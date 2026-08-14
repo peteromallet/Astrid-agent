@@ -1,4 +1,4 @@
-# SPRINT A
+# SPRINT 1
 
 Frozen execution rule: execute batches in the order below. Preserve task scope exactly. This is a direct-cut migration: no deprecation windows, compatibility releases, temporary redirects, or fallback routes. Any execution-time revision must go through the oracle.
 
@@ -240,7 +240,7 @@ Inter-sprint dependency gate:
 - Sprint A is shippable only with Arnold as the sole lifecycle engine, `_core` manifest-backed, `builtin` deleted, aliases deleted rather than redirected, canonical wheel discovery proven, and both `validate_import_layering()` and `validate_repo_structure()` green with zero exemptions.
 - This is not a compatibility release.
 
-# SPRINT B
+# SPRINT 2
 
 Frozen execution rule: execute batches in the order below after the inter-sprint dependency gate passes. Preserve task scope exactly. Continue direct cuts without deprecation windows, compatibility routes, or temporary shims. Any revision must go through the oracle.
 
