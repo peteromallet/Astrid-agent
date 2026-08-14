@@ -1,69 +1,66 @@
 # Astrid packification — megado status
 
-**Status: EXECUTION-READY** — megado Phases 0-4 complete (plan STABLE v5, tasklist frozen v2); Phase 5 (execution) not started.
+**Status: EXECUTION-READY** — megado Phases 0-4 complete (plan STABLE v7, sprint split, tasklist frozen v3); Phase 5 (execution) not started.
 
 ## Aspiration (accepted)
 
 Every discoverable capability and every optional domain is a pack, behind a
-closed, named kernel — with cheap portability seams so the kernel can later be
-extracted into a shared framework repo ("Arnold", to be renamed) that other
-agent tools consume. "As much as possible is part of the plugin system; the
-kernel surface stays as narrow as possible; everything else plugs in on top."
+closed, named kernel — with portability seams for a future framework
+extraction, and **no transitional machinery**: shims, migration patterns,
+deprecation windows, fallback engines, and compatibility routes are cut
+outright, not preserved.
 
 ## Artifacts
 
-- `.oracle/plan.md` — STABLE plan (Sol v5, 19 tasks, phases 0-4, [XHARD] tags).
-  Revision history: v1 (plan) → v2 (findings) → v3 (STABLE) → v4 (external
-  sense-check integration) → v5 (minor refinements) → STABLE again.
-- `.oracle/inputs/openrouter-sensecheck.md` — the external Claude Fable 5
-  sense-check conversation that drove v4.
+- `.oracle/plan.md` — STABLE plan v7: SPRINTS section + 19 tasks (phases 0-4,
+  [XHARD] tags) + SHIM-SWEEP verdict table (24 candidates: 19 CUT, 5 KEEP).
+  History: v1 → v2 (findings) → v3 STABLE → v4 (sense-check integration) →
+  v5 STABLE → v7 (user-directed sprint split + shim sweep) → v8 STABLE.
+- `.oracle/tasklist.md` — FROZEN v3, sprint-structured: 13 batches, 13
+  checkpoints.
+- `.oracle/inputs/openrouter-sensecheck.md` — external Claude Fable 5
+  sense-check that drove v4.
 - `.oracle/findings/01-16*.txt` — 16 DeepSeek V4 Flash exploration findings.
-- `.oracle/tasklist.md` — FROZEN tasklist (regenerated from stable v5): 12
-  batches, 12 checkpoints.
 - `.oracle-threejs-archive/` — previous megado run (three.js), preserved.
 
-## v4/v5 changes (external sense-check integration — Sol's adjudication)
+## The two sprints (~1 delegated-execution week each)
 
-INTEGRATED (15): `depends:` manifest field + static cross-pack import
-validation (2.2, with sequencing: eliminate cross-pack `run.py` imports
-before enabling the checker); defined pack-facing kernel API replacing
-"stable kernel APIs" (2.6/4.4); `astrid/packs/bundled.yaml` product-owned
-inventory replacing the kernel constant (0.3); `_core` provenance seam behind
-one function (0.2); skills branding seam `astrid/skills/branding.py` (0.2);
-Arnold residency justified with code evidence (0.1); `remotion/`/`themes/`
-classified product assets, git-aware tooling classified product-repo tooling
-(0.1); `astrid.packs.*` accepted as the product namespace, documented (0.1);
-two pre-framework-extraction blockers recorded as debts (0.1); importlib-
-string rail generalized (0.1/4.5); extension-hook admission rule (0.1);
-per-pack test subtree rail (2.6/4.5); generated-output drift checks (0.3/4.5).
+- **Sprint A**: Batch 1 (0.1 kernel+lifecycle lock, Sol), 2 (0.2 `_core`
+  legalization, Sol), 3 (0.3 bundled inventory + `builtin` deletion, Flash),
+  4 (1.1 skills stream + 1.2 pack-only elements, Sol), 5 (1.3 wheel graph,
+  Flash), 10a (3.1 alias eradication, pulled forward, Flash). Exit: releasable
+  Astrid with end-state loading, lifecycle, identity, packaging, and public
+  names; zero import exemptions.
+- **Sprint B**: 6 (2.1 generation + 2.3 RunPod, Sol), 7 (2.2 experiments +
+  `depends:`, Sol), 8 (2.4 + 2.5 Reigh, Sol), 9 (2.6 API freeze + CI, Sol),
+  10b (3.2 residual compat deletion, Flash), 11 (4.1 + 4.2 layout, Sol),
+  12 (4.3-4.5 truth + closure, Flash).
+- **Hard gate between sprints:** Batch 5 / task 1.3 — no 2.x task before the
+  canonical graph is wheel-proven.
 
-REJECTED (11, reasons in plan.md): `install_tier` dependency rule; version
-solver / auto-installer; broad `astrid.kernel` facade; renaming `astrid.packs.*`
-now; global CLI-literal abstraction; distribution-origin `_core` trust now;
-moving Arnold host shapes now; replacing `in_process.py` now; Reigh extension
-hook; quarantining invalid user packs; deprecation window for retired aliases;
-mesh_fetch promoted to a standalone executor (cut in v5 — stays private
-`blender.render` support).
+## Key shim cuts (19 of 24, per SHIM-SWEEP)
 
-## Batch map (frozen v2 — owners rebalanced from v1)
+Arnold sole lifecycle engine (legacy task fallback, `--engine` selector gone);
+`core/runtime/in_process.py` exception + both allowlists deleted (loading via
+resolver); `astrid serve` → `executors run reigh.serve_local_bridge`;
+`astrid worker`/`runpod`/`publish*`/`reigh-data`/`author`/`run`/`--brief`
+routes deleted; `builtin` pack + `builtin.agent_probe` deleted (test fixture);
+pack `aliases:` field + resolver deleted; Arnold `compat.py` + `shapes.py`
+table deleted; legacy runtime manifest shapes, auto-bind shim, rendering
+`engine` selector + `legacy_engine.py` deleted; `rendering.legacy_hybrid` →
+`rendering.hybrid` direct rename; no deprecation windows anywhere.
+KEPT: `astrid scratch`, `_core → astrid` branding, `deprecated`-as-metadata,
+rendering support fallback, forks/overrides, editorial/golden/fixtures.
 
-| Batch | Name | Phase | Owner |
-|---|---|---|---|
-| 1 | Lock the kernel contract | 0 | Flash |
-| 2 | Legalize the `_core` system pack | 0 | Sol (XHARD) |
-| 3 | Establish the bundled-product inventory | 0 | Flash |
-| 4 | Unify skills and elements on the canonical graph | 1 | Sol (XHARD) |
-| 5 | Package and prove the canonical graph | 1 | Flash |
-| 6 | Extract generation and RunPod implementations | 2 | Sol (XHARD) |
-| 7 | Declare pack dependencies and move experiments | 2 | Flash |
-| 8 | Invert and extract the Reigh service domain | 2 | Sol (XHARD) |
-| 9 | Close extraction imports and freeze the pack-facing API | 2 | Flash |
-| 10 | Retire capability-shaped host aliases | 3 | Flash |
-| 11 | Canonicalize and enforce pack layout | 4 | Sol (XHARD) |
-| 12 | Repository truth, documentation, and closure | 4 | Flash |
+## Functionality preservation
+
+All cuts are route/name/machinery removals with canonical replacements
+(`executors run <id>`). Two items interpreted narrowly — review before
+execution: (1) `builtin.agent_probe` survives only as a test fixture;
+(2) task-only lifecycle verbs with no Arnold meaning are deleted (common ops
+are ported to Arnold-backed run state).
 
 ## Next action
 
-Say "execute" (or "get it megado") to start Phase 5: run batch 1 (Flash),
-oracle-gate it, then proceed batch by batch (Sol batches carry the delegation
-mandate). Until then the plan is deliberately not executed.
+Say "execute" (or "get it megado") to start Phase 5: run Sprint A Batch 1
+(Sol XHARD, delegation mandate), oracle-gate it, proceed batch by batch.

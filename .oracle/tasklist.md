@@ -1,11 +1,18 @@
-# Batch 1 — Lock the kernel contract · Phase 0 · Flash
-Tasks: **0.1 Lock the kernel and green import baseline**
+# SPRINT A
 
-- Update `docs/packs/contract.md` with the authoritative kernel table. For every retained area, record its responsibility, current kernel-residency reason, and future portability disposition:
+Frozen execution rule: execute batches in the order below. Preserve task scope exactly. This is a direct-cut migration: no deprecation windows, compatibility releases, temporary redirects, or fallback routes. Any execution-time revision must go through the oracle.
+
+# Batch 1 — kernel and lifecycle lock · Phase 0 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate bounded implementation, investigation, and validation work; retain responsibility for integration, architectural decisions, and checkpoint proof.
+
+Tasks: 0.1 `[XHARD]` Lock the kernel, remove lifecycle duality, and eliminate core-to-pack exceptions — L · Depends: none
+
+- Update `docs/packs/contract.md` with the authoritative kernel table:
   - CLI gateway
   - session/project management
-  - task-run machinery
-  - pack discovery/validation/install/store/aliases
+  - common run-state and event machinery
+  - pack discovery/validation/install/store
   - capability registries
   - SDK and skills installer
   - structure/doctor
@@ -13,448 +20,578 @@ Tasks: **0.1 Lock the kernel and green import baseline**
   - timeline/eventlog
   - rendering and generation protocols
   - Arnold lifecycle/orchestration
-- Justify Arnold explicitly: `start`, `next`, `ack`, and `abort` default to Arnold in `astrid/core/gateway/dispatch.py`; manifest/folder orchestrators compile through Arnold lowering in `astrid/core/execution/orchestrator/pipeline.py`; the authoring DSL does the same in `astrid/core/orchestrate/compile.py`. Arnold is the default lifecycle host and compiler target, not an optional service adapter.
-- Keep Arnold loading lazy through `astrid/core/integrations/arnold/host/compat.py`; retain the legacy task engine as an explicit fallback.
-- State that concrete generation adapters, discoverable capabilities, product workflows, and optional service domains belong in manifest-backed packs.
-- Retain `astrid/core/integrations/arnold/`, `astrid/core/orchestrate/`, `astrid/core/timeline/`, `astrid/core/timeline/eventlog/`, `astrid scratch`, and `astrid serve` in host/protocol roles.
-- Classify `remotion/` as Astrid product/rendering-pack runtime substrate and `themes/` as product rendering data, not reusable framework kernel.
-- Classify `scripts/gen_capability_index.py`, `scripts/reshape/check_repo_hygiene.py`, changed-file CI selection, and other Git-aware checks as product-repository tooling.
-- Accept `astrid.packs.*` as the stable Astrid product namespace. Keep `python3 -m astrid` and `<pack>.<name>` IDs unchanged.
-- Record, without solving, the pre-framework-extraction blockers in `astrid/core/runtime/in_process.py` and `astrid/core/integrations/arnold/host/shapes.py`; state that they are not precedent for more product knowledge in core.
-- Record the verified zero-violation baseline for `validate_import_layering()` and `validate_repo_structure()`.
-- Preserve `astrid/core/runtime/in_process.py` as the sole static core-to-pack import exception and the existing manifest-driven dynamic resolver allowlist in `astrid/core/structure.py`; add no exemptions.
-- Generalize the hardcoded-import rail to detect literal `importlib.import_module()` targets throughout `astrid/core/`, including executable/module strings involved in each extraction.
-- Document the extension-hook admission rule: require a real core consumer and interchangeable implementations; otherwise use dependency injection, canonical capability dispatch, or a narrow existing host facade.
-- Add contract tests for Arnold residency, product/framework classifications, the accepted product namespace, and both documented extraction blockers.
+- Remove capability aliases from the kernel definition.
+- Make Arnold the sole lifecycle engine for `start`, `next`, `ack`, `status`, and `abort`.
+- Remove the `--engine task|arnold` selector, legacy task lifecycle branch, fallback logging, release-warning machinery, and dual-engine help.
+- Port any still-required run inspection/admin operations to common Arnold-backed run state in this task. Delete task-only verbs with no Arnold meaning rather than retaining a fallback engine.
+- Replace `astrid/core/integrations/arnold/host/compat.py` with one exact lazy Arnold contract loader. Remove optional-symbol/version accommodation and compatibility naming.
+- Delete the static product workflow and alias table in `astrid/core/integrations/arnold/host/shapes.py`.
+- Resolve qualified orchestrators through the existing discovered registry and compile them through the existing Arnold lowering path. Add no shape extension framework.
+- Consolidate pack runtime loading in the existing `astrid/core/pack/resolver.py`.
+- Move the fresh-module loading behavior needed by in-process execution behind that resolver, then remove:
+  - `_IMPORT_LAYERING_EXEMPT_REL`
+  - `_PACK_RUNTIME_BRIDGE_EXEMPT_REL`
+  - the claim that `runtime/in_process.py` is a static core-to-pack bridge
+- Make the structural rail reject literal `astrid.packs.*` imports or importlib targets anywhere in core and reject direct runtime-module resolution outside the single resolver.
+- State the exclusion rule: concrete adapters, discoverable capabilities, product workflows, and optional service domains belong in packs.
+- Retain `astrid scratch` as the sole host escape hatch for arbitrary project-scoped scripts.
+- Do not classify `astrid serve` as a permanent host contract; Task 2.5 removes it when the canonical Reigh executor lands.
+- Classify `remotion/`, `themes/`, and Git-aware scripts as product-owned rather than reusable framework kernel.
+- Accept `astrid.packs.*`, `python3 -m astrid`, and `<pack>.<name>` as Astrid product contracts.
+- Record the zero-violation import/structure baseline and add negative tests proving no exception or product workflow table remains.
+- Keep the extension-admission rule: use an extension only for a real core consumer with interchangeable implementations.
 
 CHECKPOINT:
 
-- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; assert validate_repo_structure().ok'` exits zero.
-- `pytest -q tests/test_structure_contracts.py tests/test_gateway_lifecycle_engine_dispatch.py` passes.
-- `docs/packs/contract.md` contains the kernel table, Arnold lifecycle/compiler rationale, `astrid.packs.*` decision, product classifications, extension-hook rule, and both named extraction blockers.
-- Repository tests prove `astrid/core/runtime/in_process.py` remains the sole static core-to-pack exception and literal `importlib.import_module()` targets are checked generically.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass with no new exemptions.
+- `pytest -q tests/test_gateway_lifecycle_engine_dispatch.py tests/test_gateway_status_routing.py tests/test_lifecycle_start.py tests/test_lifecycle_next.py tests/test_lifecycle_ack.py tests/test_lifecycle_status.py tests/test_lifecycle_abort.py tests/core/integrations tests/core/runtime/test_in_process.py tests/test_structure_contracts.py`
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `! rg -n '_IMPORT_LAYERING_EXEMPT_REL|_PACK_RUNTIME_BRIDGE_EXEMPT_REL' astrid tests`
+- `! rg -n '(from|import)[[:space:]]+astrid\\.packs\\.|import_module\\([\"'\"']astrid\\.packs\\.' astrid/core`
+- `! rg -n -- '--engine[ =](task|arnold)|task\\|arnold|fallback engine|fallback.*Arnold|release warning|sunset version' astrid docs tests --glob '!**/fixtures/**'`
+- `python3 -m astrid --help` exposes one Arnold-backed lifecycle surface; qualified discovered orchestrators compile without a static product workflow or alias table.
+- `runtime/in_process.py` resolves manifest-owned runtime targets only through `astrid/core/pack/resolver.py`.
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
 
-# Batch 2 — Legalize the `_core` system pack · Phase 0 · Sol(XHARD)
-Tasks: **0.2 `[XHARD]` Make `_core` a legal, manifest-backed system pack**
+# Batch 2 — legal `_core` system pack · Phase 0 · Sol(XHARD)
 
-- Change validation before or atomically with adding `astrid/packs/_core/pack.yaml`; avoid the runtime-fatal interaction among `_common.py`, `loader.py`, reserved IDs, and folder/manifest equality.
-- Update `astrid/core/pack/schemas/v1/_defs.json` so `pack_id` accepts a normal ID or reserved literal `_core`; trust remains a loader concern.
-- Add one provenance seam in `astrid/core/pack/loader.py`, such as `is_trusted_system_pack_source(pack_id, manifest_path)`, and route all reserved-system-ID loader/validator decisions through it.
-- Initially trust `_core` only when its resolved manifest parent is the canonical shipped source root. Preserve the seam for a future distribution-origin implementation.
-- Reject user, local, extra, environment, installed, symlinked, relative-path, and alias-fed `_core` claims. Preserve folder/ID equality and reject `_core.<name>` capability IDs.
-- Add `astrid/packs/_core/pack.yaml` with system metadata, the existing skill root, and no executors, orchestrators, elements, aliases, dependencies, or extensions.
-- Remove manifest-less skill-shell rules from `astrid/core/pack/validate_first_party.py` and `astrid/core/pack/validate_layout.py`.
-- Add `astrid/skills/branding.py` as the single branding seam for `_core`, the `astrid` harness-link name, display name, and managed markers.
-- Consume branding from:
-  - `astrid/skills/harnesses/base.py`
-  - `astrid/skills/harnesses/claude.py`
-  - `astrid/skills/harnesses/codex.py`
-  - `astrid/skills/harnesses/hermes.py`
-  - `astrid/skills/__init__.py`
-  - `astrid/skills/registry.py`
-  - `astrid/skills/cli.py`
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate bounded schema, loader, skills, and test work; retain responsibility for the trusted-source boundary and final checkpoint proof.
+
+Tasks: 0.2 `[XHARD]` Make `_core` a legal, manifest-backed system pack — M · Depends: 0.1
+
+- Update `_defs.json` so `pack_id` accepts normal IDs or reserved literal `_core`; provenance remains a loader concern.
+- Add one `is_trusted_system_pack_source(pack_id, manifest_path)` seam in the loader.
+- Accept `_core` only from the canonical shipped source root.
+- Reject user, local, extra, environment, installed, symlinked, and relative-path `_core` claims.
+- Preserve folder/ID equality and reject `_core.<name>` capability IDs.
+- Add `astrid/packs/_core/pack.yaml` with system metadata, its skill root, and no capabilities, dependencies, or extensions.
+- Remove manifest-less skill-shell handling from first-party and layout validation.
+- Add `astrid/skills/branding.py` as the one `_core` → `astrid` presentation seam.
+- Consume it from all Claude, Codex, Hermes, registry, CLI, and installer code.
 - Preserve literal `python3 -m astrid` commands and Python package paths.
-- Extend `tests/packs/test_pack_yaml_schema.py`, `test_pack_discovery.py`, `test_pack_layout_contract.py`, `test_packs_validate.py`, `test_packs_cli.py`, `tests/test_skills.py`, and wheel-smoke coverage for schema acceptance, canonical trust, noncanonical rejection, empty capabilities, discovery, and branding invariants.
+- Extend schema, loader, discovery, validation, skills, and wheel tests for canonical trust, noncanonical rejection, empty capabilities, and branding invariants.
 
 CHECKPOINT:
 
-- `astrid/packs/_core/pack.yaml` and `astrid/skills/branding.py` exist; `_core/pack.yaml` declares no capabilities, aliases, dependencies, or extensions.
-- `pytest -q tests/packs/test_pack_yaml_schema.py tests/packs/test_pack_discovery.py tests/packs/test_pack_layout_contract.py tests/packs/test_packs_validate.py tests/packs/test_packs_cli.py tests/test_skills.py` passes.
-- Tests cover canonical `_core` acceptance and rejection from symlink, relative, installed-store, extra-root, environment-root, local, and alias-fed sources.
-- `rg -n 'manifest.?less|skill.?shell' astrid/core/pack/validate_first_party.py astrid/core/pack/validate_layout.py` finds no live `_core` exception.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
+- `test -f astrid/packs/_core/pack.yaml`
+- `python3 -m astrid packs validate astrid/packs`
+- `pytest -q tests/packs/test_pack_yaml_schema.py tests/packs/test_pack_discovery.py tests/packs/test_pack_discovery_canonical.py tests/packs/test_pack_layout_contract.py tests/packs/test_packs_validate.py tests/test_skills.py tests/test_skills_sync_registry.py tests/test_sdk_public_surface.py`
+- Tests prove canonical shipped `_core` succeeds while user, local, extra, environment, installed, symlinked, and relative-path `_core` claims fail.
+- Tests prove `_core.<name>` capability IDs fail and `_core` declares no capabilities, dependencies, or extensions.
+- `test -f astrid/skills/branding.py`
+- `! rg -n 'skill.only.shell|manifest.less.*skill|_core.*not a pack' astrid/core astrid/skills docs --glob '!**/fixtures/**'`
+- All harness-facing `_core` → `astrid` presentation goes through `astrid/skills/branding.py`; literal `python3 -m astrid` and Python package paths remain unchanged.
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
 
-# Batch 3 — Establish the bundled-product inventory · Phase 0 · Flash
-Tasks: **0.3 Establish one deterministic product-owned first-party inventory**
+# Batch 3 — deterministic bundled inventory and `builtin` deletion · Phase 0 · Flash
 
-- Replace `_FIRST_PARTY_PACK_IDS` and `_FIRST_PARTY_INTERNAL_DIRS` in `astrid/core/pack/validate_first_party.py` with `astrid/packs/bundled.yaml`.
-- Include the complete tracked manifest-backed bundled set, including `blender` and `_core`.
-- Make generic first-party validation consume an explicit adjacent inventory rather than embedding Astrid IDs, repository-root assumptions, or Git commands in kernel Python.
-- Recognize the Astrid product pack root through `bundled.yaml`; validate every listed pack and derive displayed counts, documentation, and tests from it.
-- Remove hardcoded bundled-pack counts such as `19` from `astrid/core/pack/cli_basic.py`.
-- Keep `discord_local` and `seedance_local` as checkout-local personal packs excluded by `.git/info/exclude`; do not inventory, delete, restore, or suppress them.
-- Make `scripts/gen_capability_index.py` select IDs from `bundled.yaml` and verify every selected manifest is Git-tracked.
-- Add parity checks among `bundled.yaml`, tracked bundled pack directories, and packaged wheel inventory.
-- Add an untracked personal-pack fixture proving runtime discovery works while committed-index generation excludes it.
-- Add check modes for `_core/skill/SKILL.md` and capability-index generation.
-- Regenerate `astrid/packs/_core/skill/SKILL.md` from the product inventory in a clean checkout.
-- Keep `astrid/packs/builtin/pack.yaml` visible, accurately describe `builtin.agent_probe`, and add a consistency test.
+Execution owner: DeepSeek V4 Flash.
+
+Tasks: 0.3 Establish one deterministic product-owned inventory and delete `builtin` — M · Depends: 0.2
+
+- Replace hardcoded first-party pack sets with `astrid/packs/bundled.yaml`.
+- Include the complete tracked manifest-backed set, including `_core` and Blender.
+- Exclude `builtin`, `discord_local`, and `seedance_local`.
+- Delete `astrid/packs/builtin/`, including `builtin.agent_probe`, its build output, fixtures, and golden data.
+- Replace production `builtin.agent_probe` regression use with a temporary test pack fixture exercising the same generic orchestration behavior.
+- Remove every `builtin.*` reference from manifests, tests, docs, skills, fixtures, and Arnold state.
+- Make generic first-party validation consume an explicit adjacent inventory rather than embedded Astrid IDs or Git assumptions.
+- Derive displayed counts, docs, tests, and wheel parity from the inventory.
+- Keep checkout-local personal packs runtime-discoverable but exclude them from committed index generation.
+- Make capability-index generation select only tracked bundled IDs.
+- Add generated-output check modes for the capability index and `_core/skill/SKILL.md`.
+- Regenerate both artifacts from a clean checkout.
 
 CHECKPOINT:
 
-- `astrid/packs/bundled.yaml` exists, includes `_core` and `blender`, and excludes `discord_local` and `seedance_local`.
-- `rg -n '_FIRST_PARTY_PACK_IDS|_FIRST_PARTY_INTERNAL_DIRS' astrid/core/pack/validate_first_party.py` returns nothing.
-- `rg -n '(^|[^0-9])19([^0-9]|$)' astrid/core/pack/cli_basic.py` returns nothing.
-- `pytest -q tests/packs/test_packs_shipped_ids.py tests/packs/test_packs_gitignore_filter.py tests/packs/test_pack_discovery.py tests/packs/test_packs_validate.py tests/packs/test_packs_cli.py` passes, including inventory/tree/wheel parity and untracked-personal-pack behavior.
-- The batch-defined generation check commands for the capability index and `_core/skill/SKILL.md` exit zero, and regeneration leaves both committed outputs unchanged.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
+- `test -f astrid/packs/bundled.yaml`
+- `test ! -e astrid/packs/builtin`
+- `python3 -m astrid packs validate astrid/packs`
+- `pytest -q tests/packs/test_packs_shipped_ids.py tests/packs/test_pack_layout_contract.py tests/packs/test_pack_discovery.py tests/packs/test_packs_validate.py tests/test_sprint1_regression.py tests/test_skills_sync_registry.py`
+- `python3 scripts/gen_capability_index.py --check` passes from a clean checkout and verifies both the capability index and `astrid/packs/_core/skill/SKILL.md` are current.
+- The inventory contains `_core` and `blender`; it contains neither `builtin`, `discord_local`, nor `seedance_local`.
+- `! rg -n '\\bbuiltin(?:\\.|\\b)' astrid docs scripts --glob '!**/fixtures/**' --glob '!**/golden/**'`
+- Generated counts and wheel-parity expectations derive from `astrid/packs/bundled.yaml`; no embedded first-party ID set remains.
+- A temporary test pack, not a shipped compatibility namespace, covers the former `builtin.agent_probe` orchestration behavior.
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
 
-# Batch 4 — Unify skills and elements on the canonical graph · Phase 1 · Sol(XHARD)
-Tasks: Execute **1.1** before **1.2** within this batch.
+# Batch 4 — canonical reader graph and pack-only elements · Phase 1 · Sol(XHARD)
 
-**1.1 `[XHARD]` Route skills through the canonical discovered-pack stream**
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate the skills-reader and element-reader work as bounded streams; retain responsibility for their shared discovery ordering, invalid-manifest semantics, and integrated checkpoint.
 
-- Refactor `astrid/skills/discovery.py` to consume ordered `DiscoveredPack` records from `astrid/core/pack/discovery.py` across source, local, extra, environment, and installed roots.
-- Delete direct `PACKS_DIR.iterdir()` walking, manifest-less fallback, swallowed manifest errors, and duplicate `_scan_discovered_packs()` traversal.
+Tasks: 1.1 `[XHARD]` Route every reader through the canonical discovered-pack stream — M · Depends: 0.2–0.3; then 1.2 `[XHARD]` Remove theme and workspace element discovery — L · Depends: 1.1
+
+Task 1.1 detail:
+
+- Refactor skills discovery and the agent index to consume ordered `DiscoveredPack` records.
+- Cover source, local, extra, environment, and installed roots.
+- Delete direct `PACKS_DIR.iterdir()` walks, manifest-less fallback, swallowed manifest errors, duplicate scanners, and the agent-index dual discovery path.
 - Fix `ASTRID_PACKS_PATH` skill discovery.
-- Exclude hidden packs consistently from source and installed discovery.
-- Document hidden versus deprecated policy in `docs/packs/contract.md`; reject aliases and capability references resolving only into hidden packs.
-- Obtain skill roots only from `DiscoveredPack.skill_roots()` and deduplicate pack IDs once at canonical source priority.
+- Exclude hidden packs consistently from every discovery layer.
+- Treat `deprecated` only as lifecycle metadata: such a pack remains discoverable under its canonical ID, with no redirected name, warning window, or retained implementation path.
+- Obtain skill roots only from `DiscoveredPack.skill_roots()`.
+- Apply pack-ID deduplication once at canonical source priority.
 - Preserve explicit-root testability by parameterizing shared discovery.
-- Make invalid manifests fail explicitly at the pack boundary and never leak skills.
+- Make invalid manifests fail at the pack boundary and leak no capabilities or skills.
 - Preserve top-level SDK laziness.
-- Add source/local/extra/environment/installed ordering, `_core`, duplicate, hidden-installed, deprecated, hidden-alias, invalid-manifest, and checkout-local cases in `tests/packs/test_pack_discovery_metadata.py` and `tests/test_skills.py`.
+- Add ordering, `_core`, duplicate, hidden-installed, deprecated-status, invalid-manifest, and checkout-local tests.
 
-**1.2 `[XHARD]` Remove theme and workspace element discovery**
+Task 1.2 detail:
 
-- Remove `ElementSource`, `default_sources()`, `load_source_elements()`, active-theme element loading, `WORKSPACE_ROOT`, `legacy_workspace`, and source-conflict warnings from `astrid/core/element/registry.py`, `catalog.py`, and `__init__.py`.
-- Build the element registry exclusively from `discover_pack_metadata()` and pack-declared element roots; do not create pseudo-packs.
-- Remove discovery-only `active_theme`, `include_missing_roots`, and `elements --theme` inputs from `astrid/core/element/cli.py` and `astrid/sdk/discovery.py`.
-- Update `astrid/core/timeline/validators/`, `astrid/packs/training/executors/pool_merge/run.py`, `astrid/packs/rendering/backends/remotion/run.py`, and `scripts/gen_effect_registry.py` to use pack metadata.
-- Keep theme selection, pointers, state, and provenance as rendering data.
-- Replace positive theme/workspace discovery expectations with negative no-scan rails in `tests/core/test_elements_registry.py`, `tests/timeline/test_effects_catalog.py`, `tests/timeline/test_timeline_elements_catalog.py`, and `tests/test_sdk_public_surface.py`.
-- Preserve local-pack precedence and rendering behavior through `tests/packs/test_pack_local_priority.py`, `tests/packs/test_text_card_override.py`, and Remotion registry/code-generation tests.
-- Assert every loaded element has `source == "pack:<id>"` and matching pack metadata.
+- Remove `ElementSource`, `default_sources()`, `load_source_elements()`, active-theme element loading, `WORKSPACE_ROOT`, `legacy_workspace`, and conflict warnings.
+- Build the element registry exclusively from discovered pack metadata and declared element roots.
+- Add no pseudo-packs for theme or workspace directories.
+- Remove discovery-only `active_theme`, `include_missing_roots`, and `elements --theme` inputs.
+- Update timeline validators, training, rendering, SDK discovery, and effect-registry generation to consume pack metadata.
+- Keep theme selection, state, pointers, and provenance as rendering data.
+- Replace positive theme/workspace discovery tests with negative no-scan rails.
+- Preserve local-pack precedence and rendering behavior.
+- Require every loaded element to report `source == "pack:<id>"`.
 
 CHECKPOINT:
 
-- `pytest -q tests/packs/test_pack_discovery_metadata.py tests/test_skills.py tests/core/test_elements_registry.py tests/core/test_elements_cli.py tests/timeline/test_effects_catalog.py tests/timeline/test_timeline_elements_catalog.py tests/test_sdk_public_surface.py tests/packs/test_pack_local_priority.py tests/packs/test_text_card_override.py tests/packs/rendering/test_remotion_element_generation.py tests/packs/rendering/test_render_remotion_registry.py` passes.
-- `rg -n 'PACKS_DIR\\.iterdir|_scan_discovered_packs|ElementSource|default_sources|load_source_elements|legacy_workspace|WORKSPACE_ROOT' astrid/skills/discovery.py astrid/core/element astrid/sdk/discovery.py` returns nothing.
-- `python3 -m astrid skills list --json` succeeds and includes the canonical `_core` skill; environment-root skill coverage passes in tests.
-- `python3 -m astrid elements --help` contains no `--theme`, and no SDK discovery signature retains `active_theme` or `include_missing_roots`.
-- Tests prove hidden packs and hidden-only aliases are undiscoverable, deprecated packs remain discoverable with metadata, invalid manifests leak no skills, and all elements report `source == "pack:<id>"`.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
+- Execute and validate Task 1.1 before beginning Task 1.2.
+- `pytest -q tests/packs/test_pack_discovery.py tests/packs/test_pack_discovery_canonical.py tests/packs/test_pack_discovery_metadata.py tests/packs/test_pack_local_priority.py tests/test_skills.py tests/test_skills_sync_registry.py tests/test_sdk_public_surface.py`
+- `pytest -q tests/core/test_elements_registry.py tests/core/test_elements_cli.py tests/core/test_elements_install.py tests/timeline/test_effects_catalog.py tests/timeline/test_timeline_elements_catalog.py tests/packs/test_composition_elements.py tests/packs/test_text_card_render.py`
+- Tests cover source, local, extra, `ASTRID_PACKS_PATH`, environment, installed, `_core`, duplicate, hidden, deprecated, invalid-manifest, and checkout-local ordering.
+- Invalid manifests expose no capabilities, skills, or elements.
+- `! rg -n 'PACKS_DIR\\.iterdir|ElementSource|default_sources\\(|load_source_elements\\(|legacy_workspace|WORKSPACE_ROOT|include_missing_roots|elements --theme' astrid --glob '*.py'`
+- Every loaded element reports `source == "pack:<id>"`; negative fixtures prove themes and workspace directories are not scanned.
+- `python3 -c 'import astrid, sys; assert "astrid.core.pack.discovery" not in sys.modules'` passes.
+- `python3 -m astrid packs validate astrid/packs`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
 
-# Batch 5 — Package and prove the canonical graph · Phase 1 · Flash
-Tasks: **1.3 Package and prove the canonical graph in wheels**
+# Batch 5 — wheel-packaged canonical graph · Phase 1 · Flash
 
-- Replace rendering-only package data in `pyproject.toml` with explicit coverage for:
-  - `core/model_catalog/*.yaml`
+Execution owner: DeepSeek V4 Flash.
+
+Tasks: 1.3 Package and prove the canonical graph in wheels — L · Depends: 1.1–1.2
+
+- Replace the rendering-only package-data declaration with explicit coverage for:
+  - model-catalog YAML
   - rendering schemas and parity fixtures
   - `packs/bundled.yaml`
-  - `packs/*/pack.yaml`
-  - executor and orchestrator manifests
+  - pack manifests
+  - executor/orchestrator manifests
   - element manifests
   - rendering extension YAML
-  - pack skills and nested executor skills
-  - executor and orchestrator `STAGE.md` files
-- Do not use a blanket recursive pack-root include.
-- Extend `scripts/smoke_wheel_install.sh` to run outside the checkout with empty `ASTRID_HOME` and prove:
-  - every bundled ID has its canonical manifest
-  - source-tree and bundled inventory parity before wheel construction
-  - representative executor, orchestrator, element, nested-skill, STAGE, and extension files ship
-  - `ModelRegistry.load_default()` and `LoraRegistry.load_default()` succeed
-  - skills discover from the wheel source layer
-  - empty installed-store inclusion is a no-op
-- Prefer inventory-derived assertions over fixed counts.
-- Preserve `import astrid` laziness and ensure registry loading does not eagerly import concrete generation, Reigh, or RunPod implementations.
+  - pack and nested executor skills
+  - executor/orchestrator `STAGE.md`
+- Use no blanket recursive pack-root include.
+- Extend wheel smoke to run outside the checkout with empty `ASTRID_HOME`.
+- Prove every bundled ID has its canonical manifest in the wheel.
+- Prove source inventory and wheel inventory agree.
+- Exercise representative capabilities, skills, STAGE files, extension files, model catalogs, and an empty installed store.
+- Preserve `import astrid` laziness.
+- Prove registry loading does not eagerly import concrete generation, Reigh, or RunPod implementations.
 
 CHECKPOINT:
 
-- `pyproject.toml` explicitly lists all required package-data families and contains no blanket recursive `astrid/packs/**` include.
-- `pytest -q tests/core/rendering/test_package_data.py tests/packs/test_pack_discovery_metadata.py tests/test_skills.py tests/test_sdk_public_surface.py tests/core/test_generation_backend_registry.py` passes.
-- `scripts/smoke_wheel_install.sh` passes from outside the checkout with an empty temporary `ASTRID_HOME`.
-- Wheel-smoke output proves inventory parity, representative manifest/skill/STAGE/extension inclusion, model and LoRA default loading, source-layer skill discovery, and empty installed-store behavior.
-- SDK/import-laziness tests prove registry loading does not import concrete generation, Reigh, or RunPod implementation modules.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
+- `python3 -m astrid packs validate astrid/packs`
+- `pytest -q tests/packs/test_pack_discovery.py tests/packs/test_packs_shipped_ids.py tests/core/rendering/test_package_data.py tests/test_skills.py tests/test_sdk_public_surface.py`
+- `ASTRID_HOME="$(mktemp -d)" bash scripts/smoke_wheel_install.sh` passes outside the checkout.
+- Wheel smoke proves every ID in `astrid/packs/bundled.yaml` has its canonical `pack.yaml` and that source and wheel inventories are identical.
+- Wheel smoke exercises model-catalog YAML, pack manifests, executor/orchestrator/element manifests, rendering extension YAML, pack and nested executor skills, and `STAGE.md` files with an empty installed store.
+- Wheel package-data configuration uses explicit patterns and no blanket recursive pack-root include.
+- `import astrid` and registry discovery remain lazy; concrete generation, Reigh, and RunPod implementation modules are absent from `sys.modules` after registry loading.
+- `python3 scripts/gen_capability_index.py --check`
+- `bash scripts/reshape/run_ci_checks.sh`
+- Phase-1 gate result is recorded as `PASS` only if every criterion above succeeds. Batch 5 / Task 1.3 is the hard inter-sprint gate; no 2.x task may start without this result.
 
-# Batch 6 — Extract generation and RunPod implementations · Phase 2 · Sol(XHARD)
-Tasks: **2.1** and **2.3**.
+# Batch 10a — pulled-forward alias eradication · Phase 3 · Flash
 
-**2.1 `[XHARD]` Move concrete generation backends into the generation pack**
+Execution owner: DeepSeek V4 Flash.
 
-- Move `fal.py`, `codex.py`, and `vibecomfy.py` from `astrid/core/generation/backends/` to `astrid/packs/generation/backends/`.
-- Declare `cloud → FalBackend`, `codex → CodexBackend`, and `local → VibeComfyBackend` under `extensions.generation.backends` in `astrid/packs/generation/pack.yaml`.
-- Use the existing generation extension hook; add no extension framework.
-- Remove builtin seeding and hardcoded module strings from `astrid/core/generation/backends/registry.py`.
-- Keep provider-neutral protocols, registry, taxonomy IDs, verbs, and feature contracts in core. A bare registry is empty; defaults load only from discovered manifests.
-- Remove concrete exports and lazy imports from `astrid/core/generation/backends/__init__.py`.
-- Update generation executors, `codex_unavailable_reason`, golden patch targets, gateway resolution, SDK discovery, and model-catalog validation.
-- Delete all six tracked files under `fal-voice-upscale/`.
-- Move concrete adapter tests from `tests/core/generation/` to `tests/packs/generation/`; update registry, Codex backend, SDK-surface, parameter-map, and wheel-smoke tests.
-- Preserve the third-party descriptor rail.
-- Add negative tests for old core-backend paths and hardcoded importlib strings.
-- Extend wheel smoke to prove all three descriptors come from the generation manifest and disappear when that manifest is removed.
+Tasks: 3.1 Remove all alias surfaces — M · Depends: 1.3
 
-**2.3 `[XHARD]` Move RunPod maintenance into the RunPod pack without a new abstraction**
+Placement: deliberately pulled forward into Sprint A after Batch 5. It is independent of Phase 2 extraction and runs only after the Batch 5 hard gate passes.
 
-- Move `astrid/core/integrations/runpod/storage.py` and `sweeper.py` under `astrid/packs/runpod/`.
-- Add canonical executors and manifests for `runpod.sweep`, `runpod.list_volumes`, and `runpod.ensure_storage`.
-- Add no core RunPod protocol or extension hook.
-- Preserve sweep dry-run diagnostics and storage recovery messages.
-- Rewire the transitional top-level `runpod` handler through canonical executor dispatch.
-- Remove `_check_runpod_stale_handles()` from `astrid/core/doctor.py` and replace it with executor coverage.
-- Keep `require_existing_storage` pack-local. Replace training’s imported `ENSURE_STORAGE_HINT` with a local message pointing to `runpod.ensure_storage`; cross-reference the recovery contract in both diagnostic locations.
-- Update the RunPod manifest, skill, executor `_common.py`, and training-run `compute_backends` and `config`.
-- Remove `astrid/core/integrations/runpod/` after all imports move.
-- Relocate or retarget sweeper, storage, async, edge, doctor, and task-mutation tests.
-- Add no `astrid/core/structure.py` exemption.
-
-CHECKPOINT:
-
-- `astrid/packs/generation/backends/{fal,codex,vibecomfy}.py` exist; the corresponding `astrid/core/generation/backends/` files do not.
-- `astrid/packs/runpod/` owns storage and sweeper support plus manifests for `runpod.sweep`, `runpod.list_volumes`, and `runpod.ensure_storage`; `astrid/core/integrations/runpod/` does not exist.
-- `fal-voice-upscale/` does not exist.
-- `rg -n 'astrid\\.core\\.generation\\.backends\\.(fal|codex|vibecomfy)|astrid\\.core\\.integrations\\.runpod|import_module\\([^)]*core\\.generation\\.backends' astrid tests scripts` returns no live implementation import or hardcoded module string outside explicit negative-test fixtures.
-- `pytest -q tests/core/test_generation_backend_registry.py tests/packs/generation tests/packs/builtin/generate_image/test_codex_backend.py tests/test_sdk_public_surface.py tests/packs/runpod tests/test_doctor_setup.py tests/test_third_party_integration.py` passes.
-- Tests prove a bare generation registry is empty, the generation manifest supplies exactly the three descriptors, removal of that manifest removes them, and RunPod diagnostics retain dry-run/recovery behavior.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass with no new structure exemption.
-
-# Batch 7 — Declare pack dependencies and move experiments · Phase 2 · Flash
-Tasks: **2.2 Move experiments, declare pack dependencies, and eliminate cross-pack entrypoint coupling**
-
-- Add optional `depends` to `astrid/core/pack/schemas/v1/pack.json`, `astrid/core/pack/definition.py`, loader, author validation, and scaffolding.
-- Define it as a sorted, unique list of pack IDs for static Python support-module dependencies, distinct from external dependencies and capability composition.
-- Reject self-dependencies, cycles, duplicates, malformed IDs, undeclared imports, and stale declarations.
-- Add `astrid/core/pack/import_policy.py` and `tests/packs/test_pack_import_policy.py`.
-- Do not use `install_tier` as a dependency rule and do not add version solving, automatic installation, or another registry.
-- Inventory static and literal-dynamic cross-pack imports and classify every edge as capability invocation, reusable support code, or accidental/private coupling.
-- Eliminate every import of another pack’s executor/orchestrator `run.py`, including rendering→generation internals, understanding/editorial/video-editing→training cache code, video-editing→iteration executor entrypoints, editorial→video-editing cut internals, and video-editing→editorial executor entrypoints.
-- Move only genuinely shared symbols into narrow owning-pack support modules; use qualified capability dispatch for execution dependencies.
-- Declare surviving support edges, including `editorial → training`, `video_editing → editorial`, and `editorial → iteration`.
-- Move `astrid/core/experiments/` to `astrid/packs/iteration/experiments/` without a compatibility shim.
-- Update iteration experiment entrypoints and `astrid/packs/editorial/executors/human_review/run.py`.
-- Move `tests/core/experiments/` to `tests/packs/iteration/experiments/` and update tests and `STAGE.md` references.
-- Add tests for undeclared imports, valid declarations, forbidden entrypoint imports even when declared, cycles, stale declarations, and missing depended-on packs.
-- Finish with pack validation and the broad suite green; defer no known violation.
-
-CHECKPOINT:
-
-- `astrid/core/pack/import_policy.py` and `tests/packs/test_pack_import_policy.py` exist.
-- `astrid/core/experiments/` and `tests/core/experiments/` do not exist; `astrid/packs/iteration/experiments/` and `tests/packs/iteration/experiments/` exist.
-- `pytest -q tests/packs/test_pack_import_policy.py tests/packs/iteration tests/packs/iteration/experiments tests/packs/editorial tests/packs/video_editing` passes.
-- Import-policy tests prove sorted/unique declarations, malformed/self/cyclic/stale rejection, missing-dependency diagnostics, undeclared-edge rejection, and unconditional rejection of cross-pack executor/orchestrator `run.py` imports.
-- The machine-generated cross-pack graph is acyclic and every surviving static support edge has exactly one matching `depends` declaration.
-- Repository AST/search rails find no pack importing another pack’s executor or orchestrator `run.py`.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
-
-# Batch 8 — Invert and extract the Reigh service domain · Phase 2 · Sol(XHARD)
-Tasks: Execute **2.4** before **2.5** within this batch.
-
-**2.4 `[XHARD]` Invert the generic Reigh bridge state before extraction**
-
-- Create `astrid/core/timeline/asset_registry_state.py` for provider-neutral latest-event recovery, sidecar repair, record/source resolution, and no-pruning merge semantics.
-- Move generic logic from `astrid/core/integrations/reigh/local_bridge.py` into that host module.
-- Make `astrid/core/timeline/asset_registry_edits.py` and the eventual pack bridge consume the helper.
-- Extend `astrid/core/contracts/remote_timeline.py` only with load/save/list shapes needed by migration, editing, and worker callers.
-- Keep remote implementations caller-injected; add no Reigh discovery or registration.
-- Preserve `astrid/core/timeline/{local_fs,supabase,selector,reigh_events,transfer}.py`.
-- Keep event recovery, CAS, crash reconciliation, sidecar repair, no-op, and no-pruning tests in `tests/timeline/test_asset_registry_sync.py`; move generic recovery tests out of Reigh helper tests.
-
-**2.5 `[XHARD]` Move the Reigh service domain and worker into the Reigh pack**
-
-- Move Reigh environment, provider, bridge transport, task client, remote timeline I/O, JWT/JWKS, append service, error, and worker implementations from `astrid/core/integrations/reigh/` and `astrid/core/integrations/worker/` into `astrid/packs/reigh/integration/` and executor support.
-- Keep timeline/eventlog host primitives in core; delete compatibility copies such as `event_construction.py` and integration-local `supabase_client.py`.
-- Add `reigh.worker`, preserving the claim loop, signals, authentication, and qualified provenance.
-- Add `reigh.serve_local_bridge`, including `--projects-root`.
-- Preserve top-level unbound `astrid serve`, implemented by resolving `reigh.serve_local_bridge` through the canonical executor registry and a narrow host adapter.
-- Add no hardcoded Reigh module path, `extensions.reigh`, service registry, or general service framework.
-- Prove removal of the Reigh manifest yields an actionable missing-capability error.
-- Preserve the `serve` session/output/shutdown contract without making all executors sessionless.
-- Add narrow `reigh.timeline_edit` operations for `add-clip`, `move-clip`, and `set-theme`, preserving PAT defaults, optional service-role auth, `expected_version`, three retries, `force=False`, and event descriptors.
-- Remove remote `projects list`; remove remote `projects edit` from `astrid/core/cli/project.py` and `project_handlers.py` after executor coverage.
-- Delete `scripts/node/ops_helper.mjs` after its sole mutation caller is gone.
-- Keep generic local project storage and local `timelines` commands in core.
-- Update Reigh manifests, skill, permissions, STAGE files, seed script, project/gateway/provider tests, and the Supabase contract document.
-- Ensure gateway, project handlers, and timeline code contain no static import or hardcoded module string for Reigh implementations.
-
-CHECKPOINT:
-
-- `astrid/core/timeline/asset_registry_state.py` exists and `pytest -q tests/timeline/test_asset_registry_sync.py` passes all recovery, CAS, reconciliation, sidecar, no-op, and no-pruning cases.
-- `astrid/core/integrations/reigh/` and `astrid/core/integrations/worker/` do not exist; Reigh implementation and worker code exists under `astrid/packs/reigh/`.
-- Reigh manifests expose `reigh.worker`, `reigh.serve_local_bridge`, and `reigh.timeline_edit`; tests cover only `add-clip`, `move-clip`, and `set-theme` remote edits.
-- `scripts/node/ops_helper.mjs` is absent, and remote `projects list/edit` code is absent from `astrid/core/cli/project.py` and `astrid/core/cli/project_handlers.py`.
-- `rg -n 'astrid\\.core\\.integrations\\.(reigh|worker)|import_module\\([^)]*(reigh|worker)' astrid scripts` returns no live implementation import or hardcoded module string.
-- `pytest -q tests/timeline tests/integrations/reigh tests/packs/reigh tests/core/test_project_cli.py tests/session/test_cli_gate.py tests/test_cli_gate.py` passes, including sessionless `serve`, shutdown/output behavior, missing-manifest diagnostics, worker claim-loop behavior, and caller-injected remote timeline implementations.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
-
-# Batch 9 — Close extraction imports and freeze the pack-facing API · Phase 2 · Flash
-Tasks: **2.6 Close extraction imports, define the pack-facing kernel API, and remove CI path coupling**
-
-- Move Reigh-domain, worker, claim-loop, task-client, JWT, provider, and baseline tests under `tests/packs/reigh/`; retain timeline/eventlog Protocol tests under `tests/timeline/`.
-- Document `tests/packs/<id>/` as the extraction rail.
-- Replace positive inventories in `tests/test_structure_contracts.py` and `tests/test_m2_public_surface.py` with negative rails for:
-  - `core/experiments`
-  - concrete generation backends
-  - Reigh implementations
-  - RunPod implementations
-  - worker implementations
-- Require no live imports of `astrid.core.integrations.{reigh,runpod,worker}`.
-- Inventory every remaining static and literal-dynamic `astrid.core` import from packs.
-- Extend `astrid/core/pack/import_policy.py` with exact machine-readable pack-facing kernel module prefixes and enforce them through `validate_import_layering()`.
-- Support only:
-  - provider-neutral `astrid.core.contracts.*`
-  - explicitly public foundation I/O, hashing, path, and project-path helpers
-  - public executor/orchestrator execution APIs
-  - public pack discovery, entrypoint, resolver, and metadata APIs
-  - public project/runtime/session/task launch APIs
-  - provider-neutral generation/model-catalog contracts
-  - public rendering contracts, registries, assets, transport, service, profile, publication, and artifact APIs
-  - public timeline/event-schema and thread-lineage APIs
-  - individually admitted shared utilities
-- Exclude `_shared`, private modules/symbols, CLI handlers and presentation helpers, `task.plan.verbs`, `session.current_run_state`, `command_render`, concrete integrations/backends, and broad utility-family exemptions.
-- Promote genuinely shared private helpers into existing public modules or make them pack-local; create no catch-all facade.
-- Define supported-path stability and migration expectations in `docs/packs/contract.md`.
-- Add negative fixtures for private core modules/symbols, concrete integrations, unlisted utilities, and CLI handlers.
-- Wire the expanded checker into `scripts/reshape/run_ci_checks.sh`; add no exemptions.
-- Replace depth-limited CI matching with arbitrary-depth `astrid/**` selection and test moved Reigh/RunPod paths.
-- Admit `astrid.core.session.identity` explicitly or route it through the public session surface.
-- Update `.github/workflows/bridge-latency.yml` for `astrid/packs/reigh/**`, retain `astrid/core/timeline/**`, and test the actual PR ref.
-- Keep all moved tests under `tests/`.
-
-CHECKPOINT:
-
-- All Reigh implementation tests reside under `tests/packs/reigh/`, iteration experiment tests under `tests/packs/iteration/`, and corresponding old core/integration test locations are absent.
-- `pytest -q tests/test_structure_contracts.py tests/test_m2_public_surface.py tests/packs/test_pack_import_policy.py tests/reshape/test_ci_changed_selection.py tests/packs/reigh tests/packs/iteration/experiments tests/timeline` passes.
-- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; assert validate_repo_structure().ok'` exits zero.
-- `rg -n 'astrid\\.core\\.integrations\\.(reigh|runpod|worker)' astrid scripts tests --glob '*.py'` finds only explicit negative-test data, never live imports.
-- Import-policy fixtures reject private modules/symbols, CLI handlers, concrete integrations, unlisted utilities, and pack-to-pack entrypoint imports; every accepted pack-to-core import matches the machine-readable API.
-- `tests/reshape/test_ci_changed_selection.py` proves arbitrary-depth selection for moved Reigh and RunPod paths.
-- `.github/workflows/bridge-latency.yml` includes `astrid/packs/reigh/**` and `astrid/core/timeline/**` and checks out the PR ref.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass with zero exemptions added.
-
-# Batch 10 — Retire capability-shaped host aliases · Phase 3 · Flash
-Tasks: Execute **3.1** before **3.2** within this batch.
-
-**3.1 Remove pure executor aliases**
-
+- Delete the pack-level `aliases:` schema field, definition field, parser, normalizer, resolver, validation, and registry wiring.
+- Remove `AliasRecord`, `AliasResolver`, alias-cycle logic, deprecation messages, and alias tests.
+- Delete every alias declaration from shipped manifests, including `builtin.*`, `external.*`, `upload.youtube`, and similar alternate IDs.
+- Require all code, manifests, tests, skills, docs, fixtures, and stored examples to use canonical qualified IDs directly.
+- Delete the `builtin` namespace rather than redirecting it.
 - Remove top-level `publish`, `publish-youtube`, `upload-youtube`, and `reigh-data`.
-- Direct users to `executors run reigh.publish`, `executors run youtube.upload`, and `executors run reigh.reigh_data`.
-- Update gateway dispatch/help/exports, pipeline-alias tests, and social-publish tests.
-- Add negative root-help and unknown-command assertions.
-- Preserve existing session-gating behavior until removal.
-
-**3.2 Remove RunPod and worker host routes after executor parity**
-
-- Remove top-level `worker` after `reigh.worker` parity.
-- Remove top-level `runpod` after the three maintenance executors cover its full surface.
-- Delete `astrid/core/gateway/runpod.py`, obsolete dispatch functions, help entries, and exports.
-- Retain `_dispatch_executor_main` if used by permanent `serve` or another canonical host bridge.
-- Keep `scratch`, `astrid/core/gateway/scratch.py`, `serve`, and the unbound `serve` allowlist.
-- Update frozen allowlist assertions in `tests/test_cli_gate.py`.
-- Add negative coverage for all six retired tokens and positive coverage for `scratch` and `serve`.
-- Replace shortcut commands in RunPod, Reigh, and YouTube skills, STAGE files, recovery messages, and manifests with qualified executor invocations.
+- Remove `astrid author` and `astrid run`.
+- Remove the implicit flag-first `astrid --brief/--video` route; use the canonical qualified orchestrator.
+- Remove Arnold CLI aliases and element-kind aliases such as `crossfade`.
+- Replace `tests/test_canonical_aliases.py` with canonical-ID rejection and uniqueness tests.
+- Replace the aliases/forks/overrides guide with a forks-and-overrides guide.
+- Keep forks and explicit user overrides: they are customization contracts, not migration redirects.
+- Add negative root-help, unknown-command, schema, and manifest tests for every removed name.
 
 CHECKPOINT:
 
-- `astrid/core/gateway/runpod.py` is absent.
-- `python3 -m astrid --help` contains none of `publish`, `publish-youtube`, `upload-youtube`, `reigh-data`, `worker`, or `runpod` as root commands; `scratch` and `serve` remain documented.
-- `pytest -q tests/test_pipeline_dispatch_aliases.py tests/test_cli_gate.py tests/session/test_cli_gate.py tests/packs/runpod tests/packs/reigh` passes, including unknown-command assertions for all six retired tokens and positive `scratch`/`serve` cases.
-- Scoped searches of gateway/help exports and RunPod/Reigh/YouTube manifests, skills, STAGE files, and recovery messages find no invocation of a retired shortcut; qualified executor commands are present.
-- Canonical `reigh.worker`, `runpod.sweep`, `runpod.list_volumes`, `runpod.ensure_storage`, `reigh.publish`, `youtube.upload`, and `reigh.reigh_data` execution coverage passes.
-- `python3 -m astrid packs validate astrid/packs` and `scripts/reshape/run_ci_checks.sh` pass.
+- `pytest -q tests/test_canonical_cli.py tests/test_cli_choices.py tests/test_qualified_id_enforcement.py tests/test_public_id_resolution.py tests/test_override.py tests/packs/test_pack_yaml_schema.py tests/packs/test_pack_parser_binding.py`
+- `test ! -e tests/test_canonical_aliases.py`
+- `! rg -n '^[[:space:]]*aliases:' astrid/packs --glob 'pack.yaml'`
+- `! rg -n 'AliasRecord|AliasResolver|alias-cycle|capability_alias|builtin\\.|external\\.|upload\\.youtube' astrid docs scripts --glob '!**/fixtures/**' --glob '!**/golden/**'`
+- Root help and unknown-command tests reject `publish`, `publish-youtube`, `upload-youtube`, `reigh-data`, `author`, `run`, implicit `--brief/--video`, Arnold aliases, and `crossfade`.
+- Canonical qualified IDs succeed; each removed alias fails without warning, redirect, deprecation window, or retained implementation.
+- Fork and explicit override tests remain green.
+- `python3 -m astrid packs validate astrid/packs`
+- `bash scripts/reshape/run_ci_checks.sh`
 
-# Batch 11 — Canonicalize and enforce pack layout · Phase 4 · Sol(XHARD)
-Tasks: Execute **4.1** before **4.2** within this batch.
+Inter-sprint dependency gate:
 
-**4.1 `[XHARD]` Canonicalize pack-private entrypoints**
+- Batch 5 / Task 1.3 must have a recorded `PASS`.
+- No 2.x task may start before that result.
+- Source, local, extra, environment, installed, and wheel-source layers must all resolve through the canonical graph.
+- The wheel must contain the complete bundled inventory.
+- Sprint A is shippable only with Arnold as the sole lifecycle engine, `_core` manifest-backed, `builtin` deleted, aliases deleted rather than redirected, canonical wheel discovery proven, and both `validate_import_layering()` and `validate_repo_structure()` green with zero exemptions.
+- This is not a compatibility release.
 
-- Convert `astrid/packs/blender/deploy.py` into canonical `blender.deploy`.
-- Keep mesh fetching as private `blender.render` support; move `mesh_fetch.py` beneath its support tree and remove independent `__main__`.
-- Move `render_core.py`, `renders/`, and `server/blender_render_server.py` beneath appropriate executor support trees; retain library imports but remove alternate user-facing module surfaces.
-- Update Blender imports, presets, README, manifest, skill, STAGE files, and tests.
-- Preserve the no-cross-pack-entrypoint-import rail.
-- Classify rendering backend/planner/finalizer runners as manifest-private transport commands:
-  - `astrid/packs/rendering/run.py`
-  - `backends/{ffmpeg,remotion,threejs}/run.py`
-  - `planners/{legacy_hybrid,threejs_hybrid}/run.py`
-  - `finalizers/ffmpeg/run.py`
-- Make `astrid/core/rendering/transport.py` set an internal-invocation marker; direct subprocess invocation must fail while manifest transport succeeds.
-- Remove the unsupported `python -m astrid.sdk.rendering` claim from code and documentation.
-- Remove executable `__main__` behavior from unledgered generation golden demos; retain only needed non-runnable fixtures.
-- Add subprocess rails for canonical capability/transport success and direct pack-module failure.
-- Add a scoped stale-`python -m astrid.packs.*` rail while allowing exact manifest-private commands.
+# SPRINT B
 
-**4.2 `[XHARD]` Enforce actual pack-root layout**
+Frozen execution rule: execute batches in the order below after the inter-sprint dependency gate passes. Preserve task scope exactly. Continue direct cuts without deprecation windows, compatibility routes, or temporary shims. Any revision must go through the oracle.
 
-- Extend `astrid/core/pack/validate_layout.py` to walk real pack-root entries.
-- Permit only `pack.yaml`, declared roots, `skill/`, `docs/`, `examples/`, `schemas/`, `fixtures/`, `golden/`, capability-local golden fixtures, package markers, manifest-declared extension roots, and narrowly documented manifest-declared support-library roots.
-- Declare `astrid/packs/editorial/hype/` as library-only support and prove it has no discovery or CLI surface.
-- Preserve rendering’s declared `backends/`, `planners/`, and `finalizers/`.
+# Batch 6 — generation and RunPod extraction · Phase 2 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate Tasks 2.1 and 2.3 as independent implementation streams where safe; retain responsibility for kernel-boundary consistency, integration, and the combined checkpoint.
+
+Tasks: 2.1 `[XHARD]` Move concrete generation backends into the generation pack — M · Depends: 1.1, 1.3; and 2.3 `[XHARD]` Move RunPod maintenance into its pack and delete the host route — M · Depends: 0.1, 1.1
+
+Task 2.1 detail:
+
+- Move Fal, Codex, and VibeComfy backends into `astrid/packs/generation/backends/`.
+- Declare all three through the existing generation backend extension.
+- Delete builtin descriptor seeding and hardcoded module strings from core.
+- Keep provider-neutral protocols, registry, taxonomy, verbs, and feature contracts in core.
+- Require a bare registry to be empty and default loading to come only from manifests.
+- Remove concrete core exports and lazy concrete imports.
+- Update generation executors, unavailable-reason handling, tests, SDK discovery, gateway resolution, and model validation.
+- Delete all tracked `fal-voice-upscale/` files.
+- Move adapter tests under `tests/packs/generation/`.
+- Add negative tests for old core paths and literal module strings.
+- Prove wheel discovery gains and loses all three backends with the generation manifest.
+
+Task 2.3 detail:
+
+- Move RunPod storage and sweeper implementations into the RunPod pack.
+- Add `runpod.sweep`, `runpod.list_volumes`, and `runpod.ensure_storage`.
+- Add no core RunPod protocol, extension, or doctor hook.
+- Preserve dry-run diagnostics and storage recovery behavior.
+- Delete top-level `astrid runpod`, `astrid/core/gateway/runpod.py`, its dispatch functions, help, exports, and allowlist entries in this same task.
+- Do not temporarily rewire the old route.
+- Remove RunPod checks from core doctor and cover the executor instead.
+- Keep `require_existing_storage` pack-local.
+- Give training a local diagnostic pointing directly to `runpod.ensure_storage`.
+- Remove `astrid/core/integrations/runpod/` after imports move.
+- Relocate and retarget tests.
+- Add no structure exemption.
+
+CHECKPOINT:
+
+- `test -d astrid/packs/generation/backends`
+- `test ! -e astrid/core/generation/backends`
+- `test ! -e fal-voice-upscale`
+- `test ! -e astrid/core/gateway/runpod.py`
+- `test ! -e astrid/core/integrations/runpod`
+- `pytest -q tests/core/test_generation_backend_registry.py tests/core/test_generation_taxonomy_registry.py tests/packs/generation tests/packs/runpod tests/test_doctor_setup.py`
+- A bare generation registry is empty; manifest loading supplies exactly the Fal, Codex, and VibeComfy backends.
+- Wheel tests prove removing the generation manifest removes all three backends and restoring it restores all three.
+- `python3 -m astrid executors inspect runpod.sweep --json`
+- `python3 -m astrid executors inspect runpod.list_volumes --json`
+- `python3 -m astrid executors inspect runpod.ensure_storage --json`
+- Root help and unknown-command tests reject `astrid runpod`; no transitional dispatch remains.
+- `! rg -n 'astrid\\.core\\.generation\\.backends|astrid\\.core\\.integrations\\.runpod|astrid runpod' astrid docs scripts --glob '!**/fixtures/**'`
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
+
+# Batch 7 — experiment extraction and declared pack dependencies · Phase 2 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate dependency inventory, experiment relocation, and adversarial import-policy testing; retain responsibility for edge classification, API decisions, and zero-deferred-violation closure.
+
+Tasks: 2.2 `[XHARD]` Move experiments, declare dependencies, and eliminate entrypoint coupling — L · Depends: 0.1, 1.1
+
+- Add optional sorted, unique `depends` pack IDs for static Python support dependencies.
+- Keep it distinct from external dependencies and capability composition.
+- Reject malformed, duplicate, self, cyclic, undeclared, missing, and stale dependencies.
+- Add `astrid/core/pack/import_policy.py` and its test suite.
+- Inventory all static and literal-dynamic cross-pack imports.
+- Classify every edge as capability invocation, genuine support dependency, or accidental/private coupling.
+- Replace execution dependencies with qualified capability dispatch.
+- Forbid importing another pack’s executor/orchestrator `run.py`, even with `depends`.
+- Move only genuinely shared symbols into narrow owning-pack support modules.
+- Declare surviving edges such as editorial → training, video_editing → editorial, and editorial → iteration.
+- Move `astrid/core/experiments/` directly to `astrid/packs/iteration/experiments/`.
+- Delete the old path and update all consumers in the same change.
+- Move experiment tests under `tests/packs/iteration/experiments/`.
+- Finish with no known violation deferred.
+
+CHECKPOINT:
+
+- `test -f astrid/core/pack/import_policy.py`
+- `test -d astrid/packs/iteration/experiments`
+- `test ! -e astrid/core/experiments`
+- `test -d tests/packs/iteration/experiments`
+- `test ! -e tests/core/experiments`
+- `pytest -q tests/packs/test_pack_yaml_schema.py tests/packs/test_packs_validate.py tests/packs/iteration tests/packs/iteration/experiments`
+- Import-policy tests reject malformed, duplicate, self, cyclic, undeclared, missing, and stale `depends` edges.
+- The declared dependency graph is sorted, unique, complete, necessary, and acyclic.
+- No pack imports another pack’s executor/orchestrator `run.py`, including packs with a declared `depends` edge.
+- All execution dependencies use qualified capability dispatch.
+- `! rg -n 'astrid\\.core\\.experiments' astrid tests docs --glob '!**/fixtures/**'`
+- The import-policy checker reports zero violations and no deferred allowlist.
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
+
+# Batch 8 — Reigh state inversion and implementation extraction · Phase 2 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: execute Task 2.4 before Task 2.5; delegate provider-neutral state tests and pack extraction work as bounded streams, while retaining responsibility for the inversion boundary and deletion of host routes.
+
+Tasks: 2.4 `[XHARD]` Invert generic Reigh bridge state before extraction — M · Depends: 0.1; then 2.5 `[XHARD]` Move Reigh and worker implementations into the Reigh pack and delete host routes — L · Depends: 2.4
+
+Task 2.4 detail:
+
+- Create provider-neutral `astrid/core/timeline/asset_registry_state.py`.
+- Move latest-event recovery, sidecar repair, record/source resolution, and no-pruning merge behavior into it.
+- Make core edits and the eventual pack bridge consume this helper.
+- Extend the existing remote-timeline Protocol only with required load/save/list shapes.
+- Keep implementations caller-injected; add no Reigh registry or extension.
+- Preserve generic timeline backend modules.
+- Keep event recovery, CAS, reconciliation, sidecar, no-op, and no-pruning tests in the timeline suite.
+
+Task 2.5 detail:
+
+- Move Reigh environment, provider, transport, task client, remote timeline, JWT/JWKS, append service, errors, and worker implementations into the Reigh pack.
+- Delete `astrid/core/integrations/reigh/` and `astrid/core/integrations/worker/`.
+- Delete `event_construction.py`, integration-local `supabase_client.py`, and all other compatibility exports or copies.
+- Add canonical `reigh.worker`.
+- Add canonical `reigh.serve_local_bridge --projects-root`.
+- Make `executors run reigh.serve_local_bridge` the only public server invocation.
+- Delete top-level `astrid worker` and `astrid serve`, their dispatch/help/export code, and the sessionless `serve` allowlist entry in this same change.
+- Use the normal executor contract. If it requires an attached/explicit project, accept that contract change; do not add a new sessionless host adapter.
+- Add narrow `reigh.timeline_edit` for `add-clip`, `move-clip`, and `set-theme`.
+- Preserve PAT defaults, optional service-role authentication, optimistic versioning, three retries, `force=False`, and event descriptors.
+- Remove remote `projects list` and `projects edit`.
+- Delete `scripts/node/ops_helper.mjs`.
+- Keep local project storage and local timeline commands in core.
+- Ensure core contains no Reigh implementation import or hardcoded Reigh module string.
+
+CHECKPOINT:
+
+- Task 2.4 passes its timeline checkpoint before Task 2.5 begins.
+- `test -f astrid/core/timeline/asset_registry_state.py`
+- `pytest -q tests/timeline/test_asset_registry_contract.py tests/timeline/test_asset_registry_replaced.py tests/timeline/test_asset_registry_sync.py tests/timeline/test_backend_contract.py tests/timeline/test_eventlog.py tests/timeline/test_sync_state.py`
+- `test ! -e astrid/core/integrations/reigh`
+- `test ! -e astrid/core/integrations/worker`
+- `test ! -e scripts/node/ops_helper.mjs`
+- `pytest -q tests/packs/reigh tests/timeline tests/core/test_project_cli.py tests/test_banodoco_worker.py tests/test_worker_jwt.py tests/test_task_client.py`
+- `python3 -m astrid executors inspect reigh.worker --json`
+- `python3 -m astrid executors inspect reigh.serve_local_bridge --json`
+- `python3 -m astrid executors inspect reigh.timeline_edit --json`
+- `executors run reigh.serve_local_bridge` is the only public server invocation; root help and unknown-command tests reject `worker`, `serve`, remote `projects list`, and remote `projects edit`.
+- Reigh tests prove PAT defaults, optional service-role authentication, optimistic versioning, three retries, `force=False`, and event descriptors.
+- `! rg -n 'astrid\\.core\\.integrations\\.(reigh|worker)|astrid worker|astrid serve|event_construction|integrations/.*/supabase_client' astrid docs scripts --glob '!**/fixtures/**'`
+- `! rg -n 'astrid\\.packs\\.reigh|packs\\.reigh' astrid/core`
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
+
+# Batch 9 — extraction import closure and supported pack API · Phase 2 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: delegate full-tree import inventory and CI-selection verification; retain responsibility for supported-kernel API decisions, exception rejection, and zero-violation closure.
+
+Tasks: 2.6 `[XHARD]` Close extraction imports, define the pack-facing API, and remove CI path coupling — L · Depends: 2.1–2.5
+
+- Move all Reigh implementation tests under `tests/packs/reigh/`.
+- Keep provider-neutral timeline/eventlog tests under `tests/timeline/`.
+- Document `tests/packs/<id>/` as the extraction rail.
+- Replace positive implementation inventories with negative absence rails.
+- Require no live `astrid.core.integrations.{reigh,runpod,worker}` imports.
+- Inventory every remaining pack-to-core import.
+- Enforce exact machine-readable supported kernel module prefixes.
+- Support only provider-neutral contracts and explicitly public foundation, execution, discovery, runtime, session, generation, rendering, timeline, and lineage APIs.
+- Reject `_shared`, private symbols, CLI handlers, concrete implementations, and blanket utility families.
+- Promote genuinely shared helpers into existing public modules or make them pack-local.
+- Define the supported surface as a current pack contract; removals update every first-party caller atomically, with no alias or deprecation window promised.
+- Wire the checker into CI with zero exemptions.
+- Make changed-file selection arbitrary-depth under `astrid/**`.
+- Update the bridge workflow for `astrid/packs/reigh/**` and the actual PR ref.
+- Keep all moved tests discoverable under `tests/`.
+
+CHECKPOINT:
+
+- `test -d tests/packs/reigh`
+- `test ! -e tests/integrations/reigh`
+- `pytest -q tests/packs/reigh tests/packs/runpod tests/packs/generation tests/packs/iteration/experiments tests/timeline`
+- The machine-readable supported kernel-prefix file exists, is consumed by the checker, and contains only the approved provider-neutral/public API families.
+- The checker rejects `_shared`, private symbols, CLI handlers, concrete implementations, blanket utility families, undeclared dependencies, and every cross-pack executor/orchestrator `run.py` import.
+- `! rg -n 'astrid\\.core\\.integrations\\.(reigh|runpod|worker)' astrid tests docs --glob '!**/fixtures/**'`
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- CI import-policy execution reports zero exemptions.
+- A changed file at arbitrary depth beneath `astrid/**` selects its tests in `scripts/reshape/run_ci_checks.sh --changed`.
+- `.github/workflows/bridge-latency.yml` covers `astrid/packs/reigh/**` and references the actual PR checkout.
+- `scripts/reshape/run_ci_checks.sh --changed` passes for representative deeply nested generation, iteration, Reigh, and RunPod files.
+
+# Batch 10b — residual compatibility deletion · Phase 3 · Flash
+
+Execution owner: DeepSeek V4 Flash.
+
+Tasks: 3.2 Delete remaining compatibility parsers and dual-path runtime support — L · Depends: 2.1–2.5, 3.1
+
+- Delete `runtime_command_legacy` and require one canonical runtime manifest shape.
+- Delete fallback parsing of legacy agent entrypoints; require `agent.normal_entrypoints`.
+- Delete the legacy flat manifest parser; use the canonical YAML/JSON loader only.
+- Delete the disabled project auto-bind compatibility functions.
+- Remove rendering’s `engine` selector, neutral alias-to-engine translation, `legacy_engine.py`, and legacy argument adaptation.
+- Require qualified renderer/planner/finalizer IDs and namespaced backend configuration.
+- Rename the load-bearing hybrid planner directly from `rendering.legacy_hybrid` to `rendering.hybrid`; update every caller, fixture, schema, and provenance expectation in the same change and add no alias.
+- Delete obsolete sibling-output compatibility parameters and re-export shells.
+- Verify the RunPod, worker, and serve host routes removed in Phase 2 have not survived through help, exports, tests, or docs.
+- Remove warning-window and sunset-version machinery.
+- Add a scoped repository rail rejecting compatibility shims, alias bridges, legacy runtime shapes, and dual public routes.
+
+CHECKPOINT:
+
+- `pytest -q tests/test_schema_contract.py tests/test_component_manifest_parser_parity.py tests/test_runtime_correctness_inventory.py tests/core/rendering tests/packs/rendering tests/test_canonical_cli.py tests/test_cli_choices.py`
+- `test ! -e astrid/core/rendering/legacy_engine.py`
+- `! rg -n 'runtime_command_legacy|legacy_engine|rendering\\.legacy_hybrid|auto.bind|sunset.version|warning.window' astrid docs scripts --glob '!**/fixtures/**' --glob '!**/golden/**'`
+- `! rg -n -- '(--engine|engine selector|alias.to.engine)' astrid/core/rendering astrid/packs/rendering docs`
+- Canonical manifest tests accept only `agent.normal_entrypoints` and the canonical YAML/JSON manifest shape.
+- Renderer, planner, and finalizer tests require qualified IDs and namespaced configuration.
+- `rendering.hybrid` succeeds; `rendering.legacy_hybrid` fails with no alias or warning.
+- Root help and unknown-command tests continue to reject `runpod`, `worker`, and `serve`.
+- The scoped compatibility rail reports no shims, alias bridges, legacy runtime shapes, dual routes, warning windows, or sunset machinery outside explicit negative fixtures.
+- `python3 -m astrid packs validate astrid/packs`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
+
+# Batch 11 — canonical private entrypoints and enforced pack layout · Phase 4 · Sol(XHARD)
+
+Execution owner: GPT-5.6 Sol. Delegation mandate: execute Task 4.1 before Task 4.2; delegate Blender migration, transport guarding, and layout adversarial tests as bounded work while retaining responsibility for the final pack-root contract.
+
+Tasks: 4.1 `[XHARD]` Canonicalize pack-private entrypoints — L · Depends: Phase 3; then 4.2 `[XHARD]` Enforce actual pack-root layout — L · Depends: 4.1
+
+Task 4.1 detail:
+
+- Convert `blender/deploy.py` into canonical `blender.deploy`.
+- Keep mesh fetching as private `blender.render` support; remove its independent CLI.
+- Move Blender render/server support beneath owning executor trees.
+- Remove alternate `__main__` surfaces.
+- Update Blender manifests, skills, STAGE files, docs, presets, imports, and tests.
+- Keep rendering backend/planner/finalizer runners as manifest-private transport commands, including `rendering.hybrid`.
+- Have core rendering transport set the internal-invocation marker.
+- Reject direct subprocess invocation while allowing manifest transport.
+- Remove the unsupported `python -m astrid.sdk.rendering` claim.
+- Remove executable behavior from unledgered generation golden demos.
+- Add canonical-success/direct-module-failure subprocess rails.
+- Search for stale `python -m astrid.packs.*` instructions, permitting only exact manifest-private commands.
+
+Task 4.2 detail:
+
+- Make layout validation walk actual pack-root entries.
+- Permit only:
+  - `pack.yaml`
+  - declared content roots
+  - `skill/`, `docs/`, `examples/`, `schemas/`, `fixtures/`, `golden/`
+  - capability-local golden fixtures
+  - Python package markers
+  - declared extension roots
+  - narrowly documented declared support-library roots
+- Keep `editorial/hype/` as declared library-only support and prove it has no discovery or CLI surface.
+- Keep rendering’s declared backend/planner/finalizer extension roots.
 - Reject undeclared loose files and directories with actionable paths.
-- Move `astrid/packs/fal/tests/test_h3_video.py` to `tests/packs/fal/`.
-- Add positive rendering/editorial/golden/fixture tests and negative Blender-style junk cases.
+- Move Fal tests under `tests/packs/fal/`.
+- Add positive editorial/rendering/fixture/golden tests and negative junk-layout cases.
 
 CHECKPOINT:
 
-- The Blender manifest exposes `blender.deploy`; mesh-fetch and render/server support live under canonical executor support trees with no independent `__main__` surface.
-- Direct invocation tests fail for guarded rendering-private commands while canonical manifest transport succeeds.
-- `rg -n 'python(3)? -m astrid\\.sdk\\.rendering' astrid docs` returns nothing.
-- The scoped stale-command test finds no unsupported `python -m astrid.packs.*` instruction outside the exact manifest-private allowlist.
-- `astrid/packs/fal/tests/test_h3_video.py` is absent and `tests/packs/fal/test_h3_video.py` exists.
-- `pytest -q tests/packs/test_pack_import_policy.py tests/packs/test_pack_layout_contract.py tests/packs/test_packs_validate.py tests/core/rendering tests/packs/rendering tests/packs/fal tests --ignore=tests/agentic` passes for Blender, transport guarding, rendering extension layout, editorial support, fixtures/golden roots, and negative loose-entry cases.
-- `python3 -m astrid packs validate astrid/packs` rejects undeclared pack-root junk with actionable paths and accepts all shipped packs.
-- `scripts/reshape/run_ci_checks.sh` passes with no new exemption.
+- Task 4.1 passes its entrypoint checkpoint before Task 4.2 begins.
+- `python3 -m astrid executors inspect blender.deploy --json`
+- Canonical `blender.deploy` execution succeeds through the executor gateway.
+- Direct Blender helper/module CLI subprocesses fail; mesh fetching remains private support for `blender.render`.
+- Rendering transport tests prove manifest-private renderer/planner/finalizer commands succeed only with the internal-invocation marker and fail when invoked directly.
+- `pytest -q tests/packs/test_pack_layout_contract.py tests/packs/test_packs_validate.py tests/packs/rendering tests/core/rendering`
+- `test -d tests/packs/fal`
+- Layout validation walks actual filesystem entries and reports actionable paths for undeclared files/directories.
+- Positive layout tests cover editorial support, rendering extension roots, fixtures, golden data, and capability-local golden fixtures.
+- `editorial/hype/` has no discoverable capability or CLI surface.
+- `! rg -n 'python(3)? -m astrid\\.sdk\\.rendering' astrid docs tests --glob '!**/fixtures/**'`
+- Any surviving `python -m astrid.packs.*` instruction is an exact manifest-private transport command; all others are absent.
+- `python3 -m astrid packs validate astrid/packs`
+- `python3 -c 'from astrid.core.structure import validate_repo_structure; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `scripts/reshape/run_ci_checks.sh --changed` passes.
 
-# Batch 12 — Repository truth, documentation, and closure · Phase 4 · Flash
-Tasks: Execute **4.3**, then **4.4**, then **4.5** within this batch.
+# Batch 12 — repository truth and full closure · Phase 4 · Flash
 
-**4.3 Close root-hygiene gaps and root-writing tests**
+Execution owner: DeepSeek V4 Flash.
 
-- Verify `fal-voice-upscale/` is absent and remove it from `ROOT_DIR_ALLOWLIST`.
-- Add `*.mp3` to `.gitignore` and tracked-runtime-media hygiene rules.
-- Make `find_unknown_root_entries()` and hygiene tests inspect actual root entries as well as tracked Git paths.
-- Keep the checker product-repository-owned.
-- Replace root-directed temporary directories with `tmp_path`, `TemporaryDirectory()`, or system temp paths in:
-  - `tests/test_pipeline_caching.py`
-  - `tests/core/test_project_cli.py`
-  - `tests/test_managed_write_paths.py`
-  - worker/claim-loop tests
-  - `tests/core/test_executor_cli.py`
-  - `tests/packs/reigh/test_open_in_reigh.py`
-  - `tests/timeline/test_edit_helpers.py`
+Tasks: 4.3 Close root-hygiene gaps and root-writing tests — M · Depends: 2.1, 4.2; then 4.4 Complete the documentation and CI truth pass — M · Depends: 4.1–4.3; then 4.5 Run the full closure gate — M · Depends: 4.1–4.4
+
+Task 4.3 detail:
+
+- Verify `fal-voice-upscale/` is absent and remove its root allowlist entry.
+- Add `*.mp3` to Git ignore and tracked-runtime-media rules.
+- Inspect actual root filesystem entries as well as tracked Git paths.
+- Keep the hygiene checker product-repository-owned.
+- Replace root-directed test output with `tmp_path`, `TemporaryDirectory()`, or system temp paths.
 - Add no speculative deletion rules for absent unrelated directories.
-- Do not touch `.oracle-threejs-archive/`; run final hygiene from a clean checkout.
+- Do not touch `.oracle-threejs-archive/`.
+- Run final hygiene from a clean checkout.
 
-**4.4 Complete the documentation and CI truth pass**
+Task 4.4 detail:
 
-- Complete `docs/packs/contract.md` with the kernel, Arnold rationale, namespace decision, supported kernel API, `depends`, entrypoint-import prohibition, hidden/deprecated policy, hook-admission rule, product/framework classifications, and both extraction blockers.
-- Update `docs/packs/pack-taxonomy.md` for `_core`, visible `builtin`, Blender, current `install_tier: core`, alias-carrier truth, and inventory derivation.
-- Update `docs/architecture/repo-shape.md` for actual execution paths, gateways, kernel directories, and no legacy workspace source.
-- Update `docs/architecture/import-tiers.md` for supported kernel APIs, declared support dependencies, the fixed runtime bridge, and provider-neutral Protocols.
-- Correct SDK public-surface documentation to 32 exports in `docs/contracts/platform-contract.md` and `docs/architecture/repo-shape.md`.
-- Add `fal.h3_video` to `docs/packs/adapter-packs.md`.
-- Update architecture/SDK references for qualified capability routes, pack-only discovery, and no silent module CLI.
-- Update Generation, Iteration, Reigh, RunPod, YouTube, Blender, rendering, builtin, and `_core` skills/manifests/STAGE files.
-- Update integration and asset-resolution contracts for pack ownership while retaining `astrid serve`.
-- Update CI-lane documentation and documentation-command verification for arbitrary-depth selection.
+- Document the exact kernel, Arnold-only lifecycle, canonical product namespace, supported pack API, `depends`, and extension-admission rule.
+- Document no core-to-pack exceptions and no static Arnold product shape table.
+- Document `_core` as the system pack and the absence of `builtin`.
+- Remove alias-carrier, compatibility-window, fallback-engine, `astrid serve`, and extraction-debt language.
+- Document hidden and deprecated status without implying redirected names or retained old implementations.
+- Correct repository shape, execution paths, gateway modules, and SDK export count.
+- Document pack-only discovery and qualified capability routes.
+- Document `rendering.hybrid` and remove the old planner ID.
+- Update Generation, Iteration, Reigh, RunPod, YouTube, Blender, rendering, and `_core` skills/manifests/STAGE files.
+- Update integration contracts to point to `executors run reigh.serve_local_bridge`.
+- Update CI-lane documentation and command verification.
 - Regenerate `_core/skill/SKILL.md`.
-- Search for stale domain paths, aliases, pack counts, undeclared imports, unsupported kernel imports, direct pack commands, and old `_core` exception language.
+- Search for stale domain paths, aliases, `builtin`, removed host verbs, legacy runtime shapes, old planner IDs, direct pack commands, and old exception language.
 
-**4.5 Run the full closure gate**
+Task 4.5 detail:
 
-- Run pack validation; schema, dependency/import-policy, discovery, skills, elements, structure, gateway, doctor, generation, iteration, Reigh, RunPod, rendering, layout, CI-selection, and hygiene tests.
+- Run pack validation.
+- Run schema, dependency/import-policy, discovery, skills, elements, structure, gateway, doctor, generation, iteration, Reigh, RunPod, rendering, layout, CI-selection, and hygiene tests.
 - Run wheel smoke outside the checkout with empty `ASTRID_HOME`.
-- Run `scripts/reshape/run_ci_checks.sh` and the broad suite.
+- Run `scripts/reshape/run_ci_checks.sh` and the full broad suite.
 - Run Remotion typechecking and renderer-parity tests.
-- Verify zero import-layer exemptions.
-- Verify cross-pack support imports match acyclic, non-stale `depends`.
-- Verify no pack imports another pack’s executor/orchestrator `run.py`.
-- Verify all pack-to-core imports belong to the supported machine-readable API.
+- Require zero import-layer exemptions.
+- Require no runtime-resolver file allowlist.
+- Require a complete, non-stale, acyclic `depends` graph.
+- Require no cross-pack executor/orchestrator entrypoint imports.
+- Require every pack-to-core import to belong to the supported API.
 - Run generated-artifact check modes.
-- Search for retired gateway tokens, deleted core-domain imports, old backend module strings, obsolete paths, unsupported module commands, and undeclared dependencies.
-- Verify all capabilities, skills, and concrete generation backends originate from manifests.
-- Verify `astrid/core/integrations/` contains only Arnold.
-- Verify no new product-specific binding joins the two documented extraction debts.
-- Verify deterministic capability indexing and repository hygiene from a clean checkout.
+- Prove no shipped manifest contains `aliases:`.
+- Prove `builtin`, `builtin.*`, removed gateway verbs, task-engine selection, old runtime shapes, `rendering.legacy_hybrid`, and old core-domain paths are absent outside explicit negative fixtures.
+- Prove `runtime/in_process.py` and the Arnold host contain no product-specific exception or workflow table.
+- Prove every capability, skill, and concrete generation backend originates from a manifest-backed pack.
+- Prove `astrid/core/integrations/` contains only the exact Arnold host contract.
 - Verify moved tests follow `tests/packs/<id>/`.
+- Verify clean-checkout indexing and hygiene without touching `.oracle-threejs-archive/`.
 
 CHECKPOINT:
 
-- `fal-voice-upscale/` is absent; `ROOT_DIR_ALLOWLIST` does not mention it; `.gitignore` includes `*.mp3`.
-- `pytest -q tests/reshape/test_repo_hygiene.py tests/test_pipeline_caching.py tests/core/test_project_cli.py tests/test_managed_write_paths.py tests/core/test_executor_cli.py tests/packs/reigh/test_open_in_reigh.py tests/timeline/test_edit_helpers.py` passes without creating root artifacts.
-- Documentation-command verification passes, and scoped greps find no stale core-domain paths, retired aliases, fixed pack counts, old `_core` exception language, or unsupported direct module commands.
-- `python3 -m astrid packs validate astrid/packs` passes.
-- Pack schema, dependency/import-policy, discovery, skill, element, structure, gateway, doctor, generation, iteration, Reigh, RunPod, rendering, layout, CI-selection, and hygiene test groups pass.
-- `scripts/smoke_wheel_install.sh` passes outside the source checkout with an empty temporary `ASTRID_HOME`.
-- `scripts/reshape/run_ci_checks.sh` and `pytest --tb=no -q --no-header` pass.
-- Remotion typechecking and `pytest -q tests/packs/test_renderer_parity.py tests/packs/rendering tests/core/rendering` pass.
-- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; assert validate_repo_structure().ok'` exits zero.
-- Automated rails prove the `depends` graph is complete, non-stale, and acyclic; no pack imports another pack’s executor/orchestrator `run.py`; every pack-to-core import belongs to the supported API.
-- Generated-artifact check modes prove the capability index and `astrid/packs/_core/skill/SKILL.md` match clean regeneration.
-- `find astrid/core/integrations -mindepth 1 -maxdepth 1 -type d ! -name arnold -print` produces no output.
-- Searches find no live retired gateway tokens, deleted core Reigh/RunPod/worker imports, old concrete-generation backend strings, obsolete paths, or unsupported direct pack-module commands outside explicit negative fixtures.
-- Tests prove every executor, orchestrator, element, skill, and concrete generation backend originates from a manifest-backed pack.
-- Reigh tests are under `tests/packs/reigh/`, iteration experiment tests under `tests/packs/iteration/`, and every moved pack domain follows `tests/packs/<id>/`.
-- Final generated-index and repository-hygiene checks pass from a clean checkout without touching `.oracle-threejs-archive/`.
+- Execute Task 4.3, then Task 4.4, then Task 4.5.
+- `test ! -e fal-voice-upscale`
+- `rg -n '^\\*\\.mp3$' .gitignore`
+- `! rg -n 'fal-voice-upscale' scripts/reshape/check_repo_hygiene.py`
+- Hygiene tests inspect tracked paths and actual root filesystem entries; root-writing tests use `tmp_path`, `TemporaryDirectory()`, or system temp paths.
+- `.oracle-threejs-archive/` is unchanged.
+- `python3 scripts/reshape/check_repo_hygiene.py` passes from a clean checkout.
+- `python3 scripts/gen_capability_index.py --check`
+- `python3 -m astrid packs validate astrid/packs`
+- `python3 -c 'from astrid.core.structure import validate_import_layering, validate_repo_structure; assert validate_import_layering() == []; report = validate_repo_structure(); assert report.ok, report.errors'`
+- `! rg -n '_IMPORT_LAYERING_EXEMPT_REL|_PACK_RUNTIME_BRIDGE_EXEMPT_REL' astrid tests`
+- `! rg -n '^[[:space:]]*aliases:' astrid/packs --glob 'pack.yaml'`
+- `test ! -e astrid/packs/builtin`
+- `! rg -n '(from|import)[[:space:]]+astrid\\.packs\\.|import_module\\([\"'\"']astrid\\.packs\\.' astrid/core`
+- `! rg -n 'astrid\\.core\\.integrations\\.(reigh|runpod|worker)|rendering\\.legacy_hybrid|runtime_command_legacy' astrid docs scripts --glob '!**/fixtures/**' --glob '!**/golden/**'`
+- Root help and unknown-command tests reject `builtin`, `author`, `run`, implicit `--brief/--video`, `publish`, `publish-youtube`, `upload-youtube`, `reigh-data`, `runpod`, `worker`, and `serve`.
+- `astrid/core/integrations/` contains only the exact Arnold host contract.
+- The `depends` graph is complete, necessary, sorted, unique, non-stale, and acyclic.
+- No pack imports another pack’s executor/orchestrator `run.py`.
+- Every pack-to-core import belongs to the machine-readable supported kernel API.
+- Every capability, skill, element, and concrete generation backend originates from a manifest-backed discovered pack.
+- `pytest -q tests/test_schema_contract.py tests/packs/test_pack_yaml_schema.py tests/packs/test_pack_discovery.py tests/test_skills.py tests/core/test_elements_registry.py tests/test_structure_contracts.py tests/test_canonical_cli.py tests/test_doctor_setup.py tests/core/test_generation_backend_registry.py tests/packs/generation tests/packs/iteration tests/packs/reigh tests/packs/runpod tests/core/rendering tests/packs/rendering tests/packs/test_pack_layout_contract.py tests/reshape 2>/dev/null || pytest -q tests/test_schema_contract.py tests/packs tests/test_skills.py tests/test_structure_contracts.py tests/test_canonical_cli.py tests/test_doctor_setup.py tests/core/rendering`
+- `pytest -q tests/packs/test_renderer_parity.py`
+- `cd remotion && npm run typecheck`
+- `ASTRID_HOME="$(mktemp -d)" bash scripts/smoke_wheel_install.sh`
+- `ASTRID_CI_SKIP_COVERAGE=1 bash scripts/reshape/run_ci_checks.sh`
+- `pytest --tb=no -q --no-header -m "not integration and not opt_in"`
+- Final oracle verdict is `PASS` only when every command and absence rail above succeeds from a clean checkout. The resulting release has one discovery graph, one lifecycle engine, one canonical ID per capability, one public route per operation, and no retained migration scaffolding.
