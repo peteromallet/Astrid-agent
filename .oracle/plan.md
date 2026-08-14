@@ -1,794 +1,311 @@
-I'll verify the flagged files and line ranges so the cleanup plan matches the code as it exists now, then write a concrete ordered plan.Findings look solid; I’m now reading the exact helper sites, profile blocks, and remotion pins so the plan names real symbols and files.I have the remotion pin and helper call sites; next I’ll pull the function bodies and test-helper copies so the plan can name exact moves.I'll locate the backendI'll extract the exact code blocks run files and shared and search helpers, then extract the hits for the 90k exactHz import quirk/,function Rem facts youotion pins, Chrome VERSION workaround, and listed. test-helper duplication.Paths are under `backends/`. Next I’ll quote the 90kHz blocks, Remotion pins, and the rendering test helpers.The first search missed those two helper names. I'll read the import/alias blocks and search the function definitions next.Next I’ll read each remotion helper body and how ffmpeg/threejs call them.The Chrome VERSION search was too narrow. I’ll look in remotion setup/docs and pull the test-helper bodies plus renderer-parity paths.Checking whether `_canonical_profile` reads any settings field besides `theme_path`, and confirming there is no `backends/_shared`.# Helper coupling: remotion ↔ threejs (facts)
-
-## 1. Paths
-
-| Item | Path | Exists |
-|---|---|---|
-| threejs run | `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/threejs/run.py` | yes |
-| remotion run | `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py` | yes |
-| ffmpeg run | `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/ffmpeg/run.py` | yes |
-| `backends/_shared/` | — | **no** |
-
-`backends/` contains only `ffmpeg/`, `remotion/`, `threejs/`.
-
-## 2. threejs → remotion aliases (`threejs/run.py` 56–67)
-
-```56:67:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/threejs/run.py
-from astrid.packs.rendering.backends.remotion import run as remotion_backend
-
-# Reuse seam (T3.3): only the side-effect-free execution/provenance helpers.
-# The shared Remotion render lock is acquired inside ``_execute_remotion``;
-# this backend never adds a second lock or capture stack.
-_execute_remotion = remotion_backend._execute_remotion
-_render_provenance_payload = remotion_backend._render_provenance_payload
-_serialize_timeline = remotion_backend._serialize_timeline
-_load_registry_mapping = remotion_backend._load_registry_mapping
-_input_path = remotion_backend._input_path
-_duration_frames = remotion_backend._duration_frames
-_canonical_profile = remotion_backend._canonical_profile
-```
-
-Names aliased: `_execute_remotion`, `_render_provenance_payload`, `_serialize_timeline`, `_load_registry_mapping`, `_input_path`, `_duration_frames`, `_canonical_profile`.
-
-Not aliased (threejs defines its own): `_profile_mismatches` (L298), `_settings_from_request` (L249).
-
-## 3. remotion/run.py helpers
-
-### `_execute_remotion` — L600
-
-```600:623:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _execute_remotion(
-    timeline_path: Path,
-    assets_path: Path,
-    staged_video: Path,
-    *,
-    provenance_out_path: Path,
-    project_dir: Path,
-    composition_id: str,
-    theme_path: Path | None,
-    min_free_gb: float | None,
-) -> _ExecutionDetails:
-    """Render one private video and return the data needed for provenance."""
-
-    with remotion_lock.remotion_render_lock():
-        return _execute_remotion_locked(
-            ...
-        )
-```
-
-- Remotion-specific internally: **yes**. `remotion_lock` (import L66). Locked path runs `npx remotion render` (L692–710), `@banodoco` project validation, remotion props file, `ASTRID_TIMELINE_COMPOSITION_SRC`.
-- Used by ffmpeg: **no**.
-- Used by threejs: **yes** (alias + call L513–522 with `composition_id=THREE_COMPOSITION_ID`).
-
-### `_render_provenance_payload` — L483
-
-```483:497:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _render_provenance_payload(
-    out_path: Path,
-    *,
-    engine: str,
-    timeline_path: Path,
-    assets_path: Path,
-    project_dir: Path,
-    composition_id: str,
-    theme_path: Path | None,
-    active_theme: dict[str, Any] | None,
-    registry_state: dict[str, Any],
-    stage_summary: dict[str, Any],
-    segments: list[dict[str, float | str]] | None = None,
-    segment_provenance: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-```
-
-- Remotion-specific imports inside body: **no**. Builds a dict; calls `_active_pack_order_for_provenance` / `_active_theme_for_provenance`. Payload keys include `composition_id`, `project_dir`.
-- Used by ffmpeg: **yes** — `remotion_backend._render_provenance_payload` at L149, L379, L579 (`engine="ffmpeg"`, often `project_dir=REPO_ROOT / "remotion"`, `composition_id="TimelineComposition"`).
-
-### `_serialize_timeline` — L126
-
-```126:131:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _serialize_timeline(
-    timeline_path: Path,
-    *,
-    default_theme: str = "banodoco-default",
-) -> dict[str, Any]:
-    return timeline.Timeline.load(timeline_path).for_render(default_theme=default_theme).to_json_data()
-```
-
-- Remotion-specific: **no** (`astrid.core.timeline` only).
-- Used by ffmpeg: **no**.
-
-### `_load_registry_mapping` — L878
-
-```878:884:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _load_registry_mapping(path: Path | None) -> dict[str, Any]:
-    if path is None:
-        return {"assets": {}}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("assets"), dict):
-        raise ValueError("assets registry must be an object containing an assets object")
-    return data
-```
-
-- Remotion-specific: **no**.
-- Used by ffmpeg: **no**.
-
-### `_input_path` — L817
-
-```817:819:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _input_path(raw_path: str, workspace: Path) -> Path:
-    candidate = Path(raw_path).expanduser()
-    return (candidate if candidate.is_absolute() else workspace / candidate).resolve()
-```
-
-- Remotion-specific: **no**.
-- Used by ffmpeg: **no**. ffmpeg defines its own at L67 (same logic). Also duplicated at `backends/ffmpeg/command.py` L90.
-
-### `_duration_frames` — L1051
-
-```1051:1060:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _duration_frames(video_path: Path, profile: RenderProfile) -> int:
-    probe = ffprobe_metadata_strict(video_path)
-    ...
-    return max(1, int(frames + Fraction(1, 2)))
-```
-
-- Remotion-specific: **no** (`ffprobe_metadata_strict`).
-- Used by ffmpeg: **no**. ffmpeg has a different signature at L512: `def _duration_frames(probe: MediaProbe, profile: RenderProfile) -> int`. Same arithmetic after probe.
-
-### `_canonical_profile` — L887
-
-```887:901:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _canonical_profile(
-    timeline_path: Path,
-    assets_data: Mapping[str, Any],
-    settings: _RenderSettings,
-) -> RenderProfile:
-    fallback_theme = settings.theme_path or (
-        WORKSPACE_ROOT / "themes" / "banodoco-default" / "theme.json"
-    )
-    active_theme = _resolved_theme_for_render(timeline_path, fallback_theme)
-    return resolve_render_profile(
-        timeline_path,
-        assets_data,
-        theme=active_theme,
-        themes_root=REPO_ROOT / "themes",
-    )
-```
-
-- Remotion-specific: **no** (core theme/profile). Annotated as `_RenderSettings`.
-- Settings field actually read: **`theme_path` only**.
-- Used by ffmpeg: **no**.
-- Used by threejs: **yes**, passing `_ThreeSettings` (L388, L503).
-
-### `_active_pack_order_for_provenance` — L460
-
-```460:469:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _active_pack_order_for_provenance() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": discovered.id,
-            ...
-        }
-        for discovered in discover_pack_metadata(project_root=REPO_ROOT)
-    ]
-```
-
-- Remotion-specific: **no**.
-- Used by ffmpeg: **not directly**. Invoked only from `_render_provenance_payload`, which ffmpeg does call.
-
-### `_resolved_theme_for_render` — L172
-
-```172:175:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _resolved_theme_for_render(
-    timeline_path: Path,
-    fallback_theme_path: Path,
-) -> dict[str, Any]:
-```
-
-- Remotion-specific: **no** (`timeline.Timeline`, `timeline.resolve_timeline_theme`, `_theme_for_props` → `load_theme`).
-- Used by ffmpeg: **no**. threejs uses it only via `_canonical_profile`.
-
-### `_profile_mismatches` — L904
-
-```904:917:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/run.py
-def _profile_mismatches(
-    requested: RenderProfile,
-    canonical: RenderProfile,
-) -> list[str]:
-    requested_data = requested.to_dict()
-    canonical_data = canonical.to_dict()
-    mismatches: list[str] = []
-    for field, expected in canonical_data.items():
-        if field == "duration_tolerance":
-            continue
-        ...
-    return mismatches
-```
-
-- Remotion-specific: **no**.
-- Used by ffmpeg: **no**.
-- threejs: **local copy**, not the remotion symbol. Body at `threejs/run.py` L298–311 is the same loop/`duration_tolerance` skip.
-
-### `_reject_unknown_config`
-
-**Does not exist** as a function anywhere in the repo.
-
-Inlined in `_settings_from_request`:
-
-- remotion L836–838
-- threejs L251–253
-
-Same pattern; message uses each file’s `BACKEND_ID`.
-
-### `_parse_min_free_gb`
-
-**Does not exist** as a function anywhere in the repo.
-
-Inlined in `_settings_from_request`:
-
-- remotion L860–868
-- threejs L268–276
-
-Bodies are the same (None / bool-or-non-number TypeError / `float` / negative ValueError).
-
-## 4. ffmpeg aliases around L59
-
-```53:64:/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/ffmpeg/run.py
-from astrid.packs.rendering.backends.ffmpeg.support import (
-    ALTERNATIVE_BACKENDS,
-    BACKEND_ID,
-    BACKEND_VERSION,
-    support as strict_support,
-)
-from astrid.packs.rendering.backends.remotion import run as remotion_backend
-
-# Compatibility spellings retained while callers migrate off the facade's
-# historical private helper names.
-_validate_ffmpeg_media_timeline = validate_ffmpeg_media_timeline
-```
-
-- Module alias: `run as remotion_backend`.
-- Local alias only: `_validate_ffmpeg_media_timeline` ← `validate_ffmpeg_media_timeline` (ffmpeg `command.py`, not remotion).
-- No `name = remotion_backend._name` block like threejs.
-
-ffmpeg remotion call sites:
-
-| Symbol | Lines |
-|---|---|
-| `_render_provenance_payload` | 149, 379, 579 |
-| `_effective_registry_state` | 158, 388, 588 |
-| `_render_provenance_sidecar_path` | 165, 412 |
-| `_effect_registry_for_assets` | 300 |
-| `_source_pack_id` | 359 |
-
-## 5. `_reject_unknown_config` / `_parse_min_free_gb` search
-
-`astrid/packs/rendering`: **0 hits** for either name. Whole workspace: **0 hits**.
-
-Nearest same-body sites:
-
-| Logic | remotion | threejs |
-|---|---|---|
-| unknown config vs `_CONFIG_KEYS` | L836–838 | L251–253 |
-| `min_free_gb` parse | L860–868 | L268–276 |
-
-`_CONFIG_KEYS` differ:
-
-- remotion L74–76: `project_dir`, `composition_id`, `composition`, `theme_path`, `theme`, `min_free_gb`
-- threejs L77: `project_dir`, `theme_path`, `min_free_gb`
-
-Other unknown-config loops (different keys): `finalizers/ffmpeg/run.py:1001`, `planners/threejs_hybrid/run.py:358`, `planners/legacy_hybrid/run.py:396`.
-
-## 6. `_canonical_profile` + settings types
-
-**One definition:** remotion L887. threejs only aliases it.
-
-`_RenderSettings` (remotion L80–84): `project_dir`, `composition_id`, `theme_path`, `min_free_gb`.
-
-`_ThreeSettings` (threejs L90–93): `project_dir`, `theme_path`, `min_free_gb`. No `composition_id`.
-
-`_canonical_profile` reads **`settings.theme_path` only**. `project_dir` / `composition_id` / `min_free_gb` unused here.
-
-threejs calls: L388 (`support`), L503 (`render`) with `_ThreeSettings`. Runtime duck-type on `.theme_path`.
-
-## 7. `backends/_shared` and `__init__.py`
-
-`backends/_shared`: **absent**.
-
-`__init__.py` under `backends/`:
-
-- `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/ffmpeg/__init__.py`
-- `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/remotion/__init__.py`
-- `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/threejs/__init__.py`
-
-No `backends/__init__.py`.
-
-## 8. Cross-imports
-
-| From | To | Fact |
-|---|---|---|
-| remotion/run.py | threejs | **no**. Only `from astrid.packs.rendering.backends.remotion import lock as remotion_lock`# Cleanup facts (exact (L66). |
-|)
-
-## A. 90 ffmpeg/run.py | rem kHz +otion | **yes**. L forced-AAC
-
-**Paths59 `from astrid.packs.rendering. are `backends/`,backends.remotion import run not `remotion/run.py` / `threejs/run.py`.**
-
- as remotion_backend`.### Rem |
-| threejs/runotion support.py — `/ | remotion | **yes**. L56 +Users/peteromalley/Documents/reigh-workspace 7 aliases/Astrid-threejs. |-cleanup/astrid/packs/rendering/backends/remotion/run.py` 1008–1024
-
-```1008:1024:astrid/packs/rendering/backends/remotion/run.py
-            # Remotion ALWAYS muxes an audio track (silent when the timeline
-            # has none) and always muxes at the 90 kHz timescale; support must
-            # describe the same contract render() implements.
-            features["audio_ownership"] = AudioOwnership.RENDERED.value
-            if request.audio is not None and request.audio is not AudioOwnership.RENDERED:
-                reasons.append(
-                    f"audio={request.audio.value!r} is incompatible with "
-                    f"Remotion's always-rendered audio output"
-                )
-            if request.profile is not None:
-                render_profile = replace(
-                    canonical,
-                    time_base=(1, 90000),
-                    audio_codec=canonical.audio_codec or "aac",
-                    audio_sample_rate=canonical.audio_sample_rate or 48000,
-                    audio_channel_layout=canonical.audio_channel_layout or "stereo",
-                )
-```
-
-### Remotion render — same file 1095–1109
-
-```1095:1109:astrid/packs/rendering/backends/remotion/run.py
-        declared_profile = request.profile or canonical
-        # Remotion always muxes MP4 at the 90 kHz timescale regardless of the
-        # input timeline's time base; the declared profile must match what the
-        # renderer actually produces or strict validation rejects the output.
-        declared_profile = replace(declared_profile, time_base=(1, 90000))
-        # Remotion always muxes an audio track into its MP4 (silent when the
-        # timeline has none), so ownership is effectively 'rendered' and the
-        # declared profile must carry the AAC audio fields it always emits.
-        ownership = AudioOwnership.RENDERED
-        declared_profile = replace(
-            declared_profile,
-            audio_codec=declared_profile.audio_codec or "aac",
-            audio_sample_rate=declared_profile.audio_sample_rate or 48000,
-            audio_channel_layout=declared_profile.audio_channel_layout or "stereo",
-        )
-```
-
-### Three.js helper — `/Users/peteromalley/Documents/reigh-workspace/Astrid-threejs-cleanup/astrid/packs/rendering/backends/threejs/run.py` 314–321
-
-```314:321:astrid/packs/rendering/backends/threejs/run.py
-def _render_declared_profile(canonical: RenderProfile) -> RenderProfile:
-    declared = replace(canonical, time_base=(1, 90000))
-    return replace(
-        declared,
-        audio_codec=declared.audio_codec or "aac",
-        audio_sample_rate=declared.audio_sample_rate or 48000,
-        audio_channel_layout=declared.audio_channel_layout or "stereo",
-    )
-```
-
-Used at **393** (`support` vs `_render_declared_profile(canonical)`) and **504** (`render`: `_render_declared_profile(request.profile or canonical)`).
-
-### Semantically identical? **Field transform yes; application no.**
-
-Same four fields: force `time_base=(1, 90000)`; `audio_codec or "aac"`; `audio_sample_rate or 48000`; `audio_channel_layout or "stereo"`.
-
-Differences:
-| Site | Applied to | Shape |
-|---|---|---|
-| Remotion `support` | `canonical` only, and only if `request.profile is not None` (mismatch check) | **one** `replace()` |
-| Remotion `render` | `request.profile or canonical` (overwrites caller `time_base`) | **two** `replace()` |
-| Three.js helper | same as remotion render when called from render; same as remotion support when called from support | two `replace()`, factored |
-
-Support **rejects** a non-90kHz requested profile. Render **rewrites** it to 90kHz.
-
-### Every `90000` / `video_track_timescale` / `settb` hit
-
-**Literal `90000` (3, all production):**
-- `astrid/packs/rendering/backends/threejs/run.py:315`
-- `astrid/packs/rendering/backends/remotion/run.py:1020`
-- `astrid/packs/rendering/backends/remotion/run.py:1099`
-
-**Unrelated false positive:** `docs/architecture/timeline-event-sourcing/m6-reigh-sync.md:126` — migration timestamp `20260325090000_…`
-
-**`video_track_timescale`:**
-- `astrid/packs/rendering/finalizers/ffmpeg/run.py:648, 688` — `str(_mp4_timescale(target_profile))` (canonical FPS doubling, **not** 90000)
-- `tests/core/rendering/test_threejs_hybrid.py:590` — **`"12288"`**
-- `tests/packs/rendering/test_hyperframes_backend.py:492` — **`"12288"`**
-- `tests/packs/rendering/test_ffmpeg_finalizer.py:715`
-
-**`settb`:**
-- `astrid/packs/rendering/finalizers/ffmpeg/run.py:581` — `filters.append(f"settb=expr={time_base}")`
-- `tests/packs/rendering/test_ffmpeg_finalizer.py:397` — `assert f"settb=expr={target.time_base[0]}/{target.time_base[1]}" in filters`
-
-### Tests vs 90000
-
-**Zero tests contain `90000`.**  
-Hybrid real-render asserts `video["time_base"] == "1/12288"` (`test_threejs_hybrid.py:828`). Three.js real-render never asserts `time_base`. Remotion unit test uses `time_base=(1, 15360)` (`test_remotion_backend.py:272`). Docs mention “90 kHz” at `docs/reference/threejs-renderer.md:117` without the integer.
-
----
-
-## B. Remotion package versions
-
-### `remotion/package.json` — all `@remotion/*` + `remotion`
-
-Pinned **`4.0.455`**:
-- deps: `@remotion/cli`, `@remotion/google-fonts`, `@remotion/layout-utils`, `@remotion/media`, `@remotion/renderer`, `@remotion/three`, `remotion`
-- devDeps: `@remotion/bundler`
-
-Also: `@react-three/fiber` `8.18.0`, `three` `0.185.1`, `@types/three` `0.185.4`.
-
-### Root `package.json`
-
-**No remotion deps.** Workspace marker only (`name: astrid-workspace`).
-
-### `remotion/package-lock.json`
-
-- `node_modules/@remotion/renderer`: **`4.0.455`** (`resolved` `…/renderer-4.0.455.tgz`)
-- its dep **`extract-zip`: `2.0.1`** (lock `node_modules/extract-zip` version `2.0.1`)
-- lockfile root + every other `@remotion/*` also **`4.0.455`**
-
-### Chrome `VERSION` workaround
-
-**No code.** Repo-wide search for `chrome-headless-shell`, `mac-arm64`, `mac-arm64/VERSION`, writing a `VERSION` marker: **no hits**.
-
-Only mention — `docs/reference/threejs-renderer.md:63-65`:
-
-> 2. **Chrome Headless Shell** — `@remotion/renderer` downloads its bundled Chrome Headless Shell into `remotion/node_modules/.remotion/`. Do not depend on system Chrome or Playwright caches.
-
----
-
-## C. Test helpers
-
-**`tests/packs/rendering/_helpers.py` does not exist.**
-
-### `_missing_environment` — only in threejs backend (hybrid imports it)
-
-```62:80:tests/packs/rendering/test_threejs_backend.py
-def _missing_environment() -> list[str]:
-    missing = [
-        f"{binary} executable"
-        for binary in ("node", "npx", "ffprobe")
-        if shutil.which(binary) is None
-    ]
-    node_modules = REMOTION_PROJECT / "node_modules"
-    if not node_modules.is_dir():
-        missing.append("remotion/node_modules")
-    for package in ("three", "@remotion/three", "@react-three/fiber"):
-        if not (node_modules / package).is_dir():
-            missing.append(f"remotion/node_modules/{package}")
-    # The transport spawns `python3` from PATH; the active interpreter must
-    # carry the banodoco timeline schema or timeline serialization is refused.
-    try:
-        import banodoco_timeline_schema  # noqa: F401
-    except ImportError:
-        missing.append("banodoco_timeline_schema for the active python3")
-    return missing
-```
-
-Remotion **drifted name + thinner check** (`test_remotion_backend.py:945-954`): same `node`/`npx`/`ffprobe` + `remotion/node_modules` only; **no** `three` / `@remotion/three` / `@react-three/fiber` / `banodoco_timeline_schema`.
-
-Hybrid: `from tests.packs.rendering.test_threejs_backend import _missing_environment` (`test_threejs_hybrid.py:663`).
-
-### `_execution_env`
-
-Threejs (`106-114`) wraps `_child_path_on_front`:
-
-```105:114:tests/packs/rendering/test_threejs_backend.py
-@contextmanager
-def _execution_env():
-    node_bin = (
-        str(Path(shutil.which("node")).resolve().parent)
-        if shutil.which("node")
-        else ""
-    )
-    python_bin = str(Path(sys.executable).resolve().parent)
-    with _child_path_on_front(*[d for d in (python_bin, node_bin) if d]):
-        yield
-```
-
-Hybrid (`673-690`) and remotion `_remotion_execution_env` (`966-983`) **inline the same PATH join**; remotion is rename-only vs hybrid. Threejs is **not** byte-identical (uses `_child_path_on_front`).
-
-### `_probe` — **drifted**
-
-Threejs (`566-584`): no `-count_frames`; entries `stream=codec_name,codec_type,width,height,pix_fmt,avg_frame_rate,duration` (no `time_base` / `nb_read_frames`).
-
-Hybrid (`693-712`): `-count_frames`; `stream=…pix_fmt,time_base,avg_frame_rate,nb_read_frames` (no stream `duration`).
-
-Remotion backend: **no `_probe`**.
-
-### `_frame_md5` — **byte-identical** (threejs `587-607` == hybrid `715-735`)
-
-```587:607:tests/packs/rendering/test_threejs_backend.py
-def _frame_md5(path: Path, frame: int) -> str:
-    out = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-i",
-            str(path),
-            "-vf",
-            f"select=eq(n\\,{frame})",
-            "-frames:v",
-            "1",
-            "-f",
-            "md5",
-            "-",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return out.strip().split("=")[-1].strip()
-```
-
-### `_source_video` — **not in threejs/remotion backends**; hybrid vs hyperframes **drifted**
-
-Hybrid `561-598`: lavfi color **+** `anullsrc` + `-shortest` + `-c:a aac` + `-video_track_timescale 12288`.
-
-Hyperframes `470-500`: video-only (no audio) + same `12288`.
-
----
-
-## D. Exact pytest paths
-
-| Suite | Path |
-|---|---|
-| renderer parity | `tests/packs/test_renderer_parity.py` (`make renderer-parity` → `pytest -q -m renderer_parity tests/packs/test_renderer_parity.py`) |
-| legacy characterization | `tests/packs/rendering/test_legacy_renderer_characterization.py` |
-| Three.js backend | `tests/packs/rendering/test_threejs_backend.py` |
-| Remotion backend | `tests/packs/rendering/test_remotion_backend.py` |
-| FFmpeg backend | `tests/packs/rendering/test_ffmpeg_backend.py` |
-| related ffmpeg | `tests/packs/rendering/test_ffmpeg_support.py`, `tests/packs/rendering/test_ffmpeg_finalizer.py` |
-| Three.js hybrid | `tests/core/rendering/test_threejs_hybrid.py` |
-| legacy hybrid | `tests/core/rendering/test_legacy_hybrid.py` |
-| hyperframes | `tests/packs/rendering/test_hyperframes_backend.py` |
-| core rendering dir | `tests/core/rendering/` (29 test modules: `test_artifacts.py`, `test_assets.py`, `test_attached_render.py`, `test_caller_overrides.py`, `test_cli.py`, `test_cli_contract.py`, `test_conformance.py`, `test_contracts.py`, `test_freeze.py`, `test_generic_code_audit.py`, `test_legacy_hybrid.py`, `test_output_name.py`, `test_package_data.py`, `test_production_callers.py`, `test_profile.py`, `test_provenance.py`, `test_publication.py`, `test_raw_command_fixture.py`, `test_registry.py`, `test_registry_matrix.py`, `test_replay.py`, `test_replay_bundle.py`, `test_scaffold.py`, `test_scaffold_install.py`, `test_schema_roundtrip.py`, `test_service.py`, `test_threejs_hybrid.py`, `test_transport.py`) |
-
----
-
-## E. Ruff gating
-
-**Not a hard `ruff check` fail.** Count vs baseline **1469**.
-
-- `Makefile:30-32`: `$(PY) scripts/reshape/compare_ruff_baseline.py`
-- Script runs: `python -m ruff check . --output-format json` (`scripts/reshape/compare_ruff_baseline.py:12-20`)
-- Pass iff `current_count <= baseline_count` (`57-59`)
-- Baseline: `scripts/reshape/baselines/ruff_astrid.json` → `"finding_count": 1469`
-- CI: same script in `scripts/reshape/run_ci_checks.sh:252` and `:352`
-- Pinned tool: `pyproject.toml` `ruff==0.12.0`; lint select `E4,E7,E9,F,I,BLE`; include `astrid/**`, `scripts/reshape/**`, `tests/reshape/**`, two concurrency test files
-
----
-
-## F. Chrome cache / VERSION file
-
-- `remotion/node_modules` **not present** (renderer package.json missing).
-- `remotion/node_modules/.remotion` **does not exist**.
-- `remotion/node_modules/.remotion/chrome-headless-shell/mac-arm64/VERSION` **does not exist**.
-- No VERSION marker file checked into the repo. No postinstall/workaround script.# Three.js cleanup plan
-
-Goal: remove real duplication/fragility. No re-architecture. Four commits, in this order.
-
-Hard rails: no `astrid/core/` edits, no `pack.yaml`, no `test_production_callers` allowlist, no `tests/test_schema_contract.py`. `_shared` imports **only** `astrid.core`. `make cycles` will not catch a pack cycle — grep it yourself.
-
----
-
-## C0 — Extract backend-neutral helpers (F2 + F4 production)
-
-**Why:** `threejs/run.py:56-67` imports remotion’s whole `run` module for 7 names. 6 are core-only. `_canonical_profile` is typed on remotion’s private `_RenderSettings` and only reads `.theme_path`; threejs duck-types `_ThreeSettings`. `_profile_mismatches` is byte-identical (`threejs:298-311` = `remotion:904-917`).
-
-**Create** `astrid/packs/rendering/backends/_shared/__init__.py` (no `backends/__init__.py`). Move these as a literal cut, no behavior change:
-
-| Move | From | Notes |
-|---|---|---|
-| `_input_path` | remotion:817 | 3 lines |
-| `_load_registry_mapping` | remotion:878 | |
-| `_serialize_timeline` | remotion:126 | |
-| `_duration_frames` | remotion:1051 | path+profile form; do **not** unify with ffmpeg’s probe-form |
-| `_canonical_profile` | remotion:887 | **retype** 3rd arg `settings: _RenderSettings` → `theme_path: Path \| None`. Body already only reads `settings.theme_path` |
-| `_render_provenance_payload` | remotion:483 | **payload keys unchanged** |
-| deps: `_resolve_theme_path`, `_theme_for_props`, `_theme_slug_for_render_default`, `_resolved_theme_for_render` | remotion:134-195 | needed by `_canonical_profile` |
-| deps: `_active_pack_order_for_provenance`, `_active_theme_for_provenance` | remotion:460, 472 | needed by provenance |
-| `_profile_mismatches` | remotion:904 / threejs:298 | delete threejs copy |
-| `_parse_min_free_gb(value) -> float \| None` | **new**, body = remotion:860-868 = threejs:268-276 | |
-| `_reject_unknown_config(config, allowed, backend_id)` | **new**, body = remotion:836-838 = threejs:251-253 | remotion+threejs settings only |
-
-**Call-site rewires**
-
-- `remotion/run.py`: `from astrid.packs.rendering.backends._shared import …` and keep the same private names bound in-module (legacy_engine + tests patch `remotion._X`). Call `_canonical_profile(..., settings.theme_path)`. Use the two new config helpers inside `_settings_from_request`.
-- `threejs/run.py`: import the 6 neutrals + `_profile_mismatches` + config helpers from `_shared`. Keep **only** `_execute_remotion = remotion_backend._execute_remotion`. Delete local `_profile_mismatches`. `_canonical_profile(..., settings.theme_path)` at :388 and :503. Identity assert at `test_threejs_backend.py:790` stays valid.
-- `legacy_engine.py`: **do not touch** (26 remotion aliases keep working via re-export).
-- `ffmpeg/run.py`: **do not retarget** `_render_provenance_payload` — `test_ffmpeg_support.py:478` patches `ffmpeg.remotion_backend._render_provenance_payload`; ffmpeg still needs remotion for `_effective_registry_state`, `_effect_registry_for_assets`, `_source_pack_id`, `_render_provenance_sidecar_path`.
-
-**Verify C0**
-
-```bash
-# _shared must not import any pack
-rg -n "from astrid\.packs|import astrid\.packs" astrid/packs/rendering/backends/_shared
-# must be empty
-
-pytest -q \
-  tests/packs/rendering/test_threejs_backend.py \
-  tests/packs/rendering/test_remotion_backend.py \
-  tests/packs/rendering/test_remotion_locking.py \
-  tests/packs/rendering/test_ffmpeg_backend.py \
-  tests/packs/rendering/test_ffmpeg_support.py \
-  tests/packs/rendering/test_legacy_renderer_characterization.py \
-  tests/packs/test_renderer_parity.py \
-  tests/core/rendering
-python3 scripts/reshape/compare_ruff_baseline.py   # count must stay ≤ 1469
-```
-
----
-
-## C1 — Dedup the 90 kHz + AAC mux profile (F3)
-
-**Depends on C0.** Do **not** delete anything until the probe.
-
-**Why:** same four-field transform in three places:
-
-- remotion support `:1017-1024` (one `replace` on `canonical`, mismatch check)
-- remotion render `:1095-1109` (two `replace`s on `request.profile or canonical`)
-- threejs `_render_declared_profile` `:314-321` (used at support `:393` and render `:504`)
-
-Zero tests assert `90000`. `artifacts.py:279,386` **does** compare `time_base` — a wrong declared profile fails strict validation.
-
-**C1a — extract only**
-
-Add to `_shared`:
-
-```python
-def _remotion_mux_profile(profile: RenderProfile) -> RenderProfile:
-    return replace(
-        profile,
-        time_base=(1, 90000),
-        audio_codec=profile.audio_codec or "aac",
-        audio_sample_rate=profile.audio_sample_rate or 48000,
-        audio_channel_layout=profile.audio_channel_layout or "stereo",
-    )
-```
-
-Replace the three sites. Delete threejs `_render_declared_profile`. Remotion re-exports the name. Re-run the C0 pytest block.
-
-**C1b — probe a RAW backend artifact** (not hybrid, not finalized)
-
-Hybrid `:828` asserting `1/12288` is the **finalizer** output (`-video_track_timescale` / `settb` in `finalizers/ffmpeg/run.py:581,648,688`). Source fixtures also bake `12288`. That is not Remotion’s mux.
-
-```bash
-# use an existing real-render test output, or one-shot:
-#   backend="rendering.remotion"  or  backend="rendering.threejs"
-ffprobe -v error -show_entries stream=codec_type,codec_name,time_base,sample_rate,channel_layout -of json <raw.mp4>
-```
-
-| Video `time_base` | Audio | Action |
-|---|---|---|
-| `1/90000` | aac 48k stereo | **KEEP** helper as-is |
-| `1/12288` | aac 48k stereo | delete **only** `time_base=(1, 90000)`; keep AAC defaults |
-| `1/90000` | none | delete AAC defaults; keep time_base (unlikely) |
-| `1/12288` | none | delete the whole helper |
-
-If you delete `time_base` force, also edit `docs/reference/threejs-renderer.md:117` (“90 kHz declared timescale”). If you keep it, leave the doc.
-
-**Verify C1:** same C0 pytest block. If a real-render env is present, also:
-
-```bash
-pytest -q \
-  tests/packs/rendering/test_remotion_backend.py::test_remotion_real_render_under_global_angle_keeps_identity \
-  tests/packs/rendering/test_threejs_backend.py::test_threejs_real_render_text_timeline_through_public_service \
-  tests/core/rendering/test_threejs_hybrid.py
-```
-
----
-
-## C2 — Test helper collapse (F4 tests)
-
-**Independent of C0/C1.** New `tests/packs/rendering/_helpers.py`.
-
-| Helper | Action |
-|---|---|
-| `_execution_env` | one PATH prepend (python bin + node bin). Replaces threejs `:106`, remotion `_remotion_execution_env` `:967`, hybrid `:674`. Inline threejs `_child_path_on_front` into it; delete that helper |
-| `_frame_md5` | verbatim ×2 (threejs `:587` = hybrid `:715`) → share |
-| `_probe` | drifted; ship the **hybrid superset** (`-count_frames` + `time_base,nb_read_frames`). threejs extra `duration` keys are unused |
-| `_source_video(tmp_path, *, audio=False)` | hyperframes `:470` video-only vs hybrid `:561` +aac. `audio=True` is the hybrid body |
-
-Rewire: `test_threejs_backend.py`, `test_remotion_backend.py`, `tests/core/rendering/test_threejs_hybrid.py`, `test_hyperframes_backend.py`. Hybrid already does `from tests.packs.rendering.test_threejs_backend import _missing_environment` — keep that (env-skip stays put).
-
-**Verify C2**
-
-```bash
-pytest -q \
-  tests/packs/rendering/test_threejs_backend.py \
-  tests/packs/rendering/test_remotion_backend.py \
-  tests/packs/rendering/test_hyperframes_backend.py \
-  tests/core/rendering/test_threejs_hybrid.py
-python3 scripts/reshape/compare_ruff_baseline.py
-```
-
----
-
-## C3 — Pin `@remotion/*` to 4.0.509 (F1)
-
-**Independent. Last, so a bad bump reverts in one commit.**
-
-Root cause is upstream: `@remotion/renderer@4.0.455` → `extract-zip@2.0.1`, broken on Node ≥26 (remotion#7409). Fixed in 4.0.509 (PR #7420). CI is Node 20 + typecheck only — it will not catch a render regression.
-
-**Change**
-
-- `remotion/package.json`: pin all eight to `4.0.509` — `@remotion/cli`, `google-fonts`, `layout-utils`, `media`, `renderer`, `three`, `remotion`, `@remotion/bundler`
-- regenerate `remotion/package-lock.json` via `cd remotion && npm install` (not `npm ci`)
-- confirm lock no longer depends on `extract-zip`
-- `docs/reference/threejs-renderer.md:51` table: `@remotion/three` `4.0.509`
-- `astrid/packs/rendering/skill/SKILL.md:123`: “Requires Remotion 4.0.509 (pinned)”
-
-Do **not** add/remove a `chrome-headless-shell/VERSION` marker — none exists in the repo; the epic workaround was a local cache file. Existing local shells stay valid. Fresh checkouts get a working extract from 4.0.509.
-
-**Verify C3**
-
-```bash
-cd remotion && npm run typecheck
-pytest -q \
-  tests/packs/rendering/test_remotion_locking.py \
-  tests/packs/rendering/test_remotion_backend.py::test_remotion_real_render_under_global_angle_keeps_identity \
-  tests/packs/rendering/test_threejs_backend.py::test_threejs_real_render_text_timeline_through_public_service \
-  tests/packs/rendering/test_threejs_backend.py::test_threejs_real_render_empty_timeline_through_public_service \
-  tests/packs/test_renderer_parity.py
-make remotion-typecheck
-make renderer-parity
-```
-
----
-
-## Explicit LEAVE
-
-| Item | Why |
-|---|---|
-| `_execute_remotion` in remotion | lock + `npx remotion render`. The one honest remotion helper threejs should keep |
-| ffmpeg → remotion import (4 remotion-specific helpers + provenance patch target) | retarget adds test churn, does not shrink a cycle |
-| `legacy_engine.py` remotion aliases | re-exports preserve them; 26-name retarget is YAGNI |
-| Extra `_input_path` copies (ffmpeg/run.py:67, ffmpeg/command.py:90, planners, finalizer) | 3-line fn; not the coupling problem |
-| ffmpeg `_duration_frames(probe, profile)` | different signature |
-| Planner/finalizer unknown-config 3-liners | raise vs reasons; different key sets |
-| Full settings parsers | `composition_id` / theme-slug logic is backend-specific |
-| Env-skip trio (`_missing_environment` vs `_remotion_missing_environment`) | genuinely divergent (three-package scan vs node_modules-only vs nvm) |
-| Inline per-backend assertions | not duplication |
-| Dead-code hunt | none remains |
-| Chrome `VERSION` marker | not in repo; bump kills the root cause |
-| `html_canvas_effect` `remotion_min_version: 4.0.455` | minimum for `HtmlInCanvas`, still true |
-| ffmpeg 90000 | never hardcodes; probes |
-| `tests/test_schema_contract.py` | pre-existing failures |
-| `astrid/core/**`, `pack.yaml`, production-callers allowlist | constraints. `_shared` sits under `backends/` → auto-exempt via `_BACKEND_IMPL_PREFIX` |
-| Shared settings dataclass / new abstraction layer | more machinery than it removes |
-
----
-
-## Final gate (after C3)
-
-```bash
-pytest -q \
-  tests/packs/test_renderer_parity.py \
-  tests/packs/rendering/test_legacy_renderer_characterization.py \
-  tests/packs/rendering/test_threejs_backend.py \
-  tests/packs/rendering/test_remotion_backend.py \
-  tests/packs/rendering/test_ffmpeg_backend.py \
-  tests/core/rendering
-make ruff
-make remotion-typecheck
-make renderer-parity
-rg -n "from astrid\.packs|import astrid\.packs" astrid/packs/rendering/backends/_shared   # empty
-```
-
----
-
-## Risks
-
-- **90000 delete without a raw probe** is the one way to silently break validation. `artifacts.py` compares `time_base`. Hybrid `1/12288` is the wrong signal. Sequence C1a → probe → C1b.
-- **Provenance shape:** `_render_provenance_payload` must be a literal move. Catch: `test_legacy_renderer_characterization.py` (`test_render_provenance_v1_key_set`, hybrid segment keys), remotion registry provenance tests, threejs/remotion sidecar asserts.
-- **`_canonical_profile` signature:** only remotion/threejs call it (plus a remotion mock). No other callers.
-- **Patch targets:** remotion re-exports keep `patch.object(remotion, "_canonical_profile")` etc. working. Do not make threejs import remotion for those names or identity asserts will lie.
-- **4.0.509 CLI drift** in `_execute_remotion` (`npx remotion render` flags). Catch with `test_remotion_locking.py` + the two real-render tests. Typecheck will not catch it.
-- **Ruff:** new `_shared/__init__.py` and `_helpers.py` must be clean (`I,F,E4,E7,E9,BLE`). Gate is `current ≤ 1469`, not zero.
-- **Wheel:** `_shared/__init__.py` auto-packs. No packaging edit.
+# TASKLIST
+
+## Phase 0 — name and legalize the kernel
+
+### 0.1 Lock the kernel and green import baseline — Phase 0 · S · Depends: none
+
+- Update `docs/packs/contract.md` with the authoritative kernel table: CLI gateway; session/project management; task-run machinery; pack discovery/validation/install/store/aliases; capability registries; SDK and skills installer; structure/doctor; foundation/contracts; timeline/eventlog; rendering and generation protocols; Arnold lifecycle/orchestration.
+- State the exclusion rule: concrete generation adapters, discoverable capabilities, and optional service domains belong in manifest-backed packs.
+- Retain `astrid/core/integrations/arnold/`, `astrid/core/orchestrate/`, `astrid/core/timeline/`, `astrid/core/timeline/eventlog/`, `astrid scratch`, `astrid serve`, `remotion/`, and `themes/` in their host/substrate/data roles.
+- Record the verified baseline: `validate_import_layering()` and `validate_repo_structure()` both report zero violations.
+- Keep `astrid/core/runtime/in_process.py` as the sole static core-to-pack import exception and preserve the existing manifest-driven dynamic resolver allowlist in `astrid/core/structure.py`; add no exemptions.
+- Explicitly test hardcoded/importlib module strings such as those currently in `astrid/core/generation/backends/registry.py:185-205`, because the AST checker cannot see them.
+
+### 0.2 `[XHARD]` Make `_core` a legal, manifest-backed system pack — Phase 0 · M · Depends: 0.1
+
+- Change validation before or atomically with adding `astrid/packs/_core/pack.yaml`; a naïve manifest is runtime-fatal because:
+  - `astrid/core/pack/_common.py:144-146` rejects `_core`.
+  - `astrid/core/pack/loader.py:94-107` does not skip underscore directories.
+  - `loader.py:117-118` requires manifest ID to match the folder.
+  - The resulting `PackValidationError` escapes discovery and crashes every registry.
+- Update `astrid/core/pack/schemas/v1/_defs.json` so the lexical `pack_id` definition accepts either a normal pack ID or the reserved literal `_core`; do not pretend raw JSON Schema can validate filesystem provenance.
+- Add an explicit reserved-ID path in `astrid/core/pack/_common.py` and enforce provenance context in `astrid/core/pack/loader.py`: `_core` is accepted only at the canonical shipped source root.
+- Continue rejecting user, local, extra, environment, and installed packs claiming `_core`; preserve folder/ID equality and reject `_core.<name>` capability IDs.
+- Add `astrid/packs/_core/pack.yaml` with system metadata, the existing skill root, and no executors, orchestrators, elements, aliases, or extension capabilities.
+- Remove the manifest-less skill-shell rules from `astrid/core/pack/validate_first_party.py:136-155` and `astrid/core/pack/validate_layout.py:122-129`.
+- Preserve literal `_core → astrid` harness branding in:
+  - `astrid/skills/harnesses/base.py`
+  - `astrid/skills/harnesses/claude.py`
+  - `astrid/skills/harnesses/codex.py`
+  - `astrid/skills/harnesses/hermes.py`
+  - `astrid/skills/{__init__,registry,cli}.py`
+- Extend `tests/packs/test_pack_yaml_schema.py`, `test_pack_discovery.py`, `test_pack_layout_contract.py`, `test_packs_validate.py`, `test_packs_cli.py`, `tests/test_skills.py`, and wheel smoke coverage with lexical schema acceptance, canonical loader acceptance, noncanonical-source rejection, capability emptiness, discovery, and branding invariants.
+
+### 0.3 Establish one deterministic first-party inventory — Phase 0 · M · Depends: 0.2
+
+- Make `_FIRST_PARTY_PACK_IDS` in `astrid/core/pack/validate_first_party.py` describe the tracked, manifest-backed bundled set; add `blender` and `_core`, and remove `_FIRST_PARTY_INTERNAL_DIRS`.
+- Derive tests and documentation from that inventory instead of maintaining duplicate shipped-ID lists such as `tests/packs/test_pack_layout_contract.py:49-69`.
+- Treat `discord_local` and `seedance_local` correctly: they are checkout-local personal packs excluded through `.git/info/exclude`, not stale or bundled content.
+- Do not add those packs to the first-party inventory, delete them, restore them, or suppress their runtime discovery.
+- Change `scripts/gen_capability_index.py` to generate the committed capability index from tracked first-party source packs only, excluding untracked/ignored personal packs even when they exist in the live checkout.
+- Add a regression fixture containing an untracked personal pack and prove it remains runtime-discoverable but cannot enter the committed index.
+- Regenerate `astrid/packs/_core/skill/SKILL.md` from a clean checkout.
+- Keep `astrid/packs/builtin/pack.yaml` visible and make its description truthful about the live `builtin.agent_probe` orchestrator; add a manifest/documentation consistency test.
+
+## Phase 1 — one manifest-backed load graph
+
+### 1.1 `[XHARD]` Route skills through the canonical discovered-pack stream — Phase 1 · M · Depends: 0.2–0.3
+
+- Refactor `astrid/skills/discovery.py` to consume ordered `DiscoveredPack` records from `astrid/core/pack/discovery.py` across source, local, extra, environment, and installed roots.
+- Delete the direct `PACKS_DIR.iterdir()` walk, manifest-less fallback, swallowed manifest errors, and duplicate `_scan_discovered_packs()` traversal.
+- Fix the current `ASTRID_PACKS_PATH` omission caused by `astrid/skills/discovery.py:143-145`; environment-root skills must list.
+- Make hidden-pack treatment consistent: hidden packs must not enter source or installed discovery. Preserve the explicitly documented deprecated-pack policy instead of conflating it with hidden visibility.
+- Obtain skill roots only from `DiscoveredPack.skill_roots()` and apply pack-ID deduplication once at canonical source priority.
+- Preserve explicit-root testability by parameterizing shared discovery rather than adding another filesystem scanner.
+- Make invalid manifests fail at the pack boundary and never leak skills.
+- Preserve top-level SDK laziness asserted by `tests/test_sdk_public_surface.py:3339-3386`.
+- Add source/local/extra/environment/installed ordering, `_core`, duplicate, hidden-installed, deprecated, invalid-manifest, and checkout-local pack cases in `tests/packs/test_pack_discovery_metadata.py` and `tests/test_skills.py`.
+
+### 1.2 `[XHARD]` Remove theme and workspace element discovery — Phase 1 · L · Depends: 1.1
+
+- In `astrid/core/element/registry.py`, `catalog.py`, and `__init__.py`, remove `ElementSource`, `default_sources()`, `load_source_elements()`, active-theme element loading, `WORKSPACE_ROOT`, `legacy_workspace`, and source-conflict warnings.
+- Build the element registry exclusively from `discover_pack_metadata()` and pack-declared element roots; do not create pseudo-packs for absent theme/workspace sources.
+- Remove discovery-only `active_theme`, `include_missing_roots`, and `elements --theme` inputs from `astrid/core/element/cli.py` and `astrid/sdk/discovery.py`.
+- Update `astrid/core/timeline/validators/`, `astrid/packs/training/executors/pool_merge/run.py`, `astrid/packs/rendering/backends/remotion/run.py`, and `scripts/gen_effect_registry.py` to use pack metadata.
+- Keep theme selection, pointers, state, and provenance as rendering data.
+- Replace positive theme/workspace discovery expectations with negative no-scan rails in `tests/core/test_elements_registry.py`, `tests/timeline/test_effects_catalog.py`, `tests/timeline/test_timeline_elements_catalog.py`, and `tests/test_sdk_public_surface.py`.
+- Preserve local-pack precedence and rendering behavior through `tests/packs/test_pack_local_priority.py`, `tests/packs/test_text_card_override.py`, and Remotion registry/code-generation tests.
+- Assert every loaded element has `source == "pack:<id>"` and matching pack metadata.
+
+### 1.3 Package and prove the canonical graph in wheels — Phase 1 · L · Depends: 1.1–1.2
+
+- Replace the rendering-only package-data declaration in `pyproject.toml` with explicit coverage for:
+  - `core/model_catalog/*.yaml`
+  - existing rendering schemas and parity fixtures
+  - `packs/*/pack.yaml`
+  - `packs/*/executors/*/executor.yaml`
+  - `packs/*/orchestrators/*/orchestrator.yaml`
+  - element manifests
+  - rendering extension YAML
+  - `packs/*/skill/SKILL.md`
+  - nested executor skills
+  - executor and orchestrator `STAGE.md` files
+- Do not use a blanket recursive pack-root include.
+- Extend `scripts/smoke_wheel_install.sh` to run outside the checkout with an empty `ASTRID_HOME` and prove:
+  - Every canonical bundled manifest is present.
+  - Representative executor, orchestrator, element, nested skill, STAGE, and extension files ship.
+  - `ModelRegistry.load_default()` and `LoraRegistry.load_default()` succeed.
+  - Skills discover from the wheel’s source layer.
+  - `include_installed=True` with an empty installed store is a no-op, not a loss of source packs.
+- Prefer canonical-inventory assertions over brittle fixed capability counts.
+- Preserve `import astrid` laziness and add a rail that loading registries does not eagerly import concrete generation, Reigh, or RunPod implementations.
+
+## Phase 2 — extract concrete domain implementations
+
+### 2.1 `[XHARD]` Move concrete generation backends into the generation pack — Phase 2 · M · Depends: 1.1, 1.3
+
+- Move:
+  - `astrid/core/generation/backends/fal.py`
+  - `astrid/core/generation/backends/codex.py`
+  - `astrid/core/generation/backends/vibecomfy.py`
+  into `astrid/packs/generation/backends/`.
+- Declare `cloud → FalBackend`, `codex → CodexBackend`, and `local → VibeComfyBackend` under `extensions.generation.backends` in `astrid/packs/generation/pack.yaml`.
+- Use the existing, tested hook; do not add another extension framework. It is already defined in `astrid/core/pack/schemas/v1/pack.json:114-128` and consumed by generation registry/features/verbs and `astrid/core/pack/permissions.py:141`.
+- Delete builtin seeding and hardcoded module strings from `astrid/core/generation/backends/registry.py:78-79,185-205`.
+- Keep provider-neutral protocols, registry, taxonomy IDs, verbs, and feature contracts in core. A bare registry must be empty; default loading must populate it only from discovered manifests.
+- Remove concrete exports and lazy concrete imports from `astrid/core/generation/backends/__init__.py`.
+- Update generation executor imports, `codex_unavailable_reason`, golden patch targets, gateway generation resolution, SDK discovery, and model-catalog validation.
+- Delete the six tracked files under `fal-voice-upscale/` in this change instead of repairing their private FAL-helper imports; they are uncalled scratch experiments already designated for removal and recoverable from Git history.
+- Move concrete adapter tests from `tests/core/generation/` to `tests/packs/generation/`; update:
+  - `tests/test_generation_backend_registry.py`
+  - `tests/packs/builtin/generate_image/test_codex_backend.py`
+  - `tests/test_sdk_public_surface.py`
+  - generation parameter-map tests
+  - wheel smoke
+- Preserve the third-party descriptor rail in `tests/test_third_party_integration.py`.
+- Add explicit negative tests for old core backend paths and hardcoded importlib strings.
+- Extend wheel smoke to prove the generation manifest supplies all three descriptors and that removing that manifest removes them.
+
+### 2.2 Move experiments into the iteration pack — Phase 2 · M · Depends: 0.1
+
+- Move `astrid/core/experiments/` to `astrid/packs/iteration/experiments/` without a compatibility shim.
+- Update iteration experiment import, prepare, review, and review-session entrypoints.
+- Update `astrid/packs/editorial/executors/human_review/run.py`, the second current consumer.
+- Document pack-to-pack support-module imports as legal while retaining the prohibition on core-to-pack imports.
+- Move `tests/core/experiments/` under `tests/packs/iteration/experiments/` and update iteration/editorial tests and `STAGE.md` references.
+
+### 2.3 `[XHARD]` Move RunPod maintenance into the RunPod pack without a new abstraction — Phase 2 · M · Depends: 0.1, 1.1
+
+- Move `astrid/core/integrations/runpod/storage.py` and `sweeper.py` into support code under `astrid/packs/runpod/`.
+- Add canonical executors and manifests for:
+  - `runpod.sweep`
+  - `runpod.list_volumes`
+  - `runpod.ensure_storage`
+- Do not add a core `RunPodMaintenance` Protocol or another extension hook: after the callers below are rewired, core has no remaining consumer that justifies one.
+- Preserve sweep dry-run diagnostics and storage recovery messages.
+- Rewire the transitional top-level `runpod` handler through canonical executor dispatch rather than statically importing pack code.
+- Remove `_check_runpod_stale_handles()` from `astrid/core/doctor.py`; replace it with executor coverage and do not add a doctor extension hook.
+- Keep `require_existing_storage` pack-local. Replace training’s imported `ENSURE_STORAGE_HINT` with a local message pointing to `runpod.ensure_storage`; do not create a core interface solely to share a diagnostic string.
+- Update `astrid/packs/runpod/pack.yaml`, `skill/SKILL.md`, executor `_common.py`, and `astrid/packs/training/orchestrators/training_run/{compute_backends,config}.py`.
+- Remove `astrid/core/integrations/runpod/` only after all imports have moved.
+- Relocate or retarget `tests/packs/runpod/test_sweeper.py`, `test_ensure_storage.py`, `tests/test_sweeper_async.py`, `tests/test_sweeper_edges.py`, `tests/test_doctor_setup.py`, and task-mutation inventories.
+- Add no `astrid/core/structure.py` exemption.
+
+### 2.4 `[XHARD]` Invert the generic Reigh bridge state before extraction — Phase 2 · M · Depends: 0.1
+
+- Create `astrid/core/timeline/asset_registry_state.py` for provider-neutral:
+  - latest registry-event recovery
+  - sidecar repair
+  - record/source resolution
+  - no-pruning merge semantics
+- Move the generic logic currently buried in `astrid/core/integrations/reigh/local_bridge.py:485-549` into that host module.
+- Make `astrid/core/timeline/asset_registry_edits.py` and the eventual pack bridge consume the new host helper.
+- Extend the existing Protocol precedent in `astrid/core/contracts/remote_timeline.py` with only the remote load/save/list shapes needed by migration, editing, and worker callers.
+- Preserve `astrid/core/timeline/{local_fs,supabase,selector,reigh_events,transfer}.py`.
+- Keep event recovery, CAS, crash reconciliation, sidecar repair, no-op, and no-pruning behavior in `tests/timeline/test_asset_registry_sync.py`; move generic recovery tests out of `tests/integrations/reigh/test_local_bridge_helpers.py`.
+
+### 2.5 `[XHARD]` Move the Reigh service domain and worker into the Reigh pack — Phase 2 · L · Depends: 2.4
+
+- Move Reigh environment, provider, bridge transport, task client, remote timeline I/O, JWT/JWKS, append service, error, and worker implementations from:
+  - `astrid/core/integrations/reigh/`
+  - `astrid/core/integrations/worker/`
+  into `astrid/packs/reigh/integration/` and pack executor support.
+- Keep the host timeline/eventlog primitives in core and delete compatibility copies such as `event_construction.py` and the integration-local `supabase_client.py`.
+- Add `reigh.worker`, preserving the long-running claim loop, signal handling, authentication, and qualified provenance.
+- Add `reigh.serve_local_bridge` for the pack-owned HTTP/CORS/media transport, including `--projects-root`.
+- Preserve top-level `astrid serve` as the documented, unbound host facade. Resolve its pack implementation through the canonical registry without weakening normal executor project/session requirements or adding a general service framework.
+- Add a deliberately narrow `reigh.timeline_edit` executor replacing only the existing remote operations:
+  - `add-clip`
+  - `move-clip`
+  - `set-theme`
+- Preserve PAT-by-default authentication, optional service-role auth, optimistic `expected_version`, three retries, `force=False`, and event descriptors. Do not expand it to the full local timeline CLI.
+- Remove remote `projects list` because `reigh.reigh_data` already returns timelines.
+- Remove remote `projects edit` from `astrid/core/cli/project.py` and `project_handlers.py` after `reigh.timeline_edit` is covered.
+- Delete `scripts/node/ops_helper.mjs` only after proving its sole mutation caller is gone.
+- Keep generic local project-store and local `timelines` commands in core.
+- Update Reigh pack manifests, skill, permissions, STAGE files, `scripts/reigh_seed_timeline_events.py`, `tests/core/test_project_cli.py`, `tests/test_cli_gate.py`, provider tests, and `docs/architecture/timeline-event-sourcing/m6a-astrid-supabase-contract.md`.
+- Ensure core gateway, project handlers, and timeline code never statically import pack implementations.
+
+### 2.6 Close extraction imports and CI path coupling — Phase 2 · M · Depends: 2.1–2.5
+
+- Move Reigh-domain, worker, claim-loop, task-client, JWT, provider, and baseline tests under `tests/packs/reigh/`; retain host timeline/eventlog Protocol tests under `tests/timeline/`.
+- Replace positive inventories in `tests/test_structure_contracts.py` and `tests/test_m2_public_surface.py` with negative rails for:
+  - `core/experiments`
+  - concrete generation backends
+  - Reigh implementations
+  - RunPod implementations
+  - worker implementations
+- Require repository searches for `astrid.core.integrations.{reigh,runpod,worker}` to return no live imports.
+- Wire the existing import-layer checker into `scripts/reshape/run_ci_checks.sh`; add no exemptions.
+- Replace depth-limited changed-file matching in `scripts/reshape/run_ci_checks.sh:139-163` with arbitrary-depth `astrid/**` selection and cover moved Reigh/RunPod paths in `tests/reshape/test_ci_changed_selection.py`.
+- Keep the `astrid.core.session.identity` seed import because session identity remains kernel-owned.
+- Update `.github/workflows/bridge-latency.yml` to trigger on `astrid/packs/reigh/**` while retaining `astrid/core/timeline/**`, and make checkout test the actual PR ref rather than a hardcoded external repository state.
+- Keep all moved tests under `tests/` so broad discovery cannot silently lose them.
+
+## Phase 3 — retire capability-shaped host aliases
+
+### 3.1 Remove pure executor aliases — Phase 3 · S · Depends: 2.5
+
+- Remove top-level:
+  - `publish`
+  - `publish-youtube`
+  - `upload-youtube`
+  - `reigh-data`
+- Point users to:
+  - `executors run reigh.publish`
+  - `executors run youtube.upload`
+  - `executors run reigh.reigh_data`
+- Update `astrid/core/gateway/dispatch.py`, `help.py`, related gateway exports, `tests/test_pipeline_dispatch_aliases.py`, and social-publish tests.
+- Add negative root-help and unknown-command assertions.
+- Preserve session gating semantics while the aliases exist; none of these routes currently bypasses the bound-session gate.
+
+### 3.2 Remove RunPod and worker host routes after executor parity — Phase 3 · M · Depends: 2.3, 2.5, 3.1
+
+- Remove top-level `worker` only after `reigh.worker` covers the claim loop.
+- Remove top-level `runpod` only after `runpod.sweep`, `runpod.list_volumes`, and `runpod.ensure_storage` cover its entire maintenance surface.
+- Delete `astrid/core/gateway/runpod.py`, obsolete dispatch functions, help entries, and unused exports.
+- Retain `_dispatch_executor_main` if still used by the permanent `serve` facade or other canonical host bridges.
+- Keep `scratch`, `astrid/core/gateway/scratch.py`, `serve`, and the current unbound `serve` allowlist entry.
+- Update the frozen allowlist assertions in `tests/test_cli_gate.py` in the same change.
+- Add gateway-level negative coverage for all six retired tokens, including the previously untested `worker` route, plus positive `scratch` and `serve` coverage.
+- Replace shortcut commands in RunPod, Reigh, and YouTube skills, STAGE files, recovery messages, and manifests with qualified executor invocations.
+
+## Phase 4 — enforce pack layout and make the repository truthful
+
+### 4.1 `[XHARD]` Canonicalize pack-private entrypoints — Phase 4 · L · Depends: Phase 3
+
+- Convert:
+  - `astrid/packs/blender/deploy.py` into `blender.deploy`
+  - `astrid/packs/blender/mesh_fetch.py` into `blender.mesh_fetch`
+- Move `render_core.py`, `renders/`, and `server/blender_render_server.py` beneath the appropriate executor support trees; retain library imports but remove alternate user-facing `__main__` surfaces.
+- Update Blender imports, presets, README, pack manifest, skill, STAGE files, and tests.
+- Classify rendering backend/planner/finalizer runners as manifest-private transport commands, not new executors:
+  - `astrid/packs/rendering/run.py`
+  - `backends/{ffmpeg,remotion,threejs}/run.py`
+  - `planners/{legacy_hybrid,threejs_hybrid}/run.py`
+  - `finalizers/ffmpeg/run.py`
+- Have `astrid/core/rendering/transport.py` set the internal-invocation marker and guard those commands so direct subprocess invocation fails while manifest transport succeeds.
+- Remove the unsupported `python -m astrid.sdk.rendering` claim from `astrid/sdk/rendering.py` and `docs/reference/sdk.md`; do not create another public CLI.
+- Remove executable `__main__` behavior from the three unledgered generation golden demos; retain them only as non-runnable fixtures if tests still consume them, otherwise delete them.
+- Add subprocess rails proving canonical capability/transport invocation works and direct pack-module invocation fails.
+- Add a scoped search rail for stale `python -m astrid.packs.*` instructions while permitting exact manifest-private commands.
+
+### 4.2 `[XHARD]` Enforce actual pack-root layout — Phase 4 · L · Depends: 4.1
+
+- Extend `astrid/core/pack/validate_layout.py` to walk real pack-root entries rather than validating exception declarations alone.
+- Permit:
+  - `pack.yaml`
+  - declared capability/content roots
+  - `skill/`, `docs/`, `examples/`, `schemas/`, `fixtures/`, `golden/`
+  - capability-local golden fixtures
+  - Python package markers
+  - manifest-declared extension roots
+  - narrowly documented support-library roots declared by the owning manifest
+- Declare `astrid/packs/editorial/hype/` as library-only support in `astrid/packs/editorial/pack.yaml`; prove it exposes no independent discovery or CLI surface.
+- Preserve rendering’s declared `backends/`, `planners/`, and `finalizers/` extension layout.
+- Reject undeclared loose files and directories with actionable paths.
+- Move `astrid/packs/fal/tests/test_h3_video.py` to `tests/packs/fal/`.
+- Add positive rendering/editorial/golden/fixture tests and negative Blender-style junk cases in `tests/packs/test_pack_layout_contract.py` and `tests/packs/test_packs_validate.py`.
+
+### 4.3 Close root-hygiene gaps and root-writing tests — Phase 4 · M · Depends: 2.1, 4.2
+
+- Verify `fal-voice-upscale/` is absent after Task 2.1 and remove it from `ROOT_DIR_ALLOWLIST` in `scripts/reshape/check_repo_hygiene.py`.
+- Add `*.mp3` to `.gitignore` media rules and the hygiene checker’s tracked-runtime-media rules.
+- Extend `find_unknown_root_entries()` and `tests/reshape/test_repo_hygiene.py` to inspect actual root filesystem entries as well as tracked Git paths.
+- Replace root-directed temporary directories with `tmp_path`, `TemporaryDirectory()`, or the system temp directory in:
+  - `tests/test_pipeline_caching.py`
+  - `tests/core/test_project_cli.py`
+  - `tests/test_managed_write_paths.py`
+  - worker/claim-loop tests
+  - `tests/core/test_executor_cli.py`
+  - `tests/packs/reigh/test_open_in_reigh.py`
+  - `tests/timeline/test_edit_helpers.py`
+- Do not add speculative deletion rules for absent `external/`, competition, `mgt-*`, or pipeline-test directories.
+- Do not touch `.oracle-threejs-archive/`; it is user-owned staged work outside HEAD. Run final hygiene validation from a clean checkout.
+
+### 4.4 Complete the documentation and CI truth pass — Phase 4 · M · Depends: 4.1–4.3
+
+- `docs/packs/contract.md`: locked kernel, one manifest-backed graph, no concrete capability exceptions.
+- `docs/packs/pack-taxonomy.md`: `_core` as a manifest-backed system pack; visible `builtin`; Blender included; all current shipped manifests accurately described as `install_tier: core`; correct alias-carrier claims.
+- `docs/architecture/repo-shape.md`: actual `astrid/core/execution/{executor,orchestrator}` paths, current gateway modules, complete kernel directories, and no legacy workspace source.
+- `docs/architecture/import-tiers.md`: packs may consume stable kernel APIs and pack support modules; core may use only the fixed runtime bridges and provider-neutral Protocols.
+- `docs/contracts/platform-contract.md` and `docs/architecture/repo-shape.md`: derive the SDK public surface accurately—currently 32 exports, not 28.
+- `docs/packs/adapter-packs.md`: include `fal.h3_video`.
+- `docs/reference/{architecture,sdk}.md`: qualified capability routes, pack-only discovery, and no silent module CLI.
+- Generation, iteration, Reigh, RunPod, YouTube, Blender, rendering, builtin, and `_core` skills/manifests/STAGE files: current paths and commands.
+- `docs/contracts/integration_contracts.md` and `docs/contracts/asset-resolution-generation-bridge-contract.md`: pack ownership while retaining documented `astrid serve`.
+- `docs/guides/ci-lanes.md` and documentation-command verification: arbitrary-depth changed-file selection and current workflow paths.
+- Regenerate `astrid/packs/_core/skill/SKILL.md` from the deterministic tracked inventory.
+- Search for stale core-domain paths, removed aliases, obsolete pack counts, direct pack module commands, and old `_core` exception language.
+
+### 4.5 Run the full closure gate — Phase 4 · M · Depends: 4.1–4.4
+
+- Run `python3 -m astrid packs validate astrid/packs`.
+- Run schema, pack discovery, skill, element, structure, gateway, doctor, generation, iteration, Reigh, RunPod, rendering, layout, CI-selection, and hygiene test groups.
+- Run `scripts/smoke_wheel_install.sh` outside the source checkout with an empty `ASTRID_HOME`.
+- Run `scripts/reshape/run_ci_checks.sh` and the full broad test suite; do not rely on the changed-file fast lane alone.
+- Run Remotion typechecking and renderer-parity tests.
+- Verify the import-layer checker remains green with zero new exemptions.
+- Search for retired gateway tokens, deleted core-domain imports, hardcoded old backend module strings, obsolete paths, and unsupported direct module commands.
+- Verify all executors, orchestrators, elements, skills, and concrete generation backends originate from manifest-backed packs.
+- Verify `astrid/core/integrations/` contains only the retained Arnold implementation domain.
+- Verify the deterministic capability index and repository hygiene from a clean checkout.
+
+# EXPLORE
+
+- **Sessionless `serve` delegation:** before Task 2.5, trace the gateway, executor runner, project/session gate, output-root handling, and shutdown path. Confirm `astrid serve --projects-root ...` can resolve and launch the pack-owned bridge without granting all executors a sessionless mode. If the standard executor runner cannot preserve this contract, use the smallest dedicated host adapter rather than introducing a general service framework.
+- **Manifest-private command boundary:** before Task 4.1, inventory the exact rendering transport and deployed Blender-service subprocess callers so the shared internal-invocation guard covers every legitimate caller without creating another public CLI surface.
+
+# OPEN QUESTIONS
+
+- None.
