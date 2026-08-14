@@ -1,77 +1,84 @@
 # Astrid packification — megado status
 
-**Status: EXECUTION-READY** — megado Phases 0-4 complete (plan STABLE v9, sprint split, tasklist frozen v3); Phase 5 (execution) not started.
+**Status: EXECUTION-READY (gated)** — plan STABLE v10, tasklist frozen v4; execution
+prepared but deliberately gated on the astrid-first data-model initiative landing.
 
 ## Aspiration (accepted)
 
 Every discoverable capability and every optional domain is a pack, behind a
 closed, named kernel — with portability seams for a future framework
-extraction, and **no transitional machinery**: shims, migration patterns,
-deprecation windows, fallback engines, and compatibility routes are cut
-outright, not preserved.
+extraction, no transitional machinery, and the capability-pack layer aligned
+with the astrid-first data-pack layer (two distinct "pack" concepts, one
+coherent repo).
 
 ## Artifacts
 
-- `.oracle/plan.md` — STABLE plan v9: SPRINTS section (2 two-week sprints) +
-  19 tasks (phases 0-4, [XHARD] tags) + SHIM-SWEEP verdict table (25
-  candidates: 20 CUT, 5 KEEP).
-  History: v1 → v2 (findings) → v3 STABLE → v4 (sense-check integration) →
-  v5 STABLE → v7 (shim sweep) → v8 STABLE → v9 (two-week sprint correction,
-  +1 sweep candidate).
-- `.oracle/tasklist.md` — FROZEN v3, sprint-structured: 13 batches, 13
-  checkpoints (headers Sprint 1 / Sprint 2).
-- `.oracle/inputs/openrouter-sensecheck.md` — external Claude Fable 5
-  sense-check that drove v4.
-- `.oracle/findings/01-16*.txt` — 16 DeepSeek V4 Flash exploration findings.
-- `.oracle-threejs-archive/` — previous megado run (three.js), preserved.
+- `.oracle/plan.md` — STABLE v10: execution admission gate + SPRINTS (2
+  two-week sprints, Batch 0 added) + 20 tasks (phases 0-4, [XHARD]) +
+  SHIM-SWEEP (20 CUT / 5 KEEP) + 2 decision gates + INTEGRATED table (36
+  alignment recommendations adopted, none rejected).
+- `.oracle/tasklist.md` — FROZEN v4: 14 batches, 14 checkpoints
+  (Sprint 1: Batch 0-5 + 10a; Sprint 2: Batch 6-9, 10b, 11-12).
+- `.oracle/explanation.md` — one-time comprehensive explanation of the effort.
+- `.oracle/alignment-astrid-first.md` — alignment analysis with the data model
+  (16 conflicts, per-side adjustments, sequencing, 4 questions) — user
+  accepted its recommendations; integrated as plan v10.
+- `.oracle/inputs/astrid-first/` — staged data-model docs (NORTHSTAR, master
+  plan, v10 normative, m1 brief).
+- `.oracle/inputs/openrouter-sensecheck.md` — external sense-check (v4).
+- `.oracle/findings/01-16*.txt` — Flash exploration findings.
+- `.oracle-threejs-archive/` — previous megado run, preserved.
 
-## The sprints (N=2, each time-boxed at ~2 delegated execution weeks)
+## Execution admission gate (NEW in v10)
 
-Per the user directive "break it into as many two-week sprints as it needs,"
-Codex adjudicated N=2 — the dependency graph yields exactly two
-dependency-safe, shippable boundaries (rationale in plan.md: one combined
-sprint would hide the Phase-1→2 checkpoint; a third has no shippable seam).
+Packification execution does not begin until:
+1. Astrid-first milestones m1–m8 have landed on `main`.
+2. This worktree rebases onto the landed authority.
+3. The packification audit is rerun against the rebased tree.
+4. **Lifecycle decision recorded** (Gate 1): Option A Arnold
+   `start/next/ack/status/abort` vs Option B astrid-first runs/tasks/events
+   (no plan/session/`next`/`ack`). No hybrid; the loser is deleted outright.
+5. **`astrid scratch` decision recorded** (Gate 2, in Batch 0): developer-only
+   tooling (working-plan default) vs removed. Either result preserves exactly
+   eight product families.
 
-- **Sprint 1** (canonical graph + direct cuts, ~2 weeks): Batch 1 (0.1
-  kernel+lifecycle lock, Sol), 2 (0.2 `_core` legalization, Sol), 3 (0.3
-  bundled inventory + `builtin` deletion, Flash), 4 (1.1 skills stream + 1.2
-  pack-only elements, Sol), 5 (1.3 wheel graph, Flash), 10a (3.1 alias
-  eradication, pulled forward, Flash). Exit: releasable Astrid with end-state
-  loading, lifecycle, identity, packaging, public names; zero import
-  exemptions.
-- **Sprint 2** (extraction + residual deletion + closure, ~2 weeks): 6 (2.1
-  generation + 2.3 RunPod, Sol), 7 (2.2 experiments + `depends:`, Sol),
-  8 (2.4 + 2.5 Reigh, Sol), 9 (2.6 API freeze + CI, Sol), 10b (3.2 residual
-  compat deletion, Flash), 11 (4.1 + 4.2 layout, Sol), 12 (4.3-4.5 truth +
-  closure, Flash).
-- **Hard gate between sprints:** Batch 5 / task 1.3 — no 2.x task before the
-  canonical graph is wheel-proven; Sprint 1's full checkpoint (incl. 3.1)
-  green before Sprint 2.
+## The two layers (frozen by Task 0.0 / Batch 0)
 
-## Key shim cuts (20 of 25, per SHIM-SWEEP)
+- **Capability packs:** `astrid/packs/` + `pack.yaml` (discovery, `<pack>.<name>`,
+  `bundled.yaml` capability-only, `_core` = capability system pack).
+- **Data model:** `astrid/data/kernel/` (14-table agent kernel) +
+  `astrid/data/packs/{timeline,shots,references}/` + `data-pack.yaml` +
+  `astrid/data/composition.py` (`register_pack()`; no dynamic loader).
+- `depends` (capability) vs `depends_on` (data) stay distinct; `astrid serve`
+  stays the zero-config product bootstrap; capability tooling is
+  developer-facing; capabilities never get raw SQLite writers/UoW; timeline
+  authority = landed SQLite `TimelineRepository` (file-backed authority
+  removed from the kernel plan).
 
-Arnold sole lifecycle engine (legacy task fallback, `--engine` selector gone);
-`core/runtime/in_process.py` exception + both allowlists deleted (loading via
-resolver); `astrid serve` → `executors run reigh.serve_local_bridge`;
-`astrid worker`/`runpod`/`publish*`/`reigh-data`/`author`/`run`/`--brief`
-routes deleted; `builtin` pack + `builtin.agent_probe` deleted (test fixture);
-pack `aliases:` field + resolver deleted; Arnold `compat.py` + `shapes.py`
-table deleted; legacy runtime manifest shapes, auto-bind shim, rendering
-`engine` selector + `legacy_engine.py` deleted; `rendering.legacy_hybrid` →
-`rendering.hybrid` direct rename; Reigh bridge legacy `assets.json` recovery
-fallback deleted (v9 addition); no deprecation windows anywhere.
-KEPT: `astrid scratch`, `_core → astrid` branding, `deprecated`-as-metadata,
-rendering support fallback, forks/overrides, editorial/golden/fixtures.
+## Sprint map (v4)
 
-## Functionality preservation
+| Sprint | Batches | Focus |
+|---|---|---|
+| 1 (~2 wk) | 0-5, 10a | Two-layer freeze (0.0), kernel lock, `_core`, bundled inventory + `builtin` deletion, canonical discovery + pack-only elements, wheel proof of BOTH layers, alias removal |
+| 2 (~2 wk) | 6-9, 10b, 11-12 | Generation/RunPod extraction, experiments + dependency laws, Reigh → `TimelineRepository` + worker, API freeze + CI, compat deletion, dual layout validation, hygiene + docs + closure |
 
-All cuts are route/name/machinery removals with canonical replacements
-(`executors run <id>`). Two items interpreted narrowly — review before
-execution: (1) `builtin.agent_probe` survives only as a test fixture;
-(2) task-only lifecycle verbs with no Arnold meaning are deleted (common ops
-are ported to Arnold-backed run state).
+Hard gate: Batch 5 / task 1.3 (capability graph AND data assets wheel-proven)
+before any 2.x task.
+
+## Key shim cuts (20 of 25)
+
+Arnold sole lifecycle (post Gate 1); `in_process.py` exception + allowlists;
+`serve` route → product bootstrap (Reigh route only deleted); worker/runpod/
+publish*/reigh-data/author/run/--brief routes; `builtin` + `agent_probe`
+(test fixture); pack `aliases:` field + resolver; Arnold compat.py +
+shapes.py table; legacy runtime shapes, auto-bind shim, rendering selector +
+`legacy_engine.py`; `rendering.legacy_hybrid` → `rendering.hybrid`; Reigh
+`assets.json` fallback; no deprecation windows. KEPT: scratch (pending Gate
+2), `_core → astrid` branding, deprecated-as-metadata, rendering fallback,
+forks/overrides.
 
 ## Next action
 
-Say "execute" (or "get it megado") to start Phase 5: run Sprint 1 Batch 1
-(Sol XHARD, delegation mandate), oracle-gate it, proceed batch by batch.
+Execution is GATED — the immediate asks are the two decisions (lifecycle;
+scratch), and the astrid-first milestones landing. Say "execute" once the
+admission gate passes; Batch 0 (Sol XHARD, delegation mandate) runs first.
