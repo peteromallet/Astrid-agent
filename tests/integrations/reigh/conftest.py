@@ -30,7 +30,7 @@ def make_timeline_id() -> str:
 
 def make_ulid() -> str:
     """Return a ULID-like string for timeline directory names."""
-    from astrid.core.threads.ids import generate_ulid
+    from astrid.core.ids import generate_ulid
 
     return generate_ulid()
 

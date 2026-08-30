@@ -23,11 +23,8 @@ from typing import Any, Mapping
 from astrid.core import modalities
 from astrid.core._shared.result_manifest import write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.threads.ids import is_ulid
-from astrid.core.threads.index import ThreadIndexStore
-from astrid.core.threads.record import sha256_file
-from astrid.core.threads.schema import SCHEMA_VERSION
-from astrid.core.threads.variants import selection_history
+from astrid.core.ids import is_ulid
+SCHEMA_VERSION = 1
 
 UNDERSTAND_EXECUTOR_ID = "understanding.understand"
 DEFAULT_MAX_ITERATIONS = 200
@@ -490,27 +487,13 @@ def _dedupe_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _thread_run_ids(repo_root: Path, thread_id: str) -> set[str]:
-    try:
-        index = ThreadIndexStore(repo_root).read()
-    except Exception:
-        return set()
-    thread = index.get("threads", {}).get(thread_id, {})
-    return {str(run_id) for run_id in thread.get("run_ids", []) or []}
+    del repo_root, thread_id
+    return set()
 
 
 def _selection_orders(repo_root: Path, thread_id: str) -> dict[str, int]:
-    if not is_ulid(thread_id):
-        return {}
-    orders: dict[str, int] = {}
-    try:
-        history = selection_history(repo_root, thread_id)
-    except Exception:
-        return orders
-    for order, record in enumerate(history):
-        for selected in record.get("selected", []) or []:
-            if isinstance(selected, Mapping) and isinstance(selected.get("run_id"), str):
-                orders.setdefault(str(selected["run_id"]), order)
-    return orders
+    del repo_root, thread_id
+    return {}
 
 
 def _output_sha_index(records: Mapping[str, dict[str, Any]]) -> dict[str, list[str]]:
@@ -586,7 +569,8 @@ def _repo_rel(path: Path, repo_root: Path) -> str:
     try:
         return path.expanduser().resolve().relative_to(repo_root.expanduser().resolve()).as_posix()
     except ValueError:
-        return f"sha256:{sha256_file(path)}"
+        import hashlib
+        return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
 if __name__ == "__main__":

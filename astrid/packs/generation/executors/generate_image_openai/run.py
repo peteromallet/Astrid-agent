@@ -30,7 +30,6 @@ from astrid.core._shared.result_manifest import complete_output_metadata
 from astrid.core.audit import AuditContext
 from astrid.core.cli_choices import add_choice_arg
 from astrid.core.foundation.atomic_io import write_json_atomic
-from astrid.core.threads.variants import write_sidecar as write_variant_sidecar
 from astrid.core.util.credentials_scope import CredentialsScope
 
 API_URL = "https://api.openai.com/v1/images/generations"
@@ -421,9 +420,6 @@ def generate(args: argparse.Namespace) -> int:
                 metadata={"jobs": len(manifest_jobs)},
             )
         print(f"Wrote {args.manifest}")
-    if not args.dry_run:
-        write_variant_sidecar(out_dir, variant_artifacts)
-
     if args.preset and not args.dry_run and not args.no_open:
         preset = PRESETS.get(args.preset)
         if preset and preset.get("open_result"):

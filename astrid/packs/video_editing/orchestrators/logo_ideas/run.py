@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from astrid.core.cli_choices import add_choice_arg
-from astrid.core.threads.variants import write_sidecar as write_variant_sidecar
 from astrid.core.util.credentials_scope import CredentialsScope
 from astrid.core.util.http import (
     HttpClient,
@@ -508,7 +507,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         artifacts = _variant_artifacts_for_grid(grid_generated, results, run_id=run_id)
     else:
         artifacts = _variant_artifacts_for_logo_ideas(results, run_id=run_id)
-    write_variant_sidecar(layout["root"], artifacts)
 
     print(f"wrote_logo_manifest={layout['root'] / 'logo-manifest.json'}")
     if grid.get("path"):

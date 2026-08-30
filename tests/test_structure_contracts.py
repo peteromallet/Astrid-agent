@@ -617,42 +617,6 @@ _LINEAGE_SYMBOLS: frozenset[str] = frozenset(
 )
 
 
-def test_thread_wrapper_symbols_removed_from_public_surface() -> None:
-    """Regression guard: m5a-removed thread wrapper symbols must not appear in
-    ``astrid.core.threads.__all__`` or be accessible as module attributes, while
-    all 10 lineage symbols must remain intact.
-
-    If this test fails, a removed symbol was re-introduced into the public
-    surface — revert the change or update the m5a plan to reflect the new
-    decision.
-    """
-    import astrid.core.threads
-
-    public = set(astrid.core.threads.__all__)
-
-    leaked = public & _REMOVED_WRAPPER_SYMBOLS
-    assert not leaked, (
-        f"Removed wrapper symbols leaked into astrid.core.threads.__all__: "
-        f"{sorted(leaked)}"
-    )
-
-    missing_lineage = _LINEAGE_SYMBOLS - public
-    assert not missing_lineage, (
-        f"Lineage symbols missing from astrid.core.threads.__all__: "
-        f"{sorted(missing_lineage)}"
-    )
-
-    for sym in sorted(_REMOVED_WRAPPER_SYMBOLS):
-        assert not hasattr(astrid.core.threads, sym), (
-            f"Removed symbol {sym!r} is still accessible on astrid.core.threads"
-        )
-
-    for sym in sorted(_LINEAGE_SYMBOLS):
-        assert hasattr(astrid.core.threads, sym), (
-            f"Lineage symbol {sym!r} is not accessible on astrid.core.threads"
-        )
-
-
 def test_validate_migration_completion_flags_reintroduced_wrapper_all_aliases(
     tmp_path: Path,
 ) -> None:

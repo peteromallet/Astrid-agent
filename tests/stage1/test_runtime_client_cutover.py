@@ -63,6 +63,16 @@ def test_client_boundary_has_no_local_authority_escape_hatch():
         AstridClient.open(projects_root="/tmp/should-not-open")
 
 
+def test_retired_thread_authority_has_no_source_or_import_path():
+    source_root = Path(__file__).parents[2]
+    assert not list((source_root / "astrid" / "core" / "threads").glob("*.py"))
+    production = "\n".join(
+        path.read_text()
+        for path in (source_root / "astrid").rglob("*.py")
+    )
+    assert "astrid.core.threads" not in production
+
+
 def test_retired_public_commands_are_absent():
     from astrid.core.pack.cli_parser import build_parser
     from astrid.core.cli.domain_media import build_parser as media_parser

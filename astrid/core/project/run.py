@@ -19,7 +19,7 @@ from astrid.core.env_vars import (
 )
 from astrid.core.foundation import project_paths as paths
 from astrid.core.subprocess_env import TASK_PROJECT_ENV, TASK_RUN_ID_ENV, TASK_STEP_ID_ENV
-from astrid.core.threads.ids import generate_run_id
+from astrid.core.ids import generate_run_id
 from astrid.core.util.time import utc_now_seconds
 
 from .project import require_project

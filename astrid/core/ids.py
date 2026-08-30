@@ -76,4 +76,43 @@ __all__ = [
     "ULID_LENGTH",
     "generate_lowercase_ulid",
     "is_lowercase_ulid",
+    "generate_ulid",
+    "generate_thread_id",
+    "generate_run_id",
+    "generate_group_id",
+    "is_ulid",
+    "require_ulid",
 ]
+
+# Legacy timeline code used an uppercase spelling. Keep the pure identifier
+# helpers here, alongside the canonical kernel generator, while the retired
+# thread state store itself is removed.
+_LEGACY_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_LEGACY_RE = re.compile(r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$")
+
+
+def generate_ulid() -> str:
+    """Return an uppercase Crockford ULID for legacy timeline identifiers."""
+    return generate_lowercase_ulid().upper()
+
+
+def generate_thread_id() -> str:
+    return generate_ulid()
+
+
+def generate_run_id() -> str:
+    return generate_ulid()
+
+
+def generate_group_id() -> str:
+    return generate_ulid()
+
+
+def is_ulid(value: object) -> bool:
+    return isinstance(value, str) and _LEGACY_RE.fullmatch(value) is not None
+
+
+def require_ulid(value: object, field: str = "id") -> str:
+    if not is_ulid(value):
+        raise ValueError(f"{field} must be a 26-character Crockford ULID")
+    return str(value)
