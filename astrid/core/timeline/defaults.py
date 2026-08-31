@@ -8,7 +8,7 @@ from astrid.core._shared.jsonio import read_json, write_json_atomic
 from astrid.core.foundation.project_paths import project_json_path
 from astrid.core.project.schema import validate_project
 
-from .paths import validate_timeline_ulid
+from astrid.core.contracts.identifiers import validate_timeline_ulid
 
 
 def read_project_default(

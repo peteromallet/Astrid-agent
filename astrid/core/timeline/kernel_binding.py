@@ -87,12 +87,10 @@ def kernel_timeline_writer_for(
     fails closed; supplying neither is the normal runtime-owned path and
     returns ``None``.
     """
-    from ._edit_helpers import TimelineEditError
-
     has_writer = writer is not None
     has_repository = repository is not None
     if has_writer != has_repository:
-        raise TimelineEditError(
+        raise ValueError(
             "kernel timeline binding requires both explicit writer and "
             "timeline_repository inputs"
         )
@@ -104,7 +102,7 @@ def kernel_timeline_writer_for(
         )
         return None
     if not stream_type:
-        raise TimelineEditError("kernel timeline binding requires stream_type")
+        raise ValueError("kernel timeline binding requires stream_type")
     return KernelTimelineBinding(
         app=owner,
         writer=writer,
