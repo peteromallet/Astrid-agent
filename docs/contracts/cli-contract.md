@@ -155,4 +155,3 @@ Key points for agents:
 - [Run Ledger Contract](run-ledger-contract.md) — event log append semantics and hash-chain integrity.
 - [Platform Contract](platform-contract.md) — cross-backend primitives and gateway-level guarantees.
 - [Discovery for Agents](../guides/discovery-for-agents.md) — how agents discover available capabilities through the SDK.
-- [Output Result Contract](output-result-contract.md) — how executor outputs are surfaced.

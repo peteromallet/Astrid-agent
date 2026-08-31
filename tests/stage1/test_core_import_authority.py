@@ -237,7 +237,7 @@ def test_discovery_does_not_load_executor_install_runner_or_project_runtime() ->
             sys.executable,
             "-c",
             (
-                "import sys; import astrid; astrid.discover(include_installed=False); "
+                "import sys; import astrid; astrid.discover(); "
                 "legacy = ('astrid.core.execution.executor.install', "
                 "'astrid.core.execution.executor.runner', "
                 "'astrid.core.execution.orchestrator.runner', "
@@ -292,7 +292,7 @@ def test_sdk_dry_run_is_manifest_only_and_does_not_load_runtime_authority(tmp_pa
                 "import sys; import astrid; from pathlib import Path; "
                 f"out = Path({str(preview_root)!r}); "
                 "preview = astrid.invoke('understanding.understand', kind='executor', "
-                "include_installed=False, project='not-a-local-project', "
+                    "project='not-a-local-project', "
                 "inputs={'mode': 'audio', 'audio': 'clip.wav'}, out=out, dry_run=True); "
                 "legacy = ('astrid.core.execution.executor.runner', "
                 "'astrid.core.execution.orchestrator.runner', 'astrid.core.project.run', "
@@ -324,7 +324,7 @@ def test_sdk_orchestrator_dry_run_is_manifest_only(tmp_path: Path) -> None:
                 "import sys; import astrid; from pathlib import Path; "
                 f"out = Path({str(preview_root)!r}); "
                 "preview = astrid.invoke('video_editing.hype', kind='orchestrator', "
-                "include_installed=False, project='not-a-local-project', "
+                    "project='not-a-local-project', "
                 "inputs={'video': 'clip.mp4', 'brief': 'brief.md'}, out=out, dry_run=True); "
                 "legacy = ('astrid.core.execution.executor.runner', "
                 "'astrid.core.execution.orchestrator.runner', 'astrid.core.project.run', "
