@@ -251,8 +251,9 @@ orchestrator folders use
 `astrid/packs/<pack>/orchestrators/<slug>/{orchestrator.yaml,STAGE.md,run.py}`,
 with optional local `src/` modules. Element folders live at
 `astrid/packs/<pack>/elements/<kind>/<id>/{component.tsx,element.yaml}` where
-kind is `effects`, `animations`, or `transitions`. A gitignored `local` pack
-at `astrid/packs/local/` holds user-edited element forks.
+kind is `effects`, `animations`, or `transitions`. A project-local `local` pack,
+when present, is an ordinary editable source pack; its manifests do not shadow
+canonical ids through a sidecar or redirect.
 
 - **Executor** — one concrete, independently runnable unit of work.
 - **Orchestrator** — a workflow that coordinates executors or child
@@ -281,13 +282,13 @@ Read the relevant `STAGE.md` before running a capability; it is the source of
 truth for invocation details. Do not package every STAGE.md into one merged
 prompt — open only the folder-level `STAGE.md` for the selected capability.
 
-### Aliases, Forks, and Overrides
+### Aliases and editable source packs
 
-Three mechanisms customize capabilities without editing originals: **aliases**
-(old ids mapped to current capabilities, declared in `pack.yaml`),
-**forks** (a copy into the local pack with provenance back to the source),
-and **overrides** (redirect an id to a preferred fork). Full details:
-[docs/packs/aliases-vs-forks-vs-overrides.md](../../../../docs/packs/aliases-vs-forks-vs-overrides.md).
+Aliases are metadata-only compatibility names declared in `pack.yaml`; they
+resolve to a canonical discovered capability and never select a shadow root.
+To change a capability, edit its canonical pack source or add a uniquely named
+source pack. Registries do not consult override files or fork state, and live
+identities/digests always come from the discovered manifest.
 
 ## Safety Rules
 
@@ -319,11 +320,10 @@ Built-in executors include `editorial.transcribe`, `video_editing.cut`,
 `generation.generate_image_openai`. External executors include `moirae.moirae`
 and `vibecomfy.run` (executor only, not an orchestrator).
 
-Element source priority: active theme →
-`astrid/packs/local/elements/<kind>/<id>` (gitignored scratch pack) →
-`astrid/packs/rendering/elements/<kind>/<id>`. Forking copies the source element
-into `astrid/packs/local/`, auto-creating `astrid/packs/local/pack.yaml` and
-rewriting the element's `pack_id` to `local`.
+Element sources are discovered from pack manifests in canonical discovery
+order. An editable project-local pack is ordinary source content; it does not
+take priority over another pack with the same id. Edit the owning pack
+manifest/content directly when changing an element.
 
 ## Adding overlays to a rendered video
 
@@ -469,8 +469,8 @@ directory after Remotion exits.
 
 Discover elements through the SDK (`sdk.discover()` / `get_capability` with an
 element id), or read the index below. At time of writing: effects `text-card`
-(the built-in component is `() => null` — it expects a theme override to do
-the real DOM rendering; fork into the local pack and regenerate with
+(the built-in component is `() => null` — it expects the selected pack source
+to provide the real DOM rendering; edit the canonical source and regenerate with
 `scripts/gen_effect_registry.py` to customize), `sliding-media`,
 `neon-orbit-card`, `model-trends`, `audio-reactive-colour`, `vibe-comfy-*`;
 animations `fade`, `fade-up`, `scale-in`, `slide-left`, `slide-up`, `type-on`;

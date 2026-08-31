@@ -5,7 +5,7 @@ executors, orchestrators, elements, and optional rendering implementations
 that Astrid agents can discover and run.
 
 Terminology note: for pack identity, capability identity, default-enabled versus
-optional placement, aliases, forks, overrides, and in-place edits, use the
+optional placement, aliases, and in-place edits, use the
 Milestone 0 contract at `docs/packs/contract.md`. This guide stays focused on
 the current authoring workflow.
 
@@ -144,10 +144,9 @@ The pack manifest declares:
 - **Agent instructions**: `purpose`, `normal_entrypoints`,
   `do_not_use_for`, `required_context`.
 - **Documentation references**: paths to `README.md`, `skill/SKILL.md`, etc.
-- **Aliases**: alternate public ids that route to executor or orchestrator
-  capabilities or rendering implementations in this pack. See
-  [aliases-vs-forks-vs-overrides.md](aliases-vs-forks-vs-overrides.md) for
-  the full alias vocabulary and schema.
+- **Aliases**: alternate public ids that resolve to canonical executor,
+  orchestrator, or rendering capabilities in this pack. They are declared in
+  the pack manifest and never select a shadow source.
 - **Extensions**: optional pack-owned registries, including timeline renderers,
   planners, and finalizers under `extensions.rendering`.
 
@@ -499,16 +498,11 @@ these for the topics they cover:
 - [pack-taxonomy.md](pack-taxonomy.md) — The six taxonomy fields (`origin`,
   `install_tier`, `pack_type`, `domain`, `stability`, `support`), their
   defaults, and how to filter and group by them in the CLI.
-- [contract.md](contract.md) — Formal
-  definitions for pack identity, capability identity, aliases, forks,
-  overrides, and the unified layout contract.
+- [contract.md](contract.md) — Formal definitions for pack identity,
+  capability identity, aliases, and the unified layout contract.
 - [discovery-for-agents.md](../guides/discovery-for-agents.md) — How a cold agent
   discovers capabilities (e.g., via `astrid.sdk.discover()` and
   `astrid.sdk.get_capability()`).
-- [aliases-vs-forks-vs-overrides.md](aliases-vs-forks-vs-overrides.md) —
-  Decision table and CLI examples for the three customization mechanisms.
-- [fork-and-update.md](fork-and-update.md) — Scaffolding and managing
-  personal packs with forks, overrides, dirty detection, and update workflows.
 
 ## Future Work
 
@@ -518,8 +512,6 @@ Several pack-system capabilities are deferred to future milestones:
   installing packs from outside the repository.
 - **Dependency isolation** — Per-pack virtual environments and isolated
   dependency resolution to prevent conflicts between packs.
-- **Semantic merge** — Three-way merge of upstream pack updates with local
-  forks and overrides, replacing the current manual review workflow.
 
 ## Next Steps
 
