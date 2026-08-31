@@ -1183,7 +1183,6 @@ def _prepare_managed_render_inputs(
     projects_root = _resolve_projects_root(project_root, project)
     try:
         snapshot = resolve_managed_render_snapshot(
-            projects_root,
             project_ref=str(project),
             timeline_ref=timeline_ref.strip(),
             expected_version=expected_version,
@@ -1255,7 +1254,6 @@ def _prepare_managed_render_inputs(
 
         expanded_registry = _runtime_snapshot_registry(
             expanded_registry,
-            projects_root=projects_root,
             project_ref=str(project),
             client=_client,
         )

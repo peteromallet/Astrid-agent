@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Sequence
 from uuid import UUID
 
-from astrid.core.foundation.hash import sha256_file
 from astrid.core.timeline.eventlog.projector import project_display
 from astrid.core.timeline.events.schema import (
     TimelineEvent,
@@ -25,7 +24,7 @@ from astrid.core.timeline.events.schema import (
 from astrid.core.timeline.model import Display
 from astrid.core.timeline.paths import validate_timeline_ulid
 from astrid.core.timeline.projection import project_to_assembly
-from astrid.core.timeline.resolution import resolve_asset_authorized_path
+from astrid.core.timeline.resolution import classify_asset
 from astrid.packs.rendering.executors.timeline_visualize.snapshot_digest import (
     SNS_SCHEMA_VERSION,
     canonical_json_bytes,
@@ -408,35 +407,24 @@ def _canonical_digest(value: Any) -> str:
 def _resolve_media_hashes(
     registry: dict[str, Any],
     *,
-    project_root: Path | None,
+    project_ref: str | None,
     runtime_client: Any | None = None,
     media_snapshot: Any | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """Hash existing project sources or exact project-owned managed media.
+    """Record digests admitted by the neutral runtime's scoped object read.
 
-    R5 owns the richer typed asset states; both contracts use the same local
-    path resolver.  Deterministic diagnostics make every skip explicit without
-    URL fetches, thumbnail fallback, or path escape.
+    Deterministic diagnostics make every unadmitted entry explicit. No URL,
+    project path, CAS locator, or filesystem fingerprint is read here.
     """
 
-    if project_root is None:
+    if project_ref is None:
         return {}, []
-
-    resolved_project_root = Path(project_root).resolve()
-    sources_root = (resolved_project_root / "sources").resolve()
-    try:
-        sources_root.relative_to(resolved_project_root)
-    except ValueError:
-        return {}, [
-            "MEDIA_SOURCES_OUTSIDE_PROJECT: project sources root escapes project_root"
-        ]
     assets = registry.get("assets", {})
     if not isinstance(assets, dict):
         raise SnapshotIntegrityError("registry.assets must be an object")
 
     hashes: dict[str, str] = {}
     diagnostics: list[str] = []
-    by_path: dict[Path, str] = {}
     for asset_key in sorted(assets):
         entry = assets[asset_key]
         if not isinstance(entry, dict):
@@ -444,50 +432,17 @@ def _resolve_media_hashes(
                 f"MEDIA_INVALID_ENTRY: asset {asset_key!r} is not an object"
             )
             continue
-        raw_file = entry.get("file")
-        if not isinstance(raw_file, str) or not raw_file.strip():
-            url = entry.get("url")
-            state = (
-                "MEDIA_REMOTE"
-                if isinstance(url, str) and url.startswith(("http://", "https://"))
-                else "MEDIA_NO_LOCAL_FILE"
-            )
-            diagnostics.append(f"{state}: asset {asset_key!r} was not hashed")
-            continue
-        raw_file = raw_file.strip()
-        if raw_file.startswith(("http://", "https://")):
-            diagnostics.append(
-                f"MEDIA_REMOTE: asset {asset_key!r} file is remote and was not hashed"
-            )
-            continue
-
-        expected = entry.get("content_sha256")
-        candidate = resolve_asset_authorized_path(
-            raw_file,
-            project_root=resolved_project_root,
-            expected_sha256=expected if isinstance(expected, str) else None,
+        integrity = classify_asset(
+            asset_key,
+            entry,
+            project_ref=project_ref,
             runtime_client=runtime_client,
             media_snapshot=media_snapshot,
         )
-        if candidate is None or not candidate.is_file():
-            diagnostics.append(
-                f"MEDIA_MISSING: asset {asset_key!r} local file was not found"
-            )
-            continue
-
-        observed = by_path.get(candidate)
-        if observed is None:
-            try:
-                observed = sha256_file(candidate)
-            except OSError as exc:
-                raise SnapshotIntegrityError(f"failed to hash {candidate}: {exc}") from exc
-            by_path[candidate] = observed
-        hashes[asset_key] = observed
-        if isinstance(expected, str) and expected != observed:
-            diagnostics.append(
-                f"MEDIA_HASH_MISMATCH: asset {asset_key!r} expected {expected}, "
-                f"observed {observed}"
-            )
+        if integrity.state == "verified_original" and integrity.observed_sha256:
+            hashes[asset_key] = integrity.observed_sha256
+        else:
+            diagnostics.append(f"MEDIA_{integrity.state.upper()}: asset {asset_key!r} is not runtime-managed")
     return hashes, diagnostics
 
 
@@ -566,7 +521,7 @@ def _build_snapshot(
     display: dict[str, Any] | None,
     slug: str | None,
     project_slug: str,
-    project_root: Path | None,
+    project_ref: str,
     diagnostics: Sequence[str],
     runtime_client: Any | None = None,
     media_snapshot: Any | None = None,
@@ -584,7 +539,7 @@ def _build_snapshot(
     registry, registry_diagnostics = _registry_from_events(parsed_events)
     media_hashes, media_diagnostics = _resolve_media_hashes(
         registry,
-        project_root=project_root,
+        project_ref=project_ref,
         runtime_client=runtime_client,
         media_snapshot=media_snapshot,
     )
@@ -650,7 +605,7 @@ def snapshot_from_events(
         display=display,
         slug=slug,
         project_slug=project_slug,
-        project_root=None,
+        project_ref=project_slug,
         diagnostics=[*diagnostics, *head_diagnostics],
     )
 
@@ -675,7 +630,6 @@ def acquire_snapshot(
         raise ValueError("retries must be a non-negative integer")
 
     timeline_dir = Path(timeline_dir)
-    normalized_project_root = Path(project_root) if project_root is not None else None
     events_path = timeline_dir / "assembly.jsonl"
     attempts = retries + 1
 
@@ -711,7 +665,7 @@ def acquire_snapshot(
                 display=display,
                 slug=slug,
                 project_slug=project_slug,
-                project_root=normalized_project_root,
+                project_ref=project_slug,
                 diagnostics=[*diagnostics, *head_diagnostics],
                 runtime_client=runtime_client,
                 media_snapshot=media_snapshot,

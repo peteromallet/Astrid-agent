@@ -32,7 +32,6 @@ from astrid.core.timeline.resolution import classify_registry
 from astrid.core.timeline.snapshot import TimelineSnapshot, acquire_snapshot
 from astrid.packs.rendering.executors.timeline_visualize.assets import (
     guard_sampling,
-    verified_source_path,
     verify_now,
 )
 from astrid.packs.rendering.executors.timeline_visualize.emit import (
@@ -846,22 +845,10 @@ def _rendered_expected_hash(
     arbitrary path is never self-verified.
     """
 
-    target = rendered_video.expanduser().resolve()
-    classified = classify_registry(
-        snapshot.registry,
-        project_root=project_root,
-        media_snapshot=media_snapshot,
-    )
-    for asset_key in sorted(classified):
-        integrity = classified[asset_key]
-        if integrity.role != "rendered_sample" or not isinstance(integrity.path, str):
-            continue
-        try:
-            same = Path(integrity.path).resolve() == target
-        except OSError:
-            same = False
-        if same:
-            return integrity.expected_sha256
+    # A caller-supplied rendered path is not a media identity. Rendered
+    # sampling is admitted only when the host supplies a managed object
+    # digest; this legacy path comparison has no live equivalent.
+    del snapshot, rendered_video, project_root, media_snapshot
     return None
 
 
@@ -935,7 +922,7 @@ def _asset_filmstrips(
         return filmstrips
     classified = classify_registry(
         snapshot.registry,
-        project_root=project_root,
+        project_ref=snapshot.project_slug,
         media_snapshot=media_snapshot,
     )
     raw_assets = (
@@ -962,14 +949,13 @@ def _asset_filmstrips(
             # Pillow/ffmpeg open are the bytes just verified.
             fresh = verify_now(
                 integrity,
-                project_root=project_root,
                 media_snapshot=media_snapshot,
             )
             if guard_sampling(fresh) is not None:
                 continue
-            source = verified_source_path(fresh)
-            if source is None:
-                continue
+            # Source sampling requires an attempt-local managed-byte handle;
+            # timeline visualization has no path authority of its own.
+            continue
             media_type: str | None = None
             registry_entry = (
                 raw_assets.get(asset_key)
@@ -1418,7 +1404,6 @@ def _render_one(
         snapshot = replace(snapshot, transcript_sha256=attachment.transcript_sha256)
     model = build_model(
         snapshot,
-        project_root=project_root,
         media_snapshot=media_snapshot,
     )
     transcript_segments: list[TranscriptSegment] = []
@@ -1515,7 +1500,6 @@ def refresh_root(
         raise ValueError("current managed timeline identity disagrees with the frozen lineage")
     model = build_model(
         snapshot,
-        project_root=project_root,
         media_snapshot=media_snapshot,
     )
     transcript_segments: list[TranscriptSegment] = []
