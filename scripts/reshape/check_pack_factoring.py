@@ -189,6 +189,27 @@ KERNEL_LANE: tuple[str, ...] = (
 )
 """The complete enumerated kernel test lane (see module docstring)."""
 
+_PACK_REMOVAL_INCOMPATIBLE_TESTS = (
+    "product_parser_graph_does_not_load_local_authority",
+    "product_parsers_have_no_repository_imports",
+)
+
+
+def _kernel_lane_args(removed_pack: str) -> tuple[str, ...]:
+    """Return the kernel lane valid for a reduced pack composition.
+
+    The two parser-graph checks intentionally import every nested product
+    parser.  A reduced composition with either ``shots`` or ``references``
+    removed cannot satisfy that import by design.  Keep the remaining B7.2
+    authority checks active so removal does not weaken the proof.
+    """
+    if removed_pack not in {"shots", "references"}:
+        return KERNEL_LANE
+    expression = " and ".join(
+        f"not {name}" for name in _PACK_REMOVAL_INCOMPATIBLE_TESTS
+    )
+    return (*KERNEL_LANE, "-k", expression)
+
 _STANDARD_TUPLE_RE = re.compile(
     r"STANDARD_SCHEMA_PACKS: tuple\[str, \.\.\.\] = \(([^)]*)\)"
 )
@@ -245,8 +266,8 @@ def build_temp_source_copy(
     ``removed_pack`` from source and from the explicit registration tuple.
 
     The copy contains only what the enumerated lane needs: the ``astrid``
-    package (without bytecode caches), the v10 lane files plus their conftest
-    and package markers, the lane fixtures, the authority-lint script the
+    package (without bytecode caches), the v10 lane files plus their package
+    marker, the lane fixtures, the authority-lint script the
     lane imports, and ``pyproject.toml`` (pytest rootdir config). Nothing
     outside these paths is copied and the real tree is never written.
     """
@@ -394,7 +415,7 @@ def _artifact_test_workspace(
             target = work / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-        for relative in ("tests/v10/__init__.py", "tests/v10/conftest.py", *KERNEL_LANE):
+        for relative in ("tests/v10/__init__.py", *KERNEL_LANE):
             source = REPO_ROOT / relative
             target = work / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -574,6 +595,7 @@ def verify_artifact_composition(
 def run_artifact_kernel_suite(
     artifact_root: Path,
     *,
+    removed_pack: str,
     python: str | None = None,
     base_dir: Path | None = None,
     timeout: int = 180,
@@ -592,7 +614,7 @@ def run_artifact_kernel_suite(
             "-p",
             "no:cacheprovider",
             "--no-header",
-            *KERNEL_LANE,
+            *_kernel_lane_args(removed_pack),
         ]
         try:
             return subprocess.run(
@@ -679,6 +701,7 @@ def check_artifact_removal(
         )
         kernel = run_artifact_kernel_suite(
             reduced_root,
+            removed_pack=removed_pack,
             python=python,
             base_dir=work,
             timeout=kernel_timeout,
@@ -925,7 +948,7 @@ def verify_sketch_kernel_inventory(repo_root: Path = REPO_ROOT) -> str:
 
 
 def run_kernel_lane(
-    work: Path, python: str, *, timeout: int = 180
+    work: Path, python: str, *, removed_pack: str, timeout: int = 180
 ) -> subprocess.CompletedProcess[str]:
     """Run the complete enumerated kernel lane against the temp copy."""
     # Shadow any installed/editable astrid with the temp copy's source while
@@ -941,7 +964,7 @@ def run_kernel_lane(
         "-p",
         "no:cacheprovider",
         "--no-header",
-        *KERNEL_LANE,
+        *_kernel_lane_args(removed_pack),
     ]
     try:
         return subprocess.run(
@@ -1007,7 +1030,9 @@ def check_removal(
         catalog_output = verify_remaining_catalog(
             work, interpreter, removed_pack, timeout=catalog_timeout
         )
-        lane = run_kernel_lane(work, interpreter, timeout=lane_timeout)
+        lane = run_kernel_lane(
+            work, interpreter, removed_pack=removed_pack, timeout=lane_timeout
+        )
         return RemovalCheckResult(
             removed_pack=removed_pack,
             catalog_output=catalog_output,
@@ -1123,32 +1148,53 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    failures: list[str] = []
-    for pack in args.packs:
+    # Provision one locked interpreter for the complete source factoring run.
+    # Each reduced composition still gets a fresh source copy and subprocess,
+    # but the dependency environment is immutable and shared sequentially;
+    # provisioning once avoids multiplying the proof disk footprint by the
+    # number of removed packs.
+    proof_environment = None
+    interpreter = args.python
+    if interpreter is None:
         try:
-            result = check_removal(
-                pack,
-                python=args.python,
-                keep_temp=args.keep_temp,
-                lane_timeout=args.lane_timeout,
-            )
+            from scripts.reshape.installed_artifact import provision_locked_environment
+
+            proof_environment = provision_locked_environment(REPO_ROOT)
+            interpreter = str(proof_environment.python_executable)
         except Exception as exc:  # noqa: BLE001 - CLI must always exit non-zero
-            print(f"[FAIL] {pack}: {exc}", file=sys.stderr)
-            failures.append(pack)
-            continue
-        if result.ok:
-            print(f"[PASS] removed {result.removed_pack}: {result.catalog_output}")
-            summary = (result.lane_output or "").strip().splitlines()[-1:]
-            if summary:
-                print(f"       kernel lane: {summary[0]}")
-        else:
-            print(
-                f"[FAIL] removed {result.removed_pack}: kernel lane exited "
-                f"{result.lane_returncode}",
-                file=sys.stderr,
-            )
-            _print_lane_tail(result)
-            failures.append(pack)
+            print(f"[FAIL] factoring proof environment: {exc}", file=sys.stderr)
+            return 1
+
+    failures: list[str] = []
+    try:
+        for pack in args.packs:
+            try:
+                result = check_removal(
+                    pack,
+                    python=interpreter,
+                    keep_temp=args.keep_temp,
+                    lane_timeout=args.lane_timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - CLI must always exit non-zero
+                print(f"[FAIL] {pack}: {exc}", file=sys.stderr)
+                failures.append(pack)
+                continue
+            if result.ok:
+                print(f"[PASS] removed {result.removed_pack}: {result.catalog_output}")
+                summary = (result.lane_output or "").strip().splitlines()[-1:]
+                if summary:
+                    print(f"       kernel lane: {summary[0]}")
+            else:
+                print(
+                    f"[FAIL] removed {result.removed_pack}: kernel lane exited "
+                    f"{result.lane_returncode}",
+                    file=sys.stderr,
+                )
+                _print_lane_tail(result)
+                failures.append(pack)
+    finally:
+        if proof_environment is not None:
+            proof_environment.close()
 
     if failures:
         print(f"factoring check FAILED for: {', '.join(failures)}", file=sys.stderr)

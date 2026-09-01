@@ -17,7 +17,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _FIRST_PARTY_PACKS_ROOT = _REPO_ROOT / "astrid" / "packs"
 _FIRST_PARTY_PACK_IDS = (
     "blender",
-    "builtin",
     "comfy_wrap",
     "editorial",
     "fal",

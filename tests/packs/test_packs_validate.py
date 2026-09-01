@@ -1393,11 +1393,11 @@ class TestFirstPartyPacksRootValidation(MinimalPackTestCase):
         root = self.make_pack_root() / "packs"
         root.mkdir()
         _mirror_first_party_packs_root(root)
-        (root / "builtin").unlink()
+        (root / "blender").unlink()
         _write(
-            root / "builtin" / "pack.yaml",
-            """id: builtin
-name: Builtin
+            root / "blender" / "pack.yaml",
+            """id: blender
+name: Blender
 version: 0.1.0
 agent:
   purpose: Broken test fixture
@@ -1418,7 +1418,7 @@ agent:
         )
         self.assertTrue(
             any(
-                line.startswith("[layout] builtin: pack.yaml: missing required field schema_version")
+                line.startswith("[layout] blender: pack.yaml: missing required field schema_version")
                 for line in errors[1:]
             ),
             errors,
