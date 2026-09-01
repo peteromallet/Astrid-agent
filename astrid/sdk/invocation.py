@@ -13,8 +13,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.schema_packs.registry import FrozenSchemaPackRegistry
-
 from ._module import _sdk_module
 from .exceptions import (
     AstridSDKError,
@@ -23,8 +21,6 @@ from .exceptions import (
     CapabilityPreconditionError,
     CapabilityValidationError,
     UnsupportedCapabilityError,
-    _error_payload_from_internal_error,
-    _internal_error_from_result,
     _sdk_error_from_exception,
 )
 from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping
@@ -999,9 +995,9 @@ def _prepare_managed_render_inputs(
     _validate_explicit_render_profile(values.get("profile"))
     from astrid.packs.rendering.executors.render.managed_timeline import (
         ManagedRenderValidationError,
+        _runtime_snapshot_registry,
         materialize_managed_render_snapshot,
         resolve_managed_render_snapshot,
-        _runtime_snapshot_registry,
         validate_managed_render_snapshot,
     )
 
@@ -1257,7 +1253,7 @@ def _kernel_invoke(
     outputs: Mapping[str, Any] | None,
     extra_pack_roots: tuple[str, ...] = (),
     idempotency_context: Mapping[str, Any] | None = None,
-    registry: FrozenSchemaPackRegistry | None = None,
+    registry: Any | None = None,
     _client: Any | None = None,
 ) -> tuple[str, str, str, Path | None, dict[str, Any], bool, Any]:
     """Admit an invocation through the runtime client and generic host.
@@ -1370,7 +1366,7 @@ def invoke(
     verbose: bool = False,
     argv: tuple[str, ...] = (),
     orchestrator_args: tuple[str, ...] = (),
-    registry: FrozenSchemaPackRegistry | None = None,
+    registry: Any | None = None,
     _client: Any | None = None,
 ) -> InvocationResult:
     sdk_module = _sdk_module()
