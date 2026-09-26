@@ -61,6 +61,16 @@ the same `astrid` 0.1.0 wheel digest. A source-tree test, a different wheel,
 an authenticated account, a simulated macOS run, or an unsigned artifact
 described as notarized does not satisfy this contract.
 
+### 1.3 Plan A final-state closeout qualification profile
+
+The Astrid Plan A closeout is a separate no-GPU qualification claim within the
+installed-artifact boundary. Its exact toolchain is Python **3.11.16** for
+Astrid/Runtime, Python **3.10.21** for the Worker environment, and Node
+**20.19.4** with npm **10.8.2** for app checks. It does not expand the m8 OS or
+Python target matrix, and it excludes CUDA, provider, RunPod, and VibeComfy
+execution. The Worker is started through Runtime's owner-verified local host;
+direct GPU worker commands are production evidence only.
+
 ## 2. Frozen m4 development matrix (historical)
 
 | Dimension | Target | Notes |

@@ -94,6 +94,7 @@ from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid.sdk.workspace_client import WorkspaceClientError, validate_runtime_endpoint
+from astrid.sdk.local_compat import legacy_environment_name
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
@@ -3983,9 +3984,9 @@ class GenericPackHost:
         runtime_endpoint = getattr(self.client, "endpoint", None)
         runtime_credential = getattr(self.client, "credential", None)
         if runtime_endpoint and runtime_credential:
-            explicit["BANODOCO_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
-            secrets["BANODOCO_RUNTIME_CREDENTIAL"] = str(runtime_credential)
-            declared_secrets = (*declared, "BANODOCO_RUNTIME_CREDENTIAL")
+            explicit[legacy_environment_name("ASTRID_RUNTIME_ENDPOINT")] = str(runtime_endpoint)
+            secrets[legacy_environment_name("ASTRID_RUNTIME_CREDENTIAL")] = str(runtime_credential)
+            declared_secrets = (*declared, legacy_environment_name("ASTRID_RUNTIME_CREDENTIAL"))
         else:
             declared_secrets = declared
         if isinstance(authority_context, Mapping):

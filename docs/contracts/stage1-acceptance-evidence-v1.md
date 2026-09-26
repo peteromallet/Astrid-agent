@@ -25,7 +25,7 @@ Each receipt is one `*.json` file with:
   "observations": {"evidence_mode": "live", "owner_count": 1},
   "checks": [
     {
-      "id": "10.1.clean-editable-setup",
+      "id": "10.1.clean-installed-setup",
       "status": "pass",
       "observations": {"fresh_home": true},
       "artifacts": [
@@ -59,7 +59,10 @@ python3 -m scripts.reshape.stage1_evidence_capture \
 The capture table reuses `s1_gate.py`, the final cold-launch matrix, the
 capability-parity test, canonical Remotion proof, second-client proof,
 conformance, and the focused doctor/security/network/filesystem/static/docs
-tests. A non-zero command, a skipped test, or missing JUnit/artifact leaves a
+tests. The Plan A closeout runs the CPU qualification with the installed
+Astrid/Runtime pair, Python 3.11.16, Python 3.10.21 for Worker, and Node
+20.19.4/npm 10.8.2 for app checks; it leaves `PYTHONPATH` unset and excludes
+CUDA/provider/RunPod/VibeComfy execution. A non-zero command, a skipped test, or missing JUnit/artifact leaves a
 failed receipt and the final aggregate cannot pass. Raw command output is
 never replaced by a prose summary.
 

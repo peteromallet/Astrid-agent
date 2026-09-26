@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from astrid.sdk.storage_root import ensure_no_unmigrated_runtime, resolve_runtime_data_root
+from astrid.sdk.local_compat import canonical_value
 
-RUNTIME_COMMAND_ENV = "ASTRID_RUNTIME_CLI"
+RUNTIME_COMMAND_ENV = "ASTRID_LOCAL_CLI"
 PROFILE = "astrid"
 OBSERVE_EFFECTS = ("observe",)
 
@@ -70,18 +71,18 @@ def _absolute_root(value: str | Path, *, label: str) -> Path:
 
 def _runtime_command(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
     target = os.environ if env is None else env
-    configured = target.get(RUNTIME_COMMAND_ENV, "").strip()
+    configured = canonical_value(RUNTIME_COMMAND_ENV, target).strip()
     if configured:
         command = tuple(shlex.split(configured))
         if not command:
             raise RuntimeCLIError(f"{RUNTIME_COMMAND_ENV} is empty")
         return command
-    installed = shutil.which("banodoco-local")
+    installed = shutil.which("astrid-local")
     if installed:
         return (installed,)
     # This remains an installed-package invocation; it does not import or
     # duplicate Runtime implementation inside Astrid.
-    return (sys.executable, "-m", "banodoco_local")
+    return (sys.executable, "-m", "banodoco_local.entrypoint")
 
 
 def _json_payload(stdout: str, stderr: str) -> Mapping[str, Any]:
@@ -212,6 +213,37 @@ class RuntimeCLI:
             raise ValueError("observer command must be status or doctor")
         support = _absolute_root(support_root, label="support root")
         return self.invoke((command, "--data-root", str(support), "--json"), timeout=timeout)
+
+    def start_worker(self, *, support_root: str | Path) -> RuntimeResult:
+        """Start the Worker only for the exact Runtime-selected workspace."""
+        support = _absolute_root(support_root, label="support root")
+        selected = self.inspect(support_root=support)
+        if not selected.ok:
+            raise RuntimeCLIError(
+                str(selected.data.get("error") or "selected workspace is unavailable"),
+                code=str(selected.data.get("problem_code") or selected.data.get("state") or "workspace_missing"),
+                result=selected.data,
+                returncode=selected.returncode,
+            )
+        realm_id = str(_field(selected.data, "realm_id", "workspace_id", "selected_realm_id") or "")
+        realm_root = _field(selected.data, "realm_root", "data_root")
+        if not realm_id or realm_root is None:
+            raise RuntimeCLIError(
+                "Runtime workspace inspection omitted its identity",
+                code="workspace_identity_mismatch",
+                result=selected.data,
+            )
+        validate_selected_workspace(
+            selected.data,
+            expected_realm_id=realm_id,
+            expected_realm_root=str(realm_root),
+            expected_support_root=support,
+        )
+        return self.invoke((
+            "start-worker", "--profile", PROFILE,
+            "--expected-workspace-uuid", realm_id,
+            "--data-root", str(support), "--json",
+        ))
 
 
 def _field(data: Mapping[str, Any], *names: str) -> Any:

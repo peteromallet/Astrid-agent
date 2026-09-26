@@ -3,25 +3,46 @@
 Start in the Python environment you installed Astrid into.
 
 ```bash
-python3 -m astrid doctor --json
-banodoco-local doctor --json
+python -m astrid doctor --json
+astrid-local doctor --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
 ```
 
 ## Command or module not found
 
-Activate `.venv` from your installation folder. If the launcher script is missing from `PATH`, try the installed module:
+Activate `.venv` from your installation folder. If the launcher script is missing
+from `PATH`, use the installed module entrypoint:
 
 ```bash
-python3 -m banodoco_local up --profile astrid
+python -m banodoco_local.entrypoint up --profile astrid --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
 ```
 
-## Source profile missing
+`astrid-local` is the canonical command. `banodoco-local` and `astrid-runtime`
+are deprecated aliases and emit a warning. A canonical and legacy environment
+pair with different values fails closed; a legacy-only value is accepted with a
+warning. Set `ASTRID_LOCAL_DATA_ROOT` and use the same absolute support root for
+all lifecycle commands.
 
-Complete [Connect Runtime](README.md#2-connect-runtime-once). The manifest must use absolute paths to the actual checkouts. Avoid symlinked installation folders. If the manifest already exists, inspect its paths instead of overwriting it.
+## Installed provenance or source profile
+
+The installed closeout profile does not require a source manifest. Check the
+bounded installed identity first:
+
+```bash
+astrid-local --provenance
+astrid-local workspace inspect --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+```
+
+For editable repository development only, set
+`ASTRID_LOCAL_SOURCE_MANIFEST`. The manifest must use absolute paths to the
+actual checkouts and must not be symlinked. If it already exists, inspect its
+paths instead of overwriting it.
 
 ## Runtime cannot connect
 
-Run `banodoco-local up --profile astrid` and read the reported error. Check that the source folders and environment still exist. Do not delete workspace state or credentials to force a fresh start.
+Run `astrid-local up --profile astrid --data-root "$ASTRID_LOCAL_DATA_ROOT" --json`
+and read the structured error. Check the support root and installed environment;
+the installed path does not depend on source folders. Do not delete workspace
+state or credentials to force a fresh start.
 
 ## A tool needs a key or dependency
 

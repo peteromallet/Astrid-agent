@@ -12,7 +12,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
-from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+from banodoco_workspace_client.contract_metadata import (
+    COMPONENT_MANIFEST_SHA256,
+    PROTOCOL,
+    SCHEMA_DIGEST,
+)
 
 __all__ = ["AstridClient"]
 
@@ -41,6 +45,7 @@ _HANDSHAKE_KEYS = frozenset(
     {
         "protocol",
         "schema_digest",
+        "component_manifest_sha256",
         "session_id",
         "actor_id",
         "realm_id",
@@ -109,6 +114,7 @@ def _validate_handshake(
     *,
     expected_protocol: str,
     expected_digest: str,
+    expected_component_manifest_digest: str,
     expected_realm: str,
     expected_actor: str,
 ) -> None:
@@ -119,6 +125,11 @@ def _validate_handshake(
         raise _protocol_error("handshake.protocol", "runtime handshake protocol does not match workspace.v1")
     if handshake.get("schema_digest") != expected_digest:
         raise _protocol_error("handshake.schema_digest", "runtime handshake schema digest does not match the client")
+    if handshake.get("component_manifest_sha256") != expected_component_manifest_digest:
+        raise _protocol_error(
+            "handshake.component_manifest_sha256",
+            "runtime handshake component manifest digest does not match the client",
+        )
     session_id = handshake.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
         raise _protocol_error("handshake.session_id", "runtime handshake session_id is missing")
@@ -221,6 +232,7 @@ class AstridClient:
                 handshake,
                 expected_protocol=PROTOCOL,
                 expected_digest=SCHEMA_DIGEST,
+                expected_component_manifest_digest=COMPONENT_MANIFEST_SHA256,
                 expected_realm=realm_id,
                 expected_actor=actor_id,
             )
@@ -275,7 +287,9 @@ class AstridClient:
             # The environment variable is a launcher-issued path, not an
             # ambient bearer token. Keep it typed as a Path so the explicit
             # credential boundary rejects symlinks before reading it.
-            credential_env = os.environ.get("BANODOCO_RUNTIME_CREDENTIAL", "").strip()
+            from astrid.sdk.local_compat import canonical_value
+
+            credential_env = canonical_value("ASTRID_RUNTIME_CREDENTIAL").strip()
             credential_value = Path(credential_env) if credential_env else ""
         if not credential_value:
             # `up --json` deliberately hands off a file path, not the secret.

@@ -76,9 +76,12 @@ class _Runs:
         self.owner.calls.append(("runs.list", {"project_id": project_id}))
         return DomainResult.success([{"id": "R-1", "project_id": project_id, "status": "running"}])
 
-    def show(self, run_id):
-        self.owner.calls.append(("runs.show", {"run_id": run_id}))
-        return DomainResult.success({"id": run_id, "status": "failed", "progress": {"failed": 1}})
+    def show(self, run_id, *, evidence=False):
+        self.owner.calls.append(("runs.show", {"run_id": run_id, "evidence": evidence}))
+        data = {"id": run_id, "status": "failed", "progress": {"failed": 1}}
+        if evidence:
+            data["evidence"] = [{"event_id": "EV-1"}]
+        return DomainResult.success(data)
 
     def cancel(self, run_id, *, idempotency_key=None):
         self.owner.calls.append(("runs.cancel", {"run_id": run_id, "idempotency_key": idempotency_key}))
@@ -155,7 +158,10 @@ def test_per_id_reads_use_generated_client_shape(family, verb, identifier, call,
     client = _Client()
     assert _run(family, [verb, "--project", "P-1", identifier, "--json"], client) == 0
     key = "task_id" if family == "tasks" else "run_id"
-    assert client.calls == [(call, {key: identifier})]
+    expected = {key: identifier}
+    if family == "runs" and verb == "show":
+        expected["evidence"] = False
+    assert client.calls == [(call, expected)]
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
@@ -327,17 +333,12 @@ def test_tasks_create_does_not_advertise_unsupported_runtime_admission_fields() 
 
 def test_runs_show_preserves_runtime_progress_and_optional_evidence(capsys) -> None:
     client = _Client()
-    client.runs.show = lambda run_id: DomainResult.success({
-        "run_id": run_id,
-        "status": "failed",
-        "progress": {"total_children": 3, "succeeded": 1, "failed": 2, "cancelled": 0},
-        "evidence": [{"evidence_id": "EV-1", "kind": "preview"}],
-    })
     assert _run("runs", ["show", "--project", "P-1", "R-1", "--evidence", "--json"], client) == 0
     envelope = json.loads(capsys.readouterr().out)
     assert set(envelope) == ENVELOPE_KEYS
-    assert envelope["data"]["progress"]["failed"] == 2
-    assert envelope["data"]["evidence"][0]["evidence_id"] == "EV-1"
+    assert client.calls == [("runs.show", {"run_id": "R-1", "evidence": True})]
+    assert envelope["data"]["progress"]["failed"] == 1
+    assert envelope["data"]["evidence"][0]["event_id"] == "EV-1"
 
 
 def test_tasks_and_runs_help_explain_supported_envelope_and_event_scope(capsys) -> None:

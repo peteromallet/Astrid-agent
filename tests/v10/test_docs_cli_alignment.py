@@ -4,9 +4,9 @@ Every ``astrid ...`` / ``python3 -m astrid ...`` command documented in the
 agent-facing docs (AGENTS.md, _core/SKILL.md, getting-started.md,
 cli-journeys.md, every pack STAGE.md / skill/SKILL.md, and every
 docs/contracts/*.md / docs/packs/*.md guide) must be a real
-command on the shipped eight-family gateway:
+command on the shipped gateway:
 
-- the first token must be one of the eight families, ``help``, ``--help``,
+- the first token must be one of the declared families, ``help``, ``--help``,
   ``--version``, or a nested mount (``timelines shots``, ``media references``);
 - product-family verbs must be accepted by that family's argparse parser
   (built through ``astrid.core.cli.domain_product.FAMILY_PARSER_MODULES`` with
@@ -34,7 +34,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 
 _TOP_LEVEL_FAMILIES = frozenset(
-    {"projects", "timelines", "media", "tasks", "runs", "serve", "doctor", "backup"}
+    {"projects", "timelines", "media", "tasks", "runs", "serve", "doctor", "backup", "auth"}
 )
 
 # (family, nested) -> parser module for the manifest-declared nested mounts.
@@ -188,6 +188,11 @@ def _family_parser(module_name: str):
         return builder()
 
 
+def _auth_parser():
+    """Build the gateway's contributor-auth parser without side effects."""
+    return importlib.import_module("astrid.core.auth")._parser()  # noqa: SLF001
+
+
 def _subcommands(parser) -> frozenset[str]:
     for action in parser._actions:  # noqa: SLF001
         if isinstance(action, __import__("argparse")._SubParsersAction):
@@ -244,7 +249,7 @@ def _validate_command(tokens: list[str], where: str) -> list[str]:
                 f"{sorted(_subcommands(parser))}: {tokens!r}"
             )
         return errors
-    parser = _family_parser(_FAMILY_PARSERS[first])
+    parser = _auth_parser() if first == "auth" else _family_parser(_FAMILY_PARSERS[first])
     if verb not in _subcommands(parser):
         errors.append(
             f"{where}: verb {verb!r} not in {sorted(_subcommands(parser))}: {tokens!r}"

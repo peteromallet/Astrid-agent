@@ -380,6 +380,29 @@ def test_runtime_up_inspects_exact_selection_before_delegating(tmp_path):
     assert seen[1][1:4] == ["up", "--profile", "astrid"]
 
 
+def test_runtime_worker_start_binds_selected_workspace_identity(tmp_path):
+    request = _request(tmp_path)
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        if argv[1:3] == ["workspace", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(_selected(request)), "")
+        return subprocess.CompletedProcess(argv, 0, '{"state":"active"}', "")
+
+    result = RuntimeCLI(command=("banodoco-local",), runner=runner).start_worker(
+        support_root=request.support_root
+    )
+
+    assert result.ok
+    assert seen[0][1:3] == ["workspace", "inspect"]
+    assert seen[1][1:] == [
+        "start-worker", "--profile", "astrid",
+        "--expected-workspace-uuid", request.workspace_id,
+        "--data-root", str(request.support_root), "--json",
+    ]
+
+
 def test_input_file_and_explicit_flags_normalize_to_same_request(tmp_path):
     request = _request(tmp_path)
     input_path = tmp_path / "setup.json"

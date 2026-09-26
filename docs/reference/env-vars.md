@@ -10,16 +10,23 @@ does not select a project root or open a local database/CAS.
 
 | Variable | Who sets | Effect |
 |---|---|---|
-| `BANODOCO_RUNTIME_CREDENTIAL` | Runtime launcher / operator | Path to the credential/token file used by the generated workspace client. |
-| `BANODOCO_LOCAL_SOURCE_MANIFEST` | Astrid launcher / operator | Existing Astrid source-profile manifest passed to neutral bootstrap. |
-| `BANODOCO_LOCAL_DATA_ROOT` | Astrid launcher / operator | Absolute installation-owned support root. Defaults to `Astrid/.astrid-data` from the checkout config (or `~/.astrid-data` for a wheel install); overrides the macOS `Library/Application Support/Banodoco` location. |
+| `ASTRID_RUNTIME_CREDENTIAL` | Runtime launcher / operator | Canonical path to the credential/token file used by the generated workspace client. `BANODOCO_RUNTIME_CREDENTIAL` is a deprecated alias. |
+| `ASTRID_LOCAL_SOURCE_MANIFEST` | Astrid launcher / operator | Optional absolute source-profile manifest for editable repository development. The installed closeout profile does not require it. `BANODOCO_LOCAL_SOURCE_MANIFEST` is a deprecated alias. |
+| `ASTRID_LOCAL_DATA_ROOT` | Astrid launcher / operator | Canonical absolute installation-owned support root. The installed closeout uses an explicit root such as `~/.astrid-data` or `$PWD/.astrid-data`. `BANODOCO_LOCAL_DATA_ROOT` is a deprecated alias. |
+| `ASTRID_LOCAL_HOME` | Astrid launcher / operator | Canonical absolute home/support override for local compatibility behavior. `BANODOCO_LOCAL_HOME` is a deprecated alias. |
+| `ASTRID_LOCAL_CLI` | Astrid launcher / operator | Optional explicit Runtime CLI command/argv used by Astrid. `ASTRID_RUNTIME_CLI` is a deprecated alias. |
 | `ASTRID_COMPUTE_PROFILE` | RunPod executor / operator | Optional user compute-profile id loaded from `~/.astrid/compute-profiles/<id>.json`. |
 
 These are runtime composition variables, not project-store overrides. Product
-commands use the configured manifest to invoke
-`banodoco-local up --profile astrid` automatically; the explicit command
-remains available for operator lifecycle work. `AstridClient.open(...)` takes
-all connection values explicitly and does not read these variables.
+commands use the installed Runtime artifact and invoke
+`astrid-local up --profile astrid` through the launcher boundary. The explicit
+command remains available for operator lifecycle work. `AstridClient.open(...)`
+takes all connection values explicitly and does not read these variables.
+
+The compatibility resolver gives canonical values precedence when both spellings
+match. A legacy-only value is accepted and emits one deprecation warning. If a
+canonical and legacy pair are both set to different values, resolution fails
+closed. Data-root, home, and source-manifest values must be absolute paths.
 
 The `ASTRID_*` registry below remains useful for pack subprocesses, tests, and
 authoring tools. Variables marked **historical/internal** are not live workspace
@@ -30,8 +37,9 @@ defined in that module following the invariant `constant_name == constant_value`
 (the constant identifier equals the env-var string it names).  Use the constant
 rather than the bare string in any new code.
 
-There are no legacy-name exceptions. `get_author_test_env()` reads the
-canonical `ASTRID_AUTHOR_TEST` key only.
+Legacy-name exceptions are limited to the Runtime migration aliases in the
+table above. `get_author_test_env()` reads the canonical `ASTRID_AUTHOR_TEST`
+key only; it does not select workspace authority.
 
 ---
 

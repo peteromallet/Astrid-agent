@@ -32,10 +32,10 @@ METADATA_PATH = ROOT / "banodoco_workspace_client" / "contract_metadata.py"
 # hashes, and this test in one reviewed change; no ambient sibling checkout can
 # silently alter the shipped transport.
 PINNED_PROTOCOL = "workspace.v1"
-PINNED_COMPONENT_MANIFEST_SHA256 = "sha256:fcae767eaba85e406658ac3b14f3c3447e11073dffcb5e1256e223bdb84f51f4"
-PINNED_SCHEMA_DIGEST = "sha256:f47cff3ee8939b6caa23bd8a2cb32e4df82fb4c3cd6fa2d77aa02df69a7a0dee"
-PINNED_GENERATED_SHA256 = "c9efb120637753c0422b9f8e058a11965d367691dd40038ee7f86315115c26f9"
-PINNED_METADATA_SHA256 = "f29eb4804c16b946f9ac6ba6c676e689d5eb3afa59497a9e8b207f62a4215ecd"
+PINNED_COMPONENT_MANIFEST_SHA256 = "sha256:7bf3998ea268bc15b2d93397a8c20c627ada8293e07d375cc1c72d515fffe203"
+PINNED_SCHEMA_DIGEST = "sha256:0fbdd963346d4ec18fcd79f17d3933bcb65f4a5131d1efef94c2d8a0c8b12369"
+PINNED_GENERATED_SHA256 = "6dee69380fd467b7a5c9226724968c3d6ffd1c20031ab6c642f604488d2bd1f1"
+PINNED_METADATA_SHA256 = "dd5e1317c2cfe2124835fdcc0666dfba6340527aefbd17f9fcdbc843d8478082"
 
 
 def _camel_to_snake(value: str) -> str:
@@ -44,7 +44,7 @@ def _camel_to_snake(value: str) -> str:
 
 
 def test_vendored_client_is_the_frozen_runtime_artifact() -> None:
-    assert SOURCE_COMMIT == "04fee311ceb9ade57b05c739e880e7d25818ed56"
+    assert SOURCE_COMMIT == "8cf07f66ffe57774fc183f714bf1255d0a007ec1"
     assert PROTOCOL == PINNED_PROTOCOL == generated.PROTOCOL
     assert COMPONENT_MANIFEST_SHA256 == PINNED_COMPONENT_MANIFEST_SHA256
     assert SCHEMA_DIGEST == PINNED_SCHEMA_DIGEST == generated.SCHEMA_DIGEST
@@ -78,6 +78,20 @@ def test_vendored_health_preserves_runtime_identity() -> None:
     })
     assert health.runtime_session_id == "runtime-session-1"
     assert health.runtime_instance_id == "runtime-instance-1"
+
+
+def test_vendored_handshake_preserves_component_manifest_identity() -> None:
+    handshake = generated.Handshake(
+        protocol=PROTOCOL,
+        schema_digest=SCHEMA_DIGEST,
+        component_manifest_sha256=COMPONENT_MANIFEST_SHA256,
+        session_id="session-1",
+        actor_id="actor-1",
+        realm_id="realm-1",
+        scopes=("projects:read",),
+        capabilities=("execution_binding.targeted.v1",),
+    )
+    assert handshake.component_manifest_sha256 == COMPONENT_MANIFEST_SHA256
 
 
 def test_frozen_mutation_signatures_require_idempotency_keys() -> None:

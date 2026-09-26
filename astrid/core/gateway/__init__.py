@@ -31,6 +31,7 @@ from astrid.core.gateway.dispatch import (
     _dispatch_product,
     _dispatch_setup,
     _dispatch_status,
+    _dispatch_worker,
     _top_level_commands,
 )
 from astrid.core.gateway.help import (
@@ -56,6 +57,7 @@ SPRINT1_UNBOUND_ALLOWLIST_CONTRACT: tuple[tuple[str, ...], ...] = (
     ("backup",),
     ("setup",),
     ("status",),
+    ("worker",),
     ("auth",),
     ("login",),
     ("logout",),
@@ -109,6 +111,8 @@ def _main_impl(raw: list[str]) -> int:
         return _dispatch_setup(raw[1:])
     if first_arg == "status":
         return _dispatch_status(raw[1:])
+    if first_arg == "worker":
+        return _dispatch_worker(raw[1:])
     if first_arg == "auth":
         from astrid.core.auth import run_auth
         return int(run_auth(raw[1:]))

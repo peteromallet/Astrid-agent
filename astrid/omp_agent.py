@@ -26,8 +26,9 @@ DEFAULT_AGENT = "astrid"
 _PRODUCT_TOOLKIT_FAMILIES = frozenset(
     {"projects", "timelines", "media", "tasks", "runs", "doctor", "backup"}
 )
+_PRODUCT_WORKSPACE_COMMANDS = frozenset({"setup", "status", "worker"})
 _PACK_ROUTE_BLOCKLIST = frozenset(
-    {"agent", "auth", "help", "login", "status", "logout", "revoke"}
+    {"agent", "auth", "help", "login", "setup", "status", "worker", "logout", "revoke"}
 )
 
 
@@ -117,10 +118,13 @@ when you want to make the agent route explicit.
   astrid                         interactive Astrid agent
   astrid agent [flags] [message] interactive/one-shot Astrid agent
   astrid <toolkit> ...           product toolkit gateway
-  astrid login                   log in for Hivemind contributions
-  astrid status                  show Hivemind contributor login status
-  astrid logout                  remove the local Hivemind login
-  astrid revoke                  revoke the Hivemind contributor login
+  astrid setup ...               configure one explicit workspace
+  astrid status                  observe workspace and Runtime status
+  astrid worker start            start the verified local Worker
+  astrid auth login              log in for Hivemind contributions
+  astrid auth status             show Hivemind contributor login status
+  astrid auth logout             remove the local Hivemind login
+  astrid auth revoke             revoke the Hivemind contributor login
   astrid help                    product toolkit help
 
   --agent NAME     talk to a different installed agent (default: astrid)
@@ -288,13 +292,14 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_toolkit(rest)
     if rest and rest[0] == "auth":
         return run_auth(rest[1:])
-    if rest and rest[0] in _AUTH_ALIASES:
-        return run_auth(rest)
     if rest and (
         rest[0] in _PRODUCT_TOOLKIT_FAMILIES
+        or rest[0] in _PRODUCT_WORKSPACE_COMMANDS
         or rest[0] in _installed_pack_families()
     ):
         return _dispatch_toolkit(rest)
+    if rest and rest[0] in _AUTH_ALIASES:
+        return run_auth(rest)
     if rest and rest[0] == "agent":
         rest.pop(0)
 

@@ -15,12 +15,14 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from astrid.sdk.local_compat import canonical_value
+
 PROFILE = "astrid"
-RECONFIGURE_ACTION = "run `banodoco-local up --profile astrid`"
+RECONFIGURE_ACTION = "run `astrid-local up --profile astrid`"
 INSTALL_RUNTIME_ACTION = (
     "python3 -m pip install 'banodoco-workspace-runtime @ "
     "git+https://github.com/banodoco/banodoco-workspace-runtime.git@"
-    "bc74a4b2179de83ace55c35fa6371f10e1e58610'"
+    "astrid-plan-a-final-state-closeout-20260925'"
 )
 
 
@@ -50,11 +52,11 @@ _ACQUISITION_LOCK = threading.RLock()
 
 
 def _configured(name: str) -> str:
-    return os.environ.get(name, "").strip()
+    return canonical_value(name).strip()
 
 
 def _manifest_from_environment() -> Path | None:
-    value = _configured("BANODOCO_LOCAL_SOURCE_MANIFEST")
+    value = _configured("ASTRID_LOCAL_SOURCE_MANIFEST")
     if not value:
         # The neutral launcher owns the persisted source profile under its
         # fixed support directory.  An ordinary Astrid relaunch must be able
@@ -124,14 +126,14 @@ def _bounded_details(value: Any, *, limit: int = 16_384) -> dict[str, Any]:
 
 def _launcher_command() -> list[str]:
     """Resolve the neutral launcher without relying solely on shell ``PATH``."""
-    configured = _configured("BANODOCO_LOCAL_LAUNCHER")
+    configured = _configured("ASTRID_LOCAL_LAUNCHER")
     if configured:
         return [configured]
-    executable = shutil.which("banodoco-local")
+    executable = shutil.which("astrid-local")
     if executable:
         return [executable]
     if find_spec("banodoco_local") is not None:
-        return [sys.executable, "-m", "banodoco_local"]
+        return [sys.executable, "-m", "banodoco_local.entrypoint"]
     raise AutoBootstrapError(
         "the Banodoco workspace runtime is not installed",
         next_action=INSTALL_RUNTIME_ACTION,
@@ -140,7 +142,7 @@ def _launcher_command() -> list[str]:
 
 def _launcher_timeout() -> float:
     """Allow the runtime's admission budget plus launcher/process overhead."""
-    raw = _configured("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS") or "120"
+    raw = _configured("ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS") or "120"
     try:
         admission = float(raw)
     except ValueError as exc:

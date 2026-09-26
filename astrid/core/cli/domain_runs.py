@@ -87,7 +87,7 @@ def _cmd_list(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
-    result = parsed.client.runs.show(parsed.run_id)
+    result = parsed.client.runs.show(parsed.run_id, evidence=parsed.evidence)
     return print_result(result, as_json=parsed.json)
 
 

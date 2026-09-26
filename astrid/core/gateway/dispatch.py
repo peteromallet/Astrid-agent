@@ -169,6 +169,47 @@ def _dispatch_status(args: list[str]) -> int:
     return 0 if payload["ok"] else 1
 
 
+def _dispatch_worker(args: list[str]) -> int:
+    """Start the selected Runtime's verified local Worker on explicit request."""
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="astrid worker",
+        description="Operate the Runtime-owned local Worker.",
+    )
+    sub = parser.add_subparsers(dest="operation", required=True)
+    start = sub.add_parser("start", help="start or reconnect the verified local Worker")
+    start.add_argument("--json", action="store_true")
+    if any(token in {"-h", "--help"} for token in args):
+        parser.print_help()
+        return 0
+    parsed = parser.parse_args(args)
+
+    from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    try:
+        result = RuntimeCLI().start_worker(support_root=resolve_runtime_data_root())
+        payload = dict(result.data)
+        code = result.returncode
+    except (RuntimeCLIError, ValueError) as exc:
+        payload = {
+            "ok": False,
+            "problem_code": getattr(exc, "code", "runtime_unavailable"),
+            "error": str(exc),
+        }
+        code = getattr(exc, "returncode", 1)
+    if parsed.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif code == 0:
+        print("Astrid worker: ready")
+    else:
+        print(f"Astrid worker: {payload.get('error', 'start failed')}", file=sys.stderr)
+    return int(code)
+
+
 def _dispatch_doctor(args: list[str]) -> int:
     """Read the Runtime observer directly; never connect, start or provision."""
     import argparse
@@ -431,7 +472,7 @@ from .hivemind import PACK_COMMANDS as _PACK_COMMANDS, installed_pack_ids as _in
 # outer launcher command. This is a blocklist/precedence rule, not a second
 # hand-maintained pack allowlist.
 _PACK_ROUTE_BLOCKLIST = frozenset(
-    {"agent", "auth", "help", "login", "setup", "status", "logout", "revoke", "--help", "--version"}
+    {"agent", "auth", "help", "login", "setup", "status", "worker", "logout", "revoke", "--help", "--version"}
 )
 _DYNAMIC_PACK_ROUTE_NAMES: set[str] = set()
 

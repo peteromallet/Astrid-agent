@@ -7,34 +7,35 @@ agentic UXes — pipelines where agents and humans collaborate to make art.
 
 ## Prerequisites
 
-Astrid requires Python 3.11+. The runtime is a separate local service that
-owns durable workspace state; the Astrid checkout is a client and pack source,
-not the state store.
+Astrid requires Python 3.11.16 for the closeout qualification. The runtime is a
+separate local service that owns durable workspace state; Astrid is a client and
+pack source, not the state store. The closeout app/runtime pair is qualified with
+Node 20.19.4 and npm 10.8.2 when the app is included.
 
-Install Astrid and configure the installed neutral launcher with an explicit
-source-profile manifest. The first product command starts or reconnects that
-runtime through the neutral launcher; no separate database service is needed:
+Install both pinned distributions into the same virtual environment. This is the
+installed path: it resolves package code from the pinned Git revisions and does
+not import either repository from a checkout or set `PYTHONPATH`:
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install .
-python3 -m pip install 'banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@bc74a4b2179de83ace55c35fa6371f10e1e58610'
-export BANODOCO_LOCAL_SOURCE_MANIFEST=/path/to/astrid-source-profile.json
-python3 -m astrid --help
-python3 -m astrid projects list --json
+python -m pip install 'Astrid @ git+https://github.com/peteromallet/Astrid.git@astrid-plan-a-final-state-closeout-20260925'
+python -m pip install 'banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@astrid-plan-a-final-state-closeout-20260925'
+export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
+astrid-local --provenance
+astrid-local up --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+python -m astrid --help
+python -m astrid projects list --json
 ```
 
-The checked-in `config/astrid-runtime.json` gives this Astrid checkout a
-stable neutral-runtime support root at `Astrid/.astrid-data`. A wheel install
-uses `~/.astrid-data`. Both defaults are independent of the current working
-directory and are ignored by Git. The root contains the
-launcher catalog, credentials, and the runtime realm directory; the runtime
-continues to own the database and content-addressed objects. To choose another
-installation-owned location explicitly, set `BANODOCO_LOCAL_DATA_ROOT` or pass
-`--data-root /absolute/path` to `banodoco-local up` and subsequent lifecycle
-commands. `BANODOCO_LOCAL_HOME` retains its macOS-home meaning and should not be
-pointed at the Astrid checkout.
+The support root contains the launcher catalog, credentials, and runtime realm
+directory; Runtime continues to own the database and content-addressed objects.
+Set `ASTRID_LOCAL_DATA_ROOT` or pass `--data-root /absolute/path` to
+`astrid-local` for an installation-owned location. The compatibility layer still
+accepts `BANODOCO_LOCAL_DATA_ROOT` and other `BANODOCO_*` spellings during the
+migration window, emits a deprecation warning for a legacy-only value, and fails
+closed when canonical and legacy values conflict. Prefer the `ASTRID_LOCAL_*`
+names in new shells and scripts.
 
 ### Optional provider credentials
 
@@ -68,11 +69,11 @@ Public Hivemind search and ordinary Astrid work do not require login. Login is
 only needed when an agent is asked to contribute or ingest knowledge:
 
 ```bash
-astrid login
-astrid status
+python3 -m astrid auth login
+python3 -m astrid auth status
 ```
 
-`astrid login` opens the Banodoco approval page and polls automatically. Approve
+`python3 -m astrid auth login` opens the Banodoco approval page and polls automatically. Approve
 the Discord connection in the browser; do not type the displayed approval code
 into the terminal. After the thank-you page, the terminal saves the contributor
 credential at `~/.hivemind/key` with owner-only permissions. The machine label
@@ -86,12 +87,12 @@ log in again.
 To manage the local credential:
 
 ```bash
-astrid logout   # remove only the local credential
-astrid revoke   # revoke the server-side credential
-astrid logout   # remove the revoked local credential
+python3 -m astrid auth logout   # remove only the local credential
+python3 -m astrid auth revoke   # revoke the server-side credential
+python3 -m astrid auth logout   # remove the revoked local credential
 ```
 
-If `astrid status` reports `active` but a contribution returns `401
+If `python3 -m astrid auth status` reports `active` but a contribution returns `401
 unauthorized`, login succeeded but the deployed Hivemind contribution function
 or its database migration is not ready. Treat that as a deployment issue and
 do not publish a real resource until the write path has been verified.
@@ -104,19 +105,19 @@ Use that environment for later commands too. The render worker checks its
 dependencies in an isolated Python process, so user-site-only installations
 are insufficient; install rendering dependencies into the active environment.
 
-The pinned source install is temporary until the certified
-`banodoco-workspace-runtime==0.1.0` wheel is published. Astrid resolves the
-launcher from an explicit override, then the `banodoco-local` script, then the
-installed `banodoco_local` module through the current Python interpreter. An
-installed runtime therefore still works when its scripts directory is absent
-from `PATH`.
+The installed launcher records bounded provenance (`implementation_owner`,
+module origin, artifact digest, distribution version, and support root) without
+emitting credentials. Astrid uses the installed Runtime artifact and does not
+require a sibling checkout or `PYTHONPATH`.
 
-An existing neutral source manifest can be used instead with
-`BANODOCO_LOCAL_SOURCE_MANIFEST`. The manifest records both editable
-checkouts and is retained under the runtime support directory after a
-successful first launch so later `banodoco-local restart`/reconnect commands
-use the same composition. The equivalent explicit operator command remains
-`banodoco-local up --profile astrid`.
+For repository development only, an explicit source profile may be supplied with
+`ASTRID_LOCAL_SOURCE_MANIFEST`. It must use absolute, symlink-free checkout
+paths and is retained under the support root. The legacy
+`BANODOCO_LOCAL_SOURCE_MANIFEST` spelling is accepted with a warning; it is not
+the canonical setup path. `banodoco-local` and `astrid-runtime` are also
+deprecated aliases for `astrid-local` and print a warning when invoked; the
+legacy `banodoco-local up --profile astrid` invocation is retained only for
+migration compatibility.
 
 ## Your First Command
 
@@ -181,11 +182,22 @@ It preserves project identities and media, refuses to interrupt active work,
 and can be rerun safely. Migration archives are retained for recovery; only the
 current store is used during normal operation.
 
+For direct Runtime lifecycle work, use the canonical launcher and the same
+support root:
+
+```bash
+astrid-local upgrade --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+```
+
+Runtime owns migration and realm state. Do not open SQLite/CAS files from Astrid
+or restore an old root by hand. The deprecated `banodoco-local` and
+`astrid-runtime` names remain readable during migration and emit a warning.
+
 For the complete project, timeline, media, recovery, and failure journeys,
 continue with [CLI journeys](guides/cli-journeys.md). For renderer-specific
 diagnostics, see [Debugging](guides/debugging.md).
 
-### Canonical timeline schema
+### Developer-only canonical timeline schema
 
 The canonical `banodoco_timeline_schema` package is an optional external
 dependency. Astrid's default Python install intentionally does not vendor or
@@ -196,7 +208,8 @@ parity assertions require it and fail closed when it is unavailable.
 
 The `dev` extra pins a compatible public source revision so the repository-wide
 test suite and CI validate one deterministic schema. This does not add the
-schema to Astrid's base runtime dependencies.
+schema to Astrid's base runtime dependencies or change the installed Runtime
+authority path.
 
 Install the package from a compatible Banodoco workspace checkout with the same
 interpreter used to run Astrid:

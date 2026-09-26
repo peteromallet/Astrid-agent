@@ -12,7 +12,9 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-DATA_ROOT_ENV = "BANODOCO_LOCAL_DATA_ROOT"
+from astrid.sdk.local_compat import canonical_value
+
+DATA_ROOT_ENV = "ASTRID_LOCAL_DATA_ROOT"
 UPGRADE_ACTION = "run `astrid-upgrade` before launching Astrid"
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "astrid-runtime.json"
 
@@ -39,7 +41,7 @@ def resolve_runtime_data_root() -> Path:
     cwd changes and separate invocations.
     """
 
-    configured = os.environ.get(DATA_ROOT_ENV, "").strip()
+    configured = canonical_value(DATA_ROOT_ENV).strip()
     if configured:
         if not Path(configured).expanduser().is_absolute():
             raise ValueError(f"{DATA_ROOT_ENV} must be an absolute path")
@@ -70,7 +72,7 @@ def ensure_no_unmigrated_runtime(data_root: Path) -> None:
     overrides remain available for deliberate recovery or test composition.
     """
 
-    if os.environ.get(DATA_ROOT_ENV, "").strip():
+    if canonical_value(DATA_ROOT_ENV).strip():
         return
     target_catalog = data_root / "runtime" / "catalog.json"
     if target_catalog.is_file():

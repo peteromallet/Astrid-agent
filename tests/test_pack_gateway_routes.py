@@ -14,11 +14,12 @@ def test_pack_routes_never_shadow_core_handlers(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         dispatch,
         "_installed_pack_ids",
-        lambda: frozenset({"media", "vibecomfy"}),
+        lambda: frozenset({"media", "setup", "status", "worker", "vibecomfy"}),
     )
     dispatch._register_installed_pack_routes()
 
     assert dispatch._TOP_LEVEL_HANDLERS["media"] is original_media
+    assert all(name not in dispatch._TOP_LEVEL_HANDLERS for name in ("setup", "status", "worker"))
     assert "vibecomfy" in dispatch._TOP_LEVEL_HANDLERS
 
 

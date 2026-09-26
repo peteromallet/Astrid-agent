@@ -47,6 +47,7 @@ Latest project render:
 Operational families:
   python3 -m astrid setup [--input FILE | --create | --attach] [--apply]
   python3 -m astrid status [--json]
+  python3 -m astrid worker start [--json]
   python3 -m astrid doctor [--json]
   python3 -m astrid backup {create,restore,export,tombstone,recover,purge} [--json]
   python3 -m astrid auth {login,status,logout,revoke}
@@ -87,7 +88,7 @@ def _product_help_text() -> str:
     the ``--json`` envelope convention, the stable exit codes, and the
     two operational families (``doctor``, ``backup``).
     """
-    families = "projects timelines media tasks runs setup status doctor backup hivemind"
+    families = "projects timelines media tasks runs setup status worker doctor backup hivemind"
     return f"""Astrid product commands — runtime families and external tools
 
 The gateway owns five product families, two operational families, two reserved
@@ -100,7 +101,7 @@ Usage:
 
 Family census (exactly seven families): projects timelines media tasks runs doctor backup
 
-Reserved workspace commands (outside the family census): setup status
+Reserved workspace commands (outside the family census): setup status worker
 
 Product families:
   projects    [kernel] project create/list/show/update/select/current
@@ -112,6 +113,7 @@ Product families:
 Operational families:
   setup       [runtime] preview/check/apply one explicit Create-or-Attach plan
   status      [runtime] read-only workspace/Runtime/readiness status
+  worker      [runtime] start the selected Runtime's verified local Worker
   doctor      [runtime] read-only runtime health diagnostics
   backup      [runtime] create/restore/export/tombstone/recover/purge
 

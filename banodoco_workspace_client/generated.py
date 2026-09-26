@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 PROTOCOL = "workspace.v1"
-SCHEMA_DIGEST = "sha256:f47cff3ee8939b6caa23bd8a2cb32e4df82fb4c3cd6fa2d77aa02df69a7a0dee"
+SCHEMA_DIGEST = "sha256:0fbdd963346d4ec18fcd79f17d3933bcb65f4a5131d1efef94c2d8a0c8b12369"
 OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'getTask', 'cancelTask', 'retryTask', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
@@ -87,6 +87,7 @@ class ApiError(RuntimeError):
 class Handshake:
     protocol: str
     schema_digest: str
+    component_manifest_sha256: str
     session_id: str
     actor_id: str
     realm_id: str
@@ -589,7 +590,7 @@ class WorkspaceClient:
         payload = {"protocol": PROTOCOL, "client_name": client_name, "client_version": client_version, "requested_scopes": requested_scopes}
         _, _, body = self._request("POST", "/v1/handshake", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"})
         value = self._json(body)
-        result = Handshake(protocol=value["protocol"], schema_digest=value["schema_digest"], session_id=value["session_id"], actor_id=value["actor_id"], realm_id=value["realm_id"], scopes=tuple(value["scopes"]), capabilities=tuple(value.get("capabilities") or ()))
+        result = Handshake(protocol=value["protocol"], schema_digest=value["schema_digest"], component_manifest_sha256=value["component_manifest_sha256"], session_id=value["session_id"], actor_id=value["actor_id"], realm_id=value["realm_id"], scopes=tuple(value["scopes"]), capabilities=tuple(value.get("capabilities") or ()))
         self.handshake_info = result
         return result
 

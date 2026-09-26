@@ -21,6 +21,8 @@ from urllib.parse import urlsplit
 from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
 from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
 
+from astrid.sdk.local_compat import canonical_value
+
 from .pagination import page_pair, paged_rows
 
 __all__ = [
@@ -185,9 +187,9 @@ def resolve_runtime_connection(
     token already held by the host.
     """
     if endpoint is None:
-        endpoint = os.environ.get("BANODOCO_RUNTIME_ENDPOINT", "")
+        endpoint = canonical_value("ASTRID_RUNTIME_ENDPOINT")
     if credential is None:
-        raw_credential = os.environ.get("BANODOCO_RUNTIME_CREDENTIAL", "").strip()
+        raw_credential = canonical_value("ASTRID_RUNTIME_CREDENTIAL").strip()
         credential = (
             Path(raw_credential)
             if raw_credential and Path(raw_credential).expanduser().is_file()

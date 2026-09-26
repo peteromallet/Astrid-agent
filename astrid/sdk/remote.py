@@ -1260,7 +1260,35 @@ class RemoteTasks(_RemoteFamily):
 class RemoteRuns(_RemoteFamily):
     def list(self, project_id, *, cursor=None, limit=50):
         return self._typed("list_project_runs", project_id, cursor=cursor, limit=limit)
-    def show(self, run_id): return self._typed("get_run", run_id)
+    def show(self, run_id, *, evidence=False):
+        run = self._typed("get_run", run_id)
+        if not run.ok or not evidence:
+            return run
+        page = self._typed("list_run_events", run_id, cursor=None, limit=200)
+        if not page.ok:
+            return page
+        value = page.data
+        if isinstance(value, list) and len(value) == 2 and isinstance(value[0], list):
+            items, next_cursor = value
+        elif isinstance(value, Mapping) and isinstance(value.get("items"), list):
+            items, next_cursor = value["items"], value.get("next_cursor")
+        else:
+            return DomainResult.failure(ErrorObject(
+                "transport_error",
+                "Runtime returned an invalid run evidence page",
+                {"run_id": str(run_id)},
+            ))
+        if next_cursor is not None:
+            return DomainResult.failure(ErrorObject(
+                "transport_error",
+                "Run evidence exceeds the bounded 200-item read",
+                {"run_id": str(run_id), "next_cursor": str(next_cursor)},
+            ))
+        if not isinstance(run.data, Mapping):
+            return DomainResult.failure(ErrorObject(
+                "transport_error", "Runtime returned an invalid run read model", {"run_id": str(run_id)}
+            ))
+        return DomainResult.success({**dict(run.data), "evidence": list(items)})
     def cancel(self, run_id, *, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("cancel_run", run_id, key=key, idempotency_key=key)

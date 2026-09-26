@@ -149,6 +149,41 @@ def test_runtime_cli_timeout_maps_to_c2_timeout() -> None:
     assert report["failureBoundary"] == "diagnostic-observation"
 
 
+@pytest.mark.parametrize(
+    ("state", "problem_code"),
+    [
+        ("healthy", None),
+        ("stopped", "runtime_unavailable"),
+        ("stale", "observation_stale"),
+        ("mismatched", "runtime_identity_mismatch"),
+        ("failed", "runtime_unavailable"),
+    ],
+)
+def test_runtime_observer_states_are_preserved(state: str, problem_code: str | None) -> None:
+    runtime = _Observer(observe_data={"ok": state == "healthy", "state": state})
+    report, _, _ = collect_diagnostic(
+        runtime, support_root="/Users/private/support", command="doctor"
+    )
+
+    assert report["facts"]["runtime"]["value"] == state
+    assert report["problemCode"] == problem_code
+    assert validate_diagnostic(report) == []
+
+
+def test_absent_observer_evidence_remains_unknown() -> None:
+    class UnknownObserver:
+        def observe(self, command, *, support_root, timeout=5.0):
+            return RuntimeResult(("runtime", command), 1, {})
+
+    report, _, _ = collect_diagnostic(
+        UnknownObserver(), support_root="/Users/private/support", command="doctor"
+    )
+    runtime_fact = report["facts"]["runtime"]
+    assert runtime_fact["observed"] is False
+    assert runtime_fact["value"] is None
+    assert runtime_fact["unavailableReason"] == "unknown"
+
+
 def test_total_deadline_stops_after_first_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     from astrid.core.gateway import diagnostics
 
@@ -205,3 +240,18 @@ def test_public_doctor_permission_diagnostic_is_observer_only(monkeypatch: pytes
     assert diagnostic["problemCode"] == "permission_limited"
     assert diagnostic["failureBoundary"] == "runtime-permission"
     assert observer.observe_calls == 1
+
+
+def test_public_worker_start_delegates_to_selected_runtime(monkeypatch, tmp_path, capsys) -> None:
+    calls: list[object] = []
+
+    class Runtime:
+        def start_worker(self, *, support_root):
+            calls.append(support_root)
+            return RuntimeResult(("runtime", "start-worker"), 0, {"state": "active"})
+
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", Runtime)
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path)
+    assert main(["worker", "start", "--json"]) == 0
+    assert calls == [tmp_path]
+    assert json.loads(capsys.readouterr().out)["state"] == "active"

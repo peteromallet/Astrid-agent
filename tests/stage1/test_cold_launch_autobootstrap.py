@@ -12,7 +12,10 @@ from astrid.sdk.client import AstridClient
 from astrid.sdk.exceptions import ServiceUnavailableError
 from astrid.sdk.host_bootstrap import _provision_render_runtime_env
 from astrid.sdk.workspace_client import WorkspaceClientError
-from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+from banodoco_workspace_client.contract_metadata import (
+    COMPONENT_MANIFEST_SHA256,
+    SCHEMA_DIGEST,
+)
 
 
 def test_launcher_wait_outlasts_runtime_admission(monkeypatch):
@@ -20,6 +23,15 @@ def test_launcher_wait_outlasts_runtime_admission(monkeypatch):
     assert autobootstrap._launcher_timeout() == 135.0
     monkeypatch.setenv("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS", "300")
     assert autobootstrap._launcher_timeout() == 315.0
+
+
+def test_missing_runtime_action_tracks_closeout_branch() -> None:
+    assert autobootstrap.INSTALL_RUNTIME_ACTION.endswith(
+        "banodoco-workspace-runtime.git@astrid-plan-a-final-state-closeout-20260925'"
+    )
+    assert "bc74a4b2179de83ace55c35fa6371f10e1e58610" not in (
+        autobootstrap.INSTALL_RUNTIME_ACTION
+    )
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-1", "0", "invalid"])
@@ -306,7 +318,7 @@ def test_installed_runtime_module_is_used_when_console_script_is_off_path(
     assert seen["command"] == [
         sys.executable,
         "-m",
-        "banodoco_local",
+        "banodoco_local.entrypoint",
         "up",
         "--profile",
         "astrid",
@@ -527,6 +539,8 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
                 "protocol": "workspace.v1",
                 "schema_digest": SCHEMA_DIGEST,
                 "runtime_epoch": 1,
+                "runtime_instance_id": "runtime-instance",
+                "runtime_session_id": "runtime-session",
             }
 
         def handshake(self, *args):
@@ -534,6 +548,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
             return {
                 "protocol": "workspace.v1",
                 "schema_digest": SCHEMA_DIGEST,
+                "component_manifest_sha256": COMPONENT_MANIFEST_SHA256,
                 "session_id": "session",
                 "realm_id": "realm",
                 "actor_id": "actor",
@@ -541,6 +556,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
                     "projects:read", "projects:write", "objects:read",
                     "objects:write", "tasks:read", "tasks:write",
                 ],
+                "capabilities": ["execution_binding.targeted.v1"],
             }
 
     monkeypatch.setattr("astrid.sdk.workspace_client.resolve_runtime_connection", resolve)

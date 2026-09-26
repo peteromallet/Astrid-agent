@@ -16,6 +16,7 @@ from astrid.sdk.workspace_client import (
     WorkspaceClientError,
     resolve_runtime_connection,
 )
+from banodoco_workspace_client.contract_metadata import COMPONENT_MANIFEST_SHA256
 
 
 TARGETED_EXECUTION_BINDING_CAPABILITY = "execution_binding.targeted.v1"
@@ -56,6 +57,7 @@ def _handshake(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "protocol": PROTOCOL,
         "schema_digest": SCHEMA_DIGEST,
+        "component_manifest_sha256": COMPONENT_MANIFEST_SHA256,
         "session_id": "session-1",
         "actor_id": "actor-1",
         "realm_id": "realm-1",
@@ -116,6 +118,8 @@ def test_open_rejects_tampered_health(monkeypatch: pytest.MonkeyPatch, response:
     [
         _handshake(protocol="workspace.v999"),
         _handshake(schema_digest="sha256:" + "0" * 64),
+        _handshake(component_manifest_sha256="sha256:" + "0" * 64),
+        _handshake_without("component_manifest_sha256"),
         _handshake(session_id=""),
         _handshake(actor_id="attacker"),
         _handshake(realm_id="wrong-realm"),

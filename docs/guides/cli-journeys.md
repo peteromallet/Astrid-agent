@@ -15,12 +15,21 @@ Normative references: `docs/astrid-first-sprint-plan-20260813.md` (Sprints 5–6
 
 Configure the installed local workspace runtime before issuing product
 commands. The first product command starts or reconnects it through the
-explicit launcher boundary:
+canonical launcher boundary. Use the exact support root for every lifecycle
+command:
 
 ```bash
-export BANODOCO_LOCAL_SOURCE_MANIFEST=/path/to/astrid-source-profile.json
-python3 -m astrid projects list --json
+export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
+astrid-local up --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+python -m astrid projects list --json
 ```
+
+The installed route does not import from a checkout or set `PYTHONPATH`.
+`ASTRID_LOCAL_SOURCE_MANIFEST` is reserved for an explicitly labelled editable
+development profile. `BANODOCO_LOCAL_SOURCE_MANIFEST` and
+`BANODOCO_LOCAL_DATA_ROOT` remain readable migration aliases and emit warnings;
+conflicting canonical/legacy values fail closed. `banodoco-local` and
+`astrid-runtime` are deprecated launcher aliases for `astrid-local`.
 
 The SDK's explicit `AstridClient.open(...)` accepts a loopback endpoint and
 credential directly; it does not discover or infer either value. Run commands
@@ -589,7 +598,8 @@ python3 -m astrid doctor --json
 ```
 
 If it reports `state: "unavailable"`, start the runtime with
-`banodoco-local up --profile astrid` and retry. Do not create a local database,
+`astrid-local up --data-root "$ASTRID_LOCAL_DATA_ROOT" --json`
+and retry. Do not create a local database,
 tail local event files, or edit runtime state by hand. An unexpected command
 failure is returned as a typed error; preserve the idempotency key and retry
 only when the error's recovery guidance permits it.

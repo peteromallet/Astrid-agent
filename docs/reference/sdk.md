@@ -8,10 +8,14 @@ astrid`.
 Stage1 runtime boundary: ordinary SDK clients require an explicit endpoint,
 credential, realm id, actor id, client identity, and `workspace.v1` protocol
 version. They never infer a checkout, mutate `sys.path`, or launch a process.
-The explicit Astrid CLI launcher may invoke the installed
-`banodoco-local up --profile astrid` command and then construct a client from
-the returned runtime identity. Set `BANODOCO_LOCAL_SOURCE_MANIFEST` and, for
-the launcher client, `BANODOCO_RUNTIME_CREDENTIAL` explicitly.
+The explicit Astrid CLI launcher invokes the installed
+`astrid-local up --profile astrid` command and then constructs a client from the
+returned runtime identity. The installed path does not require a source
+manifest, sibling checkout, or `PYTHONPATH`. For editable repository
+development, use `ASTRID_LOCAL_SOURCE_MANIFEST`; for an explicit launcher
+override use `ASTRID_LOCAL_CLI`; for credential compatibility use
+`ASTRID_RUNTIME_CREDENTIAL`. The corresponding `BANODOCO_*` and
+`ASTRID_RUNTIME_CLI` spellings are deprecated aliases that warn when used.
 The runtime is the sole authority for projects, media, timelines, tasks, runs,
 receipts, and events. `AstridClient` is a runtime client: it does not open a
 checkout-local database or content store and does not execute a pack
@@ -37,7 +41,7 @@ to list/show to fetch and verify the exact immutable UTF-8 text alongside its
 binding head. The CLI exposes this as `timelines shots text list/show/set`.
 Voiceover scripts and transcripts are unslotted; only prompts accept a slot.
 
-The published Astrid wheel includes the generated
+The published Astrid package includes the generated
 `banodoco_workspace_client` transport package. It is a pinned vendor copy of
 the neutral runtime contract (source commit is recorded in
 `banodoco_workspace_client.contract_metadata`); it is never loaded from a

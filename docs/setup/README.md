@@ -2,60 +2,71 @@
 
 Install once. Then tell your agent what you want to make.
 
-The current local launcher targets **macOS**. Linux and Windows setup have not yet been validated; this guide does not claim support for them.
+The final-state local launcher is qualified on **macOS** with Python 3.11.16 for
+Astrid/Runtime, Python 3.10.21 for the Worker profile, and Node 20.19.4/npm
+10.8.2 for app checks. Linux and Windows setup have not yet been validated; this
+guide does not claim support for them.
 
 ## 1. Install
 
-You need Git and Python 3.11 or newer. Check them in Terminal:
+You need Python 3.11.16 for the Astrid/Runtime install. Git is only needed when
+installing directly from the pinned public revisions. Check them in Terminal:
 
 ```bash
 git --version
-python3 --version
+python3.11 --version
 ```
 
-Use a new folder for this installation. If you already have Astrid, keep that installation and begin with [checking it](#3-check-your-workspace).
+Use a new folder for this installation. If you already have Astrid, keep that
+installation and begin with [checking it](#3-check-your-workspace). The commands
+below install pinned distributions; they do not make an Astrid or Runtime
+checkout part of the live import path.
 
 ```bash
 mkdir astrid-local
 cd astrid-local
-git clone https://github.com/peteromallet/Astrid.git
-git clone https://github.com/banodoco/banodoco-workspace-runtime.git Runtime
-git -C Runtime checkout bc74a4b2179de83ace55c35fa6371f10e1e58610
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e ./Astrid -e ./Runtime
+python -m pip install 'Astrid @ git+https://github.com/peteromallet/Astrid.git@astrid-plan-a-final-state-closeout-20260925'
+python -m pip install 'banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@astrid-plan-a-final-state-closeout-20260925'
+export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
+astrid-local --provenance
 ```
 
-These commands use the Runtime revision pinned in this version’s [Getting Started reference](../getting-started.md). Use a matched release pair when one is supplied; do not mix an existing installation with unrelated development revisions.
+These commands use the named closeout branch for each pinned public repository;
+the final implementation commit SHAs are recorded in the release provenance
+once the branches are published. Do not mix an existing installation with
+unrelated development revisions. The installed profile must not depend on a
+source checkout or `PYTHONPATH`.
 
-## 2. Connect Runtime once
+## 2. Start Runtime once
 
-From the same `astrid-local` folder, create the source manifest. This records where the two checkouts and their Python environment live; it contains no secrets.
+From the same `astrid-local` folder, start or reconnect the selected Runtime.
+The installed profile derives its bounded provenance from the installed module;
+no source manifest is required:
 
 ```bash
-python3 - <<'PYTHON'
-import json
-from pathlib import Path
-root = Path.cwd().resolve()
-manifest = root / "astrid-source-profile.json"
-with manifest.open("x") as output:
-    json.dump({
-        "profile": "astrid",
-        "source_checkout": str(root / "Astrid"),
-        "runtime_checkout": str(root / "Runtime"),
-        "runtime_environment": str(root / ".venv")
-    }, output, indent=2)
-PYTHON
-banodoco-local up --profile astrid --source-manifest "$PWD/astrid-source-profile.json"
+astrid-local up --profile astrid --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
 ```
 
-This is a one-time configuration for this installation. The launcher starts or reconnects to Runtime, creates the local connection credentials, and retains the source profile for later use. Keep the checkouts and environment in place; repeat configuration only if those paths or the installation change.
+This is a one-time configuration for this installation. Runtime creates or
+reconnects the local realm and credentials under the support root. `astrid-local`
+is the canonical launcher; `banodoco-local` and `astrid-runtime` remain
+deprecated aliases and print a warning. If both a canonical and a legacy
+environment variable are set to different values, setup fails closed. A
+legacy-only value is accepted with a warning; use `ASTRID_LOCAL_*` names in new
+configuration.
+
+For editable repository development, create an explicit source profile and set
+`ASTRID_LOCAL_SOURCE_MANIFEST`. Keep that workflow separate from this installed
+closeout path; it requires absolute, symlink-free checkout paths and may use
+`PYTHONPATH` only inside the development environment.
 
 ## 3. Check your workspace
 
 ```bash
-python3 -m astrid doctor --json
-python3 -m astrid projects list --json
+python -m astrid doctor --json
+python -m astrid projects list --json
 ```
 
 Both commands should succeed. A new workspace may have no projects yet. If either fails, follow [Troubleshooting](troubleshooting.md).
@@ -66,8 +77,8 @@ From the Astrid checkout, using the same environment:
 
 ```bash
 cd Astrid
-python3 -m astrid.setup
-python3 -m astrid.setup --check --offline
+python -m astrid.setup
+python -m astrid.setup --check --offline
 ```
 
 Setup provisions the default Hivemind source. Searching its community knowledge requires an internet connection.
@@ -75,9 +86,9 @@ Setup provisions the default Hivemind source. Searching its community knowledge 
 ## 5. Sync your agent’s skills
 
 ```bash
-python3 -m astrid.skills.cli sync
-python3 -m astrid.skills.cli sync --check
-python3 -m astrid.skills.cli doctor --json
+python -m astrid.skills.cli sync
+python -m astrid.skills.cli sync --check
+python -m astrid.skills.cli doctor --json
 ```
 
 Sync installs the core skill and its pack navigation into detected supported agents: Claude Code, Codex, and Hermes. Individual pack links are optional (`sync --deep`). Keep existing user instructions; do not use `--force` to replace conflicting files.
@@ -86,8 +97,8 @@ Check the install report for the agent you use. If it was not detected, use the 
 
 ## 6. Check the complete setup
 
-- `python3 -m astrid --help` opens the command help.
-- `python3 -m astrid doctor --json` and `projects list --json` succeed.
+- `python -m astrid --help` opens the command help.
+- `python -m astrid doctor --json` and `projects list --json` succeed.
 - Skill sync reports no drift, and the skills doctor succeeds.
 - Your agent can find the core skill and a linked pack skill.
 
@@ -111,12 +122,13 @@ Include the actual tested launch command and agent name. If that path is unavail
 
 ## Come back later
 
-You do not need to recreate the manifest or credentials. From your `astrid-local` folder:
+You do not need to recreate credentials. From your `astrid-local` folder:
 
 ```bash
 source .venv/bin/activate
-banodoco-local up --profile astrid
-python3 -m astrid projects list
+export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
+astrid-local status --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+python -m astrid projects list
 ```
 
 [Credentials](credentials.md) · [Troubleshooting](troubleshooting.md) · [Back to Astrid](../../README.md)

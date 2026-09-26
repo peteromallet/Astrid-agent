@@ -70,7 +70,12 @@ def _fact(*, observed: bool = False, value: Any = None, reason: str | None = "no
 
 def _failure_from(exc: BaseException | None, data: Mapping[str, Any] | None = None) -> tuple[str, str]:
     payload = data or {}
-    code = str(getattr(exc, "code", "") or payload.get("problem_code") or "")
+    code = str(
+        getattr(exc, "code", "")
+        or payload.get("problem_code")
+        or payload.get("state")
+        or ""
+    )
     if code == "permission_limited":
         return code, "runtime-permission"
     if code == "workspace_identity_mismatch":
@@ -86,6 +91,49 @@ def _failure_from(exc: BaseException | None, data: Mapping[str, Any] | None = No
     if code in PROBLEM_CODES:
         return code, "runtime-contact"
     return "runtime_unavailable", "runtime-contact"
+
+
+def _public_runtime_state(data: Mapping[str, Any] | None, *, ok: bool) -> str | None:
+    """Project Runtime observer facts without guessing from absent evidence."""
+    if not isinstance(data, Mapping) or not data:
+        return None
+    support = data.get("support")
+    support = support if isinstance(support, Mapping) else data
+    explicit = support.get("state") or data.get("state")
+    if explicit in {"healthy", "stopped", "stale", "mismatched", "failed"}:
+        return str(explicit)
+    issues = {
+        str(issue)
+        for issue in support.get("issues", [])
+        if isinstance(issue, str)
+    }
+    if data.get("stale_discovery") or "stale_discovery" in issues:
+        return "stale"
+    if "discovery_identity" in issues or data.get("problem_code") in {
+        "workspace_identity_mismatch", "runtime_identity_mismatch",
+    }:
+        return "mismatched"
+    if "runtime_unhealthy" in issues or data.get("health_error"):
+        return "failed"
+    discovery = data.get("discovery")
+    if "catalog_missing" in issues or "realm_root_missing" in issues:
+        return "stopped"
+    if discovery is None and support.get("discovery_present") is False:
+        return "stopped"
+    health = data.get("health")
+    if isinstance(health, Mapping) and health.get("status") == "degraded":
+        return "failed"
+    return "healthy" if ok else "failed"
+
+
+def _state_problem(state: str | None) -> tuple[str, str] | None:
+    if state == "stale":
+        return "observation_stale", "runtime-contact"
+    if state == "mismatched":
+        return "runtime_identity_mismatch", "runtime-process-identity"
+    if state in {"stopped", "failed"}:
+        return "runtime_unavailable", "runtime-contact"
+    return None
 
 
 def validate_diagnostic(report: Mapping[str, Any]) -> list[str]:
@@ -241,19 +289,40 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
         if command == "status":
             workspace_result = _call_with_remaining(runtime.inspect, support_root=support_root, timeout=remaining_seconds())
             if getattr(workspace_result, "ok", False):
-                facts["workspace"] = _fact(observed=True, value="selected", observed_at=observed_at)
+                facts["workspace"] = _fact(observed=True, value="healthy", observed_at=observed_at)
             else:
                 problem_code, failure_boundary = _failure_from(None, getattr(workspace_result, "data", {}))
-                facts["workspace"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
+                workspace_state = (
+                    "mismatched"
+                    if problem_code == "workspace_identity_mismatch"
+                    else "stopped" if problem_code == "workspace_missing" else "failed"
+                )
+                facts["workspace"] = _fact(observed=True, value=workspace_state, observed_at=observed_at)
         runtime_result = _call_with_remaining(runtime.observe, command, support_root=support_root, timeout=remaining_seconds())
-        if getattr(runtime_result, "ok", False):
-            facts["runtime"] = _fact(observed=True, value="ready", observed_at=observed_at)
-            facts["contact"] = _fact(observed=True, value="fresh", observed_at=observed_at)
+        runtime_state = _public_runtime_state(
+            getattr(runtime_result, "data", None),
+            ok=bool(getattr(runtime_result, "ok", False)),
+        )
+        if runtime_state == "healthy":
+            facts["runtime"] = _fact(observed=True, value="healthy", observed_at=observed_at)
+            facts["contact"] = _fact(observed=True, value="healthy", observed_at=observed_at)
         else:
             if problem_code is None:
-                problem_code, failure_boundary = _failure_from(None, getattr(runtime_result, "data", {}))
-            facts["runtime"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
-            facts["contact"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
+                runtime_data = getattr(runtime_result, "data", {})
+                if isinstance(runtime_data, Mapping) and runtime_data.get("problem_code"):
+                    problem_code, failure_boundary = _failure_from(None, runtime_data)
+                else:
+                    projected = _state_problem(runtime_state)
+                    if projected is not None:
+                        problem_code, failure_boundary = projected
+                    else:
+                        problem_code, failure_boundary = _failure_from(None, runtime_data)
+            if runtime_state is None:
+                facts["runtime"] = _fact(reason="unknown")
+                facts["contact"] = _fact(reason="unknown")
+            else:
+                facts["runtime"] = _fact(observed=True, value=runtime_state, observed_at=observed_at)
+                facts["contact"] = _fact(observed=True, value=runtime_state, observed_at=observed_at)
     except BaseException as exc:  # boundary adapter must turn failures into bounded evidence
         problem_code, failure_boundary = _failure_from(exc, getattr(exc, "result", None))
         if isinstance(exc, TimeoutError) or problem_code == "observation_timeout":

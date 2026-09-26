@@ -118,8 +118,29 @@ def test_toolkit_families_and_help_delegate_to_gateway(monkeypatch) -> None:
     monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda argv: calls.append(argv) or 7)
 
     assert omp_agent.main(["projects", "list", "--json"]) == 7
+    assert omp_agent.main(["setup", "--check"]) == 7
+    assert omp_agent.main(["status", "--json"]) == 7
+    assert omp_agent.main(["worker", "start", "--json"]) == 7
     assert omp_agent.main(["help"]) == 7
-    assert calls == [["projects", "list", "--json"], ["help"]]
+    assert calls == [
+        ["projects", "list", "--json"],
+        ["setup", "--check"],
+        ["status", "--json"],
+        ["worker", "start", "--json"],
+        ["help"],
+    ]
+
+
+def test_auth_status_requires_explicit_auth_namespace(monkeypatch) -> None:
+    gateway_calls: list[list[str]] = []
+    auth_calls: list[list[str]] = []
+    monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda argv: gateway_calls.append(argv) or 0)
+    monkeypatch.setattr(omp_agent, "run_auth", lambda argv: auth_calls.append(argv) or 0)
+
+    assert omp_agent.main(["status"]) == 0
+    assert omp_agent.main(["auth", "status"]) == 0
+    assert gateway_calls == [["status"]]
+    assert auth_calls == [["status"]]
 
 
 def test_top_level_help_describes_unified_agent_and_toolkit_surface(capsys) -> None:
@@ -129,5 +150,5 @@ def test_top_level_help_describes_unified_agent_and_toolkit_surface(capsys) -> N
     assert "astrid agent" in output
     for family in ("projects", "timelines", "media", "tasks", "runs", "doctor", "backup"):
         assert family in output
-    for command in ("astrid login", "astrid status", "astrid logout", "astrid revoke"):
+    for command in ("astrid auth login", "astrid auth status", "astrid auth logout", "astrid auth revoke"):
         assert command in output
