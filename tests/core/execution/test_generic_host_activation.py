@@ -26,6 +26,30 @@ def _grant(*, channel: str = "channel-1", birth: str = "birth-1") -> dict[str, o
     }
 
 
+def _runtime_birth_identity(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = raw.rsplit(")", 1)[-1].split()
+        if len(fields) >= 20:
+            return f"proc-start-ticks:{fields[19]}"
+    except (OSError, ValueError):
+        pass
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=1,
+    )
+    return f"ps-lstart:{result.stdout.strip()}" if result.returncode == 0 else ""
+
+
+def test_process_birth_identity_matches_runtime_worker_contract() -> None:
+    expected = _runtime_birth_identity(os.getpid())
+    assert expected
+    assert generic_host.process_birth_identity() == expected
+
+
 def test_parked_host_accepts_one_same_process_grant_before_continuing(monkeypatch) -> None:
     monkeypatch.setattr(generic_host, "process_birth_identity", lambda pid=None: "birth-1")
     worker, host = socket.socketpair()

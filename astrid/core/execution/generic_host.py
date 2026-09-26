@@ -1698,9 +1698,21 @@ def source_checkout_digest(checkout: str | Path) -> str:
 
 
 def process_birth_identity(pid: int | None = None) -> str:
-    """Return the OS birth token used to distinguish a reused PID."""
-    info = _process_snapshot().get(int(pid if pid is not None else os.getpid()))
-    return str(info.birth) if info is not None else ""
+    """Return the Runtime/Worker canonical birth token for one process."""
+
+    value = int(pid if pid is not None else os.getpid())
+    if value <= 0:
+        return ""
+    try:
+        raw = Path(f"/proc/{value}/stat").read_text(encoding="utf-8")
+        # Linux's comm field may contain ')'; split at its final delimiter.
+        fields = raw.rsplit(")", 1)[-1].split()
+        if len(fields) >= 20:
+            return f"proc-start-ticks:{fields[19]}"
+    except (OSError, ValueError):
+        pass
+    info = _process_snapshot().get(value)
+    return f"ps-lstart:{info.birth}" if info is not None and info.birth else ""
 
 
 def _admitted_source_roots(root: Path, definition: Any) -> tuple[Path, ...]:
