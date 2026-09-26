@@ -51,7 +51,7 @@ def RuntimeDaemon(root, *args, **kwargs):
     return _RuntimeDaemon(root, *args, **kwargs)
 
 
-FIXTURE_PACK = Path(__file__).parents[1] / "fixtures" / "c12_cpu_pack"
+FIXTURE_PACK = Path(__file__).parents[1] / "fixtures" / "c12_cpu"
 # These are the post-T7 composition pins.  Keeping them explicit makes the
 # CPU journey fail closed when a dependency checkout drifts from the reviewed
 # composition instead of silently testing another tree.
