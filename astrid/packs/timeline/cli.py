@@ -16,27 +16,16 @@ product parser (``astrid/packs/shots/cli.py``) so project-level reusable shot
 ``list/create/show/add/remove/reorder`` commands are executable only beneath timelines
 (plan step 26, task T29). There is **no top-level shots family**.
 
-Verbs (the product routes plus the nested ``shots`` mount; read/write routes
-are thin SDK adapters, while ``retime-clip`` is an intentionally bounded
-read/CAS-save convenience operation):
+Verbs (the product routes plus the nested ``shots`` mount; reads resolve the
+Runtime-owned canonical current head, while the only supported timeline
+mutation is a parent-composition candidate publish):
 
-- ``create`` — ``client.timelines.create`` (project id/slug, slug, name,
-  optional ``--config``/``--registry`` JSON, ``--default``, and
-  ``--idempotency-key``; a fresh key is generated and returned when absent);
 - ``list`` — ``client.timelines.list`` (active timelines only), rendered as
   compact identity/count summaries; use ``show`` for the canonical current
   head inspection;
 - ``show`` — the Runtime-owned bounded current-head inspection by UUID, ULID,
   or slug; ``--summary`` is retained as a presentation spelling and never
   exposes the legacy document;
-- ``retime-clip`` — one scoped read/CAS-save operation for changing a clip's
-  start; the safe non-rippling default preserves the existing end, while
-  ``--preserve-duration`` explicitly slides the clip without changing length;
-- ``save`` — whole-document CAS ``client.timelines.save`` with
-  ``--config``/``--registry`` and ``--expected-version``;
-- ``replace-clip`` — atomically replace one explicit managed-media clip through
-  ``client.timelines.replace_clip`` with ``--expected-version`` and
-  ``preserve-duration`` timing;
 - ``replace-parent-media`` — replace one selected clip in the canonical
   parent-composition closure through ``client.timelines.replace_parent_media``;
 - ``archive`` — reversible event-backed ``client.timelines.archive``;
@@ -117,25 +106,6 @@ def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
 
 
 # -- handlers (one SDK call each, no domain rules) -------------------------
-
-
-def _cmd_create(parsed: argparse.Namespace) -> int:
-    # An asset-free timeline still has a canonical empty registry.  The
-    # generated runtime client accepts mappings only and calls ``dict(...)``
-    # at the transport boundary, so forwarding argparse's optional ``None``
-    # would turn the documented minimal create command into a TypeError.
-    # Preserve explicit empty or populated JSON objects exactly as supplied.
-    config = parsed.config if parsed.config is not None else {}
-    registry = parsed.registry if parsed.registry is not None else {"assets": {}}
-    result = parsed.client.timelines.create(
-        project=parsed.project,
-        slug=parsed.slug,
-        name=parsed.name,
-        config=config,
-        registry=registry,
-        idempotency_key=parsed.idempotency_key,
-    )
-    return print_result(result, as_json=parsed.json)
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
@@ -244,159 +214,6 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
             range_value=values.get("range"),
             detail=normalized["detail"],
         )
-    return print_result(result, as_json=parsed.json)
-
-
-def _numeric(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _clip_duration(clip: Mapping[str, Any]) -> float | None:
-    hold = clip.get("hold")
-    if _numeric(hold):
-        return float(hold)
-    source_start = clip.get("from", 0)
-    source_end = clip.get("to")
-    speed = clip.get("speed", 1)
-    if _numeric(source_start) and _numeric(source_end) and _numeric(speed) and float(speed) > 0:
-        return max(0.0, (float(source_end) - float(source_start)) / float(speed))
-    return None
-
-
-def _timing_snapshot(clip: Mapping[str, Any]) -> dict[str, float | None]:
-    at = float(clip.get("at", 0)) if _numeric(clip.get("at", 0)) else 0.0
-    duration = _clip_duration(clip)
-    return {
-        "at": at,
-        "duration": duration,
-        "end": at + duration if duration is not None else None,
-    }
-
-
-def _cmd_retime_clip(parsed: argparse.Namespace) -> int:
-    """Retiming convenience route: one bounded read followed by one CAS save.
-
-    The default is deliberately non-rippling: preserve the existing end. A
-    caller that means "slide this clip" must opt into ``preserve-duration``.
-    """
-    from copy import deepcopy
-
-    shown = parsed.client.timelines.show(parsed.project, parsed.ref)
-    if not shown.ok or not isinstance(shown.data, Mapping):
-        return print_result(shown, as_json=parsed.json)
-    data = shown.data
-    config = data.get("config")
-    registry = data.get("registry")
-    version = data.get("config_version", data.get("version"))
-    if not isinstance(config, Mapping) or not isinstance(registry, Mapping) or not _numeric(version):
-        from astrid.sdk.contracts import DomainResult, ErrorObject
-        return print_result(
-            DomainResult.failure(ErrorObject("invalid_timeline", "timeline is missing config, registry, or config_version")),
-            as_json=parsed.json,
-        )
-    if parsed.expected_version is not None and int(version) != parsed.expected_version:
-        from astrid.sdk.contracts import DomainResult, ErrorObject
-        return print_result(
-            DomainResult.failure(ErrorObject(
-                "stale_version",
-                f"timeline is at version {int(version)}; expected {parsed.expected_version}",
-                details={"expected_version": parsed.expected_version, "current_version": int(version)},
-            )),
-            as_json=parsed.json,
-        )
-    next_config = deepcopy(dict(config))
-    clips = next_config.get("clips")
-    if not isinstance(clips, list):
-        from astrid.sdk.contracts import DomainResult, ErrorObject
-        return print_result(
-            DomainResult.failure(ErrorObject("invalid_timeline", "timeline config has no clips list")),
-            as_json=parsed.json,
-        )
-    clip = next((item for item in clips if isinstance(item, Mapping) and item.get("id") == parsed.clip_id), None)
-    if clip is None:
-        from astrid.sdk.contracts import DomainResult, ErrorObject
-        return print_result(
-            DomainResult.failure(ErrorObject("not_found", f"clip not found: {parsed.clip_id}")),
-            as_json=parsed.json,
-        )
-    old_timing = _timing_snapshot(clip)
-    timing_policy = parsed.timing_policy
-    if parsed.hold is not None:
-        timing_policy = "preserve-duration"
-        if parsed.hold <= 0:
-            from astrid.sdk.contracts import DomainResult, ErrorObject
-            return print_result(
-                DomainResult.failure(ErrorObject("invalid_timing", "hold must be greater than zero")),
-                as_json=parsed.json,
-            )
-    old_end = old_timing["end"]
-    clip["at"] = parsed.at
-    if timing_policy == "preserve-end":
-        if old_end is None or old_end <= parsed.at:
-            from astrid.sdk.contracts import DomainResult, ErrorObject
-            return print_result(
-                DomainResult.failure(ErrorObject("invalid_timing", "preserve-end requires the new start to be before the existing end")),
-                as_json=parsed.json,
-            )
-        clip["hold"] = old_end - parsed.at
-        clip.pop("from", None)
-        clip.pop("to", None)
-    elif parsed.hold is not None:
-        clip["hold"] = parsed.hold
-    saved = parsed.client.timelines.save(
-        parsed.project,
-        parsed.ref,
-        config=next_config,
-        registry=registry,
-        expected_version=int(version),
-        idempotency_key=parsed.idempotency_key,
-    )
-    if saved.ok:
-        from astrid.sdk.contracts import DomainResult
-        after_timing = _timing_snapshot(clip)
-        saved_version = saved.data.get("config_version") if isinstance(saved.data, Mapping) else None
-        if saved_version is None and isinstance(saved.data, Mapping):
-            saved_version = saved.data.get("version")
-        return print_result(
-            DomainResult.success(
-                {
-                    "operation": "retime-clip",
-                    "clip_id": parsed.clip_id,
-                    "timing_policy": timing_policy,
-                    "before": old_timing,
-                    "after": after_timing,
-                    "config_version": saved_version,
-                },
-                receipt=saved.receipt,
-                idempotency_key=saved.idempotency_key,
-            ),
-            as_json=parsed.json,
-        )
-    return print_result(saved, as_json=parsed.json)
-
-
-def _cmd_save(parsed: argparse.Namespace) -> int:
-    result = parsed.client.timelines.save(
-        parsed.project,
-        parsed.ref,
-        config=parsed.config,
-        registry=parsed.registry,
-        expected_version=parsed.expected_version,
-        idempotency_key=parsed.idempotency_key,
-    )
-    return print_result(result, as_json=parsed.json)
-
-
-def _cmd_replace_clip(parsed: argparse.Namespace) -> int:
-    result = parsed.client.timelines.replace_clip(
-        parsed.project,
-        parsed.ref,
-        clip_id=parsed.clip_id,
-        source_object_id=parsed.source_object_id,
-        expected_version=parsed.expected_version,
-        timing=parsed.timing,
-        idempotency_key=parsed.idempotency_key,
-    )
     return print_result(result, as_json=parsed.json)
 
 
@@ -1037,32 +854,6 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
 # -- parser ----------------------------------------------------------------
 
 
-def _configure_create(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("slug", help="Timeline slug (immutable).")
-    subparser.add_argument("--name", required=True, help="Display name.")
-    subparser.add_argument(
-        "--config",
-        type=_parse_json_object,
-        default=None,
-        help="Document config as a JSON object.",
-    )
-    subparser.add_argument(
-        "--registry",
-        type=_parse_json_object,
-        default=None,
-        help="Document registry as a JSON object.",
-    )
-    subparser.add_argument(
-        "--default",
-        action="store_true",
-        help="Set this timeline as the project default.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_create)
-
-
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument(
@@ -1098,95 +889,6 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_show)
-
-
-def _configure_retime_clip(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    subparser.add_argument("--clip-id", required=True, help="Authored clip id to retime.")
-    subparser.add_argument("--at", type=float, required=True, help="New timeline start in seconds.")
-    timing = subparser.add_mutually_exclusive_group()
-    timing.add_argument(
-        "--preserve-end",
-        dest="timing_policy",
-        action="store_const",
-        const="preserve-end",
-        help="Trim/extend the clip so its existing end stays fixed (the default).",
-    )
-    timing.add_argument(
-        "--preserve-duration",
-        dest="timing_policy",
-        action="store_const",
-        const="preserve-duration",
-        help="Slide the clip without changing its duration; downstream clips may move/overlap.",
-    )
-    timing.add_argument(
-        "--hold",
-        type=float,
-        default=None,
-        help="Set an explicit new timeline duration in seconds (implies preserve-duration).",
-    )
-    subparser.set_defaults(timing_policy="preserve-end")
-    subparser.add_argument(
-        "--expected-version",
-        dest="expected_version",
-        type=int,
-        default=None,
-        help="Optional exact version from the editor context; stale context fails before saving.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_retime_clip)
-
-
-def _configure_save(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    subparser.add_argument(
-        "--config",
-        type=_parse_json_object,
-        required=True,
-        help="Whole-document config as a JSON object.",
-    )
-    subparser.add_argument(
-        "--registry",
-        type=_parse_json_object,
-        required=True,
-        help="Whole-document registry as a JSON object.",
-    )
-    subparser.add_argument(
-        "--expected-version",
-        dest="expected_version",
-        type=int,
-        required=True,
-        help="Expected document version for the CAS save.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_save)
-
-
-def _configure_replace_clip(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    subparser.add_argument("--clip-id", required=True, help="Authored clip id to replace.")
-    subparser.add_argument("--source-object-id", required=True, help="Project-owned managed object id (sha256:<64 hex chars>).")
-    subparser.add_argument(
-        "--expected-version",
-        dest="expected_version",
-        type=int,
-        required=True,
-        help="Expected canonical timeline document version for the atomic replacement.",
-    )
-    subparser.add_argument(
-        "--timing",
-        choices=("preserve-duration",),
-        default="preserve-duration",
-        help="Timing policy (the only supported policy is preserve-duration).",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_replace_clip)
 
 
 def _configure_replace_parent_media(subparser: argparse.ArgumentParser) -> None:
@@ -1416,11 +1118,6 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
-        "create",
-        help="Create a timeline (one SDK call, idempotency key returned).",
-        configure=_configure_create,
-    ),
-    CommandSpec(
         "list",
         help="List active timelines in a project (slug ascending).",
         configure=_configure_list,
@@ -1429,21 +1126,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "show",
         help="Show one timeline by UUID, ULID, or slug (use --summary for editor context).",
         configure=_configure_show,
-    ),
-    CommandSpec(
-        "retime-clip",
-        help="Retime one clip; preserve-end is the safe default, preserve-duration explicitly slides it.",
-        configure=_configure_retime_clip,
-    ),
-    CommandSpec(
-        "save",
-        help="Whole-document CAS save (one SDK call, stale_version mapped).",
-        configure=_configure_save,
-    ),
-    CommandSpec(
-        "replace-clip",
-        help="Atomically replace one managed-media clip while preserving duration.",
-        configure=_configure_replace_clip,
     ),
     CommandSpec(
         "replace-parent-media",
@@ -1493,7 +1175,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``timelines`` product-family parser stamped with *client*.
 
-    Exactly the ten verbs above are registered — no aliases, no legacy
+    Exactly the supported verbs above are registered — no aliases, no legacy
     migration/push/pull/sync/audit/erase/repair verbs, and no ``copy``
     (reserved for m6) — plus the manifest-declared nested ``shots`` mount
     (``astrid timelines shots <verb>``) embedded from the shots product
@@ -1508,7 +1190,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines",
         description=(
-            "Timeline create/list/show/retime-clip/save/replace-clip/archive/recover/history/diff/visualize/render "
+            "Timeline list/show/replace-parent-media/archive/recover/history/diff/visualize/render "
             "(product family); nested shots beneath 'timelines shots'."
         ),
     )

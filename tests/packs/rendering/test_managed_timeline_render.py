@@ -42,12 +42,14 @@ class _Runtime:
             "project_slug": "demo",
             "slug": "main",
             "config_version": 1,
+            "version": 1,
+            "head_revision_id": "parent-default",
             "config": {"tracks": [], "clips": []},
             "registry": {"assets": {}},
             "archived_at": "archived" if archived else None,
         }
         self.projects = SimpleNamespace(show=lambda _ref: _result(self.project))
-        self.timelines = SimpleNamespace(show=self._show_timeline, list=self._list_timelines)
+        self.timelines = SimpleNamespace(show=self._show_timeline, list=self._list_timelines, inspect=self._inspect_timeline)
         # Remote SDK list reads expose the generated client's JSON-safe page
         # pair, including the terminal null cursor.
         self.media = SimpleNamespace(
@@ -67,7 +69,36 @@ class _Runtime:
         return _result(row or self.timeline)
 
     def _list_timelines(self, _project: str, **_kwargs: object):
-        return _result([[self.timeline, *self.extra_timelines.values()], None])
+        row = dict(self.timeline)
+        row.setdefault("version", row.get("config_version", 1))
+        row.setdefault("head_revision_id", "parent-default")
+        return _result([[row, *self.extra_timelines.values()], None])
+
+    def _inspect_timeline(self, _project: str, ref: str, **_kwargs: object):
+        timeline_id = self.timeline["timeline_id"]
+        if ref not in {timeline_id, self.timeline["slug"], self.timeline["timeline_ulid"]}:
+            return _result(None, ok=False)
+        head = self.timeline.get("head_revision_id") or "parent-default"
+        if head == "parent-default":
+            self.parent_revisions[head] = {
+            "project_id": self.project["project_id"],
+            "timeline_id": timeline_id,
+            "revision_id": head,
+            "content_digest": "sha256:" + "e" * 64,
+            "payload": {
+                "config": self.timeline.get("config", {"tracks": [], "clips": []}),
+                "registry": self.timeline.get("registry", {"assets": {}}),
+                "clips": self.timeline.get("config", {}).get("clips", []),
+                "occurrences": self.timeline.get("occurrences", []),
+            },
+            }
+        return _result({
+            "timeline_id": timeline_id,
+            "representation": "canonical_head",
+            "is_current_head": True,
+            "revision_id": head,
+            "head_revision_id": head,
+        })
 
     def _show_shot(self, _project: str, ref: str):
         row = self.shot_rows.get(ref)
@@ -272,7 +303,9 @@ def test_materialize_writes_deterministic_private_snapshot(tmp_path: Path) -> No
     timeline_path, registry_path, authority = materialize_managed_render_snapshot(
         tmp_path, _snapshot(_Runtime())
     )
-    assert json.loads(timeline_path.read_text()) == {"tracks": [], "clips": []}
+    materialized = json.loads(timeline_path.read_text())
+    assert materialized["tracks"] == [] and materialized["clips"] == []
+    assert materialized["app"]["astrid_shot_composition"]["parent_revision_id"] == "parent-default"
     assert json.loads(registry_path.read_text()) == {"assets": {}}
     assert authority["authority"] == "kernel"
     assert authority["project_slug"] == "demo"
@@ -316,7 +349,7 @@ def test_runtime_media_identity_mismatch_fails_closed() -> None:
 
 @pytest.mark.parametrize("timeline_ref", [
     "main",
-    "11111111-1111-4111-8111-111111111111",
+    "timeline-1",
     "01J00000000000000000000001",
 ])
 def test_resolve_accepts_slug_uuid_and_ulid_runtime_references(timeline_ref: str) -> None:
@@ -332,21 +365,21 @@ def test_materialization_records_authority_and_content_hashes(tmp_path: Path) ->
     snapshot = _snapshot(_Runtime())
     timeline_path, registry_path, authority = materialize_managed_render_snapshot(tmp_path, snapshot)
     assert timeline_path.is_file() and registry_path.is_file()
-    assert authority["head_event_id"] == "timeline:timeline-1:1"
+    assert authority["head_event_id"] == "parent-default"
     for field in ("head_hash", "config_hash", "registry_hash", "materialized_registry_hash"):
         assert len(authority[field]) == 64
     assert authority["config_hash"] == snapshot.config_hash
     assert authority["registry_hash"] == snapshot.registry_hash
 
 
-def test_authority_uses_runtime_event_head_hash_when_available() -> None:
+def test_authority_uses_immutable_parent_head_even_when_event_log_exists() -> None:
     runtime = _Runtime()
     runtime.app = SimpleNamespace(event_log=SimpleNamespace(list_events=lambda **_kwargs: [
         SimpleNamespace(subject_id="timeline-1", seq=1, event_id="event-1", event_hash="f" * 64)
     ]))
     snapshot = _snapshot(runtime)
-    assert snapshot.head_event_id == "event-1"
-    assert snapshot.head_hash == "f" * 64
+    assert snapshot.head_event_id == "parent-default"
+    assert snapshot.head_hash == "e" * 64
 
 
 def test_unadmitted_and_foreign_runtime_media_fail_closed() -> None:
@@ -622,52 +655,29 @@ def test_render_profile_shape_type_and_canvas_mismatch_are_actionable(tmp_path: 
         _prepare_managed_render_inputs({"timeline_ref": "main", "profile": bad_canvas}, project="demo", _client=runtime)
 
 
-def test_registered_shot_expands_and_unknown_shot_rejects(tmp_path: Path) -> None:
+def test_legacy_shot_shell_is_rejected_before_render_admission() -> None:
     runtime = _Runtime()
-    runtime.shot_rows["shot-1"] = {"shot_id": "shot-1", "project_id": "project-demo"}
-    runtime.extra_timelines["child"] = {
-        "timeline_id": "child-1", "timeline_ulid": "01J00000000000000000000002", "slug": "child",
-        "config_version": 1, "config": {"tracks": [], "clips": []}, "registry": {}, "archived_at": None,
-    }
     runtime.timeline["config"] = {"tracks": [], "clips": [{
         "id": "shot", "at": 0, "hold": 1, "clipType": "shot",
+        "track": "picture",
         "params": {"shot_id": "shot-1", "timeline_document_id": "child"},
     }]}
-    prepared, authority = _prepare_managed_render_inputs(
-        {"timeline_ref": "main"}, project="demo", _client=runtime
-    )
-    assert all(
-        item.get("clipType") != "shot"
-        for item in prepared["timeline_snapshot"]["config"]["clips"]
-    )
-    assert authority and authority["expansion"]["children"][0]["timeline_id"] == "child-1"
-
-    runtime.shot_rows.clear()
-    with pytest.raises(CapabilityValidationError, match="unregistered shot"):
+    with pytest.raises(CapabilityValidationError, match="legacy clipType=shot"):
         _prepare_managed_render_inputs({"timeline_ref": "main"}, project="demo", _client=runtime)
 
 
-def test_admission_stamps_flattened_image_with_registered_shot_identity() -> None:
+def test_legacy_shot_review_context_is_rejected_before_projection() -> None:
     runtime = _Runtime()
-    runtime.shot_rows['shot-1'] = {'shot_id': 'shot-1', 'project_id': 'project-demo', 'name': '01 Opening'}
-    runtime.extra_timelines['child'] = {
-        'timeline_id': 'child-1', 'slug': 'child', 'config_version': 1,
-        'config': {'tracks': [{'id': 'picture', 'kind': 'visual', 'label': 'Picture'}], 'clips': [{
-            'id': 'image-child', 'at': 0, 'hold': 1, 'track': 'picture', 'clipType': 'image',
-        }]},
-        'registry': {'assets': {}}, 'archived_at': None,
-    }
-    runtime.timeline['config'] = {'tracks': [{'id': 'picture', 'kind': 'visual', 'label': 'Picture'}], 'clips': [{
-        'id': 'shot', 'at': 2, 'hold': 1, 'track': 'picture', 'clipType': 'shot',
-        'params': {'shot_id': 'shot-1', 'timeline_document_id': 'child'},
+    runtime.timeline["config"] = {"tracks": [], "clips": [{
+        "id": "shot", "at": 1.25, "hold": 2.75, "clipType": "shot",
+        "track": "picture",
+        "params": {"shot_id": "shot-1", "timeline_document_id": "child"},
     }]}
-    prepared, authority = _prepare_managed_render_inputs({'timeline_ref': 'main'}, project='demo', _client=runtime)
-    flat = prepared['timeline_snapshot']['config']['clips'][0]
-    assert flat['clipType'] == 'image'
-    assert flat['shot_id'] == 'shot-1'
-    assert flat['shot_name'] == '01 Opening'
-    assert flat['shot_occurrence_id'] == 'shot-occ-0000-shot-1'
-    assert authority['expansion']['occurrences'][0]['shot_occurrence_id'] == 'shot-occ-0000-shot-1'
+    with pytest.raises(CapabilityValidationError, match="legacy clipType=shot"):
+        _prepare_managed_render_inputs(
+            {"timeline_ref": "main", "review": True, "review_context": {"shots": ["forged"]}},
+            project="demo", _client=runtime,
+        )
 
 
 def test_unknown_effect_structured_schema_and_opaque_params_contracts() -> None:
@@ -703,51 +713,6 @@ def test_alpha_mov_compatibility_requires_matching_profile(tmp_path: Path) -> No
     profile = _profile(); profile.update(container="mov", video_codec="prores", pixel_format="yuva444p12le", audio_codec="pcm_s16le")
     prepared, _authority = _prepare_managed_render_inputs({"timeline_ref": "main", "output_name": "alpha.mov", "profile": profile}, project="demo", _client=runtime)
     assert prepared["profile"] == profile
-
-
-def test_review_pins_registered_names_and_ranges_without_changing_authority():
-    import copy
-    runtime = _Runtime()
-    runtime.shot_rows['shot-1'] = {'shot_id': 'shot-1', 'project_id': 'project-demo', 'name': '01 Opening'}
-    runtime.extra_timelines['child'] = {
-        'timeline_id': 'child-1', 'slug': 'child',
-        'config_version': 1, 'config': {'tracks': [], 'clips': []}, 'registry': {}, 'archived_at': None,
-    }
-    runtime.timeline['config'] = {'tracks': [], 'clips': [{
-        'id': 'shot', 'at': 1.25, 'hold': 2.75, 'clipType': 'shot',
-        'params': {'shot_id': 'shot-1', 'timeline_document_id': 'child'},
-    }]}
-    runtime.text_binding_rows = [{'binding_id': 'binding-1', 'shot_id': 'shot-1',
-        'kind': 'voiceover_script', 'slot': None, 'head': 1,
-        'media_id': 'sha256:' + 'a' * 64, 'content_hash': 'sha256:' + 'a' * 64,
-        'text': 'A pinned narration line.'}]
-    before = copy.deepcopy(runtime.timeline)
-    prepared, authority = _prepare_managed_render_inputs(
-        {'timeline_ref': 'main', 'review': True, 'review_context': {'shots': ['forged']}}, project='demo', _client=runtime)
-    assert prepared['review_context'] == {
-        'shots': [{'shot_id': 'shot-1', 'name': '01 Opening', 'at': 1.25, 'hold': 2.75}],
-        'speech': {'status': 'projected', 'phrases': [{
-            'id': 'shot-script:shot-occ-0000-shot-1:binding-1',
-            'shot_id': 'shot-1', 'shot_occurrence_id': 'shot-occ-0000-shot-1',
-            'text': 'A pinned narration line.', 'status': 'projected',
-            'render_interval': {'start': 1.25, 'end': 4.0},
-            'timing_basis': 'shot_script', 'word_aligned': False,
-            'binding_id': 'binding-1', 'head': 1,
-            'media_id': 'sha256:' + 'a' * 64,
-        }]},
-    }
-    clean, clean_authority = _prepare_managed_render_inputs({'timeline_ref': 'main'}, project='demo', _client=runtime)
-    assert clean['review_context'] == prepared['review_context']
-    assert authority['expansion']['children'][0]['timeline_ulid'] == 'child-1'
-    assert clean_authority == authority
-    assert runtime.timeline == before
-    pinned = authority['expansion']['shots'][0]['text_bindings'][0]
-    assert pinned['head'] == 1 and pinned['content_hash'] == 'sha256:' + 'a' * 64
-    runtime.text_binding_rows[0].update(head=2, media_id='sha256:' + 'b' * 64, content_hash='sha256:' + 'b' * 64)
-    revised, revised_authority = _prepare_managed_render_inputs({'timeline_ref': 'main'}, project='demo', _client=runtime)
-    assert revised['timeline_snapshot'] == clean['timeline_snapshot']
-    assert revised_authority != clean_authority
-    assert pinned['head'] == 1  # The first admission is immutable after a rebind.
 
 
 @pytest.mark.parametrize('data', [None, [[], 'more'], [[{'binding_id': 'bad'}], None]])

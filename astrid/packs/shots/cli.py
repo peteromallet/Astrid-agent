@@ -19,9 +19,6 @@ Verbs (one SDK call each):
 
 - ``text list/show/set`` — read immutable shot text and edit it with expected-head protection;
 
-- ``group`` — resumably group existing timeline clips into a shot with a child
-  timeline and managed media associations; commit the parent with CAS last;
-
 - ``list`` — ``client.shots.list(project)`` (sort_key, then id order);
 - ``show`` — ``client.shots.show(project, shot_id)`` (ordered items, media ids,
   positions, and best-effort media names/paths);
@@ -113,25 +110,6 @@ def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
 def _cmd_list(parsed: argparse.Namespace) -> int:
     result = parsed.client.shots.list(parsed.project)
     return print_result(result, as_json=parsed.json)
-
-
-def _cmd_group(parsed: argparse.Namespace) -> int:
-    return print_result(parsed.client.shots.group(
-        parsed.project, parsed.timeline, clip_ids=parsed.clip, name=parsed.name,
-        expected_version=parsed.expected_version, hold=parsed.hold,
-        idempotency_key=parsed.idempotency_key), as_json=parsed.json)
-
-
-def _configure_group(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("timeline", help="Parent timeline slug or id.")
-    subparser.add_argument("--clip", action="append", required=True, help="Existing clip id (repeat for each item).")
-    subparser.add_argument("--name", required=True, help="Shot name for editing and review.")
-    subparser.add_argument("--expected-version", required=True, type=int)
-    subparser.add_argument("--hold", type=float, help="Optional shot duration including trailing space; cannot truncate clips.")
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_group)
 
 
 def _cmd_text_list(parsed: argparse.Namespace) -> int:
@@ -323,7 +301,6 @@ def _configure_reorder(subparser: argparse.ArgumentParser) -> None:
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("text", help="Read or update canonical shot narration, prompts, and transcripts.", configure=_configure_text),
-    CommandSpec("group", help="Group existing timeline clips into a reusable shot, preserving timing.", configure=_configure_group),
     CommandSpec(
         "list",
         help="List every shot in a project (sort_key, then id order).",
@@ -366,9 +343,8 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines shots",
         description=(
-            "Project-level reusable shots: text/group/list/create/show/add/remove/reorder "
-            "(nested product family). Use group to organize existing timeline clips "
-            "into an attached reusable shot without changing their timing."
+            "Project-level reusable shots: text/list/create/show/add/remove/reorder "
+            "(nested product family)."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

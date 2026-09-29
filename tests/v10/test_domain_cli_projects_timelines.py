@@ -166,6 +166,21 @@ class _RecordingTimelines:
         self._owner.calls.append(("timelines.show", {"project": project, "ref": ref}))
         return DomainResult.success({"slug": ref, "name": "Main", "timeline_id": "T-1"})
 
+    def open_composition(self, project, ref, **kwargs):
+        self._owner.calls.append(("timelines.open_composition", {"project": project, "ref": ref, **kwargs}))
+        return DomainResult.success({
+            "kind": "timeline-inspection",
+            "summary": {"authority": "canonical_head", "revision_id": "head-1", "is_current_head": True},
+            "query": {}, "targets": [], "clips": [],
+        })
+
+    def visualize(self, project, ref, *, mode="auto", options=None, out=None):
+        return self._owner.invoke_result(
+            "rendering.timeline_visualize",
+            kind="executor", project=project,
+            inputs=dict(options or {}), out=out, wait=True,
+        )
+
     def save(
         self,
         project,
@@ -607,12 +622,8 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     from astrid.packs.timeline.cli import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
-        "create",
         "list",
         "show",
-        "retime-clip",
-        "save",
-        "replace-clip",
         "replace-parent-media",
         "archive",
         "recover",
@@ -626,12 +637,8 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     # The parser registers the timeline verbs plus the
     # manifest-declared nested ``shots`` mount (task T29).
     assert _subparser_choices(build_parser(_FakeClient())) == {
-        "create",
         "list",
         "show",
-        "retime-clip",
-        "save",
-        "replace-clip",
         "replace-parent-media",
         "archive",
         "recover",
@@ -820,61 +827,8 @@ def test_timelines_forbidden_and_legacy_verbs_are_absent(forbidden: str) -> None
     assert excinfo.value.code == 2
 
 
-def test_timelines_create_is_one_sdk_call_with_exact_envelope(capsys) -> None:
-    client = _FakeClient()
-    rc = _run(
-        "timelines",
-        [
-            "create",
-            "--project",
-            "demo",
-            "main",
-            "--name",
-            "Main",
-            "--config",
-            '{"fps": 24}',
-            "--registry",
-            '{"assets": []}',
-            "--json",
-        ],
-        client=client,
-    )
-    assert rc == 0
-    (verb, kwargs) = client.calls[0]
-    assert verb == "timelines.create"
-    assert kwargs == {
-        "project": "demo",
-        "slug": "main",
-        "name": "Main",
-        "config": {"fps": 24},
-        "registry": {"assets": []},
-        "idempotency_key": None,
-    }
-    envelope = json.loads(capsys.readouterr().out)
-    assert set(envelope) == ENVELOPE_KEYS
-    assert envelope["ok"] is True
-    assert envelope["receipt"]["command_kind"] == "timeline.create"
-    assert envelope["idempotency_key"] == "generated-key"
 
 
-def test_timelines_create_forwards_caller_key() -> None:
-    client = _FakeClient()
-    rc = _run(
-        "timelines",
-        [
-            "create",
-            "--project",
-            "demo",
-            "main",
-            "--name",
-            "Main",
-            "--idempotency-key",
-            "tl-key",
-        ],
-        client=client,
-    )
-    assert rc == 0
-    assert client.calls[0][1]["idempotency_key"] == "tl-key"
 
 
 def test_timelines_list_is_one_sdk_call(capsys) -> None:
@@ -987,31 +941,22 @@ def test_timelines_show_is_one_sdk_call(capsys) -> None:
     client = _FakeClient()
     rc = _run("timelines", ["show", "--project", "demo", "main"], client=client)
     assert rc == 0
-    assert client.calls == [("timelines.show", {"project": "demo", "ref": "main"})]
-    assert json.loads(capsys.readouterr().out)["data"]["slug"] == "main"
+    assert client.calls == [("timelines.open_composition", {
+        "project": "demo", "ref": "main", "limit": 50, "cursor": None,
+        "clip": None, "occurrence": None, "shot": None, "track": [],
+        "asset": None, "range_value": None, "detail": False,
+    })]
+    assert json.loads(capsys.readouterr().out)["data"]["kind"] == "timeline-inspection"
 
 
 def test_timelines_show_summary_is_bounded_and_keeps_clip_timing(capsys) -> None:
     class _Timelines:
-        def show(self, project, ref):
+        def open_composition(self, project, ref, **kwargs):
             return DomainResult.success({
-                "timeline_id": "T-1",
-                "project_id": "P-1",
-                "slug": ref,
-                "name": "Main",
-                "config_version": 8,
-                "config": {
-                    "tracks": [{"id": "picture", "name": "Picture"}],
-                    "clips": [{
-                        "id": "shot-1",
-                        "track": "picture",
-                        "clipType": "shot",
-                        "at": 1,
-                        "hold": 6,
-                        "params": {"prompt": "must not leak"},
-                    }],
-                },
-                "registry": {"assets": {"secret": {"url": "private"}}},
+                "kind": "timeline-inspection",
+                "summary": {"authority": "canonical_head", "revision_id": "head-1", "is_current_head": True},
+                "query": {}, "targets": [],
+                "clips": [{"clip_id": "image-1", "track": "picture", "at": 1.0, "duration": 6.0}],
             })
 
     class _Client:
@@ -1020,151 +965,17 @@ def test_timelines_show_summary_is_bounded_and_keeps_clip_timing(capsys) -> None
     rc = _run("timelines", ["show", "--summary", "--project", "demo", "main"], client=_Client())
     assert rc == 0
     summary = json.loads(capsys.readouterr().out)["data"]
-    assert summary["kind"] == "timeline-summary"
-    assert summary["config_version"] == 8
-    assert summary["clips"] == [{
-        "id": "shot-1",
-        "track": "picture",
-        "clip_type": "shot",
-        "at": 1.0,
-        "duration": 6.0,
-        "end": 7.0,
-        "hold": 6,
-    }]
-    assert "prompt" not in json.dumps(summary)
-    assert "private" not in json.dumps(summary)
+    assert summary["kind"] == "timeline-inspection"
+    assert summary["summary"]["authority"] == "canonical_head"
+    assert summary["clips"][0]["clip_id"] == "image-1"
 
 
-def test_timelines_retime_clip_reads_once_and_saves_with_cas(capsys) -> None:
-    class _Timelines:
-        def __init__(self):
-            self.calls = []
-
-        def show(self, project, ref):
-            self.calls.append(("show", project, ref))
-            return DomainResult.success({
-                "config_version": 8,
-                "config": {"clips": [{"id": "shot-1", "at": 0, "hold": 7}]},
-                "registry": {"assets": {}},
-            })
-
-        def save(self, project, ref, **kwargs):
-            self.calls.append(("save", project, ref, kwargs))
-            return DomainResult.success({"config_version": 9})
-
-    class _Client:
-        def __init__(self):
-            self.timelines = _Timelines()
-
-    client = _Client()
-    rc = _run("timelines", [
-        "retime-clip", "--project", "demo", "main", "--clip-id", "shot-1",
-        "--at", "1", "--preserve-end",
-    ], client=client)
-    assert rc == 0
-    result = json.loads(capsys.readouterr().out)["data"]
-    assert result["operation"] == "retime-clip"
-    assert result["clip_id"] == "shot-1"
-    assert result["timing_policy"] == "preserve-end"
-    assert result["before"] == {"at": 0.0, "duration": 7.0, "end": 7.0}
-    assert result["after"] == {"at": 1.0, "duration": 6.0, "end": 7.0}
-    assert result["config_version"] == 9
-    assert client.timelines.calls[0] == ("show", "demo", "main")
-    assert client.timelines.calls[1][0:3] == ("save", "demo", "main")
-    assert client.timelines.calls[1][3]["expected_version"] == 8
-    assert client.timelines.calls[1][3]["config"]["clips"][0] == {
-        "id": "shot-1", "at": 1.0, "hold": 6.0,
-    }
 
 
-def test_timelines_retime_clip_defaults_to_preserve_end(capsys) -> None:
-    class _Timelines:
-        def show(self, project, ref):
-            return DomainResult.success({
-                "config_version": 3,
-                "config": {"clips": [{"id": "clip-1", "at": 2, "hold": 4}]},
-                "registry": {"assets": {}},
-            })
-
-        def save(self, project, ref, **kwargs):
-            assert kwargs["expected_version"] == 3
-            assert kwargs["config"]["clips"][0]["at"] == 3.0
-            assert kwargs["config"]["clips"][0]["hold"] == 3.0
-            return DomainResult.success({"config_version": 4})
-
-    class _Client:
-        timelines = _Timelines()
-
-    rc = _run("timelines", [
-        "retime-clip", "--project", "demo", "main", "--clip-id", "clip-1", "--at", "3",
-    ], client=_Client())
-    assert rc == 0
-    result = json.loads(capsys.readouterr().out)["data"]
-    assert result["timing_policy"] == "preserve-end"
-    assert result["after"] == {"at": 3.0, "duration": 3.0, "end": 6.0}
 
 
-def test_timelines_retime_clip_preserve_duration_is_explicit_slide(capsys) -> None:
-    class _Timelines:
-        def show(self, project, ref):
-            return DomainResult.success({
-                "config_version": 3,
-                "config": {"clips": [{"id": "clip-1", "at": 2, "hold": 4}]},
-                "registry": {"assets": {}},
-            })
-
-        def save(self, project, ref, **kwargs):
-            assert kwargs["config"]["clips"][0] == {"id": "clip-1", "at": 10.0, "hold": 4}
-            return DomainResult.success({"config_version": 4})
-
-    class _Client:
-        timelines = _Timelines()
-
-    rc = _run("timelines", [
-        "retime-clip", "--project", "demo", "main", "--clip-id", "clip-1", "--at", "10",
-        "--preserve-duration",
-    ], client=_Client())
-    assert rc == 0
-    result = json.loads(capsys.readouterr().out)["data"]
-    assert result["timing_policy"] == "preserve-duration"
-    assert result["after"] == {"at": 10.0, "duration": 4.0, "end": 14.0}
 
 
-def test_timelines_save_is_one_sdk_call_with_cas_args(capsys) -> None:
-    client = _FakeClient()
-    rc = _run(
-        "timelines",
-        [
-            "save",
-            "--project",
-            "demo",
-            "main",
-            "--config",
-            '{"fps": 30}',
-            "--registry",
-            '{"assets": ["A1"]}',
-            "--expected-version",
-            "2",
-            "--idempotency-key",
-            "save-key",
-            "--json",
-        ],
-        client=client,
-    )
-    assert rc == 0
-    (verb, kwargs) = client.calls[0]
-    assert verb == "timelines.save"
-    assert kwargs == {
-        "project": "demo",
-        "ref": "main",
-        "config": {"fps": 30},
-        "registry": {"assets": ["A1"]},
-        "expected_version": 2,
-        "idempotency_key": "save-key",
-    }
-    envelope = json.loads(capsys.readouterr().out)
-    assert envelope["data"]["version"] == 3
-    assert envelope["idempotency_key"] == "save-key"
 
 
 def test_timelines_archive_is_one_sdk_call(capsys) -> None:
@@ -1237,7 +1048,7 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
             "visualize",
             "--project", "demo",
             "--timeline-slug", "01TIMELINE",
-            "--format", "png,svg",
+            "--format", "png,md",
             "--format", "md",
             "--json",
         ],
@@ -1252,7 +1063,7 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
     assert kwargs["project"] == "demo"
     assert kwargs["wait"] is True
     assert kwargs["inputs"] == {
-        "formats": ["png", "svg", "md"],
+        "formats": ["png", "md", "md"],
         "timeline_slug": "01TIMELINE",
         "view": "filmstrip",
     }
@@ -1301,80 +1112,16 @@ def test_visualization_artifact_summary_groups_deduplicated_filmstrip_refs() -> 
     }
 
 
-def test_timelines_save_stale_version_failure_exits_one(capsys) -> None:
-    class _StaleTimelines(_RecordingTimelines):
-        def save(
-            self,
-            project,
-            ref,
-            *,
-            config,
-            registry,
-            expected_version,
-            idempotency_key=None,
-        ):
-            self._owner.calls.append(("timelines.save", {"ref": ref}))
-            return DomainResult.failure(
-                ErrorObject(
-                    code="stale_version",
-                    message="expected head 2 but head is 3",
-                    details={"expected_version": expected_version},
-                ),
-                idempotency_key=idempotency_key or "generated-key",
-            )
-
-    class _StaleClient(_FakeClient):
-        def __init__(self) -> None:
-            super().__init__()
-            self.timelines = _StaleTimelines(self)
-
-    client = _StaleClient()
-    rc = _run(
-        "timelines",
-        [
-            "save",
-            "--project",
-            "demo",
-            "main",
-            "--config",
-            "{}",
-            "--registry",
-            "{}",
-            "--expected-version",
-            "2",
-            "--json",
-        ],
-        client=client,
-    )
-    assert rc == 1
-    assert len(client.calls) == 1
-    captured = capsys.readouterr()
-    envelope = json.loads(captured.out)
-    assert envelope["ok"] is False
-    assert envelope["error"]["code"] == "stale_version"
-    assert captured.err == ""
 
 
-def test_timelines_save_missing_required_cas_args_is_a_usage_error() -> None:
-    client = _FakeClient()
-    with pytest.raises(SystemExit) as excinfo:
-        _run(
-            "timelines",
-            ["save", "--project", "demo", "main"],
-            client=client,
-        )
-    assert excinfo.value.code == 2
-    assert client.calls == []
 
 
 @pytest.mark.parametrize(
     "argv",
     [
         ["--help"],
-        ["create", "--help"],
         ["list", "--help"],
         ["show", "--help"],
-        ["save", "--help"],
         ["archive", "--help"],
         ["history", "--help"],
         ["diff", "--help"],
@@ -1406,8 +1153,8 @@ def test_dispatch_timelines_routes_product_verbs_through_product_dispatch(
         return 7
 
     monkeypatch.setattr(dispatch, "_dispatch_product", _fake_product)
-    assert dispatch._dispatch_timelines(["create", "--project", "demo", "main"]) == 7
-    assert seen["args"] == ["timelines", "create", "--project", "demo", "main"]
+    assert dispatch._dispatch_timelines(["list", "--project", "demo"]) == 7
+    assert seen["args"] == ["timelines", "list", "--project", "demo"]
 
 
 def test_dispatch_timelines_has_no_legacy_cli_fallback(monkeypatch) -> None:
@@ -1446,7 +1193,6 @@ def test_shots_parser_has_exactly_eight_verbs_beneath_timelines() -> None:
 
     assert tuple(spec.name for spec in COMMANDS) == (
         "text",
-        "group",
         "list",
         "show",
         "create",
@@ -1459,7 +1205,6 @@ def test_shots_parser_has_exactly_eight_verbs_beneath_timelines() -> None:
     assert parser.prog == "astrid timelines shots"
     assert _subparser_choices(parser) == {
         "text",
-        "group",
         "list",
         "show",
         "create",
@@ -1788,7 +1533,7 @@ def test_timelines_visualize_forwards_filmstrip_options(capsys) -> None:
     assert len(client.calls) == 1
     assert client.calls[0][1]["wait"] is True
     assert client.calls[0][1]['inputs'] == {
-        'formats': ['all'], 'timeline_slug': 'main', 'view': 'filmstrip',
+        'formats': ['png', 'md'], 'timeline_slug': 'main', 'view': 'filmstrip',
         'sample': 'cuts', 'render_run': '01EXACT', 'every_frames': 12,
         'columns': 4, 'page_size': 40, 'range': '10..20',
     }

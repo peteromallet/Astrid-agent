@@ -406,8 +406,8 @@ def build_authoring_proposal(
         ],
         "publication": {
             "authority": "workspace_runtime",
-            "mutation": "timelines.save",
-            "expected_version": "runtime-current",
+            "mutation": "authoring-bundle validate/commit",
+            "expected_head": "runtime-current",
             "render_capability": "rendering.render",
         },
     }

@@ -550,10 +550,9 @@ result = sdk.invoke(
 Use `client.timelines.visualize` for declared-input or composed-output evidence
 and `client.timelines.show` / `client.timelines.open_composition` for bounded
 text inspection. Use `rendering.render` to create an output before requesting
-composed visualization. The legacy
-`client.timelines.save` path is retained for compatibility; new
-programmatic edits should use the detached authoring-bundle validate/publish
-path above, with previews as needed. Keep `project` explicit and
+composed visualization. Programmatic edits use the detached authoring-bundle
+validate/publish path above; mutable whole-document timeline saves are retired.
+Keep `project` explicit and
 use returned runtime IDs, manifests, and receipts for durable navigation.
 
 ## Renderer authoring

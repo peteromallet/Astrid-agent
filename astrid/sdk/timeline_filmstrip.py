@@ -286,51 +286,18 @@ def _canonical_shot_occurrences(config: Mapping[str, Any]) -> list[dict[str, Any
 
 
 def _expand_input_snapshot(client: Any, config: Mapping[str, Any], registry: Mapping[str, Any], authority: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Flatten admitted child timelines for input inspection.
+    """Accept only an admission-owned canonical input snapshot.
 
-    Render admission normally stores this already-expanded config in its
-    immutable envelope.  The current-timeline, render-free lane may still
-    contain authored ``clipType=shot`` placements, so expand those children
-    through the SDK read surface while enforcing any immutable child pins
-    supplied by a render authority.  A changed pinned child fails closed.
+    Child expansion belongs to the exact parent-composition projection before
+    this function is called. This lane never reopens mutable timeline
+    documents or interprets legacy ``clipType=shot`` shells.
     """
-    raw_clips = config.get('clips') if isinstance(config, Mapping) else None
-    if not isinstance(raw_clips, list) or not any(isinstance(c, Mapping) and c.get('clipType') == 'shot' for c in raw_clips):
-        return deepcopy(dict(config)), deepcopy(dict(registry))
-    from astrid.core.timeline.expand_shots import expand_shot_clips
-    child_pins = {}
-    if isinstance(authority, Mapping):
-        expansion = authority.get('expansion')
-        if isinstance(expansion, Mapping):
-            for child in expansion.get('children') or []:
-                if isinstance(child, Mapping) and child.get('timeline_id'):
-                    child_pins[str(child['timeline_id'])] = child
-                    if child.get('slug'):
-                        child_pins[str(child['slug'])] = child
-
-    def as_mapping(value):
-        if isinstance(value, Mapping):
-            return value
-        data = getattr(value, 'data', None)
-        return data if isinstance(data, Mapping) else None
-
-    def load_child(ref):
-        child = as_mapping(client.get_timeline(str(ref)))
-        if not child:
-            raise ValueError(f'child timeline {ref!r} was not found')
-        pin = child_pins.get(str(ref))
-        if pin is not None and pin.get('config_version') is not None and int(child.get('config_version', -1)) != int(pin['config_version']):
-            raise ValueError(f'child timeline {ref!r} is no longer at pinned config_version {pin["config_version"]}')
-        child_config, child_registry = child.get('config'), child.get('registry')
-        if not isinstance(child_config, Mapping) or not isinstance(child_registry, Mapping):
-            raise ValueError(f'child timeline {ref!r} has an invalid immutable snapshot')
-        return child_config, child_registry
-
-    try:
-        expanded, merged = expand_shot_clips(config, registry, load_timeline=load_child)
-    except Exception as exc:
-        _fail(f'Input inspection cannot expand child timeline placements: {exc}')
-    return deepcopy(dict(expanded)), deepcopy(dict(merged))
+    raw_clips = config.get("clips") if isinstance(config, Mapping) else None
+    if isinstance(raw_clips, list) and any(
+        isinstance(c, Mapping) and c.get("clipType") == "shot" for c in raw_clips
+    ):
+        _fail("Input inspection found legacy clipType=shot entries; migrate the timeline offline before review.")
+    return deepcopy(dict(config)), deepcopy(dict(registry))
 
 
 def _open_current_input_closure(
@@ -339,11 +306,11 @@ def _open_current_input_closure(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Open the current timeline through its immutable parent head.
 
-    A child shot cannot be expanded from ``get_timeline``: that is a mutable
-    read and can join a newer child revision to an older parent.  The managed
+    A child shot cannot be expanded from a mutable timeline document: that
+    can join a newer child revision to an older parent. The managed
     render path already owns the exact parent/shot/internal-revision opener;
-    reuse that seam for the render-free inspection lane.  Legacy flat
-    timelines remain supported without a composition closure.
+    reuse that seam for the render-free inspection lane. Flat legacy timeline
+    documents are not a supported read representation.
     """
     clips = config.get("clips") if isinstance(config, Mapping) else []
     has_shot_placements = isinstance(clips, list) and any(
@@ -626,13 +593,11 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
     # that run, even when a timeline slug is also supplied.  Only the ordinary
     # input-only path may read the current canonical timeline row.
     if 'output' not in components['resolved'] and timeline_row is not None and not exact:
-        config = timeline_row.get('config') or timeline_row.get('configuration') or {}
-        registry = timeline_row.get('registry') or timeline_row.get('assets_registry') or {'assets': {}}
-        if not isinstance(config, Mapping) or not isinstance(registry, Mapping):
-            _fail('Timeline has no immutable canonical input snapshot.')
+        if not (timeline_row.get('head_revision_id') or timeline_row.get('parent_revision_id')):
+            _fail('Timeline has no canonical current parent head.')
         config, registry, closure = _open_current_input_closure(
             client, project_id=project_id, timeline_row=timeline_row,
-            config=config, registry=registry,
+            config={}, registry={'assets': {}},
         )
         from astrid.core.timeline.duration import timeline_duration_frames
         from fractions import Fraction
@@ -799,9 +764,12 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
     if not exact:
         pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version')}]
         pins += authority.get('expansion', {}).get('children', [])
+        current_rows = paged_rows(client.list_timelines, project_id, limit=50) or []
         for pin in pins:
-            current = client.get_timeline(pin['timeline_id'])
-            if current.get('config_version') != pin.get('config_version'):
+            current = next((row for row in current_rows if isinstance(row, Mapping) and str(row.get("timeline_id")) == str(pin.get("timeline_id"))), None)
+            current_head = current.get("head_revision_id") if isinstance(current, Mapping) else None
+            pinned_head = pin.get("revision_id") or pin.get("head_revision_id")
+            if pinned_head and current_head and str(current_head) != str(pinned_head):
                 _status_failure(render_status(
                     lifecycle="succeeded",
                     output={"available": True, "run_id": _identifier(run, "id", "run_id"), "timeline": selector},

@@ -4,7 +4,8 @@ Expands `clipType == "shot"` clips by loading their sub-documents and
 offsetting their clips into the parent timeline's `at`/`hold` window.
 
 The stored SQLite timeline document is NEVER mutated: this module is purely
-memory-only. CLI `timelines show` uses this to print derived expanded counts.
+memory-only. It is retained only for explicit offline migration and repair
+utilities; canonical Runtime reads do not expand legacy shot shells.
 """
 
 from __future__ import annotations

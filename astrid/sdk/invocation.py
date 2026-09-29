@@ -1021,129 +1021,16 @@ def _prepare_managed_render_inputs(
                         "media_id": binding.get("media_id"),
                     })
 
-        # Compatibility expansion is only reachable for an older, explicitly
-        # migrated render snapshot. Canonical graph snapshots arrive already
-        # projected above and never interpret a legacy child shape here.
-        expand_shot_clips = None
-        if canonical_expansion is None:
-            from astrid.core.timeline.expand_shots import expand_shot_clips
-
-        # Admission is intentionally split for the compatibility boundary: a
-        # legacy parent is expanded only after each registered reference is
-        # resolved through the SDK. The canonical path above does not use it.
-        for index, clip in enumerate(raw_clips):
-            if not isinstance(clip, Mapping) or clip.get("clipType") != "shot":
-                continue
-            if clip.get("shot_occurrence_id"):
-                raise CapabilityValidationError(
-                    f"canonical timeline {snapshot.timeline_slug!r} shot clip at index {index} "
-                    "contains caller-authored shot_occurrence_id"
-                )
-            params = clip.get("params")
-            shot_id = params.get("shot_id") if isinstance(params, Mapping) else None
-            timeline_document_id = (
-                params.get("timeline_document_id") if isinstance(params, Mapping) else None
+        if any(
+            isinstance(clip, Mapping) and clip.get("clipType") == "shot"
+            for clip in raw_clips
+        ):
+            raise CapabilityValidationError(
+                f"canonical timeline {snapshot.timeline_slug!r} contains legacy clipType=shot entries; "
+                "migrate the timeline with the offline migration utility before rendering"
             )
-            if not isinstance(shot_id, str) or not shot_id:
-                raise CapabilityValidationError(
-                    f"canonical timeline {snapshot.timeline_slug!r} shot clip at index {index} "
-                    "is missing a registered shot_id"
-                )
-            shot_result = _client.shots.show(str(project), shot_id)
-            if not shot_result.ok or not shot_result.data:
-                raise CapabilityValidationError(
-                    f"canonical timeline {snapshot.timeline_slug!r} references unregistered shot "
-                    f"{shot_id!r}"
-                )
-            if shot_id not in shot_records:
-                bindings = shot_text_snapshot(
-                    _client,
-                    str(project),
-                    shot_id,
-                    include_text=values.get("review") is True,
-                )
-                shot_records[shot_id] = {
-                    "shot_id": shot_id,
-                    "name": str(shot_result.data.get("name") or shot_id),
-                    "version": shot_result.data.get("version"),
-                    "text_bindings": [{key: value for key, value in binding.items() if key != "text"} for binding in bindings],
-                }
-                review_bindings[shot_id] = bindings
-            # Placement is canonical render provenance, not a visual-only
-            # review option.  Freeze every authored shot occurrence so later
-            # filmstrip/visualizer consumers can map pinned bindings to the
-            # rendered timeline even when review labels are disabled.
-            occurrence_id = f"shot-occ-{len(shot_occurrences):04d}-{shot_id}"
-            occurrence = {
-                "shot_occurrence_id": occurrence_id,
-                "shot_id": shot_id,
-                "name": str(shot_result.data.get("name") or shot_id),
-                "at": float(clip.get("at", 0)),
-                "hold": float(clip.get("hold", 0)),
-                "timeline_document_id": str(timeline_document_id or ""),
-                "source_index": index,
-            }
-            shot_occurrences.append(occurrence)
-            review_shots.append({"shot_id": shot_id, "name": occurrence["name"], "at": occurrence["at"], "hold": occurrence["hold"]})
-            for binding in review_bindings.get(shot_id, []):
-                text = binding.get("text")
-                if binding.get("kind") != "voiceover_script" or not isinstance(text, str) or not text.strip():
-                    continue
-                review_phrases.append(
-                    {
-                        "id": f"shot-script:{occurrence_id}:{binding['binding_id']}",
-                        "shot_id": shot_id,
-                        "shot_occurrence_id": occurrence_id,
-                        "text": text.strip(),
-                        "status": "projected",
-                        "render_interval": {
-                            "start": occurrence["at"],
-                            "end": occurrence["at"] + occurrence["hold"],
-                        },
-                        "timing_basis": "shot_script",
-                        "word_aligned": False,
-                        "binding_id": binding["binding_id"],
-                        "head": binding["head"],
-                        "media_id": binding["media_id"],
-                    }
-                )
-            if not isinstance(timeline_document_id, str) or not timeline_document_id:
-                raise CapabilityValidationError(
-                    f"canonical timeline {snapshot.timeline_slug!r} shot {shot_id!r} "
-                    "is missing timeline_document_id"
-                )
 
-        def load_child(ref: str) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-            child_result = _client.timelines.show(str(project), ref)
-            if not child_result.ok or not child_result.data:
-                raise ValueError(f"timeline {ref!r} was not found")
-            child = child_result.data
-            child_config = child.get("config")
-            child_registry = child.get("registry")
-            if not isinstance(child_config, Mapping) or not isinstance(child_registry, Mapping):
-                raise ValueError(f"timeline {ref!r} has an invalid snapshot")
-            child_records.append(
-                {
-                    "timeline_id": str(child["timeline_id"]),
-                    "timeline_ulid": str(child.get("timeline_ulid") or child["timeline_id"]),
-                    "slug": str(child["slug"]),
-                    "config_version": int(child["config_version"]),
-                    "config_hash": _expanded_config_hash(child_config),
-                }
-            )
-            return child_config, child_registry
-
-        if expand_shot_clips is not None:
-            try:
-                expanded_config, expanded_registry = expand_shot_clips(
-                    snapshot.config,
-                    snapshot.registry,
-                    load_timeline=load_child,
-                )
-            except ValueError as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-        else:
-            expanded_config, expanded_registry = snapshot.config, snapshot.registry
+        expanded_config, expanded_registry = snapshot.config, snapshot.registry
         # The pure expander can carry the registered id and authored-order
         # occurrence through arbitrary child payloads.  Pin the name here,
         # after reading it from the canonical shot registry; child/caller

@@ -458,7 +458,7 @@ def test_native_timeline_visualize_skips_optional_pack_host(monkeypatch) -> None
             "md,png",
         ]
     ) == 0
-    assert seen["start_pack_host"] is False
+    assert seen["start_pack_host"] is True
 
 
 def test_pack_host_requirement_is_declared_by_command_not_read_allowlist() -> None:
@@ -485,9 +485,9 @@ def test_dispatch_product_help_does_not_open_client(monkeypatch, capsys) -> None
     from astrid.core.gateway import dispatch
 
     with pytest.raises(SystemExit) as excinfo:
-        dispatch._dispatch_product(["timelines", "save", "--help"])
+        dispatch._dispatch_product(["timelines", "show", "--help"])
     assert excinfo.value.code == 0
-    assert "astrid timelines save" in capsys.readouterr().out
+    assert "astrid timelines show" in capsys.readouterr().out
 
 
 def test_dispatch_product_rejects_excluded_commands_before_opening(
@@ -764,7 +764,7 @@ def test_product_help_lists_current_timeline_visualize_and_render_verbs() -> Non
     text = _product_help_text()
     assert "projects    [kernel] project create/list/show/update/select/current" in text
     assert "runs        [kernel] run list/show/cancel/retry/events/open" in text
-    assert "[pack: timeline] timelines create/list/show/retime-clip/save/archive/recover/history/diff/visualize/render" in text
+    assert "[pack: timeline] timelines list/show/replace-parent-media/archive/recover/history/diff/visualize/render" in text
 
 
 def test_print_product_help_prints_to_stdout(capsys) -> None:

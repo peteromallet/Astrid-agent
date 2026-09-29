@@ -60,6 +60,14 @@ def test_remote_open_composition_uses_runtime_inspection_authority() -> None:
     )]
 
 
+def test_remote_show_is_canonical_current_head_alias() -> None:
+    transport = _NativeTransport()
+    result = RemoteTimelines(transport).show("project-1", "main")
+    assert result.ok
+    assert result.data["summary"]["revision_id"] == "rev-7"
+    assert transport.inspect_calls[0][1] == "tl-1"
+
+
 def test_remote_open_composition_forwards_native_cursor_without_legacy_read() -> None:
     transport = _NativeTransport()
     result = RemoteTimelines(transport).open_composition(

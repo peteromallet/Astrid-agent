@@ -164,8 +164,8 @@ def build_multitrack_timeline(
 
     Returns a ``TimelineConfig`` that is serialized as ``hype.timeline.json`` — a
     standalone attempt output, not a project-timeline container. A caller may
-    deliberately apply it later through ``client.timelines.save`` with an
-    expected version; the worker never opens timeline authority itself.
+    deliberately compile it into a detached authoring candidate for canonical
+    parent-composition publication; the worker never opens timeline authority.
     """
     clips: list[dict[str, Any]] = []
     if primary_asset is None and "rant" in registry["assets"]:

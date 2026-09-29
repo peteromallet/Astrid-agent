@@ -30,6 +30,7 @@ from astrid.core.timeline.authoring_bundle import (
 )
 
 from .workspace_client import WorkspaceClientError, validate_runtime_endpoint
+from .pagination import paged_rows
 
 __all__ = ["AuthoringRemoteError", "TargetBoundAuthoringBundle"]
 
@@ -242,11 +243,28 @@ class TargetBoundAuthoringBundle:
         base_parent = candidate.get("base_parent")
         if not isinstance(base_parent, Mapping) or base_parent.get("revision_id") != identity.base_head:
             raise AuthoringRemoteError("authoring candidate base head is not the trusted target head")
-        current = _data(
-            self._client.get_timeline(identity.timeline_id, project_id=identity.project_id),
-            "get_timeline",
+        rows = paged_rows(self._client.list_timelines, identity.project_id, limit=50) or []
+        current = next(
+            (
+                row for row in rows
+                if isinstance(row, Mapping)
+                and str(row.get("timeline_id") or row.get("id")) == identity.timeline_id
+            ),
+            None,
         )
-        current_head = current.get("head_revision_id") or current.get("parent_revision_id")
+        if not isinstance(current, Mapping):
+            raise AuthoringRemoteError("authoring target timeline is not in the canonical project listing")
+        inspection = _data(
+            self._client.inspect_timeline(
+                identity.project_id,
+                identity.timeline_id,
+                options={"limit": 1, "detail": False},
+            ),
+            "inspect_timeline",
+        )
+        if inspection.get("is_current_head") is not True:
+            raise AuthoringRemoteError("authoring target inspection is not the canonical current head")
+        current_head = inspection.get("revision_id") or inspection.get("head_revision_id")
         if current_head != identity.base_head:
             raise AuthoringRemoteError("authoring target head is stale")
         try:

@@ -121,8 +121,9 @@ python3 -m astrid timelines recover <timeline> --project <project> --json
 python3 -m astrid media references list --project <project> --include-archived --json
 ```
 
-Use `timelines show`, `save`, `history`, `diff`, `visualize`, and `render` for
-timeline work. Existing timeline editing conventions live in the
+Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
+timeline work. Whole-document timeline saves are retired; edits are published
+through the detached authoring bundle. Existing timeline editing conventions live in the
 [video editing skill](../../video_editing/skill/SKILL.md); the
 [rendering compatibility skill](../../rendering/skill/SKILL.md) is downstream
 evidence and playback documentation. Use `tasks` and `runs` to inspect or manage

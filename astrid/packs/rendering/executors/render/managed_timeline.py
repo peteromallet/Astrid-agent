@@ -943,86 +943,88 @@ def resolve_managed_render_snapshot(
     if not project_result.ok or not project_result.data:
         raise ValueError(f"project not found: {project_ref!r}")
     project = project_result.data
-    timeline_result = client.timelines.show(project_ref, timeline_ref)
-    if not timeline_result.ok or not timeline_result.data:
+
+    # Resolve identity from the active canonical listing, then read exactly one
+    # immutable current parent head through native inspection.  The legacy
+    # mutable timeline document is deliberately unavailable to renderers.
+    rows = paged_rows(client.timelines.list, project_ref)
+    listed_timeline = None
+    if rows is not None:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            if str(timeline_ref) in {
+                str(row.get("timeline_id", "")),
+                str(row.get("timeline_ulid", "")),
+                str(row.get("slug", "")),
+            }:
+                listed_timeline = row
+                break
+    if not isinstance(listed_timeline, Mapping):
         raise ValueError(
             f"timeline {timeline_ref!r} was not found in project {project_ref!r}"
         )
-    timeline_data = timeline_result.data
-    version_value = timeline_data.get("config_version", timeline_data.get("version"))
+    if listed_timeline.get("archived_at") or listed_timeline.get("archived") is True:
+        raise ValueError(
+            f"timeline {timeline_ref!r} is archived; unarchive it before rendering"
+        )
+    timeline_id = listed_timeline.get("timeline_id") or listed_timeline.get("id")
+    if not isinstance(timeline_id, str) or not timeline_id:
+        raise ValueError("canonical timeline listing omitted timeline_id")
+    version_value = listed_timeline.get("version")
     if isinstance(version_value, bool) or not isinstance(version_value, (int, float, str)):
-        raise ValueError("canonical timeline snapshot has no config_version or version")
+        raise ValueError("canonical timeline listing has no version")
     try:
         version = int(version_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("canonical timeline snapshot has an invalid config_version or version") from exc
+        raise ValueError("canonical timeline listing has an invalid version") from exc
     if version < 1:
-        raise ValueError("canonical timeline snapshot version must be positive")
+        raise ValueError("canonical timeline version must be positive")
     if expected_version is not None and expected_version != version:
         raise ValueError(
             f"stale timeline version: expected {expected_version}, current version is {version}; "
             "show the timeline and retry with the current version"
         )
-    rows = paged_rows(client.timelines.list, project_ref)
-    listed_timeline = None
-    if rows is not None:
-        for row in rows:
-            if isinstance(row, Mapping) and row.get("timeline_id") == timeline_data.get("timeline_id"):
-                listed_timeline = row
-                if row.get("archived_at"):
-                    raise ValueError(
-                        f"timeline {timeline_ref!r} is archived; unarchive it before rendering"
-                    )
-                break
-    timeline_slug = str(
-        timeline_data.get("slug")
-        or (listed_timeline or {}).get("slug")
-        or timeline_ref
+
+    inspected = client.timelines.inspect(
+        project_ref, timeline_id, limit=100, detail=False, neighbors=0
     )
-    config = timeline_data.get("config")
-    stored_registry = timeline_data.get("registry")
-    project_id = str(project.get("id") or project["project_id"])
-    exact_parent = None
-    composition_graph = None
-    expansion = None
-    parent_head = timeline_data.get("head_revision_id")
-    if candidate_preview:
-        if not isinstance(parent_head, str) or not parent_head:
-            raise ValueError("authoring preview requires an immutable parent composition head")
-        reader = _exact_revision_reader(client)
-        parent = _exact_mapping(
-            reader.get_project_parent_composition_revision(
-                project_id, str(timeline_data["timeline_id"]), parent_head
-            ),
-            label="parent composition revision",
+    if not inspected.ok or not isinstance(inspected.data, Mapping):
+        raise ValueError("canonical timeline inspection is unavailable")
+    inspection = inspected.data
+    if inspection.get("representation") != "canonical_head" or inspection.get("is_current_head") is not True:
+        raise ValueError(
+            "Runtime did not return the canonical current timeline head; "
+            "legacy timeline documents are not renderable"
         )
-        if (
-            parent.get("revision_id") != parent_head
-            or parent.get("project_id") != project_id
-            or parent.get("timeline_id") != str(timeline_data["timeline_id"])
-        ):
-            raise ValueError("Runtime returned a different preview base parent revision")
-        parent_digest = parent.get("content_digest")
-        if not isinstance(parent_digest, str) or not parent_digest.startswith("sha256:"):
-            raise ValueError("preview base parent has no canonical content digest")
-        if config is None and stored_registry is None:
-            # Canonical Runtime timeline reads expose a head and version, not
-            # the legacy mutable document fields. The exact parent closure is
-            # the source of the preview base in that response shape.
-            _parent, projected, _expansion = _project_exact_parent_head(
-                client=client,
-                project_id=project_id,
-                timeline_id=str(timeline_data["timeline_id"]),
-                parent_revision_id=parent_head,
-            )
-            config, stored_registry = projected.config, projected.registry
-        if not isinstance(config, dict) or not isinstance(stored_registry, dict):
-            raise ValueError("canonical timeline snapshot is not a JSON object")
+    parent_head = inspection.get("revision_id") or inspection.get("head_revision_id")
+    if not isinstance(parent_head, str) or not parent_head:
+        raise ValueError("canonical timeline inspection has no current head revision")
+    inspected_timeline_id = inspection.get("timeline_id")
+    if inspected_timeline_id is not None and str(inspected_timeline_id) != timeline_id:
+        raise ValueError("Runtime inspected a different timeline identity")
+
+    timeline_slug = str(listed_timeline.get("slug") or timeline_ref)
+    project_id = str(project.get("id") or project["project_id"])
+    exact_parent, projected, expansion = _project_exact_parent_head(
+        client=client,
+        project_id=project_id,
+        timeline_id=timeline_id,
+        parent_revision_id=parent_head,
+    )
+    config = projected.config
+    stored_registry = projected.registry
+    composition_graph = projected.graph
+
+    parent_digest = exact_parent.get("content_digest")
+    if not isinstance(parent_digest, str) or not parent_digest.startswith("sha256:"):
+        raise ValueError("canonical parent head has no content digest")
+    if candidate_preview:
         return ManagedRenderSnapshot(
             project_id=project_id,
             project_slug=str(project["slug"]),
-            timeline_id=str(timeline_data["timeline_id"]),
-            timeline_ulid=str(timeline_data.get("timeline_ulid") or timeline_data["timeline_id"]),
+            timeline_id=timeline_id,
+            timeline_ulid=str(listed_timeline.get("timeline_ulid") or timeline_id),
             timeline_slug=timeline_slug,
             config_version=version,
             head_event_id=parent_head,
@@ -1032,73 +1034,10 @@ def resolve_managed_render_snapshot(
             config_hash=_digest(config),
             registry_hash=_digest(stored_registry),
             materialized_registry_hash=_digest(stored_registry),
+            expansion=expansion,
+            composition_graph=composition_graph,
         )
-    if isinstance(parent_head, str) and parent_head:
-        exact_parent, projected, expansion = _project_exact_parent_head(
-            client=client,
-            project_id=project_id,
-            timeline_id=str(timeline_data["timeline_id"]),
-            parent_revision_id=parent_head,
-        )
-        config = projected.config
-        stored_registry = projected.registry
-        composition_graph = projected.graph
-    else:
-        if not isinstance(config, dict) or not isinstance(stored_registry, dict):
-            raise ValueError("canonical timeline snapshot is not a JSON object")
-        for key in ("shot_composition", "composition_graph", "canonical_graph", "prepared_shot_composition"):
-            candidate = timeline_data.get(key)
-            if isinstance(candidate, Mapping) and isinstance(candidate.get("shot_revisions"), list):
-                composition_graph = candidate
-                break
-        if composition_graph is None:
-            metadata = timeline_data.get("metadata")
-            if isinstance(metadata, Mapping):
-                candidate = metadata.get("shot_composition") or metadata.get("composition_graph")
-                if isinstance(candidate, Mapping) and isinstance(candidate.get("shot_revisions"), list):
-                    composition_graph = candidate
-    if composition_graph is not None and expansion is None:
-        from astrid.core.timeline.shot_composition_projection import project_shot_composition
 
-        try:
-            projected = project_shot_composition(
-                composition_graph,
-                base_config=config,
-                base_registry=stored_registry,
-            )
-        except ValueError as exc:
-            raise ValueError(f"canonical shot-composition graph is not renderable: {exc}") from exc
-        config = projected.config
-        stored_registry = projected.registry
-        revisions = {
-            (row["shot_id"], row["revision_id"]): row
-            for row in composition_graph["shot_revisions"]
-            if isinstance(row, Mapping) and row.get("shot_id") and row.get("revision_id")
-        }
-        shots = []
-        for (shot_id, revision_id), revision in sorted(revisions.items()):
-            provenance = revision.get("provenance") if isinstance(revision, Mapping) else None
-            metadata = provenance.get("metadata") if isinstance(provenance, Mapping) else None
-            name = metadata.get("name") if isinstance(metadata, Mapping) else None
-            shots.append({
-                "shot_id": shot_id,
-                "revision_id": revision_id,
-                "name": str(name or shot_id),
-                "text_bindings": list(revision.get("text_bindings") or []) if isinstance(revision.get("text_bindings"), list) else [],
-            })
-        expansion = {
-            "canonical": True,
-            "children": [
-                {"timeline_id": row.get("revision_id"), "config_version": 1,
-                 "config_hash": row.get("content_digest")}
-                for row in composition_graph["shot_revisions"]
-                if isinstance(row, Mapping)
-            ],
-            "shots": shots,
-            "occurrences": [dict(row) for row in projected.occurrences],
-            "outputs": [dict(row) for row in projected.outputs],
-            "graph": composition_graph,
-        }
     # The SDK's read model is the authority. Keep runtime-admitted media
     # identities in the snapshot; the generic host supplies bytes to the child
     # attempt without any local database or filesystem lookup.
@@ -1112,31 +1051,13 @@ def resolve_managed_render_snapshot(
     )
     config_hash = _digest(config)
     registry_hash = _digest(raw_registry)
-    if exact_parent is not None:
-        head_event_id = str(exact_parent["revision_id"])
-        head_hash = str(exact_parent["content_digest"]).removeprefix("sha256:")
-    else:
-        head_event_id = f"timeline:{timeline_data['timeline_id']}:{version}"
-        head_hash = config_hash
-        try:
-            events = client.app.event_log.list_events(project_id=project_id, limit=10000)
-            matching = [
-                event for event in events
-                if event.subject_id == str(timeline_data["timeline_id"])
-                and event.seq == version
-            ]
-            if matching:
-                head_event_id = matching[-1].event_id
-                head_hash = matching[-1].event_hash
-        except (AttributeError, TypeError, ValueError):
-            # Older equivalent clients may not expose ordered event reads. The
-            # content digest remains deterministic evidence for materialization.
-            pass
+    head_event_id = str(exact_parent["revision_id"])
+    head_hash = str(exact_parent["content_digest"]).removeprefix("sha256:")
     return ManagedRenderSnapshot(
         project_id=project_id,
         project_slug=str(project["slug"]),
-        timeline_id=str(timeline_data["timeline_id"]),
-        timeline_ulid=str(timeline_data.get("timeline_ulid") or timeline_data["timeline_id"]),
+        timeline_id=timeline_id,
+        timeline_ulid=str(listed_timeline.get("timeline_ulid") or timeline_id),
         timeline_slug=timeline_slug,
         config_version=version,
         head_event_id=head_event_id,

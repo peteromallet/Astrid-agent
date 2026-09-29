@@ -325,7 +325,7 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "get_timeline", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision"}
+        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
@@ -347,7 +347,6 @@ class _RemoteFamily:
             elif operation == "create_project": value = self._client.create_project(*args, **kwargs)
             elif operation == "create_project_reference": value = self._client.create_project_reference(*args, **kwargs)
             elif operation == "create_project_shot": value = self._client.create_project_shot(*args, **kwargs)
-            elif operation == "create_timeline_document": value = self._client.create_timeline_document(*args, **kwargs)
             elif operation == "create_variant": value = self._client.create_variant(*args, **kwargs)
             elif operation == "current_project": value = self._client.current_project(*args, **kwargs)
             elif operation == "diff_timeline": value = self._client.diff_timeline(*args, **kwargs)
@@ -363,7 +362,6 @@ class _RemoteFamily:
             elif operation == "get_managed_output": value = self._client.get_managed_output(*args, **kwargs)
             elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
             elif operation == "get_task": value = self._client.get_task(*args, **kwargs)
-            elif operation == "get_timeline": value = self._client.get_timeline(*args, **kwargs)
             elif operation == "inspect_timeline": value = self._client.inspect_timeline(*args, **kwargs)
             elif operation == "create_timeline_view": value = self._client.create_timeline_view(*args, **kwargs)
             elif operation == "fail_attempt": value = self._client.fail_attempt(*args, **kwargs)
@@ -408,8 +406,6 @@ class _RemoteFamily:
             elif operation == "update_project": value = self._client.update_project(*args, **kwargs)
             elif operation == "update_project_reference": value = self._client.update_project_reference(*args, **kwargs)
             elif operation == "update_project_shot": value = self._client.update_project_shot(*args, **kwargs)
-            elif operation == "update_timeline_document": value = self._client.update_timeline_document(*args, **kwargs)
-            elif operation == "replace_timeline_clip": value = self._client.replace_timeline_clip(*args, **kwargs)
             else: raise ValueError(f"unsupported generated operation: {operation}")
             receipt = None
             if isinstance(value, dict) and set(value) >= {"data", "receipt"}:
@@ -442,9 +438,24 @@ class RemoteTimelines(_RemoteFamily):
         super().__init__(client)
         self._invoker = invoker
 
-    def create(self, *, project, config: Mapping[str, Any], registry: Mapping[str, Any], slug=None, name=None, timeline_id=None, idempotency_key=None):
+    @staticmethod
+    def _retired_document_route(operation: str, *, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
-        return self._typed("create_timeline_document", project, timeline_id or uuid.uuid4().hex, key=key, config=config, registry=registry, slug=slug, name=name, idempotency_key=key)
+        return DomainResult.failure(
+            ErrorObject(
+                "retired_route",
+                f"timeline document route {operation!r} is retired; use canonical current-head inspection",
+                {
+                    "status": 410,
+                    "operation": operation,
+                    "replacement": "timelines.inspect/open_composition",
+                },
+            ),
+            idempotency_key=key,
+        )
+
+    def create(self, *, project, config: Mapping[str, Any], registry: Mapping[str, Any], slug=None, name=None, timeline_id=None, idempotency_key=None):
+        return self._retired_document_route("create", idempotency_key=idempotency_key)
     def list(self, project, *, cursor=None, limit=50, include_archived=False):
         result = self._typed("list_timelines", project, cursor=cursor, limit=limit)
         if not result.ok or include_archived or not isinstance(result.data, (list, tuple)):
@@ -503,15 +514,8 @@ class RemoteTimelines(_RemoteFamily):
         return DomainResult.success({**dict(match), "timeline_id": timeline_id})
 
     def show(self, project, ref):
-        # The runtime read endpoint is id-addressed while the product CLI is
-        # deliberately slug-friendly. Resolve the project-local slug to the
-        # canonical id before issuing the resource read. This keeps slug
-        # resolution inside the remote client and never creates a filesystem
-        # timeline authority.
-        resolved = self._resolve_timeline(project, ref)
-        if not resolved.ok:
-            return resolved
-        return self._typed("get_timeline", resolved.data["timeline_id"], project_id=str(project))
+        """Canonical current-head alias retained for SDK callers."""
+        return self.open_composition(project, ref)
 
     @staticmethod
     def _native_options(
@@ -875,24 +879,7 @@ class RemoteTimelines(_RemoteFamily):
             idempotency_key=inspected.idempotency_key,
         )
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
-        key = idempotency_key or uuid.uuid4().hex
-        if not project:
-            return DomainResult.failure(
-                ErrorObject("validation_error", "timeline save requires a project", {"field": "project"}),
-                idempotency_key=key,
-            )
-        return self._typed(
-            "update_timeline_document",
-            project,
-            ref,
-            key=key,
-            expected_version=expected_version,
-            config=config,
-            registry=registry,
-            slug=slug,
-            name=name,
-            idempotency_key=key,
-        )
+        return self._retired_document_route("save", idempotency_key=idempotency_key)
     def replace_clip(
         self,
         project,
@@ -904,32 +891,7 @@ class RemoteTimelines(_RemoteFamily):
         timing: str = "preserve-duration",
         idempotency_key=None,
     ):
-        key = idempotency_key or uuid.uuid4().hex
-        if not project:
-            return DomainResult.failure(
-                ErrorObject("validation_error", "timeline clip replacement requires a project", {"field": "project"}),
-                idempotency_key=key,
-            )
-        if timing != "preserve-duration":
-            return DomainResult.failure(
-                ErrorObject("validation_error", "timing must be preserve-duration", {"field": "timing"}),
-                idempotency_key=key,
-            )
-        if not clip_id:
-            return DomainResult.failure(
-                ErrorObject("validation_error", "timeline clip replacement requires a clip id", {"field": "clip_id"}),
-                idempotency_key=key,
-            )
-        return self._typed(
-            "replace_timeline_clip",
-            ref,
-            key=key,
-            clip_id=clip_id,
-            source_object_id=source_object_id,
-            expected_version=int(expected_version),
-            timing=timing,
-            idempotency_key=key,
-        )
+        return self._retired_document_route("replace-clip", idempotency_key=idempotency_key)
 
     def replace_parent_media(
         self,
@@ -1162,16 +1124,29 @@ class RemoteTimelines(_RemoteFamily):
     def diff(self, project, ref, *, from_version=None, to_version=None):
         if from_version is None or to_version is None: return DomainResult.failure(ErrorObject("validation_error", "timeline diff requires from_version and to_version", {}))
         return self._typed("diff_timeline", ref, from_version=from_version, to_version=to_version)
-    def _version(self, ref, expected_version):
+    def _version(self, project, ref, expected_version):
         if expected_version is not None: return int(expected_version)
-        current = self._client.get_timeline(ref)
-        return int(current.get("version", 1))
+        current = self._resolve_timeline(project, ref)
+        if not current.ok or not isinstance(current.data, Mapping):
+            raise WorkspaceClientError(404, "not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
+        value = current.data.get("version", current.data.get("config_version", 1))
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceClientError(502, "protocol_error", "Runtime timeline listing has no valid version", {}) from exc
     def archive(self, project, ref, *, expected_version=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
-        return self._typed("archive_timeline", ref, key=key, expected_version=self._version(ref, expected_version), idempotency_key=key)
+        try:
+            version = self._version(project, ref, expected_version)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
+        return self._typed("archive_timeline", ref, key=key, expected_version=version, idempotency_key=key)
     def recover(self, project, ref, *, expected_version=None, version=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
-        current_version = self._version(ref, expected_version)
+        try:
+            current_version = self._version(project, ref, expected_version)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
         return self._typed("recover_timeline", ref, key=key, expected_version=current_version, version=int(version) if version is not None else max(1, current_version - 1), idempotency_key=key)
 
 
@@ -1708,11 +1683,15 @@ class RemoteReferences(_RemoteFamily):
 
 class RemoteShots(_RemoteFamily):
     def group(self, project, timeline, *, clip_ids, name, expected_version, hold=None, idempotency_key=None):
-        from .shot_grouping import group_timeline_clips
-        return group_timeline_clips(shots=self, timelines=RemoteTimelines(self._client),
-                                    project=project, timeline=timeline, clip_ids=clip_ids,
-                                    name=name, expected_version=expected_version, hold=hold,
-                                    idempotency_key=idempotency_key)
+        key = idempotency_key or uuid.uuid4().hex
+        return DomainResult.failure(
+            ErrorObject(
+                "retired_route",
+                "legacy shot grouping is retired; publish a canonical parent composition",
+                {"status": 410, "operation": "shots.group", "replacement": "publish_parent_composition"},
+            ),
+            idempotency_key=key,
+        )
 
     def list(self, project, *, cursor=None, limit=50, include_archived=False):
         return self._typed("list_project_shots", project, cursor=cursor, limit=limit, include_archived=include_archived)
