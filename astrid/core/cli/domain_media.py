@@ -168,6 +168,29 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _open_ref(value: str) -> object:
+    """Decode a structured returned opening action, retaining plain ids."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if not isinstance(parsed, (dict, str)):
+        raise argparse.ArgumentTypeError("open reference must be a JSON object or string id")
+    return parsed
+
+
+def _cmd_open(parsed: argparse.Namespace) -> int:
+    result = parsed.client.media.open(
+        parsed.project,
+        parsed.ref,
+        materialize=parsed.materialize,
+        cache_root=parsed.cache_root,
+        preview_bytes=parsed.preview_bytes,
+        max_bytes=parsed.max_bytes,
+    )
+    return print_result(result, as_json=parsed.json)
+
+
 def _cmd_verify(parsed: argparse.Namespace) -> int:
     kwargs = {
         "realm": parsed.realm,
@@ -249,6 +272,39 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("ref", help="Exact project-scoped media id.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_show)
+
+
+def _configure_open(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser)
+    subparser.add_argument(
+        "ref",
+        type=_open_ref,
+        help="Returned structured opening reference (JSON object) or exact project media id.",
+    )
+    subparser.add_argument(
+        "--materialize",
+        action="store_true",
+        help="Write a verified bounded copy to a disposable local path.",
+    )
+    subparser.add_argument(
+        "--cache-root",
+        default=None,
+        help="Optional directory for explicit materialization.",
+    )
+    subparser.add_argument(
+        "--preview-bytes",
+        type=int,
+        default=16 * 1024,
+        help="Maximum inline preview bytes (default: 16384).",
+    )
+    subparser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=10 * 1024 * 1024,
+        help="Maximum bytes read/materialized (default: 10485760).",
+    )
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_open)
 
 
 def _configure_verify(subparser: argparse.ArgumentParser) -> None:
@@ -370,6 +426,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         configure=_configure_show,
     ),
     CommandSpec(
+        "open",
+        help="Open one returned source, text, view, artifact, or definition reference.",
+        configure=_configure_open,
+    ),
+    CommandSpec(
         "verify",
         help="Fingerprint-verify one realm location "
         "(missing/mutated bytes change zero rows).",
@@ -396,7 +457,7 @@ def build_parser(
 ) -> argparse.ArgumentParser:
     """Build the ``media`` product-family parser stamped with *client*.
 
-    Exactly the six verbs above are registered, plus the manifest-declared
+    Exactly the seven verbs above are registered, plus the manifest-declared
     nested ``references`` mount (``astrid media references <verb>``)
     embedded from the references product parser. There is no top-level
     references family.

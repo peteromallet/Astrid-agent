@@ -13,25 +13,44 @@ from astrid.sdk.results import InvocationResult
 class _Client:
     def __init__(self) -> None:
         self.visualize_inputs = None
-        self.timelines = SimpleNamespace(show=self.show)
+        self.timelines = SimpleNamespace(
+            open_composition=self.open_composition,
+            visualize=self.visualize,
+        )
 
-    def show(self, project, ref):  # noqa: ANN001
+    def open_composition(self, project, ref, **kwargs):  # noqa: ANN001
+        occurrence = kwargs.get("occurrence")
+        clip = {
+            "clip_id": "clip-b",
+            "track_id": "picture",
+            "occurrence_id": "occ-b",
+            "shot_id": "shot-b",
+        }
         return DomainResult.success(
             {
-                "project_slug": project,
-                "timeline_id": "tl-1",
-                "slug": ref,
-                "config": {
-                    "tracks": [{"id": "picture"}],
-                    "clips": [
-                        {"id": "clip-a", "track": "picture", "at": 0, "hold": 1},
-                        {"id": "clip-b", "track": "picture", "at": 1, "hold": 1, "shot_id": "shot-b"},
-                    ],
+                "kind": "timeline-inspection",
+                "summary": {
+                    "authority": "canonical_head",
+                    "revision_id": "head-1",
+                    "head_revision_id": "head-1",
+                    "is_current_head": True,
                 },
-                "occurrences": [{"clip_id": "clip-b", "occurrence_id": "occ-b", "shot_id": "shot-b"}],
-                "registry": {"assets": {}},
+                "query": {"occurrence": occurrence},
+                "targets": [{
+                    "kind": "clip",
+                    "timeline_id": "tl-1",
+                    "occurrence_id": "occ-b",
+                    "clip_id": "clip-b",
+                    "shot_id": "shot-b",
+                    "addressable": True,
+                }] if occurrence else [],
+                "clips": [clip] if occurrence else [],
             }
         )
+
+    def visualize(self, project, ref, **kwargs):  # noqa: ANN001
+        self.visualize_inputs = kwargs["options"]
+        return DomainResult.success({"kind": "timeline-view", "inspection": {"revision_id": "head-1"}})
 
     def invoke_result(self, capability_id, **kwargs):  # noqa: ANN001
         self.visualize_inputs = kwargs["inputs"]
@@ -57,7 +76,7 @@ def test_show_and_visualize_preserve_one_normalized_occurrence_target(capsys) ->
         ["show", "--project", "demo", "main", "--summary", "--occurrence", "occ-b"]
     )
     assert _cmd_show(show_args) == 0
-    shown = json.loads(capsys.readouterr().out)["data"]["inspection"]
+    shown = json.loads(capsys.readouterr().out)["data"]
     assert shown["query"]["occurrence"] == "occ-b"
     assert shown["targets"] == [
         {
@@ -78,14 +97,14 @@ def test_show_and_visualize_preserve_one_normalized_occurrence_target(capsys) ->
     assert client.visualize_inputs["occurrence"] == shown["query"]["occurrence"]
 
 
-def test_plain_show_keeps_the_full_document_shape(capsys) -> None:
+def test_plain_show_returns_the_canonical_inspection_shape(capsys) -> None:
     client = _Client()
     parser = build_parser(client)
     args = parser.parse_args(["show", "--project", "demo", "main"])
     assert _cmd_show(args) == 0
     shown = json.loads(capsys.readouterr().out)["data"]
-    assert shown["config"]["clips"]
-    assert shown.get("kind") != "timeline-inspection"
+    assert shown["kind"] == "timeline-inspection"
+    assert shown["summary"]["authority"] == "canonical_head"
 
 
 def test_show_prefers_shared_open_composition_adapter_when_available(capsys) -> None:
@@ -111,34 +130,15 @@ def test_show_prefers_shared_open_composition_adapter_when_available(capsys) -> 
     assert json.loads(capsys.readouterr().out)["data"]["kind"] == "timeline-inspection"
 
 
-def test_remote_open_composition_uses_immutable_parent_closure(monkeypatch) -> None:
-    from types import SimpleNamespace
+def test_show_fails_closed_without_canonical_adapter(capsys) -> None:
+    class LegacyOnly:
+        def __init__(self) -> None:
+            self.timelines = SimpleNamespace(
+                show=lambda *_args: DomainResult.success({"config": {"clips": []}})
+            )
 
-    from astrid.sdk.remote import RemoteTimelines
-
-    timelines = RemoteTimelines(object())
-    timelines.show = lambda project, ref: DomainResult.success({
-        "project_id": project,
-        "timeline_id": "tl-1",
-        "slug": ref,
-        "head_revision_id": "parent-1",
-        # This mutable projection is deliberately different from the closure.
-        "config": {"clips": [{"id": "mutable", "at": 0, "hold": 1}]},
-        "registry": {"assets": {}},
-    })
-    projected = SimpleNamespace(
-        config={"clips": [{"id": "pinned", "at": 0, "hold": 1, "occurrence_id": "occ-1"}], "tracks": []},
-        registry={"assets": {}},
-    )
-    monkeypatch.setattr(
-        "astrid.packs.rendering.executors.render.managed_timeline._project_exact_parent_head",
-        lambda **kwargs: (
-            {"revision_id": "parent-1", "content_digest": "sha256:parent"},
-            projected,
-            {"occurrences": [], "graph": {}},
-        ),
-    )
-    result = timelines.open_composition("p-1", "main")
-    assert result.ok
-    assert [row["clip_id"] for row in result.data["clips"]] == ["pinned"]
-    assert result.data["summary"]["authority"] == "canonical_head"
+    parser = build_parser(LegacyOnly())
+    args = parser.parse_args(["show", "--project", "demo", "main"])
+    assert _cmd_show(args) == 1
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "unavailable"

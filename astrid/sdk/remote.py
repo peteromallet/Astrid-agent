@@ -465,15 +465,20 @@ class RemoteTimelines(_RemoteFamily):
             receipt=result.receipt,
             idempotency_key=result.idempotency_key,
         )
-    def show(self, project, ref):
-        # The runtime read endpoint is id-addressed while the product CLI is
-        # deliberately slug-friendly. Resolve the project-local slug to the
-        # canonical id before issuing the resource read. This keeps slug
-        # resolution inside the remote client and never creates a filesystem
-        # timeline authority.
+
+    def _resolve_timeline(self, project, ref):
+        """Resolve a product reference to one Runtime timeline identity.
+
+        Current reads must resolve through the Runtime listing and native
+        inspection routes.  In particular, do not use ``get_timeline`` here:
+        that endpoint returns the legacy document projection (including
+        mutable config/registry bytes) and is not a current-head authority.
+        """
         rows = paged_rows(self._client.list_timelines, str(project), limit=50)
         if rows is None:
-            return DomainResult.failure(ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)}))
+            return DomainResult.failure(
+                ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
+            )
         match = next(
             (
                 item for item in rows
@@ -483,8 +488,30 @@ class RemoteTimelines(_RemoteFamily):
             None,
         )
         if match is None:
-            return DomainResult.failure(ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)}))
-        return self._typed("get_timeline", str(match.get("timeline_id")), project_id=str(project))
+            return DomainResult.failure(
+                ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
+            )
+        timeline_id = match.get("timeline_id") or match.get("id")
+        if not isinstance(timeline_id, str) or not timeline_id:
+            return DomainResult.failure(
+                ErrorObject(
+                    "protocol_error",
+                    "Runtime timeline listing omitted its canonical timeline id",
+                    {"project": str(project), "ref": str(ref)},
+                )
+            )
+        return DomainResult.success({**dict(match), "timeline_id": timeline_id})
+
+    def show(self, project, ref):
+        # The runtime read endpoint is id-addressed while the product CLI is
+        # deliberately slug-friendly. Resolve the project-local slug to the
+        # canonical id before issuing the resource read. This keeps slug
+        # resolution inside the remote client and never creates a filesystem
+        # timeline authority.
+        resolved = self._resolve_timeline(project, ref)
+        if not resolved.ok:
+            return resolved
+        return self._typed("get_timeline", resolved.data["timeline_id"], project_id=str(project))
 
     @staticmethod
     def _native_options(
@@ -499,6 +526,7 @@ class RemoteTimelines(_RemoteFamily):
         range_value=None,
         detail=False,
         neighbors=0,
+        cursor=None,
         formats=None,
     ) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -513,6 +541,8 @@ class RemoteTimelines(_RemoteFamily):
                 options[name] = value
         if range_value not in (None, "", []):
             options["range"] = range_value
+        if cursor not in (None, ""):
+            options["cursor"] = cursor
         if formats is not None:
             options["formats"] = list(formats)
         return options
@@ -532,18 +562,22 @@ class RemoteTimelines(_RemoteFamily):
         range_value=None,
         detail=False,
         neighbors=0,
+        cursor=None,
     ):
         """Inspect an exact Runtime timeline closure through the native route."""
-        timeline = self.show(project, ref)
+        if not callable(getattr(self._client, "inspect_timeline", None)):
+            return DomainResult.failure(
+                ErrorObject(
+                    "unavailable",
+                    "Runtime does not expose canonical timeline inspection",
+                    {"project": str(project), "timeline": str(ref)},
+                )
+            )
+        timeline = self._resolve_timeline(project, ref)
         if not timeline.ok or not isinstance(timeline.data, Mapping):
             return timeline
-        document = timeline.data
-        timeline_id = document.get("timeline_id") or document.get("id")
-        if not isinstance(timeline_id, str) or not timeline_id:
-            return DomainResult.failure(
-                ErrorObject("protocol_error", "timeline read did not return a canonical timeline id", {"project": str(project), "timeline": str(ref)})
-            )
-        pinned_revision = revision_id or document.get("parent_revision_id") or document.get("head_revision_id")
+        timeline_id = timeline.data["timeline_id"]
+        pinned_revision = revision_id or timeline.data.get("head_revision_id") or timeline.data.get("parent_revision_id")
         options = self._native_options(
             revision_id=pinned_revision,
             limit=limit,
@@ -555,6 +589,7 @@ class RemoteTimelines(_RemoteFamily):
             range_value=range_value,
             detail=detail,
             neighbors=neighbors,
+            cursor=cursor,
         )
         return self._typed("inspect_timeline", str(project), timeline_id, options=options)
 
@@ -596,16 +631,11 @@ class RemoteTimelines(_RemoteFamily):
             return DomainResult.failure(
                 ErrorObject("validation_error", "native timeline views do not accept an output path", {"field": "out"})
             )
-        timeline = self.show(project, ref)
+        timeline = self._resolve_timeline(project, ref)
         if not timeline.ok or not isinstance(timeline.data, Mapping):
             return timeline
-        document = timeline.data
-        timeline_id = document.get("timeline_id") or document.get("id")
-        if not isinstance(timeline_id, str) or not timeline_id:
-            return DomainResult.failure(
-                ErrorObject("protocol_error", "timeline read did not return a canonical timeline id", {"project": str(project), "timeline": str(ref)})
-            )
-        pinned_revision = revision_id or document.get("parent_revision_id") or document.get("head_revision_id")
+        timeline_id = timeline.data["timeline_id"]
+        pinned_revision = revision_id or timeline.data.get("head_revision_id") or timeline.data.get("parent_revision_id")
         view_options = dict(options or {})
         requested_run = view_options.get("render_run")
         explicit_run = requested_run not in (None, "", "latest")
@@ -621,16 +651,31 @@ class RemoteTimelines(_RemoteFamily):
             project_reader = getattr(self._client, "get_project", None)
             project_row = project_reader(str(project)) if callable(project_reader) else None
             project_id = (
-                str(project_row.get("project_id") or project_row.get("id"))
+                str(timeline.data.get("project_id"))
+                if timeline.data.get("project_id")
+                else str(project_row.get("project_id") or project_row.get("id"))
                 if isinstance(project_row, Mapping) and (project_row.get("project_id") or project_row.get("id"))
                 else str(project)
             )
             from astrid.sdk.timeline_filmstrip import matching_composed_render
 
+            # Pass only Runtime identity/head fields into render matching.
+            # The list response may still carry legacy document fields on
+            # older daemons; current visualization must never consume them.
+            authority_row = {
+                key: timeline.data[key]
+                for key in (
+                    "project_id", "project_slug", "timeline_id", "timeline_slug",
+                    "timeline_ulid", "config_version", "head_event_id", "head_hash",
+                    "config_hash", "registry_hash", "materialized_registry_hash",
+                )
+                if timeline.data.get(key) is not None
+            }
+            authority_row["parent_revision_id"] = pinned_revision
             exact_render = matching_composed_render(
                 self._client,
                 project_id=project_id,
-                timeline={**dict(document), "parent_revision_id": pinned_revision},
+                timeline=authority_row,
                 limit=50,
             )
         else:
@@ -696,6 +741,7 @@ class RemoteTimelines(_RemoteFamily):
             range_value=range_value,
             detail=detail,
             neighbors=neighbors,
+            cursor=view_options.get("cursor"),
             formats=formats,
         )
         return self._typed("create_timeline_view", str(project), timeline_id, options=options)
@@ -708,8 +754,25 @@ class RemoteTimelines(_RemoteFamily):
         pagination identity, and snapshot authority stay in Runtime.
         """
         selected = data.get("selected") if isinstance(data.get("selected"), list) else []
+        selected_parent = data.get("selected_parent_clips") if isinstance(data.get("selected_parent_clips"), list) else []
         clips: list[dict[str, Any]] = []
         targets: list[dict[str, Any]] = []
+        for item in selected_parent:
+            if not isinstance(item, Mapping):
+                continue
+            clip = dict(item)
+            clip.setdefault("track", clip.get("track_id"))
+            clip.setdefault("target_kind", "parent_clip")
+            clips.append(clip)
+            targets.append({
+                "kind": "parent_clip",
+                "target_kind": "parent_clip",
+                "timeline_id": data.get("timeline_id"),
+                "clip_id": item.get("clip_id"),
+                "track_id": item.get("track_id"),
+                "element_ref": item.get("element_ref"),
+                "addressable": True,
+            })
         for row in selected:
             if not isinstance(row, Mapping):
                 continue
@@ -740,8 +803,12 @@ class RemoteTimelines(_RemoteFamily):
             "kind": "timeline-inspection",
             "summary": {
                 "authority": "canonical_head",
+                "representation": data.get("representation", "canonical_head"),
+                "is_current_head": data.get("is_current_head"),
                 "revision_id": data.get("revision_id"),
+                "head_revision_id": data.get("head_revision_id"),
                 "snapshot_digest": data.get("snapshot_digest"),
+                "head_content_digest": data.get("head_content_digest"),
                 "evidence_kind": data.get("evidence_kind", "declared_inputs"),
             },
             "query": dict(selectors),
@@ -750,7 +817,7 @@ class RemoteTimelines(_RemoteFamily):
             "media": [],
             "outputs": [],
             "diagnostics": {"selection_status": data.get("selection_status"), "target_count": data.get("target_count", 0)},
-            "pagination": {"next_cursor": None, "limit": selectors.get("limit")},
+            "pagination": {"next_cursor": data.get("next_cursor"), "limit": selectors.get("limit")},
             "native_inspection": dict(data),
             "scope": {"authority": "canonical_head", "project": str(project), "timeline": str(ref), "read_only": True},
         }
@@ -777,76 +844,18 @@ class RemoteTimelines(_RemoteFamily):
         sister command; it does not create a second document or imply that
         source-media playback is available.
         """
-        # Current generated transports expose Runtime's native inspection
-        # operation.  Use it as the sole closure/selector authority; the
-        # legacy projection below remains only for older test doubles and
-        # transport implementations that predate the native route.
-        if callable(getattr(self._client, "inspect_timeline", None)) and cursor is None:
-            inspected = self.inspect(
-                project,
-                ref,
-                limit=limit,
-                clip=clip,
-                occurrence=occurrence,
-                shot=shot,
-                track=track,
-                asset=asset,
-                range_value=range_value,
-                detail=detail,
-                neighbors=neighbors,
-            )
-            if not inspected.ok or not isinstance(inspected.data, Mapping):
-                return inspected
-            return DomainResult.success(
-                self._native_projection(inspected.data, project=project, ref=ref),
-                receipt=inspected.receipt,
-                idempotency_key=inspected.idempotency_key,
-            )
-
-        result = self.show(project, ref)
-        if not result.ok or not isinstance(result.data, Mapping):
-            return result
-        from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import project_timeline_document
-
-        document = dict(result.data)
-        document.setdefault("project_id", str(project))
-        parent_head = document.get("head_revision_id") or document.get("parent_revision_id")
-        if parent_head:
-            # A canonical parent head is an immutable closure authority. Reuse
-            # the same Runtime reader as managed rendering instead of letting a
-            # structural inspection drift onto mutable child documents.
-            try:
-                from astrid.packs.rendering.executors.render.managed_timeline import _project_exact_parent_head
-
-                project_id = str(document.get("project_id") or project)
-                timeline_id = str(document.get("timeline_id") or ref)
-                _parent, projected, expansion = _project_exact_parent_head(
-                    client=self._client,
-                    project_id=project_id,
-                    timeline_id=timeline_id,
-                    parent_revision_id=str(parent_head),
+        if not callable(getattr(self._client, "inspect_timeline", None)):
+            return DomainResult.failure(
+                ErrorObject(
+                    "unavailable",
+                    "Runtime does not expose canonical timeline inspection",
+                    {"project": str(project), "timeline": str(ref)},
                 )
-            except Exception as exc:
-                return DomainResult.failure(
-                    ErrorObject(
-                        "composition_closure_unavailable",
-                        "the canonical parent composition closure could not be opened",
-                        {"project": str(project), "timeline": str(ref), "parent_revision_id": str(parent_head), "reason": str(exc)},
-                    )
-                )
-            document["config"] = projected.config
-            document["registry"] = projected.registry
-            document["occurrences"] = expansion["occurrences"]
-            document["parent_revision_id"] = str(parent_head)
-            document["head_revision_id"] = str(parent_head)
-            digest = _parent.get("content_digest")
-            if isinstance(digest, str):
-                document["head_hash"] = digest.removeprefix("sha256:")
-            document["composition_graph"] = expansion["graph"]
-        projection = project_timeline_document(
-            document,
+            )
+        inspected = self.inspect(
+            project,
+            ref,
             limit=limit,
-            cursor=cursor,
             clip=clip,
             occurrence=occurrence,
             shot=shot,
@@ -854,18 +863,16 @@ class RemoteTimelines(_RemoteFamily):
             asset=asset,
             range_value=range_value,
             detail=detail,
+            neighbors=neighbors,
+            cursor=cursor,
         )
-        projection["scope"] = {
-            "authority": projection["summary"]["authority"],
-            "project": str(project),
-            "timeline": str(ref),
-            "read_only": True,
-            "source_media_actions": "metadata_only_until_runtime_source_handle",
-        }
+        if not inspected.ok or not isinstance(inspected.data, Mapping):
+            return inspected
+        projection = self._native_projection(inspected.data, project=project, ref=ref)
         return DomainResult.success(
             projection,
-            receipt=result.receipt,
-            idempotency_key=result.idempotency_key,
+            receipt=inspected.receipt,
+            idempotency_key=inspected.idempotency_key,
         )
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
@@ -958,7 +965,11 @@ class RemoteTimelines(_RemoteFamily):
                 idempotency_key=key,
             )
 
-        timeline_result = self.show(project, ref)
+        # Resolve only canonical Runtime identity here.  The replacement
+        # operation already opens the pinned parent composition below; a
+        # legacy document read would be both unnecessary and stale once the
+        # Runtime document route is retired.
+        timeline_result = self._resolve_timeline(project, ref)
         if not timeline_result.ok:
             return timeline_result
         timeline = timeline_result.data
@@ -1165,6 +1176,35 @@ class RemoteTimelines(_RemoteFamily):
 
 
 class RemoteMedia(_RemoteFamily):
+    def open(
+        self,
+        project: str,
+        ref: Mapping[str, Any] | str,
+        *,
+        materialize: bool = False,
+        cache_root: str | Path | None = None,
+        preview_bytes: int = 16 * 1024,
+        max_bytes: int = 10 * 1024 * 1024,
+    ) -> DomainResult[Any]:
+        """Open one returned source/artifact reference through one read facade.
+
+        Resolution and bounded delivery live in ``media_open`` so the SDK and
+        evaluator-facing callers share exactly the same identity, scope,
+        integrity, and unavailable behavior.  This operation has no Runtime
+        mutation or render/task side effects.
+        """
+        from .media_open import open_reference
+
+        return open_reference(
+            self._client,
+            project,
+            ref,
+            materialize=materialize,
+            cache_root=cache_root,
+            preview_bytes=preview_bytes,
+            max_bytes=max_bytes,
+        )
+
     @staticmethod
     def _managed_realm_error(realm: str | None, *, idempotency_key: str | None = None) -> DomainResult[Any] | None:
         if realm == "managed_local":

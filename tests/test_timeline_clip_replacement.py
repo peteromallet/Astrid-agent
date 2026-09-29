@@ -127,7 +127,7 @@ def test_remote_parent_media_replacement_publishes_exact_closure_once() -> None:
             return ([{"project_id": project, "timeline_id": "main", "slug": "main"}], None)
 
         def get_timeline(self, timeline_id, *, project_id=None):
-            return {"project_id": "project-1", "timeline_id": timeline_id, "version": 1}
+            raise AssertionError("canonical parent replacement must not read the legacy timeline document")
 
         def get_project_parent_composition_revision(self, project_id, timeline_id, revision):
             assert (project_id, timeline_id, revision) == ("project-1", "main", "parent-1")

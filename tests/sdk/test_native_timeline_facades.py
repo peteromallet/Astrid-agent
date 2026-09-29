@@ -13,7 +13,7 @@ class _NativeTransport:
         return [[{"timeline_id": "tl-1", "slug": "main", "parent_revision_id": "rev-7"}], None]
 
     def get_timeline(self, timeline_id, *, project_id=None):
-        return {"timeline_id": timeline_id, "slug": "main", "parent_revision_id": "rev-7"}
+        raise AssertionError("canonical inspection must not read the legacy timeline document")
 
     def inspect_timeline(self, project, timeline, *, options):
         self.inspect_calls.append((project, timeline, options))
@@ -58,6 +58,49 @@ def test_remote_open_composition_uses_runtime_inspection_authority() -> None:
             "occurrence": "occ-1",
         }
     )]
+
+
+def test_remote_open_composition_forwards_native_cursor_without_legacy_read() -> None:
+    transport = _NativeTransport()
+    result = RemoteTimelines(transport).open_composition(
+        "project-1", "main", cursor="cursor-1", limit=3
+    )
+    assert result.ok
+    assert transport.inspect_calls[0][2]["cursor"] == "cursor-1"
+    assert transport.inspect_calls[0][2]["limit"] == 3
+
+
+def test_native_projection_keeps_parent_effect_targets_without_shot_identity() -> None:
+    transport = _NativeTransport()
+
+    original_inspect = transport.inspect_timeline
+
+    def inspect(project, timeline, *, options):  # noqa: ANN001
+        data = original_inspect(project, timeline, options=options)
+        data["selected"] = []
+        data["selected_parent_clips"] = [{
+            "clip_id": "effect-1",
+            "track_id": "effects",
+            "clip_type": "element",
+            "target_kind": "parent_clip",
+            "element_ref": {"id": "blur", "kind": "effect"},
+            "parameters": {"amount": 0.5},
+        }]
+        return data
+
+    transport.inspect_timeline = inspect
+    result = RemoteTimelines(transport).open_composition("project-1", "main")
+    assert result.ok
+    assert result.data["targets"] == [{
+        "kind": "parent_clip",
+        "target_kind": "parent_clip",
+        "timeline_id": "tl-1",
+        "clip_id": "effect-1",
+        "track_id": "effects",
+        "element_ref": {"id": "blur", "kind": "effect"},
+        "addressable": True,
+    }]
+    assert result.data["clips"][0]["target_kind"] == "parent_clip"
 
 
 def test_remote_visualize_creates_runtime_owned_view_without_executor() -> None:

@@ -24,10 +24,11 @@ read/CAS-save convenience operation):
   optional ``--config``/``--registry`` JSON, ``--default``, and
   ``--idempotency-key``; a fresh key is generated and returned when absent);
 - ``list`` — ``client.timelines.list`` (active timelines only), rendered as
-  compact identity/count summaries; use ``show`` for the full document;
-- ``show`` — ``client.timelines.show`` by UUID, ULID, or slug; ``--summary``
-  returns a bounded editor-oriented clip/track view instead of the full
-  document;
+  compact identity/count summaries; use ``show`` for the canonical current
+  head inspection;
+- ``show`` — the Runtime-owned bounded current-head inspection by UUID, ULID,
+  or slug; ``--summary`` is retained as a presentation spelling and never
+  exposes the legacy document;
 - ``retime-clip`` — one scoped read/CAS-save operation for changing a clip's
   start; the safe non-rippling default preserves the existing end, while
   ``--preserve-duration`` explicitly slides the clip without changing length;
@@ -141,9 +142,8 @@ def _cmd_list(parsed: argparse.Namespace) -> int:
     result = parsed.client.timelines.list(
         parsed.project, include_archived=parsed.include_archived
     )
-    # Listing is a discovery route.  Keep the full document available through
-    # ``show`` while preventing a registry/config blob from flooding the
-    # terminal (and agent context) during the common list operation.
+    # Listing is a discovery route. Keep the identity/count view compact and
+    # leave current-head content to the canonical ``show`` inspection route.
     if result.ok and isinstance(result.data, (list, tuple)):
         from astrid.sdk.contracts import DomainResult
 
@@ -204,31 +204,33 @@ def _timeline_summary(item: Any) -> Any:
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
-    # Prefer the SDK's single bounded composition adapter when the client has
-    # one.  Test doubles and older clients fall back to the same projection
-    # below, so this remains backwards-compatible without creating a second
-    # storage authority.
-    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import (
-        inspection_options,
-        project_timeline_document,
-    )
+    """Print the Runtime-owned canonical current-head inspection.
+
+    ``show`` deliberately has no whole-document fallback.  A legacy timeline
+    document is a mutable storage projection and cannot be presented as the
+    current editor state when the native Runtime inspection route is absent.
+    """
+    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import inspection_options
     values = {
         name: getattr(parsed, name, None)
         for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor")
     }
     normalized = inspection_options(values)
-    selectors = {
-        "clip": normalized["clip"], "occurrence": normalized["occurrence"],
-        "shot": normalized["shot"], "track": normalized["tracks"],
-        "asset": normalized["asset"],
-        "range": values.get("range"), "detail": normalized["detail"],
-    }
-    has_selector = any(
-        selectors[name] not in (None, "", [], ())
-        for name in ("clip", "occurrence", "shot", "track", "asset", "range")
-    ) or selectors["detail"] is True
     opener = getattr(parsed.client.timelines, "open_composition", None)
-    if callable(opener) and (parsed.summary or has_selector):
+    if not callable(opener):
+        from astrid.sdk.contracts import DomainResult, ErrorObject
+
+        result = DomainResult.failure(
+            ErrorObject(
+                "unavailable",
+                "canonical timeline inspection is unavailable",
+                {"project": str(parsed.project), "timeline": str(parsed.ref)},
+            )
+        )
+    else:
+        # ``summary`` remains accepted as a presentation flag for CLI
+        # compatibility, but both forms read the same bounded canonical
+        # projection and never expose the legacy document.
         result = opener(
             parsed.project,
             parsed.ref,
@@ -242,37 +244,6 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
             range_value=values.get("range"),
             detail=normalized["detail"],
         )
-    else:
-        result = parsed.client.timelines.show(parsed.project, parsed.ref)
-    if result.ok and isinstance(result.data, Mapping):
-        # Keep the legacy bounded summary shape, but derive its inspection
-        # metadata through the same shared projection used by visualize. This
-        # makes occurrence/selected-media/output identity agree without
-        # exposing storage internals or changing the ordinary full show route.
-        # ``detail`` is a presentation flag, not a scope selector. In
-        # particular, its default False must not turn ordinary ``show`` into
-        # the bounded inspection projection.
-        if parsed.summary or has_selector:
-            if result.data.get("kind") == "timeline-inspection":
-                return print_result(result, as_json=parsed.json)
-            projection = project_timeline_document(
-                result.data,
-                clip=normalized["clip"], occurrence=normalized["occurrence"],
-                shot=normalized["shot"], track=normalized["tracks"],
-                asset=normalized.get("asset"), range_value=values.get("range"),
-                detail=normalized["detail"], limit=values.get("limit") or 50,
-                cursor=values.get("cursor"),
-            )
-            if parsed.summary:
-                result = _summary_result(result, projection=projection)
-            else:
-                from astrid.sdk.contracts import DomainResult
-
-                result = DomainResult.success(
-                    {"kind": "timeline-inspection", **projection},
-                    receipt=result.receipt,
-                    idempotency_key=result.idempotency_key,
-                )
     return print_result(result, as_json=parsed.json)
 
 
@@ -290,100 +261,6 @@ def _clip_duration(clip: Mapping[str, Any]) -> float | None:
     if _numeric(source_start) and _numeric(source_end) and _numeric(speed) and float(speed) > 0:
         return max(0.0, (float(source_end) - float(source_start)) / float(speed))
     return None
-
-
-def _compact_clip(clip: Any) -> Any:
-    if not isinstance(clip, Mapping):
-        return clip
-    summary: dict[str, Any] = {}
-    for source, target in (
-        ("id", "id"),
-        ("track", "track"),
-        ("clipType", "clip_type"),
-        ("clip_type", "clip_type"),
-        ("asset", "asset"),
-        ("shot_id", "shot_id"),
-    ):
-        value = clip.get(source)
-        if value is not None and target not in summary:
-            summary[target] = value
-    at = clip.get("at")
-    if _numeric(at):
-        summary["at"] = float(at)
-    duration = _clip_duration(clip)
-    if duration is not None:
-        summary["duration"] = duration
-        if _numeric(at):
-            summary["end"] = float(at) + duration
-    for key in ("hold", "from", "to", "speed"):
-        value = clip.get(key)
-        if value is not None and _numeric(value):
-            summary[key] = value
-    return summary
-
-
-def _compact_track(track: Any) -> Any:
-    if not isinstance(track, Mapping):
-        return track
-    summary: dict[str, Any] = {}
-    for key in ("id", "name", "label", "kind", "type"):
-        if track.get(key) is not None:
-            summary[key] = track[key]
-    return summary or dict(track)
-
-
-def _timeline_document_summary(data: Any, *, projection: Mapping[str, Any] | None = None) -> Any:
-    """Build the bounded read model used by editor agents.
-
-    This intentionally keeps timing and identity, while excluding prompts,
-    effect parameters, media URLs, and the full asset registry. The full
-    document remains available through the normal ``show`` route.
-    """
-    if not isinstance(data, Mapping):
-        return data
-    config = data.get("config") if isinstance(data.get("config"), Mapping) else {}
-    registry = data.get("registry") if isinstance(data.get("registry"), Mapping) else {}
-    clips = config.get("clips") if isinstance(config.get("clips"), list) else []
-    tracks = config.get("tracks") if isinstance(config.get("tracks"), list) else []
-    summary: dict[str, Any] = {
-        "kind": "timeline-summary",
-        "timeline_id": data.get("timeline_id"),
-        "project_id": data.get("project_id"),
-        "slug": data.get("slug"),
-        "name": data.get("name"),
-        "config_version": data.get("config_version", data.get("version")),
-        "archived": bool(data.get("archived", False)),
-        "track_count": len(tracks),
-        "clip_count": len(clips),
-        "asset_count": len(registry.get("assets", {})) if isinstance(registry.get("assets"), (Mapping, list, tuple)) else 0,
-        "tracks": [_compact_track(track) for track in tracks],
-        "clips": sorted(
-            [_compact_clip(clip) for clip in clips],
-            key=lambda clip: (float(clip.get("at", 0)) if isinstance(clip, Mapping) and _numeric(clip.get("at")) else 0.0, str(clip.get("track", "")) if isinstance(clip, Mapping) else ""),
-        ),
-    }
-    if isinstance(projection, Mapping):
-        # This is deliberately nested so existing consumers of the bounded
-        # summary's track/clip/count fields remain compatible.
-        summary["inspection"] = {
-            key: projection[key]
-            for key in (
-                "query", "targets", "clips", "media", "outputs",
-                "diagnostics", "pagination",
-            )
-            if key in projection
-        }
-    return summary
-
-
-def _summary_result(result: Any, *, projection: Mapping[str, Any] | None = None) -> Any:
-    from astrid.sdk.contracts import DomainResult
-
-    return DomainResult.success(
-        _timeline_document_summary(result.data, projection=projection),
-        receipt=result.receipt,
-        idempotency_key=result.idempotency_key,
-    )
 
 
 def _timing_snapshot(clip: Mapping[str, Any]) -> dict[str, float | None]:
@@ -1204,7 +1081,7 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--summary",
         action="store_true",
-        help="Return a bounded editor summary with tracks, clip timing, and counts.",
+        help="Presentation flag for the canonical bounded inspection (no legacy document).",
     )
     subparser.add_argument(
         "--occurrence",
