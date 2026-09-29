@@ -8,7 +8,7 @@ from fractions import Fraction
 from typing import Any
 
 from .exceptions import CapabilityValidationError
-from .pagination import paged_rows
+from .pagination import page_pair, paged_rows
 from .project_render import _SUCCESS_STATES, _identifier, _render_capability, _state
 
 _AUTHORITY_IDENTITY_FIELDS = (
@@ -16,6 +16,153 @@ _AUTHORITY_IDENTITY_FIELDS = (
     'config_version', 'head_event_id', 'head_hash', 'config_hash', 'registry_hash',
     'materialized_registry_hash',
 )
+
+
+def matching_composed_render(
+    client: Any, *, project_id: str, timeline: Mapping[str, Any], limit: int = 50,
+) -> str | None:
+    """Return one recent successful render whose frozen authority is current.
+
+    This is intentionally a bounded read. A candidate must identify the exact
+    timeline and match every current immutable identity field available on the
+    timeline row, including at least one revision/content pin. Ambiguous or
+    incomplete authority fails closed.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
+        return None
+    timeline_id = _identifier(timeline, "timeline_id", "id")
+    if not project_id or not timeline_id:
+        return None
+    current: dict[str, Any] = {"timeline_id": timeline_id}
+    for key in ("project_id", "project_slug", "timeline_slug", "timeline_ulid", "config_version",
+                "head_event_id", "head_hash", "config_hash", "registry_hash", "materialized_registry_hash"):
+        if timeline.get(key) is not None:
+            current[key] = timeline[key]
+    revision = _identifier(timeline, "parent_revision_id", "head_revision_id", "revision_id")
+    if revision:
+        current["parent_revision_id"] = revision
+
+    def exact_authority(authority: Mapping[str, Any]) -> bool:
+        if _identifier(authority, "timeline_id") != timeline_id:
+            return False
+        if _is_candidate_render({}, authority):
+            candidate = authority.get("authoring_preview")
+            expected_parent = current.get("parent_revision_id")
+            if (
+                not isinstance(candidate, Mapping)
+                or not expected_parent
+                or candidate.get("candidate_parent_revision_id") != expected_parent
+                or not candidate.get("candidate_digest")
+                or not candidate.get("publication_digest")
+            ):
+                return False
+        immutable = ("parent_revision_id", "config_version", "head_hash", "config_hash", "registry_hash",
+                     "materialized_registry_hash", "head_event_id")
+        pins = [key for key in immutable if current.get(key) is not None]
+        if not pins:
+            return False
+        aliases = {
+            "parent_revision_id": ("parent_revision_id", "head_revision_id", "revision_id"),
+        }
+        matched_pin = False
+        for key in pins:
+            names = aliases.get(key, (key,))
+            actual = next((authority.get(name) for name in names if authority.get(name) is not None), None)
+            if actual is None or actual != current[key]:
+                return False
+            matched_pin = True
+        return matched_pin
+
+    # A transport that only exposes the native input-view surface has no
+    # render-history reader. That is a valid input-only capability, not a
+    # composed lookup failure: ``auto`` falls back to inputs and ``composed``
+    # returns the normal render-required diagnostic.
+    list_runs = getattr(client, "list_project_runs", None)
+    if not callable(list_runs):
+        return None
+    try:
+        page_value = list_runs(project_id, cursor=None, limit=limit)
+    except Exception:
+        return None
+    if hasattr(page_value, "ok") and hasattr(page_value, "data"):
+        if not bool(page_value.ok):
+            return None
+        page_value = page_value.data
+    page = page_pair(page_value)
+    if page is None:
+        return None
+    rows, _next_cursor = page
+    if len(rows) > limit:
+        return None
+    ordered = sorted(
+        (row for row in rows if isinstance(row, Mapping)
+         and _render_capability(row) == "rendering.render" and _state(row) in _SUCCESS_STATES),
+        key=lambda row: (str(row.get("created_at") or row.get("updated_at") or ""),
+                         _identifier(row, "run_id", "id")),
+        reverse=True,
+    )
+    for listed in ordered:
+        run_id = _identifier(listed, "run_id", "id")
+        if not run_id:
+            continue
+        run = client.get_run(run_id)
+        if (not isinstance(run, Mapping) or _state(run) not in _SUCCESS_STATES
+                or _identifier(run, "project_id", "project") != project_id):
+            continue
+        task_ids = run.get("task_ids")
+        if not isinstance(task_ids, list) or len(task_ids) > 20:
+            continue
+        render_tasks = []
+        for task_id in task_ids:
+            task = client.get_task(str(task_id))
+            if isinstance(task, Mapping) and _render_capability(task) == "rendering.render" and _state(task) in _SUCCESS_STATES:
+                render_tasks.append(task)
+        if len(render_tasks) != 1:
+            continue
+        task = render_tasks[0]
+        try:
+            envelope = _envelope(task)
+            authority = _authority(envelope)
+        except CapabilityValidationError:
+            continue
+        frozen_inputs = envelope.get("inputs")
+        if isinstance(frozen_inputs, Mapping) and frozen_inputs.get("profile") is not None:
+            # A caller-selected render profile is not interchangeable with the
+            # normal timeline profile for implicit auto/final-output reuse.
+            # Such previews remain inspectable by explicit run ID.
+            continue
+        if not exact_authority(authority):
+            continue
+        result = task.get("result")
+        raw_outputs = result.get("outputs") if isinstance(result, Mapping) else None
+        if not isinstance(raw_outputs, list) and isinstance(result, Mapping):
+            raw_outputs = result.get("output_objects")
+        outputs = [item for item in (raw_outputs or []) if isinstance(item, Mapping)
+                   and _identifier(item, "output_port", "port", "name") == "video"]
+        if len(outputs) > 1:
+            continue
+        from .project_render import (
+            _association_needs_managed_lookup,
+            _find_publication_association,
+            _lookup_managed_output,
+        )
+        output = outputs[0] if outputs else {}
+        association = _find_publication_association(task=task, run=run, output=output)
+        if association is None or _association_needs_managed_lookup(association):
+            association = _lookup_managed_output(
+                client=client,
+                project_id=project_id,
+                run_id=run_id,
+                task_id=_identifier(task, "task_id", "id"),
+                output=output,
+                association=association,
+            )
+        if association is not None:
+            # Ordered by creation time: the first verified exact output is
+            # the fresh authority for this state. Older renders of the same
+            # immutable state are harmless and must not make auto ambiguous.
+            return run_id
+    return None
 
 
 def _fail(message: str, *, details: Mapping[str, Any] | None = None) -> None:
@@ -76,6 +223,40 @@ def _is_candidate_render(envelope: Mapping, authority: Mapping | None = None) ->
         if isinstance(value.get("authoring_preview"), Mapping):
             return True
     return False
+
+
+def _explicit_render_selection(
+    envelope: Mapping, authority: Mapping[str, Any], timeline: Mapping[str, Any] | None,
+) -> str:
+    """Truthfully label an explicitly selected immutable render authority."""
+    if _is_candidate_render(envelope, authority):
+        return "explicit_candidate_preview"
+    if not isinstance(timeline, Mapping):
+        return "explicit_unverified_legacy_render"
+    aliases = {
+        "parent_revision_id": ("parent_revision_id", "head_revision_id", "revision_id"),
+    }
+    compared = 0
+    for key in (
+        "parent_revision_id", "config_version", "head_event_id", "head_hash",
+        "config_hash", "registry_hash", "materialized_registry_hash",
+    ):
+        expected = next(
+            (timeline.get(name) for name in aliases.get(key, (key,)) if timeline.get(name) is not None),
+            None,
+        )
+        actual = next(
+            (authority.get(name) for name in aliases.get(key, (key,)) if authority.get(name) is not None),
+            None,
+        )
+        if expected is None:
+            continue
+        if actual is None:
+            return "explicit_unverified_legacy_render"
+        compared += 1
+        if expected != actual:
+            return "explicit_historical_render"
+    return "explicit_current_render" if compared else "explicit_unverified_legacy_render"
 
 
 def _timeline_snapshot(envelope: Mapping) -> Mapping:
@@ -413,7 +594,11 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         from .client import AstridClient
         with AstridClient.open_from_launcher() as connected:
             return prepare_filmstrip(inputs, project=project, client=connected)
-    client = getattr(getattr(client, '_remote', None), '_transport', client)
+    # Public SDK calls arrive through AstridClient; the timelines facade
+    # dispatches through RemoteAstridClient directly. Both wrap the same
+    # workspace transport whose project/run readers admission needs.
+    remote = getattr(client, '_remote', client)
+    client = getattr(remote, '_transport', remote)
     from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import render_status
     if inputs.get('rendered_video'):
         _fail('Filmstrip review accepts a managed --render-run, not --rendered-video.')
@@ -646,7 +831,10 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         ))
     run_id = _identifier(run, 'id', 'run_id')
     snapshot = build_filmstrip_snapshot(envelope, client=client, project=canonical_project, run_id=run_id, video_digest=digest)
-    snapshot['metadata']['selection'] = 'explicit_render' if exact else 'latest_current_render'
+    snapshot['metadata']['selection'] = (
+        _explicit_render_selection(envelope, authority, timeline_row)
+        if exact else 'latest_current_render'
+    )
     from .managed_transcript import transcript_input_from_snapshot
     timeline_snapshot = _timeline_snapshot(envelope)
     config = timeline_snapshot.get('config', {})

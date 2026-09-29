@@ -13,6 +13,144 @@ from typing import Any, Callable, Iterable, Mapping, Protocol
 Json = Mapping[str, Any]
 
 
+# These values are intentionally a small policy vocabulary, rather than a
+# second grading framework.  The suite's assertion table says what evidence a
+# case needs; the existing concrete checkers below decide whether that evidence
+# matches.  Keeping the vocabulary here makes malformed/ambiguous policy data
+# fail at setup instead of silently weakening a later review.
+ASSERTION_OUTPUT_POLICIES = frozenset({
+    "none",
+    "baseline-only",
+    "requested-preview",
+    "required-after-edit",
+    "required-audio",
+    "semantic-only",
+})
+_ASSERTION_POLICY_FIELDS = frozenset({"target", "preserve", "output", "positive", "negative"})
+_OUTPUTS_REQUIRING_SAMPLES = frozenset(ASSERTION_OUTPUT_POLICIES - {"none"})
+_OUTPUTS_REQUIRING_TOLERANCE = frozenset({
+    "required-after-edit", "required-audio", "semantic-only",
+})
+
+
+class AssertionPolicyError(ValueError):
+    """The suite's case assertion contract is malformed or incomplete."""
+
+
+def _non_empty_string_list(value: Any, field: str, case_id: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise AssertionPolicyError(f"{case_id} assertion policy {field} must be a non-empty list")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise AssertionPolicyError(f"{case_id} assertion policy {field} must contain non-empty strings")
+    return [str(item) for item in value]
+
+
+def validate_assertion_policy(
+    policy: Mapping[str, Any], *, case_id: str = "<unknown>",
+) -> dict[str, Any]:
+    """Validate one compact case-to-evidence policy and return a copy.
+
+    This is deliberately not a generic outcome grader.  It only validates the
+    contract consumed by the existing checkers: target/preservation scope,
+    positive and negative expectations, and the output evidence required for
+    the case.  Callers can therefore fail closed before launching a worker,
+    while qualitative claims still remain an explicit manual/undetermined
+    review rather than an automatic pass.
+    """
+    if not isinstance(policy, Mapping):
+        raise AssertionPolicyError(f"{case_id} assertion policy must be an object")
+    missing = sorted(_ASSERTION_POLICY_FIELDS - set(policy))
+    if missing:
+        raise AssertionPolicyError(
+            f"{case_id} assertion policy is missing: {', '.join(missing)}"
+        )
+    target = policy.get("target")
+    if not isinstance(target, str) or not target.strip():
+        raise AssertionPolicyError(f"{case_id} assertion policy target must be a non-empty string")
+    output = policy.get("output")
+    if output not in ASSERTION_OUTPUT_POLICIES:
+        allowed = ", ".join(sorted(ASSERTION_OUTPUT_POLICIES))
+        raise AssertionPolicyError(
+            f"{case_id} assertion policy output must be one of: {allowed}"
+        )
+
+    normalized = dict(policy)
+    normalized["target"] = target.strip()
+    normalized["preserve"] = _non_empty_string_list(policy.get("preserve"), "preserve", case_id)
+    normalized["positive"] = _non_empty_string_list(policy.get("positive"), "positive", case_id)
+    normalized["negative"] = _non_empty_string_list(policy.get("negative"), "negative", case_id)
+
+    samples = policy.get("samples")
+    if output in _OUTPUTS_REQUIRING_SAMPLES:
+        normalized["samples"] = _non_empty_string_list(samples, "samples", case_id)
+    elif samples is not None:
+        normalized["samples"] = _non_empty_string_list(samples, "samples", case_id)
+
+    if output in _OUTPUTS_REQUIRING_TOLERANCE:
+        tolerance = policy.get("tolerance")
+        if not isinstance(tolerance, str) or not tolerance.strip():
+            raise AssertionPolicyError(
+                f"{case_id} assertion policy {output} output requires a tolerance"
+            )
+        normalized["tolerance"] = tolerance.strip()
+    elif "tolerance" in policy and policy["tolerance"] is not None:
+        tolerance = policy["tolerance"]
+        if not isinstance(tolerance, str) or not tolerance.strip():
+            raise AssertionPolicyError(f"{case_id} assertion policy tolerance must be a string")
+        normalized["tolerance"] = tolerance.strip()
+    return normalized
+
+
+def load_assertion_policy(
+    suite: Mapping[str, Any], case_id: str | None = None,
+) -> dict[str, Any]:
+    """Load and validate the existing suite assertion table.
+
+    With no ``case_id`` this returns ``{case_id: policy}`` for every suite
+    case.  With a case ID it returns that single policy.  The suite case IDs
+    and table keys must agree when both are present, preventing a case from
+    being launched without the bounded target/preservation contract.
+    """
+    if not isinstance(suite, Mapping):
+        raise AssertionPolicyError("timeline suite must be an object")
+    table = suite.get("assertion_policy")
+    if not isinstance(table, Mapping) or not table:
+        raise AssertionPolicyError("timeline suite assertion_policy must be a non-empty object")
+
+    cases = suite.get("cases")
+    case_ids: set[str] | None = None
+    if cases is not None:
+        if not isinstance(cases, list) or any(not isinstance(case, Mapping) for case in cases):
+            raise AssertionPolicyError("timeline suite cases must be a list of objects")
+        case_ids = {str(case.get("id", "")) for case in cases}
+        if "" in case_ids:
+            raise AssertionPolicyError("timeline suite contains a case without an id")
+        policy_ids = {str(key) for key in table}
+        if policy_ids != case_ids:
+            missing = sorted(case_ids - policy_ids)
+            extra = sorted(policy_ids - case_ids)
+            detail = []
+            if missing:
+                detail.append("missing=" + ",".join(missing))
+            if extra:
+                detail.append("extra=" + ",".join(extra))
+            raise AssertionPolicyError(
+                "assertion policy keys do not match suite cases (" + "; ".join(detail) + ")"
+            )
+
+    if case_id is not None:
+        if case_id not in table:
+            raise AssertionPolicyError(f"no assertion policy for case {case_id!r}")
+        if case_ids is not None and case_id not in case_ids:
+            raise AssertionPolicyError(f"case {case_id!r} is not present in suite cases")
+        return validate_assertion_policy(table[case_id], case_id=case_id)
+
+    return {
+        str(key): validate_assertion_policy(value, case_id=str(key))
+        for key, value in table.items()
+    }
+
+
 @dataclass(frozen=True)
 class CheckResult:
     check_id: str

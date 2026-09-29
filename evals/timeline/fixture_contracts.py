@@ -236,7 +236,13 @@ def action_target_contract(case: Mapping[str, Any]) -> ActionTargetContract:
     if case_id == "A03":
         return ActionTargetContract(
             case_id=case_id,
-            edit_route="Astrid SDK move_occurrence_group() + publish_authoring_candidate",
+            # A03's semantic operation is a grouped occurrence move, but the
+            # public detached-candidate transport is the same canonical
+            # authoring-bundle validate/commit route used by the other action
+            # fixtures.  Keep the operation in the readback projection rather
+            # than advertising a private SDK route that the public target
+            # binder cannot open.
+            edit_route=GENERIC_AUTHORING_ROUTE,
             readback_projection="move_occurrence_group.v1",
             required_inputs=(FixtureInput(
                 path="target.json", scope="coordinator",

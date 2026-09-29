@@ -169,7 +169,14 @@ def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name:
     new_id = track_id or _next_id("track")
     if any(track.get("id") == new_id for track in tracks):
         raise TimelineEditError(f"track id already exists: {new_id}")
-    track: MutableMapping[str, Any] = {"id": new_id, "kind": kind}
+    # Runtime's canonical timeline schema requires a human-readable label on
+    # every track.  Keep ``name`` as a compatibility alias when supplied, but
+    # always emit the field the renderer/validator actually consumes.
+    track: MutableMapping[str, Any] = {
+        "id": new_id,
+        "kind": kind,
+        "label": name or str(kind).replace("_", " ").title(),
+    }
     if name is not None:
         track["name"] = name
     tracks.append(track)
@@ -650,8 +657,18 @@ def add_authoring_shot(
     if new_id in shots:
         raise TimelineEditError(f"authoring shot id already exists: {new_id}")
     if template is None:
-        base_payload: MutableMapping[str, Any] = {"items": []}
-        base_internal: MutableMapping[str, Any] = {"tracks": [], "clips": []}
+        # Seed the complete canonical child envelopes.  Runtime publication
+        # fills these defaults before hashing; emitting them here keeps the
+        # detached compiler's digest identical to the server's digest.
+        base_payload: MutableMapping[str, Any] = {
+            "metadata": {}, "items": [], "pools": [],
+            "selected_variants": {}, "provenance": {},
+            "generation_inputs": {}, "audio_bindings": [], "text_bindings": [],
+        }
+        base_internal: MutableMapping[str, Any] = {
+            "tracks": [], "clips": [], "effects": [], "audio": [],
+            "layout": {}, "registry": {}, "assets": [],
+        }
         source = {
             # A synthetic source identity forces the compiler to materialize
             # this new authored shot instead of treating it as an existing
@@ -790,8 +807,9 @@ def move_occurrence_group(
 
     The operation changes only placement order and derived ``start_ms`` values.
     Duration and every shot/item/clip binding remain attached to their stable
-    occurrence identity. It accepts only a contiguous sequence so the total
-    running time is provably unchanged.
+    occurrence identity. Existing gaps between non-overlapping placements are
+    preserved, so frame-quantized timelines can be moved without flattening
+    their authored timing.
     """
 
     placements = _list(bundle.get("placements"), "authoring bundle placements")
@@ -825,20 +843,34 @@ def move_occurrence_group(
             raise TimelineEditError("group move requires finite starts and positive durations")
         start_values.append(float(start))
         durations[occurrence["occurrence_id"]] = float(duration)
-    if any(not math.isclose(start_values[i], start_values[i - 1] + durations[placements[i - 1]["occurrence_id"]], rel_tol=0, abs_tol=1e-6)
+    if any(start_values[i] < start_values[i - 1] + durations[placements[i - 1]["occurrence_id"]] - 1e-6
            for i in range(1, len(placements))):
-        raise TimelineEditError("group move requires contiguous occurrence placements")
+        raise TimelineEditError("group move requires non-overlapping occurrence placements")
 
     reordered = list(placements)
     target_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == target_id)
+    anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
+    if target_index == anchor_index - 1:
+        return bundle
     target = reordered.pop(target_index)
     anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
     reordered.insert(anchor_index, target)
 
+    # Keep the authored leading and inter-placement gaps attached to their
+    # timeline slots while assigning the reordered durations. This preserves
+    # the final end time even when frame quantization left small gaps.
+    gaps = [
+        start_values[index] - (
+            start_values[index - 1] + durations[placements[index - 1]["occurrence_id"]]
+        )
+        for index in range(1, len(placements))
+    ]
     cursor = start_values[0]
-    for row in reordered:
+    for index, row in enumerate(reordered):
         _mapping(row.get("placement"), f"{row['occurrence_id']}.placement")["start_ms"] = cursor
         cursor += durations[row["occurrence_id"]]
+        if index < len(reordered) - 1:
+            cursor += gaps[index]
     bundle["placements"] = reordered
     return bundle
 

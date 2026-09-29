@@ -78,7 +78,9 @@ def public_result_contract(case: Mapping[str, Any]) -> dict[str, Any]:
         "kind": RESULT_ADAPTER_KIND,
         "schema": RESULT_SCHEMA,
         "case_id": str(case.get("id", "")),
-        "result": {"path": "result.json", "owner": "worker", "format": "json"},
+        # Worker narration is useful when present, but final-state evidence is
+        # coordinator-owned and does not depend on this file being written.
+        "result": {"path": "result.json", "owner": "worker", "format": "json", "required": False},
         "artifacts": [spec.as_dict() for spec in specs],
         "ownership": {
             "worker_may_write": [spec.path for spec in specs if spec.owner == "worker"],
@@ -313,18 +315,28 @@ def build_outcome_record(
     conclusion: Any = None, independent_before: Any = None,
     independent_after: Any = None, independent_readback: Any = None,
     render_artifacts: Any = None, playback_artifacts: Any = None,
+    execution: str | None = None,
 ) -> dict[str, Any]:
-    """Build the minimal coordinator-owned record Astra can judge later.
+    """Build a bounded coordinator assessment from captured end-state evidence.
 
-    ``semantic_outcome`` intentionally starts as ``unjudged``. Worker JSON
-    validity is nested under ``worker_protocol`` and can never become a
-    semantic pass/fail by itself.
+    This does not claim that a changed timeline satisfies the requested edit:
+    case-specific semantic/output checks are still needed for that. It can
+    establish a failed no-op action, or preserve an explicit evidence gap, and
+    keeps execution state (including timeout) separate from semantic state.
+    Worker JSON validity never grades the task.
     """
+    assessment = assess_coordinator_outcome(
+        case, independent_before=independent_before,
+        independent_after=independent_after,
+        independent_readback=independent_readback,
+        conclusion=conclusion,
+    )
     return {
         "kind": OUTCOME_RECORD_KIND,
         "schema": "astrid.timeline-eval.outcome-evidence.v1",
         "case_id": str(case.get("id", "")),
-        "semantic_outcome": {"status": "unjudged", "judge": "coordinator", "reason": "compare request with independent evidence"},
+        "semantic_outcome": assessment,
+        "execution": execution,
         "worker_protocol": dict(worker_protocol),
         "conclusion": conclusion,
         "independent_evidence": {
@@ -337,8 +349,56 @@ def build_outcome_record(
     }
 
 
+def assess_coordinator_outcome(
+    case: Mapping[str, Any], *, independent_before: Any = None,
+    independent_after: Any = None, independent_readback: Any = None,
+    conclusion: Any = None,
+) -> dict[str, Any]:
+    """Make only the end-state determination supported by captured evidence.
+
+    A committed action that leaves the prepared semantic state unchanged is a
+    bounded failure. A changed state is not enough to prove that the requested
+    edit was correct, so it remains undetermined pending a case checker.
+    Navigation answers likewise need a case-specific oracle. Missing or
+    malformed independent evidence always remains undetermined.
+    """
+    base = {"judge": "coordinator", "final_text_present": False}
+    if isinstance(conclusion, Mapping):
+        base["final_text_present"] = bool(
+            isinstance(conclusion.get("final_text"), str)
+            and conclusion["final_text"].strip()
+        )
+    before = independent_before if isinstance(independent_before, Mapping) else None
+    after = independent_after if isinstance(independent_after, Mapping) else None
+    readback = independent_readback if isinstance(independent_readback, Mapping) else None
+    if before is None or after is None or readback is None:
+        return {**base, "status": "undetermined", "reason": "required independent before/after/readback evidence is missing"}
+    if readback.get("before_observed") is not True or readback.get("after_observed") is not True:
+        return {**base, "status": "undetermined", "reason": "independent before/after capture is incomplete"}
+    before_digest, after_digest = before.get("semantic_digest"), after.get("semantic_digest")
+    before_head, after_head = before.get("head_revision_id"), after.get("head_revision_id")
+    if not all(isinstance(value, str) and value for value in (before_digest, after_digest, before_head, after_head)):
+        return {**base, "status": "undetermined", "reason": "independent snapshots lack semantic digest or revision identity"}
+    if str(case.get("kind", "")).lower() != "action":
+        return {**base, "status": "undetermined", "reason": "navigation correctness requires a case-specific answer check"}
+    changed = before_digest != after_digest or before_head != after_head
+    if not changed:
+        return {
+            **base, "status": "failed",
+            "reason": "requested action left the independently observed timeline state unchanged",
+            "evidence": {"before_head": before_head, "after_head": after_head,
+                         "before_digest": before_digest, "after_digest": after_digest},
+        }
+    return {
+        **base, "status": "undetermined",
+        "reason": "timeline state changed, but no case-specific semantic checker established correctness",
+        "evidence": {"before_head": before_head, "after_head": after_head,
+                     "before_digest": before_digest, "after_digest": after_digest},
+    }
+
+
 __all__ = [
     "ArtifactSpec", "OUTCOME_RECORD_KIND", "RESULT_ADAPTER_KIND", "RESULT_SCHEMA",
     "ResultContractError", "adapt_worker_result", "artifact_owner",
-    "build_outcome_record", "public_result_contract", "worker_protocol_record",
+    "assess_coordinator_outcome", "build_outcome_record", "public_result_contract", "worker_protocol_record",
 ]

@@ -1,20 +1,29 @@
 # Timeline Visualize
 
-`rendering.timeline_visualize` reads one canonical runtime timeline together
-with a successful managed render and produces a deterministic paired filmstrip
-for agent inspection. Slug, UUID, and ULID selectors resolve the runtime
-timeline; the admitted render snapshot and immutable stream head/version/hash
-pin provenance. The output is a render-scoped filmstrip pack, not a second
+This is the private backend for the canonical `timelines visualize`
+operation. It produces deterministic, render-scoped evidence for a matching
+managed render; it is not a public capability and must not be invoked
+directly. The operation may use this backend for composed views, while its
+input-only mode uses native Runtime discovery. Slug, UUID, and ULID selectors
+resolve the runtime timeline; the admitted render snapshot and immutable
+stream head/version/hash pin provenance. The output is evidence, not a second
 timeline authority.
+
+For native Runtime discovery, use the sibling timeline operations instead:
+`timelines show` returns structural/text facts, and
+`timelines visualize --show inputs --hide output` returns the declared-input
+view without a managed render. Carry the exact `occurrence_id` and pinned head
+between those operations. Do not route native input-only inspection through
+this executor, and do not use fixture JSON, seed maps, or prior result files
+as an agent's source of truth.
 
 Use the canonical [Astrid timeline skill](../../skill/SKILL.md) for the
 end-to-end workflow and its [timeline cookbook](../../skill/references/timeline-cookbook.md)
 for renderable document examples; this stage is the executor contract for the
 evidence-producing visualization path.
 
-It is a first-class project executor with one explicitly selected managed
-timeline per review run; it is never bound to, or recorded in, a timeline
-`manifest.json`.
+Runtime keeps this executor registered as an internal execution backend. It
+is never bound to, or recorded in, a timeline `manifest.json`.
 
 ## Rendered filmstrip view
 
@@ -31,8 +40,9 @@ timestamp/context, clip, asset, and shot selectors restrict frame selection.
 The shared component grammar is `--show COMPONENT` (repeatable or
 comma-separated: `output`, `text`, `audio`, `inputs`) and `--hide COMPONENT`;
 `--track` is repeatable and `--detail` enlarges the current selection.
-`--show inputs --hide output` is render-free input inspection and emits
-readable, paginated input-band PNGs plus the machine-readable frame index.
+The public native input-only route is `timelines visualize --mode inputs`;
+this backend's rendered filmstrip and source/media analysis remain separate
+from Runtime structural discovery.
 When `inputs` and `output` are selected together, the primary static PNG page
 is a paired-row surface: up to `columns` (default five) sampled rendered cards
 are grouped per row, and the input lanes active in that row sit directly below
@@ -71,10 +81,9 @@ Use `--include-cuts` with interval sampling when cut-neighbor evidence is also
 wanted; those extra frames are never inserted implicitly.
 
 ```bash
-python3 -m astrid timelines visualize main --project demo \
-  --view filmstrip --render-run latest --every 0.5 --include-media
-python3 -m astrid timelines visualize main --project demo \
-  --view filmstrip --render-run <exact-run-id> --range 10..20 --every-frames 6
+python3 -m astrid timelines visualize main --project demo --mode auto
+python3 -m astrid timelines visualize main --project demo --mode composed \
+  --range 10..20 --every-frames 6
 ```
 
 The executor samples presentation frame numbers from the actual managed

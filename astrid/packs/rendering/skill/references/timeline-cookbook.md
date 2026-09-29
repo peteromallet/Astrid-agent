@@ -5,7 +5,7 @@ runtime owns the saved document; these examples describe the renderable JSON
 boundary rather than a local storage format.
 
 The canonical end-to-end workflow is the [Astrid timeline skill](../SKILL.md);
-the executable evidence contract is [Timeline Visualize](../../executors/timeline_visualize/STAGE.md).
+the private composed-evidence backend contract is [Timeline Visualize](../../executors/timeline_visualize/STAGE.md).
 
 ## Minimal renderable config
 

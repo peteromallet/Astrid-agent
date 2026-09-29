@@ -446,7 +446,7 @@ def _clip_duration_ms(clip: Mapping[str, Any]) -> int:
     if speed <= 0:
         raise ShotCompositionMigrationError(f"clip {clip.get('id', '?')} has invalid speed")
     if "hold" in clip:
-        duration = float(clip["hold"])
+        duration = float(clip["hold"]) / speed
     else:
         duration = (float(clip.get("to", 0)) - float(clip.get("from", 0))) / speed
     if duration <= 0:

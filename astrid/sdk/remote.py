@@ -325,7 +325,7 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "get_timeline", "list_timelines", "list_timeline_history", "diff_timeline", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision"}
+        reads = {"get_project", "list_projects", "current_project", "get_timeline", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
@@ -364,6 +364,8 @@ class _RemoteFamily:
             elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
             elif operation == "get_task": value = self._client.get_task(*args, **kwargs)
             elif operation == "get_timeline": value = self._client.get_timeline(*args, **kwargs)
+            elif operation == "inspect_timeline": value = self._client.inspect_timeline(*args, **kwargs)
+            elif operation == "create_timeline_view": value = self._client.create_timeline_view(*args, **kwargs)
             elif operation == "fail_attempt": value = self._client.fail_attempt(*args, **kwargs)
             elif operation == "head_object": value = self._client.head_object(*args, **kwargs)
             elif operation == "ingest_project_object": value = self._client.ingest_project_object(*args, **kwargs)
@@ -436,6 +438,10 @@ class RemoteProjects(_RemoteFamily):
 
 
 class RemoteTimelines(_RemoteFamily):
+    def __init__(self, client, *, invoker=None):
+        super().__init__(client)
+        self._invoker = invoker
+
     def create(self, *, project, config: Mapping[str, Any], registry: Mapping[str, Any], slug=None, name=None, timeline_id=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("create_timeline_document", project, timeline_id or uuid.uuid4().hex, key=key, config=config, registry=registry, slug=slug, name=name, idempotency_key=key)
@@ -479,6 +485,275 @@ class RemoteTimelines(_RemoteFamily):
         if match is None:
             return DomainResult.failure(ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)}))
         return self._typed("get_timeline", str(match.get("timeline_id")), project_id=str(project))
+
+    @staticmethod
+    def _native_options(
+        *,
+        revision_id=None,
+        limit=50,
+        occurrence=None,
+        shot=None,
+        clip=None,
+        track=None,
+        asset=None,
+        range_value=None,
+        detail=False,
+        neighbors=0,
+        formats=None,
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "limit": int(limit),
+            "detail": bool(detail),
+            "neighbors": int(neighbors),
+        }
+        if revision_id:
+            options["revision_id"] = str(revision_id)
+        for name, value in (("occurrence", occurrence), ("shot", shot), ("clip", clip), ("track", track), ("asset", asset)):
+            if value not in (None, "", []):
+                options[name] = value
+        if range_value not in (None, "", []):
+            options["range"] = range_value
+        if formats is not None:
+            options["formats"] = list(formats)
+        return options
+
+    def inspect(
+        self,
+        project,
+        ref,
+        *,
+        revision_id=None,
+        limit=50,
+        occurrence=None,
+        shot=None,
+        clip=None,
+        track=None,
+        asset=None,
+        range_value=None,
+        detail=False,
+        neighbors=0,
+    ):
+        """Inspect an exact Runtime timeline closure through the native route."""
+        timeline = self.show(project, ref)
+        if not timeline.ok or not isinstance(timeline.data, Mapping):
+            return timeline
+        document = timeline.data
+        timeline_id = document.get("timeline_id") or document.get("id")
+        if not isinstance(timeline_id, str) or not timeline_id:
+            return DomainResult.failure(
+                ErrorObject("protocol_error", "timeline read did not return a canonical timeline id", {"project": str(project), "timeline": str(ref)})
+            )
+        pinned_revision = revision_id or document.get("parent_revision_id") or document.get("head_revision_id")
+        options = self._native_options(
+            revision_id=pinned_revision,
+            limit=limit,
+            occurrence=occurrence,
+            shot=shot,
+            clip=clip,
+            track=track,
+            asset=asset,
+            range_value=range_value,
+            detail=detail,
+            neighbors=neighbors,
+        )
+        return self._typed("inspect_timeline", str(project), timeline_id, options=options)
+
+    def visualize(
+        self,
+        project,
+        ref,
+        *,
+        mode="auto",
+        options: Mapping[str, Any] | None = None,
+        revision_id=None,
+        limit=50,
+        occurrence=None,
+        shot=None,
+        clip=None,
+        track=None,
+        asset=None,
+        range_value=None,
+        detail=False,
+        neighbors=0,
+        formats=("md", "png"),
+        out=None,
+    ):
+        """Render-free input view or an exactly matched composed filmstrip.
+
+        ``inputs`` never reads render history. ``auto`` pairs a fresh composed
+        output only when the bounded Runtime lookup proves an exact match for
+        the current timeline head; otherwise it falls back to declared inputs.
+        ``composed`` returns ``render_required`` when that proof is absent.
+        An explicit run instead uses that run's immutable candidate or
+        historical authority after exact-run admission verifies it.
+        """
+        selected_mode = str(mode or "auto").strip().lower()
+        if selected_mode not in {"auto", "inputs", "composed"}:
+            return DomainResult.failure(
+                ErrorObject("validation_error", "mode must be auto, inputs, or composed", {"field": "mode"})
+            )
+        if out not in (None, ""):
+            return DomainResult.failure(
+                ErrorObject("validation_error", "native timeline views do not accept an output path", {"field": "out"})
+            )
+        timeline = self.show(project, ref)
+        if not timeline.ok or not isinstance(timeline.data, Mapping):
+            return timeline
+        document = timeline.data
+        timeline_id = document.get("timeline_id") or document.get("id")
+        if not isinstance(timeline_id, str) or not timeline_id:
+            return DomainResult.failure(
+                ErrorObject("protocol_error", "timeline read did not return a canonical timeline id", {"project": str(project), "timeline": str(ref)})
+            )
+        pinned_revision = revision_id or document.get("parent_revision_id") or document.get("head_revision_id")
+        view_options = dict(options or {})
+        requested_run = view_options.get("render_run")
+        explicit_run = requested_run not in (None, "", "latest")
+        if selected_mode != "inputs" and explicit_run:
+            # An explicit run is already an immutable output authority.  It may
+            # intentionally describe an unpublished candidate or a historical
+            # revision, so current-head discovery must not filter it out.  The
+            # filmstrip admission below still verifies project ownership,
+            # timeline authority, successful lifecycle, and managed output.
+            project_id = str(project)
+            exact_render = str(requested_run)
+        elif selected_mode != "inputs":
+            project_reader = getattr(self._client, "get_project", None)
+            project_row = project_reader(str(project)) if callable(project_reader) else None
+            project_id = (
+                str(project_row.get("project_id") or project_row.get("id"))
+                if isinstance(project_row, Mapping) and (project_row.get("project_id") or project_row.get("id"))
+                else str(project)
+            )
+            from astrid.sdk.timeline_filmstrip import matching_composed_render
+
+            exact_render = matching_composed_render(
+                self._client,
+                project_id=project_id,
+                timeline={**dict(document), "parent_revision_id": pinned_revision},
+                limit=50,
+            )
+        else:
+            exact_render = None
+            project_id = str(project)
+        if selected_mode == "composed" and exact_render is None:
+            return DomainResult.failure(
+                ErrorObject(
+                    "render_required",
+                    "No successful composed output matches the current timeline state.",
+                    {
+                        "project_id": project_id,
+                        "timeline_id": timeline_id,
+                        "next_actions": [
+                            {"label": "Render this timeline", "command": f"astrid timelines render --project {project} {ref}"},
+                            {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project} {ref} --mode inputs"},
+                        ],
+                    },
+                )
+            )
+        if exact_render is not None:
+            if self._invoker is None:
+                return DomainResult.failure(
+                    ErrorObject("unavailable", "composed visualization requires the canonical invocation route", {"render_run": exact_render})
+                )
+            executor_inputs: dict[str, Any] = {
+                "timeline_slug": ref,
+                "view": "filmstrip",
+                "render_run": exact_render,
+                "formats": list(formats or ("md", "png")),
+            }
+            executor_inputs.update(view_options)
+            executor_inputs["render_run"] = exact_render
+            executor_inputs.setdefault("timeline_slug", ref)
+            executor_inputs.setdefault("show", ["output", "inputs", "text", "audio"])
+            return self._invoker(
+                "rendering.timeline_visualize",
+                kind="executor",
+                project=project,
+                inputs=executor_inputs,
+                out=None,
+                wait=True,
+            )
+
+        if view_options:
+            formats = view_options.get("formats", formats)
+            occurrence = view_options.get("occurrence", occurrence)
+            shot = view_options.get("shot", shot)
+            clip = view_options.get("clip", clip)
+            track = view_options.get("track", track)
+            asset = view_options.get("asset", asset)
+            range_value = view_options.get("range", range_value)
+            detail = view_options.get("detail", detail)
+            neighbors = view_options.get("neighbors", neighbors)
+        options = self._native_options(
+            revision_id=pinned_revision,
+            limit=limit,
+            occurrence=occurrence,
+            shot=shot,
+            clip=clip,
+            track=track,
+            asset=asset,
+            range_value=range_value,
+            detail=detail,
+            neighbors=neighbors,
+            formats=formats,
+        )
+        return self._typed("create_timeline_view", str(project), timeline_id, options=options)
+
+    @staticmethod
+    def _native_projection(data: Mapping[str, Any], *, project, ref) -> dict[str, Any]:
+        """Adapt native inspection rows to the established show shape.
+
+        This is result-shape adaptation only: closure expansion, selection,
+        pagination identity, and snapshot authority stay in Runtime.
+        """
+        selected = data.get("selected") if isinstance(data.get("selected"), list) else []
+        clips: list[dict[str, Any]] = []
+        targets: list[dict[str, Any]] = []
+        for row in selected:
+            if not isinstance(row, Mapping):
+                continue
+            occurrence = row.get("occurrence") if isinstance(row.get("occurrence"), Mapping) else {}
+            oid = occurrence.get("occurrence_id")
+            target = row.get("role") == "target"
+            if target:
+                targets.append({
+                    "kind": "occurrence",
+                    "timeline_id": data.get("timeline_id"),
+                    "occurrence_id": oid,
+                    "shot_id": occurrence.get("shot_id"),
+                    "addressable": True,
+                })
+            for item in row.get("clips", []) if isinstance(row.get("clips"), list) else []:
+                if not isinstance(item, Mapping):
+                    continue
+                clip = dict(item)
+                clip.setdefault("occurrence_id", oid)
+                clip.setdefault("shot_id", occurrence.get("shot_id"))
+                clip.setdefault("track", clip.get("track_id"))
+                clips.append(clip)
+                if target:
+                    targets[-1]["kind"] = "clip"
+                    targets[-1]["clip_id"] = item.get("clip_id")
+        selectors = data.get("selectors") if isinstance(data.get("selectors"), Mapping) else {}
+        return {
+            "kind": "timeline-inspection",
+            "summary": {
+                "authority": "canonical_head",
+                "revision_id": data.get("revision_id"),
+                "snapshot_digest": data.get("snapshot_digest"),
+                "evidence_kind": data.get("evidence_kind", "declared_inputs"),
+            },
+            "query": dict(selectors),
+            "targets": targets,
+            "clips": clips,
+            "media": [],
+            "outputs": [],
+            "diagnostics": {"selection_status": data.get("selection_status"), "target_count": data.get("target_count", 0)},
+            "pagination": {"next_cursor": None, "limit": selectors.get("limit")},
+            "native_inspection": dict(data),
+            "scope": {"authority": "canonical_head", "project": str(project), "timeline": str(ref), "read_only": True},
+        }
     def open_composition(
         self,
         project,
@@ -493,6 +768,7 @@ class RemoteTimelines(_RemoteFamily):
         asset=None,
         range_value=None,
         detail=False,
+        neighbors=0,
     ):
         """Open one bounded, read-only composition projection.
 
@@ -501,6 +777,32 @@ class RemoteTimelines(_RemoteFamily):
         sister command; it does not create a second document or imply that
         source-media playback is available.
         """
+        # Current generated transports expose Runtime's native inspection
+        # operation.  Use it as the sole closure/selector authority; the
+        # legacy projection below remains only for older test doubles and
+        # transport implementations that predate the native route.
+        if callable(getattr(self._client, "inspect_timeline", None)) and cursor is None:
+            inspected = self.inspect(
+                project,
+                ref,
+                limit=limit,
+                clip=clip,
+                occurrence=occurrence,
+                shot=shot,
+                track=track,
+                asset=asset,
+                range_value=range_value,
+                detail=detail,
+                neighbors=neighbors,
+            )
+            if not inspected.ok or not isinstance(inspected.data, Mapping):
+                return inspected
+            return DomainResult.success(
+                self._native_projection(inspected.data, project=project, ref=ref),
+                receipt=inspected.receipt,
+                idempotency_key=inspected.idempotency_key,
+            )
+
         result = self.show(project, ref)
         if not result.ok or not isinstance(result.data, Mapping):
             return result
@@ -1041,6 +1343,7 @@ class RemoteTasks(_RemoteFamily):
         capability_digest: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
         execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
+        child_delegation: Mapping[str, Any] | None = None,
         deterministic_idempotency: bool = False,
     ):
         """Admit a task, optionally deriving its key from the final payload.
@@ -1136,6 +1439,8 @@ class RemoteTasks(_RemoteFamily):
             admission["generation_intent"] = generation_intent
         if normalized_request is not None:
             admission["execution_request"] = normalized_request
+        if child_delegation is not None:
+            admission["child_delegation"] = dict(child_delegation)
         if key is None:
             # Hash the completed wire payload, after selection, normalization,
             # project resolution, and preflight. Sort mapping keys only: input
@@ -1710,13 +2015,19 @@ class RemoteAstridClient:
     def __init__(self, transport: WorkspaceClient):
         self._transport = transport
         self.projects = RemoteProjects(transport)
-        self.timelines = RemoteTimelines(transport)
+        self.timelines = RemoteTimelines(transport, invoker=self._timeline_invoke_result)
         self.media = RemoteMedia(transport)
         self.tasks = RemoteTasks(transport)
         self.runs = RemoteRuns(transport)
         self.references = RemoteReferences(transport)
         self.shots = RemoteShots(transport)
         self.generations = RemoteGenerations(transport)
+
+    def _timeline_invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any):
+        """Private dispatch used by the canonical timeline visualization facade."""
+        from astrid.sdk.invocation import _invoke_internal_result
+
+        return _invoke_internal_result(capability_id, kind=kind, client=self, **kwargs)
 
     def health(self): return self._transport.health()
     def handshake(self, client_name: str, client_version: str, requested_scopes: list[str]):

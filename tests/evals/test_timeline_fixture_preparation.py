@@ -13,6 +13,7 @@ from astrid.packs.rendering.executors.render.managed_timeline import (
 )
 from evals.timeline.a01_smoke import OLD_OPENING_VIDEO_ASSET, load_baseline
 from evals.timeline.fixture_preparation import (
+    _capture_final_managed_output,
     _case_baseline,
     build_preparation_table,
     inspect_action_sidecars,
@@ -28,6 +29,57 @@ ROOT = Path(__file__).resolve().parents[3]
 SUITE = ROOT / "Astrid/evals/timeline/suite.json"
 FIXTURES = ROOT / ".otto/runs/timeline-text-inspection-20260922/evals/fixtures"
 UNBLOCKED = ROOT / ".otto/runs/timeline-text-inspection-20260922/evals/fixtures-unblock-20260924"
+
+
+def test_final_output_capture_reuses_exact_saved_head_without_rendering(monkeypatch) -> None:
+    import astrid.sdk.timeline_filmstrip as filmstrip
+
+    monkeypatch.setattr(filmstrip, "matching_composed_render", lambda *args, **kwargs: "run-exact")
+    invoked: list[dict] = []
+    client = SimpleNamespace(
+        timelines=SimpleNamespace(show=lambda *args: SimpleNamespace(
+            ok=True, data={"timeline_id": "timeline", "parent_revision_id": "revision-2"},
+        ), visualize=lambda *args, **kwargs: SimpleNamespace(ok=True, data={"render_run_id": "run-exact"})),
+        remote=SimpleNamespace(_client=object()),
+        invoke_result=lambda *args, **kwargs: invoked.append(kwargs),
+    )
+
+    result = _capture_final_managed_output(client, project_id="project", timeline_id="timeline")
+
+    assert result["status"] == "reused_exact"
+    assert result["run_id"] == "run-exact"
+    assert result["authority_verified"] is True
+    assert result["rendered_by_coordinator"] is False
+    assert result["actor_scoped_readable"] is True
+    assert invoked == []
+
+
+def test_final_output_capture_renders_once_and_verifies_returned_run(monkeypatch) -> None:
+    import astrid.sdk.timeline_filmstrip as filmstrip
+
+    matches = iter((None, "run-final"))
+    monkeypatch.setattr(filmstrip, "matching_composed_render", lambda *args, **kwargs: next(matches))
+    invoked: list[dict] = []
+    client = SimpleNamespace(
+        timelines=SimpleNamespace(show=lambda *args: SimpleNamespace(
+            ok=True, data={"timeline_id": "timeline", "parent_revision_id": "revision-2", "version": 4},
+        ), visualize=lambda *args, **kwargs: SimpleNamespace(ok=True, data={"render_run_id": "run-final"})),
+        remote=SimpleNamespace(_client=object()),
+        invoke_result=lambda *args, **kwargs: invoked.append(kwargs) or SimpleNamespace(
+            ok=True, run_id="run-final", kernel_run_id="kernel", kernel_task_id="task", executor_version="1",
+        ),
+    )
+
+    result = _capture_final_managed_output(client, project_id="project", timeline_id="timeline")
+
+    assert result["status"] == "rendered_exact"
+    assert result["run_id"] == "run-final"
+    assert result["authority_verified"] is True
+    assert result["rendered_by_coordinator"] is True
+    assert result["kernel_task_id"] == "task"
+    assert result["actor_scoped_readable"] is True
+    assert len(invoked) == 1
+    assert invoked[0]["inputs"]["expected_version"] == 4
 
 
 def test_preparation_table_has_all_cases_and_preserves_real_blockers(tmp_path: Path) -> None:
@@ -217,7 +269,7 @@ def test_prepare_public_legacy_case_copies_only_labelled_comparison_sidecar(tmp_
     assert sidecar["canonical_fixture"]["canonical_clip_type"] == "media"
 
 
-def test_live_navigation_preparation_renders_runtime_brief(tmp_path: Path, monkeypatch) -> None:
+def test_live_navigation_preparation_renders_a_user_task_without_agent_ceremony(tmp_path: Path, monkeypatch) -> None:
     from contextlib import contextmanager
     from evals.timeline import fixture, runtime_adapter
     from evals.timeline.a01_smoke import load_baseline
@@ -277,14 +329,12 @@ def test_live_navigation_preparation_renders_runtime_brief(tmp_path: Path, monke
         assert prepared.realm_id == "runtime-realm-live"
         assert prepared.endpoint == "http://127.0.0.1:45678"
         assert "play its voice" in brief
-        assert "timelines.open_composition" in brief
-        assert "ASTRID_TIMELINE_EVAL_CREDENTIAL" in brief
-        assert "offline entrypoint" in brief
+        assert "Project: `runtime-project-live`; timeline: `runtime-timeline-live`" in brief
         assert brief.count("Documentation:") == 1
-        assert "What is the capital" not in brief
-        assert "Write exactly one JSON object to `result.json` in your current working" in brief
-        assert "`status`, `answer`, and `evidence`" in brief
-        assert "Make no unsupported claims" in brief
+        assert "Write exactly one JSON object" not in brief
+        assert "result.json" not in brief
+        assert "browser" not in brief.lower()
+        assert "must visualize" not in brief.lower()
         before = prepared.baseline_observer()
         assert before["project_id"] == project_id
         assert before["timeline_id"] == timeline_id
@@ -466,9 +516,9 @@ def test_action_preparation_uses_server_target_ids_and_keeps_runtime_alive(tmp_p
         assert "shot-ee383f695b10431c" not in json.dumps(inputs)
         assert "runtime-project-123" in brief
         assert "{opening shot}" not in brief
-        assert "Write exactly one JSON object to `result.json` in your current working" in brief
-        assert "`status`, `answer`, and `evidence`" in brief
-        assert "Make no unsupported claims" in brief
+        assert "Show me the preview" in brief
+        assert "result.json" not in brief
+        assert "exact readback" not in brief.lower()
         assert not closed["value"]
         assert prepared.baseline_observer()["head_revision_id"] == identities.parent_revision_id
     finally:
@@ -476,7 +526,7 @@ def test_action_preparation_uses_server_target_ids_and_keeps_runtime_alive(tmp_p
     assert closed["value"]
 
 
-def test_live_navigation_briefs_require_public_inspection_and_visual_artifacts(tmp_path: Path) -> None:
+def test_live_navigation_briefs_give_the_task_and_project_locator_without_forced_routes(tmp_path: Path) -> None:
     target = {
         "endpoint": "http://127.0.0.1:45678", "realm_id": "live-realm",
         "project_id": "live-project", "timeline_id": "live-timeline",
@@ -489,10 +539,13 @@ def test_live_navigation_briefs_require_public_inspection_and_visual_artifacts(t
     )
     for case_id in (f"L{index:02d}" for index in range(1, 11)):
         brief = render_case_brief(case_id, prepared=prepared)
-        assert "client.timelines.show" in brief
-        assert "client.timelines.open_composition" in brief
         assert "live-project" in brief and "live-timeline" in brief
-        assert "ASTRID_TIMELINE_EVAL_CREDENTIAL" in brief
-        if case_id in {"L04", "L09"}:
-            assert "client.timelines.visualize" in brief
-            assert "Open every returned `md`, `png`, and `manifest` artifact" in brief
+        assert "public timeline tools" in brief
+        assert "result.json" not in brief
+        assert "browser" not in brief.lower()
+        assert "visualize(" not in brief
+        assert "renderer" not in brief.lower()
+        if case_id == "L04":
+            assert "prepared starting render" in brief
+        if case_id == "L09":
+            assert "real historical output" in brief

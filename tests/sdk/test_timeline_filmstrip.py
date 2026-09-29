@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from astrid.sdk.timeline_filmstrip import build_filmstrip_snapshot, prepare_filmstrip
+from astrid.sdk.timeline_filmstrip import build_filmstrip_snapshot, matching_composed_render, prepare_filmstrip
 from astrid.sdk.exceptions import CapabilityValidationError
 
 TEXT = b'Take the blue pill.'
@@ -36,7 +36,8 @@ class FakeClient:
 
     def get_object(self, object_id): return {'data': self.raw}
     def get_project(self, project): return {'id': 'p', 'metadata': {'default_timeline_id': 'tl'}}
-    def list_timelines(self, project, **kwargs): return [[{'timeline_id': 'tl', 'slug': 'cut'}], None]
+    def list_timelines(self, project, **kwargs):
+        return [[{'timeline_id': 'tl', 'slug': 'cut', 'config_version': self.current_version}], None]
     def list_project_runs(self, project, **kwargs): return [[self.get_run('run')], None]
     def get_run(self, ref): return {'id': 'run', 'project_id': 'p', 'capability': 'rendering.render', 'status': 'succeeded', 'task_ids': ['task']}
     def get_task(self, ref): return {'state': 'succeeded', 'capability_id': 'rendering.render', 'spec': {'spec': envelope()}, 'result': {'outputs': [{'name': 'video', 'digest': VIDEO}]}}
@@ -104,7 +105,9 @@ def test_exact_old_render_uses_frozen_script_without_current_binding_reads():
         {'shot_occurrence_id': 'shot-occ-0000-sh', 'shot_id': 'sh', 'at': 0, 'hold': 3}
     ]
     client.get_task = lambda ref: {'state': 'succeeded', 'capability_id': 'rendering.render', 'spec': {'spec': value}, 'result': {'outputs': [{'name': 'video', 'digest': VIDEO}]}}
-    result = prepare_filmstrip({'render_run': 'run'}, project='p', client=client)
+    result = prepare_filmstrip(
+        {'render_run': 'run', 'timeline_ref': 'tl'}, project='p', client=client,
+    )
     snapshot = result['filmstrip_snapshot']
     assert snapshot['duration_frames'] == 72
     assert snapshot['scripts'][0]['head'] == 1
@@ -112,6 +115,7 @@ def test_exact_old_render_uses_frozen_script_without_current_binding_reads():
     assert snapshot['scripts'][0]['timing_basis'] == 'shot_script'
     assert (snapshot['scripts'][0]['start'], snapshot['scripts'][0]['end']) == (0, 3)
     assert not client.read_binding
+    assert snapshot['metadata']['selection'] == 'explicit_historical_render'
 
 
 def test_direct_render_uses_frozen_inputs_authority_and_exact_run():
@@ -124,9 +128,92 @@ def test_direct_render_uses_frozen_inputs_authority_and_exact_run():
     assert result['timeline_id'] == DIRECT_TIMELINE
 
 
+@pytest.mark.parametrize('wrapper', ['transport', 'remote', 'public'])
+def test_real_filmstrip_preflight_accepts_client_wrappers(wrapper):
+    from astrid.sdk.client import AstridClient
+    from astrid.sdk.remote import RemoteAstridClient
+    from astrid.sdk.invocation import _validate_timeline_visualize_inputs
+
+    client = DirectRenderClient()
+    if wrapper in {'remote', 'public'}:
+        client = RemoteAstridClient(client)
+    if wrapper == 'public':
+        client = AstridClient(remote=client)
+    result = _validate_timeline_visualize_inputs(
+        {'render_run': DIRECT_RENDER_RUN, 'timeline_ref': DIRECT_TIMELINE},
+        project='p', _client=client,
+    )
+    assert result['render_run_id'] == DIRECT_RENDER_RUN
+    assert result['timeline_id'] == DIRECT_TIMELINE
+
+
 def test_latest_selection_skips_newer_unpublished_candidate_preview():
     result = prepare_filmstrip({}, project='p', client=CandidateFirstClient())
     assert result['render_run_id'] == 'run'
+
+
+def test_final_output_matching_reuses_candidate_render_only_after_exact_publication(monkeypatch):
+    import astrid.sdk.project_render as project_render
+
+    monkeypatch.setattr(project_render, "_lookup_managed_output", lambda **kwargs: {"verified": True})
+    pins = {
+        "timeline_id": "tl", "parent_revision_id": "published-revision",
+        "config_version": 4, "head_event_id": "published-revision",
+        "head_hash": "candidate-content", "config_hash": "candidate-config",
+        "registry_hash": "candidate-registry", "materialized_registry_hash": "candidate-materialized",
+    }
+
+    class CandidateRuntime:
+        explicit_profile = None
+
+        def list_project_runs(self, project, **kwargs):
+            # A next cursor must not cause an unbounded history walk.
+            return [[{
+                "id": "candidate-run", "created_at": "2026-09-28T12:00:00Z",
+                "capability": "rendering.render", "status": "succeeded",
+            }], "more"]
+
+        def get_run(self, run_id):
+            return {"id": run_id, "project_id": "p", "capability": "rendering.render",
+                    "status": "succeeded", "task_ids": ["candidate-task"]}
+
+        def get_task(self, task_id):
+            authority = {
+                **pins,
+                "project_id": "p",
+                "render_mode": "authoring_candidate_preview",
+                "authoring_preview": {
+                    "candidate_digest": "sha256:candidate",
+                    "publication_digest": "sha256:publication",
+                    "candidate_parent_revision_id": "published-revision",
+                },
+            }
+            return {
+                "id": task_id, "state": "succeeded", "capability_id": "rendering.render",
+                "spec": {"spec": {"inputs": {
+                    "timeline_authority": authority,
+                    **({"profile": self.explicit_profile} if self.explicit_profile is not None else {}),
+                }}},
+                "result": {"outputs": [{"output_port": "video", "digest": VIDEO}]},
+            }
+
+    runtime = CandidateRuntime()
+    exact_timeline = {"project_id": "p", **pins}
+    assert matching_composed_render(runtime, project_id="p", timeline=exact_timeline) == "candidate-run"
+    stale_timeline = {**exact_timeline, "parent_revision_id": "different-revision"}
+    assert matching_composed_render(runtime, project_id="p", timeline=stale_timeline) is None
+    runtime.explicit_profile = {"resolution": [640, 360]}
+    assert matching_composed_render(runtime, project_id="p", timeline=exact_timeline) is None
+
+
+def test_exact_unpublished_candidate_is_admitted_and_labelled_truthfully():
+    result = prepare_filmstrip(
+        {'render_run': 'candidate', 'timeline_ref': 'tl'},
+        project='p', client=CandidateFirstClient(),
+    )
+
+    assert result['render_run_id'] == 'candidate'
+    assert result['filmstrip_snapshot']['metadata']['selection'] == 'explicit_candidate_preview'
 
 
 def test_exact_pinned_input_inspection_does_not_fall_back_to_current_timeline():

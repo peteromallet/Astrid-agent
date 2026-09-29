@@ -37,16 +37,30 @@ def _load_executor_registry(
     project_root: str | Path | None = None,
     extra_pack_roots: tuple[str, ...] = (),
     banodoco_config: Any | None = None,
+    include_internal: bool = False,
 ) -> Any:
-    from astrid.core.execution.executor.registry import load_default_registry
+    from astrid.core.execution.executor.registry import (
+        ExecutorRegistry,
+        load_default_registry,
+    )
 
-    return load_default_registry(
+    registry = load_default_registry(
         banodoco_config=banodoco_config,
         **_registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
         ),
     )
+    if include_internal:
+        return registry
+    public_registry = ExecutorRegistry()
+    public_registry.alias_resolver = registry.alias_resolver
+    for definition in registry.list():
+        if str(definition.metadata.get("visibility", "public")).lower() == "internal":
+            continue
+        public_registry.register(definition)
+    public_registry.validate_all()
+    return public_registry
 
 
 def _load_orchestrator_registry(
@@ -92,12 +106,14 @@ def _load_registries(
     banodoco_config: Any | None = None,
     include_missing_roots: bool = False,
     include_elements: bool = False,
+    include_internal: bool = False,
 ) -> tuple[Any, Any, Any | None]:
     sdk_module = _sdk_module()
     executor_registry = sdk_module._load_executor_registry(
         project_root=project_root,
         extra_pack_roots=extra_pack_roots,
         banodoco_config=banodoco_config,
+        include_internal=include_internal,
     )
     orchestrator_registry = sdk_module._load_orchestrator_registry(
         executor_registry=executor_registry,

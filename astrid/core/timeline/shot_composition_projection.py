@@ -214,7 +214,7 @@ def _add_assets(registry: dict[str, Any], revision: Mapping[str, Any]) -> None:
         asset = _mapping(raw, "shot_revision.assets[]")
         asset_id = asset.get("asset_id")
         if not isinstance(asset_id, str) or not asset_id:
-            continue
+            raise ShotCompositionProjectionError("shot_revision.assets[].asset_id must be a non-empty string")
         if asset_id in assets:
             continue
         digest = asset.get("digest")
@@ -224,7 +224,17 @@ def _add_assets(registry: dict[str, Any], revision: Mapping[str, Any]) -> None:
             entry.setdefault("media_id", object_id)
         if isinstance(digest, str):
             entry.setdefault("content_sha256", digest.removeprefix("sha256:"))
-        entry.setdefault("type", "video")
+        media_type = asset.get("media_type")
+        if media_type is not None and (not isinstance(media_type, str) or not media_type.strip()):
+            raise ShotCompositionProjectionError(
+                f"shot_revision.assets[{asset_id!r}].media_type must be a non-empty string"
+            )
+        normalized_media_type = media_type.strip().lower() if isinstance(media_type, str) else ""
+        media_kind = next((kind for kind in ("image", "video", "audio")
+                           if normalized_media_type == kind or normalized_media_type.startswith(f"{kind}/")), "unknown")
+        # Runtime managed-media metadata is authoritative. Alias fields in the
+        # payload or nested source are opaque and never default to video/image.
+        entry["type"] = media_kind
         assets[asset_id] = entry
 
 
@@ -285,11 +295,16 @@ def _project_clip(
     visible_duration = max(0.0, clipped_end - absolute_at)
     if visible_duration <= 0:
         return None
+    child_speed = _number(clip.get("speed", 1), f"{path}.speed", default=1.0)
+    if child_speed <= 0:
+        raise ShotCompositionProjectionError(f"{path}.speed must be positive")
     if "hold" in clip:
-        clip["hold"] = visible_duration
+        # ``hold`` is stored in source seconds. Keep the authored speed on the
+        # projected clip and convert the visible cap back to source units so
+        # the renderer divides by speed exactly once.
+        clip["hold"] = visible_duration * child_speed
     elif "to" in clip:
         source_from = _number(clip.get("from", 0), f"{path}.from", default=0.0)
-        child_speed = _number(clip.get("speed", 1), f"{path}.speed", default=1.0)
         clip["to"] = source_from + visible_duration * child_speed
     clip["at"] = absolute_at
     _apply_placement_transform(clip, occurrence, path=path)

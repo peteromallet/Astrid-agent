@@ -198,6 +198,13 @@ def _execution_authority_context() -> dict[str, Any] | None:
     raw = os.environ.get(_AUTHORITY_CONTEXT_ENV)
     if raw is None:
         return None
+    if len(raw) < 4096 and not raw.lstrip().startswith(("{", "[")):
+        authority_path = Path(raw).expanduser()
+        if authority_path.is_file():
+            try:
+                raw = authority_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ValueError("timeline visualization execution authority handoff is unreadable") from exc
     try:
         value = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -433,7 +440,17 @@ def execute(argv: list[str] | None = None) -> dict[str, Any]:
         try:
             args.materialized_objects = json.loads(args.materialized_objects)
         except json.JSONDecodeError:
-            raise ValueError("--materialized-objects must be a JSON object") from None
+            handoff_path = Path(args.materialized_objects).expanduser()
+            try:
+                args.materialized_objects = json.loads(handoff_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                raise ValueError("--materialized-objects must be a JSON object or host handoff path") from None
+        if isinstance(args.materialized_objects, str):
+            handoff_path = Path(args.materialized_objects).expanduser()
+            try:
+                args.materialized_objects = json.loads(handoff_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                raise ValueError("--materialized-objects must be a JSON object or host handoff path") from None
         if not isinstance(args.materialized_objects, Mapping):
             raise ValueError("--materialized-objects must be a JSON object")
     else:

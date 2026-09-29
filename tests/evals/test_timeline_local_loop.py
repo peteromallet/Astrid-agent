@@ -37,7 +37,7 @@ def test_local_loop_dry_run_writes_twenty_manual_review_rows_without_scoring(tmp
     assert (tmp_path / "attempt/cases/A01/work/project").is_dir()
     brief = tmp_path / "attempt/cases/A01/work/brief.md"
     assert brief.is_file()
-    assert "result.json" in brief.read_text(encoding="utf-8")
+    assert "result.json" not in brief.read_text(encoding="utf-8")
 
 
 def test_local_loop_continues_after_process_failure_and_records_result_reporting_defect(tmp_path: Path, monkeypatch) -> None:
@@ -72,7 +72,7 @@ def test_local_loop_continues_after_process_failure_and_records_result_reporting
     assert result["launch_count"] == 3 and result["model_launched"] is True
     assert result["records"][0]["returncode"] == 3
     assert "OMP exited with status 3" in result["records"][0]["notes"]
-    assert "reporting defect: result.json is malformed" in result["records"][1]["notes"][0]
+    assert any("optional worker report unavailable: result.json is malformed" in note for note in result["records"][1]["notes"])
     assert result["records"][1]["task_outcome"] == "not_assessed"
     assert result["records"][1]["manual_review"] == "undetermined"
     assert (attempt / "cases/A02/trace.jsonl").is_file()
@@ -192,6 +192,39 @@ def test_execute_prepares_captures_and_closes_before_returning(tmp_path: Path, m
     assert json.loads((case_root / "before.json").read_text()) == {"sequence": 1}
     assert json.loads((case_root / "after.json").read_text()) == {"sequence": 2}
     assert json.loads((case_root / "fixture-receipt.json").read_text()) == {"kind": "test-fixture"}
+
+
+def test_required_final_output_is_captured_after_worker_and_before_runtime_close(tmp_path: Path, monkeypatch) -> None:
+    attempt = tmp_path / "attempt"
+    lifecycle: list[str] = []
+    prepared = SimpleNamespace(
+        fixture_receipt={"kind": "test-fixture"},
+        baseline_observer=lambda: (lifecycle.append("capture"), {"sequence": lifecycle.count("capture")})[1],
+        final_output_capture=lambda: (lifecycle.append("final-render"), {
+            "status": "reused_exact", "run_id": "run-final", "authority_verified": True,
+        })[1],
+        close=lambda: lifecycle.append("close"),
+    )
+    monkeypatch.setattr(local_loop, "render_case_brief", lambda case_id, *, prepared, doc_path: f"prepared {case_id}\n")
+
+    def launcher(argv, cwd, timeout, trace_path, log_path):
+        lifecycle.append("worker")
+        (cwd / "result.json").write_text(json.dumps({"status": "completed", "answer": "done", "evidence": []}))
+        trace_path.write_text("", encoding="utf-8")
+        log_path.write_text("", encoding="utf-8")
+        return ProcessResult(0)
+
+    result = run_local_loop(
+        SUITE, attempt_root=attempt, execute=True, case_ids=["A06"],
+        case_preparer=lambda *args, **kwargs: prepared, process_launcher=launcher,
+    )
+
+    assert result["records"][0]["execution"] == "completed"
+    assert lifecycle == ["capture", "worker", "capture", "final-render", "close"]
+    evidence = json.loads((attempt / "cases/A06/final-render.json").read_text())
+    assert evidence["run_id"] == "run-final"
+    outcome = json.loads((attempt / "cases/A06/coordinator-result.json").read_text())
+    assert outcome["render_artifacts"]["authority_verified"] is True
 
 
 def test_real_launcher_receives_only_the_prepared_runtime_environment_for_every_case(tmp_path: Path, monkeypatch) -> None:
@@ -383,7 +416,9 @@ def test_worker_boundary_denies_exact_runtime_and_canonical_paths_but_allows_cre
     assert f'(deny file-read* (subpath "{runtime.resolve()}"))' in profile
     assert f'(deny file-read* (subpath "{(runtime / "support/credentials").resolve()}"))' in profile
     assert f'(allow file-read* (literal "{credential.resolve()}"))' in profile
-    assert f'(deny file-read* (subpath "{canonical.resolve()}"))' in profile
+    # The checkout/public source may be readable for the CLI, but the
+    # canonical target remains write-protected by the worker boundary.
+    assert f'(deny file-write* (subpath "{canonical.resolve()}"))' in profile
     assert receipt["status"] == "enforced"
     assert str(runtime.resolve()) in receipt["runtime_storage_denied"]
     assert receipt["canonical_root_denied"] == str(canonical.resolve())
@@ -418,3 +453,71 @@ def test_preparation_failure_records_setup_error_and_continues_without_launch(tm
     assert result["records"][0]["setup_error"] == "RuntimeError: Runtime protocol unavailable"
     assert result["records"][1]["execution"] == "completed"
     assert attempts == ["A02"]
+
+
+def test_timeout_after_saved_edit_keeps_execution_separate_from_undetermined_semantics(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(local_loop, "render_case_brief", lambda case_id, *, prepared, doc_path: f"prepared {case_id}\n")
+    observations = iter((
+        {"head_revision_id": "head-before", "semantic_digest": "digest-before"},
+        {"head_revision_id": "head-after", "semantic_digest": "digest-after"},
+    ))
+    prepared = SimpleNamespace(
+        fixture_receipt={"case_id": "A01"}, baseline_observer=lambda: next(observations), close=lambda: None,
+    )
+
+    def launcher(argv, cwd, timeout, trace_path, log_path):
+        (cwd / "result.json").write_text(
+            '{"answer":"Saved the requested edit.","status":"failed","agent_status":"passed"}',
+            encoding="utf-8",
+        )
+        trace_path.write_text('{"event":"agent_output","text":"final narration"}\n', encoding="utf-8")
+        log_path.write_text("", encoding="utf-8")
+        return ProcessResult(None, timed_out=True)
+
+    result = run_local_loop(
+        SUITE, attempt_root=tmp_path / "attempt", execute=True, process_launcher=launcher,
+        case_ids=["A01"], case_preparer=lambda *args, **kwargs: prepared,
+    )
+    row = result["records"][0]
+    assert row["execution"] == "timed_out"
+    assert row["task_outcome"] == "partial"
+    assert row["manual_review"] == "undetermined"
+    saved = json.loads((tmp_path / "attempt/cases/A01/coordinator-result.json").read_text())
+    assert saved["execution"] == "timed_out"
+    assert saved["semantic_outcome"]["status"] == "undetermined"
+    assert saved["semantic_outcome"]["final_text_present"] is True
+    assert saved["worker_protocol"]["valid"] is False
+
+
+def test_action_noop_is_failed_without_requiring_worker_result_json(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(local_loop, "render_case_brief", lambda case_id, *, prepared, doc_path: f"prepared {case_id}\n")
+    snapshot = {"head_revision_id": "head-1", "semantic_digest": "digest-1"}
+    prepared = SimpleNamespace(
+        fixture_receipt={"case_id": "A01"}, baseline_observer=lambda: snapshot, close=lambda: None,
+    )
+
+    def launcher(argv, cwd, timeout, trace_path, log_path):
+        trace_path.write_text("", encoding="utf-8")
+        log_path.write_text("", encoding="utf-8")
+        return ProcessResult(0)
+
+    result = run_local_loop(
+        SUITE, attempt_root=tmp_path / "attempt", execute=True, process_launcher=launcher,
+        case_ids=["A01"], case_preparer=lambda *args, **kwargs: prepared,
+    )
+    row = result["records"][0]
+    assert row["execution"] == "completed"
+    assert row["task_outcome"] == "failed"
+    assert row["manual_review"] == "fail"
+    saved = json.loads((tmp_path / "attempt/cases/A01/coordinator-result.json").read_text())
+    assert saved["worker_protocol"]["valid"] is False
+    assert saved["semantic_outcome"]["status"] == "failed"
+
+
+def test_preserved_final_text_can_be_recovered_from_trace_without_worker_result(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        '{"event":"agent_output","text":"{\\"event\\":\\"assistant_final\\",\\"text\\":\\"Saved the edit.\\"}"}\n',
+        encoding="utf-8",
+    )
+    assert local_loop._preserved_final_text(None, trace) == ("Saved the edit.", "trace_final_event")

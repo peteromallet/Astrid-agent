@@ -174,7 +174,7 @@ def test_all_case_matrix_admits_a03_route_but_keeps_missing_fixture_blocked():
     assert len(rows) == 20
     assert rows["A01"].execution_contract["edit_route"] == "timelines replace-parent-media"
     assert "publication receipt" in " ".join(rows["A01"].execution_contract["required_coordinator_evidence"])
-    assert rows["A03"].execution_contract["edit_route"] == "Astrid SDK move_occurrence_group() + publish_authoring_candidate"
+    assert rows["A03"].execution_contract["edit_route"] == "authoring-bundle validate/commit"
     assert rows["A03"].execution_contract["readback_projection"] == "move_occurrence_group.v1"
     assert rows["A03"].execution_contract["status"] == "ready"
     assert rows["A03"].operational_ready is False

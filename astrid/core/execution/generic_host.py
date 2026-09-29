@@ -3989,9 +3989,16 @@ class GenericPackHost:
         else:
             declared_secrets = declared
         if isinstance(authority_context, Mapping):
-            explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = json.dumps(
+            authority_json = json.dumps(
                 dict(authority_context), sort_keys=True, separators=(",", ":")
             )
+            if len(authority_json) > 8192:
+                authority_path = (attempt / "inputs" / "timeline-visualize-authority-context.json").resolve()
+                authority_path.parent.mkdir(parents=True, exist_ok=True)
+                authority_path.write_text(authority_json, encoding="utf-8")
+                explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = str(authority_path)
+            else:
+                explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = authority_json
         env = build_child_subprocess_env(
             explicit_env=explicit,
             passthrough=record.definition.isolation.env_passthrough,
@@ -4285,6 +4292,36 @@ class GenericPackHost:
             attempt=attempt,
             admission=admission if isinstance(admission, Mapping) else None,
         )
+        # Serialize the final host-owned mapping after binding, because the
+        # binder may derive materialized objects from managed registries.
+        materialized_objects = values.get("materialized_objects")
+        if isinstance(materialized_objects, Mapping):
+            materialized_path = (attempt / "inputs" / "materialized-objects.json").resolve()
+            materialized_path.parent.mkdir(parents=True, exist_ok=True)
+            materialized_path.write_text(
+                json.dumps(materialized_objects, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            values["materialized_objects"] = str(materialized_path)
+        filmstrip_authority = values.get("filmstrip_authority")
+        if isinstance(filmstrip_authority, str) and len(filmstrip_authority) > 8192:
+            authority_path = (attempt / "inputs" / "filmstrip-authority.json").resolve()
+            authority_path.parent.mkdir(parents=True, exist_ok=True)
+            authority_path.write_text(filmstrip_authority, encoding="utf-8")
+            values["filmstrip_authority"] = str(authority_path)
+        timeline_authority = values.get("timeline_authority")
+        if isinstance(timeline_authority, Mapping) or (
+            isinstance(timeline_authority, str) and len(timeline_authority) > 8192
+        ):
+            authority_path = (attempt / "inputs" / "timeline-authority.json").resolve()
+            authority_path.parent.mkdir(parents=True, exist_ok=True)
+            authority_path.write_text(
+                json.dumps(timeline_authority, sort_keys=True, separators=(",", ":"))
+                if isinstance(timeline_authority, Mapping)
+                else timeline_authority,
+                encoding="utf-8",
+            )
+            values["timeline_authority"] = str(authority_path)
         for output in record.definition.outputs:
             if output.name == "video" and "output_name" not in values:
                 values["output_name"] = "hype.mp4"

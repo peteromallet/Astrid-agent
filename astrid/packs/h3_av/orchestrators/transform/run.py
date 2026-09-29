@@ -455,6 +455,22 @@ def _invoke(client: Any, capability_id: str, *, inputs: Mapping[str, Any], out: 
     return result
 
 
+def _execution_request_for_child(
+    execution_request: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Carry scheduling intent without inheriting the parent's input set.
+
+    The parent H3 task owns ``request.json`` and ``h3-input-bundle.zip``.  The
+    nested GPU task owns the sealed workflow and managed-assets objects.  By
+    omitting ``inputs`` here, the SDK derives the child's canonical manifest
+    from its actual file inputs and Runtime remains the sole input authority.
+    """
+
+    if execution_request is None:
+        return None
+    return {key: value for key, value in execution_request.items() if key != "inputs"}
+
+
 def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
     """Derive the child publication declaration from the sealed compilation."""
 
@@ -553,15 +569,17 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         generation_metadata = {"h3_av": provenance}
         generation_intent = _generation_intent(compilation)
         generation_intent["metadata"].update(generation_metadata)
+        run_inputs = {
+            **bundle_inputs,
+            "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
+            "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
+            "generation_intent": generation_intent,
+        }
         run = _invoke(
             client, "vibecomfy.run",
-            inputs={
-                **bundle_inputs,
-                "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
-                "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
-                "generation_intent": generation_intent,
-            },
-            out=root / "04-run", project=args.project, execution_request=execution_request,
+            inputs=run_inputs,
+            out=root / "04-run", project=args.project,
+            execution_request=_execution_request_for_child(execution_request),
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None

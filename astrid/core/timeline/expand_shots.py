@@ -207,8 +207,8 @@ def expand_shot_clips(
                 )
 
             sub_at = float(sub_clip.get("at", 0.0))
-            # Sub-clip duration: `hold` for stills/text; `to-from` for bounded
-            # media (VO audio clips carry from/to with no hold).
+            # Sub-clip duration fields are source seconds. Playback speed maps
+            # that source window into visible timeline time exactly once.
             sub_hold = float(sub_clip.get("hold", 0.0))
             speed = float(sub_clip.get("speed", 1.0))
             if speed <= 0.0:
@@ -219,9 +219,9 @@ def expand_shot_clips(
             source_to = float(sub_clip.get("to", 0.0))
             if sub_hold <= 0.0:
                 if source_to > source_from:
-                    sub_hold = (source_to - source_from) / speed
+                    sub_hold = source_to - source_from
             new_at = parent_at + sub_at
-            new_end = new_at + sub_hold
+            new_end = new_at + sub_hold / speed
             if new_end <= parent_at:
                 # No positive remainder inside the parent window; drop.
                 _LOGGER.debug(
@@ -248,10 +248,10 @@ def expand_shot_clips(
             expanded_sub["at"] = new_at
             if new_end > parent_end:
                 # Preserve source semantics while making the timeline window
-                # finite.  ``hold`` is timeline time; bounded media ``to`` is
-                # source time and therefore scales by playback speed.
+                # finite. Both ``hold`` and bounded media ``to`` are source
+                # time and therefore scale by playback speed.
                 if "hold" in expanded_sub:
-                    expanded_sub["hold"] = remaining
+                    expanded_sub["hold"] = remaining * speed
                 if source_to > source_from:
                     expanded_sub["to"] = source_from + remaining * speed
             if sub_clip.get("track") is None:

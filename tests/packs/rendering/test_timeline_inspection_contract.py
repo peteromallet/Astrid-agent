@@ -281,6 +281,25 @@ def test_inspection_orders_rational_times_and_rejects_invalid_millisecond_input(
     assert result["clips"][0]["actions"]["expand"]["argv"][4] == "p-1"
 
 
+def test_inspection_visible_time_vectors_apply_speed_once_and_keep_half_open_ranges():
+    document = {
+        "timeline_id": "tl-1",
+        "config": {"clips": [
+            {"id": "hold-slow", "track": "picture", "at": 0, "hold": 1, "speed": 0.5},
+            {"id": "duration-ms-fast", "track": "picture", "at_ms": 1, "duration_ms": 17, "speed": 2},
+            {"id": "trim-fast", "track": "picture", "at": 3, "from": 2, "to": 6, "speed": 2},
+            {"id": "adjacent", "track": "picture", "at": 2, "hold": 1},
+        ]},
+    }
+    result = project_timeline_document(document)
+    clips = {row["clip_id"]: row for row in result["clips"]}
+    assert clips["hold-slow"]["duration_seconds"] == [2, 1]
+    assert clips["duration-ms-fast"]["duration_seconds"] == [17, 2000]
+    assert clips["trim-fast"]["duration_seconds"] == [2, 1]
+    assert project_timeline_document(document, clip="hold-slow", range_value="2..3")["clips"] == []
+    assert [row["clip_id"] for row in project_timeline_document(document, clip="adjacent", range_value="2..3")["clips"]] == ["adjacent"]
+
+
 def test_inspection_cursor_is_bound_to_the_document_head():
     document = {
         "timeline_id": "tl-1", "head_hash": "head-1",

@@ -1575,7 +1575,22 @@ def _compose_synchronized_surface(
 
 def execute_filmstrip(args, *, authority=None):
     if args.filmstrip_authority:
-        authority = json.loads(args.filmstrip_authority)
+        authority_value = args.filmstrip_authority
+        try:
+            parsed_authority = json.loads(authority_value)
+        except json.JSONDecodeError:
+            authority_path = Path(authority_value).expanduser()
+            try:
+                parsed_authority = json.loads(authority_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("filmstrip authority must be JSON or a host handoff path") from exc
+        if isinstance(parsed_authority, str):
+            authority_path = Path(parsed_authority).expanduser()
+            try:
+                parsed_authority = json.loads(authority_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("filmstrip authority handoff is not valid JSON") from exc
+        authority = parsed_authority
     if not isinstance(authority, dict) or authority.get('mode') not in {'filmstrip', 'input_only'}:
         raise ValueError('Rendered filmstrips require managed SDK admission.')
     if authority.get('mode') == 'input_only':

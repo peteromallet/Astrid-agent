@@ -10,8 +10,8 @@ description: >
 # Astrid timeline rendering evidence (compatibility)
 
 Existing timeline editing is owned by the [video editing skill](../../video_editing/skill/SKILL.md).
-Follow its open/pin → exact target inspection → detached candidate →
-validate/diff → optional render → publish → reopen/readback route first. This
+Follow its inspect → edit → validate → save route. Render only when requested
+or needed for composed evidence; honor explicit preview-before-save ordering. This
 skill is the downstream rendering/evidence and playback compatibility layer;
 it is not an alternate editorial source of truth. In a checkout the source is
 `astrid/packs/rendering/skill/SKILL.md`; in an installed skill view it is
@@ -38,14 +38,16 @@ python3 -m astrid timelines --help
 
 The timeline is one canonical authoring composition. `timelines show` (and the
 typed authoring-bundle opener) is the bounded structural/text view;
-`timelines visualize` is the native declared-input/rendered visual view; and offline
+`timelines visualize` is the declared-input/composed-output visual view; and offline
 `timelines inspect --manifest` is a bounded read-only view of an already
 published evidence pack. These are sister commands over the same identity and
-time model in the single `timelines` product family. For
-`--show inputs --hide output`, `timelines visualize` is served directly by the
-Runtime's native timeline-view operation and does not require a pack host.
-Source decoding, waveforms, and rendered-output filmstrips still use the
-qualified `rendering.timeline_visualize` executor. Never invent a
+time model in the single `timelines` product family. The default `auto` mode
+shows declared inputs and includes composed output only when a fresh matching
+render already exists; it never starts a render. Explicit `--mode inputs` never
+looks up renders. `--mode composed` inspects an exact matching output or returns
+`render_required`; render the selected saved state or candidate explicitly and
+retry with its returned run ID. Source decoding, waveforms, and rendered-output
+filmstrips are private implementation details of the same operation. Never invent a
 second text-only timeline, treat a filmstrip as a new source of truth, or
 switch to a mutable child document because it is easier to read.
 
@@ -74,11 +76,12 @@ Use this loop for every inspection or edit:
    objects. That code is a detached candidate, not a new format or hidden
    command language. Do not edit Runtime files directly, call undocumented
    endpoints, or silently rebase a stale candidate.
-5. **Validate, preview, publish once.** Validate the complete candidate, inspect
-   its diff, and preview the frozen candidate when visual confirmation matters.
-   Commit through the existing compare-and-swap/idempotent publication boundary.
-   Re-read the newly published closure by its returned IDs (not a seed map),
-   then use the visual view/render to verify the actual changed media and timing.
+5. **Validate and save.** Validate the complete candidate, inspect its diff,
+   and save through the existing compare-and-swap/idempotent publication boundary.
+   Preview, rendering, and focused readback are optional unless the request
+   needs them. For an explicit preview-before-save request, inspect/deliver a
+   successful unpublished candidate render before saving that same candidate.
+   Keep the receipt; further corrective edits and saves are allowed.
 6. **Explain the evidence.** Report what was observed, what was changed, and
    what remains unavailable separately. A successful command, a semantic
    readback, a decoded media check, and a browser/render proof are different
@@ -89,9 +92,23 @@ The short agent preamble is:
 > Open one pinned composition. Find the target in the structural view, carry its
 > exact identity to the visual view, and expand only as needed. Use the smallest
 > supported command; otherwise edit a detached same-schema candidate with
-> ordinary code. Validate, diff, preview, publish once, reopen the published
-> closure, and verify the result in both views. Keep current, candidate, and
+> ordinary code. Validate, diff, and save. Choose source inspection, rendered
+> preview, or readback when the request needs it. Keep current, candidate, and
 > historical evidence distinct.
+
+For discovery, `timelines show` answers structural/text questions, and
+`timelines visualize --mode inputs` answers declared-placement questions. They
+share the explicit project/timeline, pinned head, and exact
+`occurrence_id`; carry that identity between calls rather than using a shot
+name, ordinal, or fixture alias. Input mode is not a render or source-pixel
+proof. Composed mode can inspect only an existing exact render/run and never
+starts rendering itself.
+
+Workers must treat live Runtime responses and the artifacts returned by those
+calls as authoritative. Fixture/evaluator JSON, seed maps, baseline exports,
+and prior result files are coordinator inputs or test evidence, never the
+source of truth for an agent's conclusion. If a live operation or artifact is
+unavailable, say so and stop the unsupported claim.
 
 This contract deliberately favors simple primitives for common work and code
 for complex batch work. It does not add a DSL, persistent checkout, new media
@@ -141,13 +158,31 @@ published evidence objects. The durable authority is the managed run's
 digest-verified bundle/manifest, not those disposable local paths.
 
 Input placement inspection is also available without a render. Run
-`timelines visualize --show inputs --hide output --format md --format png` to
+`timelines visualize --mode inputs --format md --format png` to
 project the current canonical input snapshot into declared visual lanes; the
 Runtime publishes the Markdown/PNG view as derived project objects. This
 reads no rendered pixels, decodes no audio, and makes no provider call.
 Placement metadata establishes
 which sources and intervals are declared, not what those sources look like in
-the rendered composition. To compare against pixels, pin the exact successful
+the rendered composition. The native input PNG is a metadata diagram, not a
+thumbnail sheet: it shows separate numbered clip spans, boundaries, a time
+ruler, and an occurrence/track/clip legend. It displays at most 40 clips;
+narrow the selectors or inspect the paired Markdown/JSON for the rest.
+
+To inspect an image source itself, take `source_object_id` from the exact
+selected clip in the returned inspection and retrieve it through the SDK:
+
+```python
+source_bytes = client.media.read_bytes(clip["source_object_id"])
+```
+
+Open those bytes in an image viewer (or save a temporary inspection copy and
+use the agent's image-viewing tool). This verifies the source image, not its
+crop, effects, or appearance in the composition. Use the installed Astrid
+Python environment for these commands; in a checkout, activate `.venv` or use
+`.venv/bin/python -m astrid` so declared dependencies are available.
+
+To compare against composed pixels, pin the exact successful
 render run with `--render-run <exact-run-id>`; that view is scoped to that
 frozen render and its captured frames. A current-input view and an exact-run
 view answer different questions, so retain their scope with any conclusion.
@@ -234,7 +269,7 @@ edits.
 
 For rendered-output inspection, the rendered paired filmstrip/storyboard is
 the canonical visual surface. It is not the only way to inspect a timeline:
-the render-free `--show inputs` route above exposes declared placements and
+the render-free `--mode inputs` route above exposes declared placements and
 source media without pretending they are rendered pixels. There is no separate
 structural diagram or frozen-object navigation route.
 Use the managed filmstrip commands above with `--render-run`; do not supply a
@@ -297,7 +332,7 @@ supported edits, use ordinary Python against the detached same-schema bundle:
 from astrid.sdk.authoring_bundle import (
     open_authoring_bundle, validate_authoring_candidate,
     diff_authoring_candidate, preview_authoring_candidate,
-    publish_authoring_candidate, render_authoring_candidate_preview,
+    publish_authoring_candidate,
 )
 
 candidate = open_authoring_bundle(
@@ -308,17 +343,13 @@ candidate = open_authoring_bundle(
 validate_authoring_candidate(candidate)
 diff = diff_authoring_candidate(candidate)
 frozen = preview_authoring_candidate(candidate)  # freezes candidate JSON; no pixels are rendered
-# Rendering is a separate evidence action over that frozen JSON.
-render_receipt = render_authoring_candidate_preview(
-    frozen, client, project="<project>", timeline_ref="<timeline>"
-)
 publication = publish_authoring_candidate(candidate, writer, idempotency_key=run_id)
-# Reopen the returned parent/shot/internal revision closure and verify it.
+# Retain the receipt; reopen its exact closure only if a later check needs it.
 ```
 
 Keep the exact publication response, including its `new_head` and complete
-`dependency_manifest`, then reopen that returned closure rather than trusting
-the candidate, seed map, or an agent-authored snapshot. These operations are
+`dependency_manifest`. If readback is needed, reopen that returned closure
+rather than a seed map or an agent-authored snapshot. These operations are
 public where documented; an unsupported case-specific route must be reported
 as unavailable, not inferred from the composition's shape.
 
@@ -330,11 +361,21 @@ renders pixels through the runtime, and returns a render receipt/evidence
 identity. Use the public `astrid.sdk.authoring_bundle` import shown above; do
 not reach through `astrid.core` as a substitute public API.
 
+For an explicitly requested composed preview, import
+`render_authoring_candidate_preview` from that public module and render the
+frozen candidate. Check its success and inspect/deliver the output before
+publication when the user asks for that order (as in A01). If the required
+preview fails, do not save. See the
+[target-bound editing guide](../../../../docs/timeline-editing-guide.md) for
+the optional preview branch and current source/artifact access limitations.
+
 Keep authoring-bundle `placements` distinct from parent `occurrences`.
 Placements are candidate rows describing where an item is placed in the
 detached edit; parent occurrences are committed closure identities used for
 readback and navigation. A placement may carry an occurrence reference, but
 it is not a new parent occurrence and must not be substituted for one.
+Timing is nested at `row["placement"]["start_ms"]` and
+`row["placement"]["duration_ms"]`; do not add flat timing fields to the row.
 
 The older `timelines save --config ... --registry ... --expected-version ...`
 command below is a separate legacy whole-document compare-and-swap interface.
@@ -436,8 +477,8 @@ still use their current path. Stream copy is disabled for this overlay path.
 
 ## Render and open
 
-For an editorial feedback cycle (including reference-frame and storyboard
-previews), render with `--review` by default and keep it enabled for subsequent
+When a rendered editorial feedback cycle is requested (including reference-frame
+and storyboard previews), render with `--review` by default and keep it enabled for subsequent
 revisions. Deliver and open that review render so the user can identify frames
 by shot name and timecode. Use meaningful registered shot names, and check that
 the labels are visible in the exported video. A filmstrip viewer is useful
@@ -506,13 +547,13 @@ result = sdk.invoke(
 )
 ```
 
-Use `client.timelines.visualize` for native declared-input evidence and
-`client.timelines.show` / `client.timelines.open_composition` for bounded text
-inspection. Use `rendering.timeline_visualize` only when source pixels,
-waveforms, or an exact rendered-output filmstrip are required. The legacy
+Use `client.timelines.visualize` for declared-input or composed-output evidence
+and `client.timelines.show` / `client.timelines.open_composition` for bounded
+text inspection. Use `rendering.render` to create an output before requesting
+composed visualization. The legacy
 `client.timelines.save` path is retained for compatibility; new
-programmatic edits should use the detached authoring-bundle validate/preview/
-publish path above. Keep `project` explicit and
+programmatic edits should use the detached authoring-bundle validate/publish
+path above, with previews as needed. Keep `project` explicit and
 use returned runtime IDs, manifests, and receipts for durable navigation.
 
 ## Renderer authoring

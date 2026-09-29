@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -58,9 +59,20 @@ class PreparedCase:
     baseline_observer: Any
     fixture_receipt: Mapping[str, Any]
     _resources: contextlib.ExitStack
+    # Optional case-local managed render, prepared before the worker starts.
+    # It is valid only for this prepared realm/project and is never a shared
+    # cache or evidence for an edited final state.
+    baseline_render: Mapping[str, Any] | None = None
+    # Optional coordinator-owned final-output capture. The local loop calls it
+    # only after the worker exits and before this prepared Runtime is closed.
+    final_output_capture: Any = None
     # Runtime realm/support/contract storage is coordinator-owned.  The local
     # worker may read the credential file itself, but never the backing store.
     worker_denied_paths: tuple[Path, ...] = ()
+    # The public CLI needs the server-issued actor as part of its explicit
+    # case-local connection context.  Older callers may omit it; the
+    # coordinator always supplies it for live disposable realms.
+    actor_id: str | None = None
 
     def close(self) -> None:
         self._resources.close()
@@ -726,6 +738,116 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _verify_actor_scoped_render_readability(
+    product_client: Any, *, project_id: str, timeline_id: str, run_id: str,
+) -> tuple[bool, str | None]:
+    """Exercise the actor-facing composed view against the exact managed run."""
+    viewed = product_client.timelines.visualize(
+        project_id, timeline_id, mode="composed", options={"render_run": run_id},
+    )
+    if getattr(viewed, "ok", False):
+        return True, None
+    error = getattr(viewed, "error", None)
+    return False, getattr(error, "message", str(error or "composed view failed"))
+
+
+def _capture_final_managed_output(
+    product_client: Any, *, project_id: str, timeline_id: str,
+    render_if_missing: bool = True,
+) -> dict[str, Any]:
+    """Reuse an exact saved-head render, otherwise render it at most once.
+
+    The returned status is authority evidence only; decoded-media assertions
+    remain the responsibility of the existing output checkers.
+    """
+    from astrid.sdk.timeline_filmstrip import matching_composed_render
+
+    started = time.perf_counter()
+    result: dict[str, Any] = {
+        "kind": "astrid.timeline-eval.final-render.v1",
+        "project_id": project_id,
+        "timeline_id": timeline_id,
+        "status": "unavailable",
+        "rendered_by_coordinator": False,
+    }
+    try:
+        shown = product_client.timelines.show(project_id, timeline_id)
+        if not shown.ok or not isinstance(shown.data, Mapping):
+            result["reason"] = "final timeline state could not be read"
+            return result
+        timeline = dict(shown.data)
+        result["head_revision_id"] = timeline.get("parent_revision_id") or timeline.get("head_revision_id")
+        result["config_version"] = timeline.get("config_version") or timeline.get("version")
+        runtime_client = product_client.remote._client
+        run_id = matching_composed_render(
+            runtime_client, project_id=project_id, timeline=timeline, limit=50,
+        )
+        if run_id:
+            readable, reason = _verify_actor_scoped_render_readability(
+                product_client, project_id=project_id, timeline_id=timeline_id, run_id=run_id,
+            )
+            result.update(
+                status="reused_exact" if readable else "unreadable",
+                run_id=run_id,
+                authority_verified=True,
+                actor_scoped_readable=readable,
+            )
+            if reason:
+                result["reason"] = reason
+            return result
+        if not render_if_missing:
+            result["reason"] = "no exact saved-head render found within bounded discovery"
+            return result
+
+        inputs: dict[str, Any] = {"timeline_ref": timeline_id, "review": True}
+        version = timeline.get("config_version", timeline.get("version"))
+        if isinstance(version, int) and not isinstance(version, bool):
+            inputs["expected_version"] = version
+        elif isinstance(version, str) and version.isdigit():
+            inputs["expected_version"] = int(version)
+        rendered = product_client.invoke_result(
+            "rendering.render", kind="executor", project=project_id,
+            inputs=inputs, wait=True, timeout_seconds=600,
+        )
+        result.update(
+            rendered_by_coordinator=True,
+            kernel_run_id=getattr(rendered, "kernel_run_id", None),
+            kernel_task_id=getattr(rendered, "kernel_task_id", None),
+            executor_version=getattr(rendered, "executor_version", None),
+        )
+        if not rendered.ok:
+            error = getattr(rendered, "error", None)
+            result.update(status="failed", reason=getattr(error, "message", str(error)))
+            return result
+        run_id = getattr(rendered, "run_id", None)
+        exact = matching_composed_render(
+            runtime_client, project_id=project_id, timeline=timeline, limit=50,
+        )
+        if not run_id or exact != run_id:
+            result.update(
+                status="unverified", run_id=run_id,
+                reason="render completed but exact managed output authority was not verified",
+            )
+            return result
+        readable, reason = _verify_actor_scoped_render_readability(
+            product_client, project_id=project_id, timeline_id=timeline_id, run_id=run_id,
+        )
+        result.update(
+            status="rendered_exact" if readable else "unreadable",
+            run_id=run_id,
+            authority_verified=True,
+            actor_scoped_readable=readable,
+        )
+        if reason:
+            result["reason"] = reason
+        return result
+    except Exception as exc:  # evidence capture must not mask actor outcome
+        result.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
+        return result
+    finally:
+        result["duration_seconds"] = round(time.perf_counter() - started, 3)
+
+
 class _RuntimeBaselineObserver:
     def __init__(self, adapter: Any, project_id: str, timeline_id: str):
         self.adapter = adapter
@@ -753,6 +875,7 @@ def _prepare_case_with_resources(
     canonical_endpoint: str,
     canonical_realm_id: str,
     canonical_root: Path,
+    rendering_host_source: str | Path | None,
     resources: contextlib.ExitStack,
 ) -> PreparedCase:
     """Prepare one case in a fresh project; every case owns a live Runtime.
@@ -791,6 +914,7 @@ def _prepare_case_with_resources(
         canonical_endpoint=canonical_endpoint,
         canonical_realm_id=canonical_realm_id,
         canonical_root=canonical_root,
+        rendering_host_source=rendering_host_source,
     ))
     # The fixture seeding helper currently validates its internal namespace as
     # A01–A10. L cases retain their public IDs/tasks, while using an
@@ -908,7 +1032,129 @@ def _prepare_case_with_resources(
         _write_json(case_root / "task-inputs.json", task_inputs)
     observer = _RuntimeBaselineObserver(session.adapter, project_id, timeline_id)
     baseline_snapshot = observer()
-    _write_json(case_root / "baseline-observation.json", baseline_snapshot)
+    baseline_render: dict[str, Any] | None = None
+    product_client = None
+    # ``baseline_view`` is a preparation requirement for the cases that use
+    # it.  The actor may still choose the render-free input view, but the
+    # coordinator must prove that a same-project starting render exists before
+    # launching a baseline-backed case.  A missing/failed render is setup
+    # failure, never an optional evidence downgrade.
+    if bool(row.get("baseline_view")):
+        baseline_render = {
+            "kind": "astrid.timeline-eval.baseline-render.v1",
+            "case_id": case_id,
+            "project_id": project_id,
+            "timeline_id": timeline_id,
+            "status": "not_requested",
+            "reason": "required managed rendering host was not supplied",
+        }
+        if rendering_host_source is None:
+            _write_json(case_root.parent.parent / "baseline-render.json", {
+                **baseline_render,
+                "status": "failed",
+            })
+            raise FixtureError("required baseline render host was not supplied")
+        render_started = time.perf_counter()
+        try:
+            from astrid.sdk.client import AstridClient
+            from astrid.sdk.remote import RemoteAstridClient
+
+            product_client = AstridClient(remote=RemoteAstridClient(session.adapter.workspace))
+            shown = product_client.timelines.show(project_id, timeline_id)
+            version = None
+            if shown.ok and isinstance(shown.data, Mapping):
+                raw_version = shown.data.get("config_version", shown.data.get("version"))
+                if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                    version = raw_version
+                elif isinstance(raw_version, str) and raw_version.isdigit():
+                    version = int(raw_version)
+            render_inputs: dict[str, Any] = {"timeline_ref": timeline_id, "review": True}
+            if version is not None:
+                render_inputs["expected_version"] = version
+            rendered = product_client.invoke_result(
+                "rendering.render", kind="executor", project=project_id,
+                # Setup has the same ten-minute ceiling as an actor case;
+                # it is measured separately and never charged to the
+                # worker's timeout budget.
+                inputs=render_inputs, wait=True, timeout_seconds=600,
+            )
+            baseline_render = {
+                "kind": "astrid.timeline-eval.baseline-render.v1",
+                "case_id": case_id,
+                "project_id": project_id,
+                "timeline_id": timeline_id,
+                "status": "succeeded" if rendered.ok else "failed",
+                "run_id": rendered.run_id,
+                "kernel_run_id": rendered.kernel_run_id,
+                "kernel_task_id": rendered.kernel_task_id,
+                "executor_version": rendered.executor_version,
+                "error": rendered.error,
+                "head_revision_id": baseline_snapshot.get("head_revision_id"),
+                "config_version": version,
+                "render_profile": "default",
+                "coverage": "full_timeline",
+                "closure_semantic_digest": baseline_snapshot.get("semantic_digest"),
+                "setup_duration_seconds": round(time.perf_counter() - render_started, 3),
+            }
+            if not rendered.ok:
+                _write_json(case_root.parent.parent / "baseline-render.json", baseline_render)
+                error = rendered.error
+                detail = error.message if hasattr(error, "message") else error
+                raise FixtureError(f"required baseline render failed: {detail}")
+            from astrid.sdk.timeline_filmstrip import matching_composed_render
+
+            verified_run = matching_composed_render(
+                product_client.remote._client,
+                project_id=project_id,
+                timeline={**dict(shown.data), "parent_revision_id": baseline_snapshot.get("head_revision_id")},
+                limit=50,
+            ) if shown.ok and isinstance(shown.data, Mapping) else None
+            if not rendered.run_id or verified_run != rendered.run_id:
+                baseline_render.update(
+                    status="failed",
+                    authority_verified=False,
+                    error="render succeeded but exact starting-head managed output authority was not verified",
+                )
+                _write_json(case_root.parent.parent / "baseline-render.json", baseline_render)
+                raise FixtureError("required baseline render did not verify against the exact starting head")
+            readable, reason = _verify_actor_scoped_render_readability(
+                product_client, project_id=project_id, timeline_id=timeline_id,
+                run_id=rendered.run_id,
+            )
+            baseline_render.update(
+                authority_verified=True,
+                actor_scoped_readable=readable,
+            )
+            if not readable:
+                baseline_render.update(status="failed", error=reason or "actor-scoped composed view failed")
+                _write_json(case_root.parent.parent / "baseline-render.json", baseline_render)
+                raise FixtureError("required baseline output is not readable through the actor-scoped view")
+        except FixtureError:
+            raise
+        except Exception as exc:  # setup failure is explicit and case-local
+            baseline_render = {
+                **baseline_render,
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "setup_duration_seconds": round(time.perf_counter() - render_started, 3),
+            }
+            _write_json(case_root.parent.parent / "baseline-render.json", baseline_render)
+            raise FixtureError(f"required baseline render setup failed: {type(exc).__name__}: {exc}") from exc
+        _write_json(case_root.parent.parent / "baseline-render.json", baseline_render)
+    if rendering_host_source is not None and product_client is None:
+        from astrid.sdk.client import AstridClient
+        from astrid.sdk.remote import RemoteAstridClient
+
+        product_client = AstridClient(remote=RemoteAstridClient(session.adapter.workspace))
+    final_output_capture = None
+    if product_client is not None:
+        final_output_capture = lambda: _capture_final_managed_output(
+            product_client, project_id=project_id, timeline_id=timeline_id,
+        )
+    # Keep the coordinator's full starting closure outside ``work/project``.
+    # The worker receives only the public target/task inputs; even a sandboxed
+    # file that sits beside those inputs is an unnecessary contamination risk.
+    _write_json(case_root.parent.parent / "baseline-observation.json", baseline_snapshot)
     receipt = {
         "case_id": case_id,
         "kind": "runtime-navigation" if row.get("task") == "navigation" else "runtime-action",
@@ -928,7 +1174,10 @@ def _prepare_case_with_resources(
         endpoint=session.endpoint, credential_file=session.adapter.isolation.credential_file,
         realm_id=session.realm_id, project_id=project_id, timeline_id=timeline_id,
         target=target, entrypoint=None, baseline_observer=observer,
-        fixture_receipt=receipt, _resources=resources,
+        fixture_receipt={**receipt, "baseline_render": baseline_render},
+        baseline_render=baseline_render, final_output_capture=final_output_capture,
+        _resources=resources,
+        actor_id=getattr(getattr(session.adapter, "proof", None), "actor_id", None),
             worker_denied_paths=tuple(
                 path for path in (
                     getattr(session, "root", None),
@@ -948,6 +1197,7 @@ def prepare_case(
     canonical_endpoint: str,
     canonical_realm_id: str,
     canonical_root: Path,
+    rendering_host_source: str | Path | None = None,
 ) -> PreparedCase:
     """Prepare a case and close partially opened resources if setup fails."""
     resources = contextlib.ExitStack()
@@ -959,6 +1209,7 @@ def prepare_case(
             canonical_endpoint=canonical_endpoint,
             canonical_realm_id=canonical_realm_id,
             canonical_root=canonical_root,
+            rendering_host_source=rendering_host_source,
             resources=resources,
         )
     except BaseException:
@@ -971,11 +1222,7 @@ def render_case_brief(case_id: str, *, prepared: PreparedCase, doc_path: str = "
     suite = json.loads((Path(__file__).with_name("cases") / "agent_briefs.json").read_text(encoding="utf-8"))
     row = next(item for item in suite["cases"] if item["id"] == case_id)
     if row.get("task") == "navigation":
-        task = str(row.get("operational_addendum", "Inspect the selected fixture."))
-        if case_id == "L05":
-            task = "Inspect one selected shot's active media and available history. Report which historical alternatives and source/composed references are actually present; do not infer or invent missing provenance."
-        elif case_id == "L09":
-            task = "Inspect current and older output provenance exposed by the live timeline view. Classify only records with actual IDs, heads and digests; do not invent output identities or provenance."
+        task = str(row.get("operational_addendum", "Inspect the selected timeline for the requested purpose."))
         target = prepared.target or {}
         project_id = str(target.get("project_id") or prepared.project_id or "")
         timeline_id = str(target.get("timeline_id") or prepared.timeline_id or "")
@@ -985,40 +1232,38 @@ def render_case_brief(case_id: str, *, prepared: PreparedCase, doc_path: str = "
         credential = str(prepared.credential_file or "")
         occurrences = target.get("occurrence_ids", [])
         occurrence = str(occurrences[0]) if isinstance(occurrences, list) and occurrences else ""
-        visual = case_id in {"L04", "L09"}
-        if visual:
-            call = (
-                "Use `client.timelines.show` and `client.timelines.open_composition`, then "
-                "`client.timelines.visualize` for the exact project/timeline. Open every returned "
-                "`md`, `png`, and `manifest` artifact; the "
-                "visualization call and artifact opens are mandatory.\n\n"
-                "```python\n"
-                "import os\nfrom pathlib import Path\n"
-                "from astrid.sdk.client import AstridClient\n"
-                "from astrid.sdk.workspace_client import PROTOCOL\n"
-                f"with AstridClient.open(endpoint={endpoint!r}, credential=Path(os.environ['ASTRID_TIMELINE_EVAL_CREDENTIAL']), "
-                f"realm_id={realm_id!r}, actor_id='owner', client_name='timeline-eval', client_version='1', protocol_version=PROTOCOL) as client:\n"
-                f"    client.timelines.show({project_id!r}, {timeline_id!r})\n"
-                f"    client.timelines.open_composition({project_id!r}, {timeline_id!r}, detail=True)\n"
-                f"    result = client.timelines.visualize({project_id!r}, {timeline_id!r}, occurrence={occurrence!r}, neighbors=1, formats=('md', 'png'))\n"
-                "    print(result.to_dict() if hasattr(result, 'to_dict') else result)\n"
-                "```\n"
-                "Open the paths returned by `visualize` with the public artifact-opening mechanism. "
-                "Do not use fixture files, offline entrypoints, or a renderer."
-            )
-        else:
-            call = (
-                "Use `client.timelines.show` followed by `client.timelines.open_composition` for the "
-                "exact project/timeline and expand the relevant occurrence from that live response. "
-                "Do not read an offline entrypoint or any fixture/evaluator JSON."
-            )
-        return (f"# {case_id} — live read-only navigation\n\n{task}\n\n"
-                f"Runtime endpoint: `{endpoint}`\nCredential: `$ASTRID_TIMELINE_EVAL_CREDENTIAL` (coordinator file `{credential}`)\n"
-                f"Realm: `{realm_id}`\nProject: `{project_id}`\nTimeline: `{timeline_id}`\nPinned head: `{head}`\n"
-                f"Target occurrence: `{occurrence}`\n\n{call}\n\n"
-                "This is a live disposable Runtime target. Read only; do not edit, publish, or render.\n\n"
-                f"Documentation: [{Path(doc_path).name}]({doc_path})\n\n"
-                f"{_worker_result_contract()}")
+        material_notes = row.get("materials", [])
+        materials = "\n".join(f"- {item}" for item in material_notes) if material_notes else "- The supplied timeline and its selected media."
+        show_command = (
+            f"python3 -m astrid timelines show --project {project_id} {timeline_id} "
+            f"--summary --detail --limit 100"
+        )
+        visual_command = (
+            f"python3 -m astrid timelines visualize {timeline_id} --project {project_id} "
+            f"--mode inputs --format md --format png"
+        )
+        if occurrence:
+            show_command += f" --occurrence {occurrence}"
+            visual_command += f" --occurrence {occurrence}"
+        return (
+            f"# {case_id} — timeline task\n\n{task}\n\n"
+            f"Project: `{project_id}`; timeline: `{timeline_id}`; target occurrence: `{occurrence}`.\n"
+            f"Use the supplied project and these materials:\n{materials}\n\n"
+            "Start with these public, render-free inspection commands (using `python3`):\n"
+            f"- Text: `{show_command}`\n"
+            f"- Visual inputs: `{visual_command}`\n\n"
+            "You may use the documented public selectors (`--occurrence`, `--shot`, `--clip`, `--track`, "
+            "`--asset`, `--range`, and `--detail`) or repeat the same commands for a focused target. "
+            "Do not use AstridClient internals, authoring targets, fixture/evaluator readers, a URL, token, "
+            "curl, web search, or direct Runtime HTTP; if a public command fails, report that failure. "
+            "The input view is render-free; use composed mode only when the task supplies or requires a "
+            "specific output run.\n\n"
+            "Use the public timeline tools and the short guide below as useful. Inspect the timeline "
+            "or source media as needed for the request. If a named fixture, historical output, or "
+            "other required material is not actually available, stop and report the missing setup "
+            "input; do not substitute invented evidence.\n\n"
+            f"Documentation: [{Path(doc_path).name}]({doc_path})\n"
+        )
 
     prompt = str(row.get("prompt", ""))
     inputs_path = prepared.project_dir / "task-inputs.json"
@@ -1059,29 +1304,32 @@ def render_case_brief(case_id: str, *, prepared: PreparedCase, doc_path: str = "
     )
     edit_value = target_value.get("capabilities", {}).get("edit", {}) if isinstance(target_value, Mapping) else {}
     if isinstance(edit_value, Mapping) and edit_value.get("status") == "available":
-        prompt += (
-            f" Use the target-advertised detached authoring route `{edit_value.get('route')}` "
-            "(open the exact target, edit a detached same-schema candidate, validate, preview, "
-            "then publish); do not invent a case-specific command."
-        )
+        prompt += f" The target advertises the public edit route `{edit_value.get('route')}`."
     else:
-        prompt += " If the target does not advertise an edit route, report that limitation rather than inventing one."
+        prompt += " If the prepared target has no available public edit route, treat that as a setup blocker."
     prompt += (f"\n\nRuntime project: `{prepared.project_id}`; timeline: `{prepared.timeline_id}`. "
                f"Target: `{prepared.project_dir / 'target.json'}`. Task inputs: `{inputs_path}`. "
-               "Show a preview, then publish the requested change to this disposable timeline.")
+               "Use the public tools and supplied project information that help complete the request. "
+               "Save the requested timeline change. A preview is optional unless the user asks for "
+               "one or it helps you make the requested edit; you may make corrective edits as needed.")
+    baseline_render = getattr(prepared, "baseline_render", None)
+    if isinstance(baseline_render, Mapping):
+        if baseline_render.get("status") == "succeeded":
+            prompt += (
+                f" A case-local starting render is already prepared as run "
+                f"`{baseline_render.get('run_id')}` for this same project and timeline; "
+                "use it only as the starting/reference view, and render again only when the edited "
+                "result needs output verification."
+            )
+        else:
+            prompt += " No starting render is available; use the render-free input view unless the task explicitly requires output evidence."
     return (f"# {case_id} — timeline action\n\n{prompt}\n\n"
             f"Only edit this case's disposable Runtime project.\n\n"
+            f"Before editing, run the public text command `python3 -m astrid timelines show --project {prepared.project_id} {prepared.timeline_id} --json`; if a visual check helps, run `python3 -m astrid timelines visualize --project {prepared.project_id} {prepared.timeline_id} --mode inputs --json`. "
+            "Use the public Astrid SDK/CLI edit route advertised by the target for the mutation, but never use SDK internals or authoring targets for inspection; the case connection is already in the environment. "
+            "Do not use curl, direct Runtime HTTP, web search, fixture/evaluator JSON, or prior-result evidence as a substitute.\n\n"
             f"Documentation: [{Path(doc_path).name}]({doc_path})\n\n"
-            f"{_worker_result_contract()}")
-
-
-def _worker_result_contract() -> str:
-    return (
-        "Write exactly one JSON object to `result.json` in your current working "
-        "directory (`work/`). It must contain the keys `status`, `answer`, "
-        "and `evidence`. Make no unsupported claims: report only actions and evidence "
-        "you actually observed.\n"
-    )
+            )
 
 
 def write_preparation_table(rows: list[PreparationRow], path: Path) -> Path:

@@ -42,8 +42,9 @@ read/CAS-save convenience operation):
 - ``recover`` — idempotent recovery through ``client.timelines.recover``;
 - ``history`` — ordered lifecycle events (read);
 - ``diff`` — deterministic adjacent-version diffs (read).
-- ``visualize`` — synchronous ``client.invoke`` of the public
-  ``rendering.timeline_visualize`` capability.
+- ``visualize`` — the single public native timeline visualization operation
+  (declared inputs immediately, or an exactly matched composed view when one
+  already exists).
 - ``render`` — version-pinned kernel timeline render through the explicit
   ``rendering.render`` `timeline_ref` mode.
 
@@ -67,7 +68,7 @@ import shlex
 from collections.abc import Mapping
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
+from astrid.core.cli.domain_output import DomainResult, print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 
@@ -532,6 +533,79 @@ def _cmd_replace_parent_media(parsed: argparse.Namespace) -> int:
         expected_head=parsed.expected_head,
         idempotency_key=parsed.idempotency_key,
     )
+    # The authoring route necessarily compiles the complete immutable
+    # parent/shot/internal-timeline closure, but that closure is an internal
+    # publication payload.  Never put it on the public CLI wire: a single
+    # replacement can otherwise exceed the 4 MiB JSON pipe limit even though
+    # the CAS publication succeeded.  Keep the SDK result lossless for
+    # programmatic callers and project only a bounded public receipt here.
+    if isinstance(result, DomainResult) and result.ok and isinstance(result.data, Mapping):
+        source = result.data
+        compact: dict[str, Any] = {}
+        for key in (
+            "representation",
+            "project_id",
+            "timeline_id",
+            "occurrence_id",
+            "clip_id",
+            "expected_head",
+            "candidate_digest",
+        ):
+            if key in source:
+                compact[key] = source[key]
+        validation = source.get("validation")
+        if isinstance(validation, Mapping):
+            compact["validation"] = {
+                key: validation[key]
+                for key in (
+                    "valid",
+                    "candidate_digest",
+                    "publication_digest",
+                    "changed_identities",
+                    "reused_identities",
+                )
+                if key in validation
+            }
+        diff = source.get("diff")
+        if isinstance(diff, Mapping):
+            compact["diff"] = {
+                key: diff[key]
+                for key in ("changed", "changed_count", "summary")
+                if key in diff and not isinstance(diff[key], (list, dict))
+            }
+            if not compact["diff"]:
+                compact.pop("diff")
+        publication = source.get("publication")
+        if isinstance(publication, Mapping):
+            published_data = publication.get("data")
+            if not isinstance(published_data, Mapping):
+                published_data = publication
+            publication_summary = {
+                key: published_data[key]
+                for key in (
+                    "new_head",
+                    "old_head",
+                    "revision_id",
+                    "parent_revision_id",
+                    "replayed",
+                    "status",
+                )
+                if key in published_data and not isinstance(published_data[key], (dict, list))
+            }
+            dependency_manifest = published_data.get("dependency_manifest")
+            if isinstance(dependency_manifest, Mapping):
+                publication_summary["dependency_counts"] = {
+                    key: len(value)
+                    for key, value in dependency_manifest.items()
+                    if key in {"shots", "internal_timelines", "media"}
+                    and isinstance(value, list)
+                }
+            compact["publication"] = publication_summary
+        result = DomainResult.success(
+            compact,
+            receipt=result.receipt,
+            idempotency_key=result.idempotency_key,
+        )
     return print_result(result, as_json=parsed.json)
 
 
@@ -630,8 +704,8 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     human_outputs: Mapping[str, Any] | None = None
 
     # Normalize repeatable and comma-separated spellings before the one
-    # canonical SDK call.  The filmstrip is the only public visualization
-    # path, and its presentation formats are deliberately bounded to PNG/MD.
+    # canonical SDK call. Inputs remain render-free; auto resolves to one
+    # exact current composed output or falls back to declared inputs.
     formats = [
         item.strip().lower()
         for value in (parsed.formats or ["png", "md"])
@@ -659,40 +733,48 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs.pop("occurrence")
     shown_components = inputs.get("show") or []
     hidden_components = inputs.get("hide") or []
-    native_input_only = (
-        "inputs" in shown_components
-        and "output" in hidden_components
-        and not inputs.get("render_run")
-        and not inputs.get("include_media")
-    )
-    native_visualize = getattr(getattr(parsed.client, "timelines", None), "visualize", None)
-    if native_input_only and callable(native_visualize):
-        result = native_visualize(
-            parsed.project,
-            timeline_slug,
-            formats=formats,
-            occurrence=inputs.get("occurrence"),
-            shot=inputs.get("shot"),
-            clip=inputs.get("clip"),
-            asset=inputs.get("asset"),
-            track=inputs.get("track"),
-            range_value=inputs.get("range"),
-            detail=bool(inputs.get("detail")),
-            neighbors=int(inputs.get("neighbors") or 0),
-            out=getattr(parsed, "out", None),
-        )
+    if "output" in hidden_components or (shown_components and "output" not in shown_components):
+        mode = "inputs"
     else:
-        result = parsed.client.invoke_result(
-            "rendering.timeline_visualize",
-            kind="executor",
-            project=parsed.project,
-            inputs=inputs,
-            out=getattr(parsed, "out", None),
-            # Wait for the admitted task so the CLI cannot report a successful run
-            # before the PNG/manifest artifacts (or a terminal failure) exist.
-            wait=True,
-        )
-    if result.ok:
+        mode = getattr(parsed, "mode", "auto")
+    result = parsed.client.timelines.visualize(
+        parsed.project,
+        timeline_slug,
+        mode=mode,
+        options=inputs,
+        out=getattr(parsed, "out", None),
+    )
+    if isinstance(result, DomainResult):
+        # Native Runtime views are already typed DomainResults and deliberately
+        # have no task/run identity. Keep the CLI envelope compatible while
+        # preserving Runtime-owned artifact/inspection data verbatim.
+        if result.ok:
+            outputs = dict(result.data) if isinstance(result.data, Mapping) else {"data": result.data}
+            summary = _visualization_artifact_summary(outputs)
+            if summary is not None:
+                outputs["artifact_summary"] = summary
+            outputs["navigation"] = _visualization_navigation_help(
+                project=parsed.project,
+                inputs=inputs,
+                outputs=outputs,
+            )
+            human_outputs = outputs
+            envelope = DomainResult.success(
+                {
+                    "capability_id": "timelines.visualize",
+                    "run_id": None,
+                    "kernel_run_id": None,
+                    "kernel_task_id": None,
+                    "kernel_attempt_id": None,
+                    "manifest_path": None,
+                    "outputs": outputs,
+                },
+                receipt=result.receipt,
+                idempotency_key=result.idempotency_key,
+            )
+        else:
+            envelope = result
+    elif result.ok:
         outputs = result.outputs
         if isinstance(outputs, Mapping):
             outputs = dict(outputs)
@@ -1330,10 +1412,19 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         help="Repeatable/comma-separated png or md (default: png,md).",
     )
     subparser.add_argument(
+        "--mode",
+        choices=("auto", "inputs", "composed"),
+        default="auto",
+        help=(
+            "auto pairs a fresh exact composed output with inputs, falling back to inputs; "
+            "inputs is render-free; composed requires a matching current render."
+        ),
+    )
+    subparser.add_argument(
         "--view",
         choices=("filmstrip",),
         default="filmstrip",
-        help="Rendered paired filmstrip as static PNG/Markdown/JSON evidence (default and only view).",
+        help="Rendered paired filmstrip (only view for composed output).",
     )
     subparser.add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
                            help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")

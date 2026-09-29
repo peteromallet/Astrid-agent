@@ -72,6 +72,18 @@ def test_group_preserves_order_source_bounds_speed_audio_and_registry():
     assert r.parent['config_version'] == 5
 
 
+def test_group_uses_visible_hold_after_one_speed_application():
+    r = Runtime()
+    picture = next(clip for clip in r.parent['config']['clips'] if clip['id'] == 'pic')
+    picture.pop('from')
+    picture.pop('to')
+    picture.update(hold=8, speed=2)
+    result = r.group(hold=4)
+    assert result.ok, result
+    grouped = next(clip for clip in r.parent['config']['clips'] if clip.get('clipType') == 'shot')
+    assert grouped['hold'] == 4
+
+
 def test_partial_failure_retries_without_duplicate_resources():
     r = Runtime(); r.fail_child_once = True
     result = r.group(); assert not result.ok and result.error.details['stage'] == 'create_child'

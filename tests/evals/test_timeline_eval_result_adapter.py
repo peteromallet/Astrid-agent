@@ -4,6 +4,7 @@ import pytest
 
 from evals.timeline.result_adapter import (
     ResultContractError,
+    assess_coordinator_outcome,
     adapt_worker_result,
     build_outcome_record,
     public_result_contract,
@@ -146,6 +147,42 @@ def test_protocol_health_is_separate_from_semantic_outcome_and_preserves_malform
         render_artifacts={"preview": "preview.json"},
         playback_artifacts=None,
     )
-    assert record["semantic_outcome"]["status"] == "unjudged"
+    assert record["semantic_outcome"]["status"] == "undetermined"
     assert record["worker_protocol"]["valid"] is False
     assert record["independent_evidence"]["before"]["head"] == "before"
+
+
+def test_coordinator_assessment_fails_a_proved_action_noop_but_does_not_grade_changed_state() -> None:
+    before = {"head_revision_id": "head-1", "semantic_digest": "digest-1"}
+    after_same = {"head_revision_id": "head-1", "semantic_digest": "digest-1"}
+    readback = {"before_observed": True, "after_observed": True, "status": "captured"}
+    no_op = assess_coordinator_outcome(
+        {"id": "A01", "kind": "action"}, independent_before=before,
+        independent_after=after_same, independent_readback=readback,
+        conclusion={"final_text": "Done."},
+    )
+    assert no_op["status"] == "failed"
+    assert no_op["final_text_present"] is True
+
+    changed = assess_coordinator_outcome(
+        {"id": "A01", "kind": "action"}, independent_before=before,
+        independent_after={"head_revision_id": "head-2", "semantic_digest": "digest-2"},
+        independent_readback=readback, conclusion={"final_text": "Done."},
+    )
+    assert changed["status"] == "undetermined"
+    assert "case-specific" in changed["reason"]
+
+
+def test_coordinator_assessment_keeps_missing_evidence_and_navigation_undetermined() -> None:
+    assert assess_coordinator_outcome(
+        {"id": "A01", "kind": "action"}, independent_before={"head_revision_id": "head"},
+        independent_after={"head_revision_id": "head"},
+        independent_readback={"before_observed": True, "after_observed": True},
+    )["status"] == "undetermined"
+    assert assess_coordinator_outcome(
+        {"id": "L01", "kind": "navigation"},
+        independent_before={"head_revision_id": "head-1", "semantic_digest": "digest-1"},
+        independent_after={"head_revision_id": "head-1", "semantic_digest": "digest-1"},
+        independent_readback={"before_observed": True, "after_observed": True},
+        conclusion={"final_text": "Found the requested material."},
+    )["status"] == "undetermined"

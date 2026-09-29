@@ -12,6 +12,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import shutil
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -861,12 +862,110 @@ class LocalDisposableRuntimeSession:
     realm_id: str
     root: Path
     contract_path: Path
+    pack_host: Mapping[str, Any] | None = None
+
+
+def _ensure_disposable_pack_host(
+    daemon: Any, adapter: RuntimeFixtureAdapter, source: str | Path,
+) -> Mapping[str, Any]:
+    """Start a schema-aligned managed host over the selected checkout's packs.
+
+    Some reusable pack-source worktrees intentionally predate the Runtime
+    schema currently running in this process. Compose a temporary host tree
+    from the selected checkout's known-compatible host/core and pack corpus,
+    plus the current generated Runtime client. Older pinned worktrees can omit
+    ignored local-element assets, so the disposable copy is completed from
+    the current Astrid asset bundle before admission. The host is admitted
+    against the composed copy's digest; this does not edit or bypass its
+    capability census.
+    """
+    source_checkout = _regular_non_symlink(Path(source), "rendering host source checkout").resolve()
+    if not source_checkout.is_dir():
+        raise RuntimeAdapterError("rendering host source checkout does not exist")
+    pack_root = source_checkout / "astrid" / "packs"
+    if not pack_root.is_dir() or pack_root.is_symlink():
+        raise RuntimeAdapterError("rendering host source checkout has no safe pack root")
+    from astrid.core.execution.generic_host import source_checkout_digest
+
+    selected_pack_digest = source_checkout_digest(source_checkout)
+    current_source = Path(__file__).resolve().parents[2]
+    compatible_checkout = Path(daemon.root).parent / "host-source"
+    if compatible_checkout.exists() or compatible_checkout.is_symlink():
+        raise RuntimeAdapterError("temporary rendering host source path already exists")
+    shutil.copytree(
+        source_checkout / "astrid", compatible_checkout / "astrid",
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "node_modules", ".venv", ".git"),
+    )
+    # A clean historical worktree may still lack ignored local-element assets.
+    # Merge only that executable asset bundle into the disposable copy; never
+    # mutate the selected source checkout itself.
+    local_elements = current_source / "astrid" / "packs" / "local" / "elements"
+    if local_elements.is_dir() and not local_elements.is_symlink():
+        shutil.copytree(
+            local_elements,
+            compatible_checkout / "astrid" / "packs" / "local" / "elements",
+            dirs_exist_ok=True,
+        )
+    shutil.copytree(
+        current_source / "banodoco_workspace_client",
+        compatible_checkout / "banodoco_workspace_client",
+        dirs_exist_ok=True,
+    )
+    for directory in ("config",):
+        source_dir = source_checkout / directory
+        if source_dir.is_dir():
+            shutil.copytree(source_dir, compatible_checkout / directory)
+    for filename in ("pyproject.toml",):
+        shutil.copy2(source_checkout / filename, compatible_checkout / filename)
+    remotion = source_checkout / "remotion"
+    if remotion.exists() and not remotion.is_symlink():
+        (compatible_checkout / "remotion").symlink_to(remotion, target_is_directory=True)
+    composed_pack_digest = source_checkout_digest(compatible_checkout)
+    if not composed_pack_digest:
+        raise RuntimeAdapterError("temporary rendering host pack tree has no source digest")
+    worker_credential = Path(daemon.worker_credential_path)
+    health = adapter.workspace.health()
+    health_value = dict(health) if isinstance(health, Mapping) else {
+        "runtime_epoch": getattr(health, "runtime_epoch", None),
+        "schema_digest": getattr(health, "schema_digest", None),
+        "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+    }
+    from astrid.sdk.host_bootstrap import (
+        PACK_HOST_ACTOR, PACK_HOST_SCOPES, ensure_pack_host,
+    )
+
+    handoff = {
+        "endpoint": daemon.endpoint,
+        "worker_credential_file": str(worker_credential),
+        "worker_actor": PACK_HOST_ACTOR,
+        "worker_scopes": list(PACK_HOST_SCOPES),
+        "source_checkout": str(compatible_checkout),
+        "selected_source_checkout_digest": selected_pack_digest,
+        "composed_source_checkout_digest": composed_pack_digest,
+        "runtime_instance_id": daemon.instance_id,
+        "runtime_epoch": health_value.get("runtime_epoch"),
+        "schema_digest": health_value.get("schema_digest"),
+    }
+    try:
+        return ensure_pack_host(handoff, reconfigure_action="use the normal Astrid runtime launcher")
+    except Exception as exc:
+        # The disposable support directory is removed as soon as the context
+        # exits, so preserve the bounded host diagnostic in the coordinator's
+        # setup error rather than losing the only explanation for a no-launch.
+        log_path = Path(daemon.support_root) / "generic-host.log"
+        try:
+            tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:])
+        except OSError:
+            tail = ""
+        detail = f"; host log tail:\n{tail}" if tail else ""
+        raise RuntimeAdapterError(f"managed rendering host startup failed: {exc}{detail}") from exc
 
 
 @contextmanager
 def local_disposable_runtime(
     *, scratch_parent: str | Path, canonical_endpoint: str,
     canonical_realm_id: str, canonical_root: str | Path,
+    rendering_host_source: str | Path | None = None,
 ) -> Iterator[LocalDisposableRuntimeSession]:
     """Start an ephemeral real loopback Runtime without touching canonical data.
 
@@ -897,6 +996,7 @@ def local_disposable_runtime(
     else:
         raise RuntimeAdapterError("canonical realm root must not be inside the Runtime scratch parent")
 
+    host_state: Mapping[str, Any] | None = None
     try:
         from runtime_protocol.daemon import RuntimeDaemon
         from runtime_protocol.store import RealmStore
@@ -940,14 +1040,39 @@ def local_disposable_runtime(
                 credential_file=daemon.credential_path,
                 contract_path=contract_path,
             )
+            if rendering_host_source is not None:
+                host_state = dict(_ensure_disposable_pack_host(
+                    daemon, adapter, rendering_host_source,
+                ))
             yield LocalDisposableRuntimeSession(
                 adapter=adapter,
                 endpoint=daemon.endpoint,
                 realm_id=realm_id,
                 root=task_root,
                 contract_path=contract_path,
+                pack_host=host_state,
             )
         finally:
+            if host_state:
+                # This host is bound to a temporary Runtime and must not be
+                # left running after the disposable realm is removed. Reuse
+                # the bootstrapper's PID/birth/command verification before
+                # terminating its exact recorded process group.
+                try:
+                    from astrid.sdk import host_bootstrap
+
+                    state_path = support_root / "generic-host.json"
+                    recorded = host_bootstrap._read_object(state_path)
+                    if (
+                        recorded
+                        and recorded.get("endpoint") == daemon.endpoint
+                        and recorded.get("runtime_instance_id") == daemon.instance_id
+                    ):
+                        host_bootstrap._terminate_old_host(recorded)
+                finally:
+                    daemon.stop()
+            else:
+                daemon.stop()
             daemon.stop()
 
 

@@ -107,7 +107,10 @@ def _brief(probe: Mapping[str, Any], prepared: PreparedCase, doc_path: Path) -> 
     else:
         tool = (
             "Use the native public Runtime-owned timeline view below with the supplied disposable credential. "
-            "Do not rediscover the CLI, inspect source, or search the workspace. Open both returned artifacts.\n\n"
+            "This is the same operation as `timelines visualize --show inputs --hide output`; do not invoke "
+            "the rendering executor or a render. Use the exact occurrence ID supplied below, not a shot name, "
+            "ordinal, fixture alias, or nearby occurrence. Do not rediscover the CLI, inspect source, or search "
+            "the workspace. Open both returned artifacts.\n\n"
             "```python\n"
             "import os\n"
             "from pathlib import Path\n"
@@ -134,7 +137,7 @@ def _brief(probe: Mapping[str, Any], prepared: PreparedCase, doc_path: Path) -> 
         f"Timeline: `{timeline_id}`\n"
         f"Pinned head: `{head}`\n"
         f"Realm: `{realm_id}` (actor: `owner`)\n"
-        f"Target occurrence(s): `{occurrences}`\n"
+        f"Target occurrence(s) (exact Runtime identity): `{occurrences}`\n"
         f"Runtime endpoint: `{endpoint}` (use `ASTRID_TIMELINE_EVAL_CREDENTIAL` for the credential)\n\n"
         f"{tool}\n\n"
         f"{COMMON}\n\n"
@@ -204,13 +207,23 @@ def run_probe_loop(*, attempt_root: Path, fixture_root: Path, canonical_endpoint
             argv = ["omp", "--model", model, "--thinking", thinking, "--no-session", "--mode", "json", "--print", f"@{work / 'brief.md'}"]
             launch_argv, boundary = _case_worker_boundary(
                 argv, work=work, attempt_root=root,
-                protected_paths=getattr(prepared, "worker_denied_paths", ()),
+                # The brief carries the coordinator's exact Runtime identity;
+                # these preparation receipts are deliberately not worker
+                # inputs. Keep them denied even though the selected case
+                # directory is writable/readable for the worker's result.
+                protected_paths=(
+                    *getattr(prepared, "worker_denied_paths", ()),
+                    prepared.project_dir / "target.json",
+                    prepared.project_dir / "task-inputs.json",
+                    prepared.project_dir / "fixture-receipt.json",
+                    prepared.project_dir.parent.parent / "baseline-observation.json",
+                ),
                 public_read_paths=((prepared.credential_file,) if prepared.credential_file else ()),
                 canonical_root=canonical_root,
             )
             _write_json(case_root / "worker-boundary.json", boundary)
             _write_json(case_root / "launch.json", {"argv": argv, "cwd": str(work), "model": model, "thinking": thinking, "timeout_seconds": timeout, "probe": probe})
-            env = _case_child_environment(prepared)
+            env = _case_child_environment(prepared, work=work)
             returncode, execution = _launch(launch_argv, work, env, timeout, trace, log)
             record.update({"execution": execution if execution != "completed" or returncode == 0 else "launcher_failed", "returncode": returncode})
             if execution == "completed" and returncode != 0:

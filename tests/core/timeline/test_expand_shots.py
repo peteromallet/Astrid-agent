@@ -202,6 +202,42 @@ def test_bounded_media_window_clamps_to_parent_remaining_with_speed():
     assert clip["to"] == 5.0  # 2s remaining * speed 2 + source from 2
 
 
+@pytest.mark.parametrize(
+    ("speed", "source_hold", "parent_hold", "expected_source_hold"),
+    [(2.0, 4.0, 0.75, 1.5), (0.5, 1.0, 1.25, 0.625)],
+)
+def test_hold_window_applies_speed_once_and_caps_in_source_units(
+    speed: float,
+    source_hold: float,
+    parent_hold: float,
+    expected_source_hold: float,
+):
+    config, registry = _make_timeline_fixture(
+        "main",
+        clips=[{
+            "id": "shot-1", "at": 0, "hold": parent_hold, "clipType": "shot",
+            "params": {"shot_id": "shot-1", "timeline_document_id": "child"},
+        }],
+    )
+    child, child_registry = _make_timeline_fixture(
+        "child",
+        clips=[{
+            "id": "speed-vector", "at": 0, "hold": source_hold,
+            "speed": speed, "track": "visual", "clipType": "hold",
+        }],
+    )
+
+    expanded, _ = expand_shot_clips(
+        config,
+        registry,
+        load_timeline=lambda _timeline_id: (child, child_registry),
+    )
+
+    assert expanded["clips"][0]["hold"] == pytest.approx(expected_source_hold)
+    assert expanded["clips"][0]["hold"] / speed == pytest.approx(parent_hold)
+    assert child["clips"][0]["hold"] == source_hold
+
+
 def test_registry_union_parent_wins():
     """Assets from sub-registries are merged; parent wins on conflict."""
     config, registry = _make_timeline_fixture(

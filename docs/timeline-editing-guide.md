@@ -1,23 +1,98 @@
 # Code-driven timeline editing
 
+The default flow is **inspect → edit → validate → save**. Inspect the supplied
+timeline and source media as needed, edit a detached candidate, check its diff,
+and publish through Runtime's compare-and-swap boundary. Iterate and save again
+when useful. Rendering, visualization, and reopening the saved closure are
+optional checks unless the request needs them; a normal edit does not require
+a render or an exact-head readback ceremony.
+
+If the user says **“show me the preview, then save”**, preserve that order:
+render the unpublished candidate, inspect/deliver its actual output, then save
+that same candidate. Freezing candidate JSON is not a visual preview. If the
+required preview fails or is unavailable, report that and leave the candidate
+unpublished. A render after saving cannot satisfy a preview-before-save request.
+
+## Shared timeline and shot contracts
+
+`@banodoco/timeline-schema` owns `TimelineConfig` and timeline clip semantics.
+Workspace Runtime's `contract/schemas/shot-composition.json` owns the outer
+shot publication envelope (revision identity, head/CAS, dependencies, and
+occurrences) and references the generated canonical config schema for nested
+timelines. The Runtime schema also marks its managed-media registry as a
+Runtime-owned extension. Consumers project these contracts into their local
+views; they do not define a competing `TimelineConfig`.
+
+Shot audio is optional. Child timeline audio clips and their bindings are the
+playback authority; a legacy aggregate `audio` descriptor may be read when
+present, but is neither required nor synthesized. Shot payloads remain open to
+unknown fields so app-specific data survives a lossless read/edit/publication
+round trip. New writes use top-level `name`; readers may fall back through
+legacy provenance/metadata names and finally the stable shot identity. Media
+kind comes from Runtime's managed-media metadata and stays `unknown` when that
+identity is missing or unrecognized; a missing kind never implies `image`.
+
+Visible clip duration is the selected source duration divided once by positive
+`speed`: `hold`, transport `duration_ms`, or source trim `to - from` supplies
+the source duration. Parent occurrence `duration_ms` caps the resulting visible
+interval. Source trims remain in source units, and the renderer owns final frame
+rounding against the shared conformance vectors.
+
+The Reigh editor reads the exact canonical Runtime head. Empty canonical
+compositions remain canonical; a failed read shows an error and never routes to
+legacy shot groups. Legacy mode is explicit and is selected only when the
+canonical adapter is absent. Retry refreshes the pinned Runtime snapshot while
+preserving the separate local draft, and publication uses expected-head CAS.
+
 `open_composition` is a read-only inspection projection. Editing uses a
 separate detached bundle opened from an exact parent/shot/internal-timeline
-revision closure; that bundle is then validated, previewed, and published as
+revision closure; that bundle is then validated and published as
 one complete candidate through the existing Runtime writer.
+
+## Read the live timeline first
+
+Use the connected Runtime for discovery and readback. `timelines show` is the
+native structural/text operation. For declared visual placement, use its
+sibling native Runtime operation:
+
+```bash
+python3 -m astrid timelines show --project <project> <timeline> --json
+python3 -m astrid timelines visualize <timeline> --project <project> \
+  --mode inputs --format md --format png --occurrence <occurrence-id> --json
+```
+
+Pin the head returned by `show`, then carry the exact `occurrence_id` returned
+by the live response into any input view or later focused inspection. Do not replace
+it with a shot name, ordinal, fixture alias, seed-map entry, or a nearby
+occurrence. The input view describes declared placement and timing; it does
+not prove source pixels or a composited render.
+
+`timelines visualize` is the one visual-inspection operation. Its default
+`auto` mode shows declared inputs and includes composed output only when a fresh
+matching render already exists; it never starts a render. Use `--mode inputs`
+for declared inputs without looking up renders. For actual composed pixels or
+sound, render the exact saved state or candidate, then pass the returned run
+with `--mode composed --render-run <ID>`. The supplied run may represent a
+historical revision or candidate preview. Agent conclusions must come from live
+Runtime responses and returned artifacts, never from fixture/evaluator JSON,
+baseline exports, or prior result files.
 
 For a supplied target and credential file, the complete public SDK route is
 below. Save it as `edit_target.py` and pass `target.json`, the supplied token
 path, an edit JSON object such as `{"occurrence-id": 1200}` (new `start_ms`
 values), and the credential's actor ID (the disposable owner token uses
-`owner`). The selected Runtime must have `rendering.render` registered to
-produce pixels.
+`owner`). This example saves an edit without rendering. Keep SDK work in the
+same connected environment as the working shell command: a persistent Python
+evaluator may have a different environment and working directory. Importing
+the SDK does not connect it. Use the supplied connection explicitly as below
+if it is not already available; never guess credentials or inspect private
+Runtime storage to recover them.
 
 ```python
 import json
 import sys
 from pathlib import Path
 
-from astrid.sdk.authoring_bundle import render_authoring_candidate_preview
 from astrid.sdk.client import AstridClient
 from astrid.sdk.workspace_client import PROTOCOL
 
@@ -35,34 +110,31 @@ work = bound.open()  # detached parent/shot/internal closure at target's exact h
 placements = {row["occurrence_id"]: row for row in work["placements"]}
 assert edits.keys() <= placements.keys()
 for occurrence_id, start_ms in edits.items():
-    placements[occurrence_id]["start_ms"] = start_ms
-assert all(placements[key]["start_ms"] == value for key, value in edits.items())
+    placements[occurrence_id]["placement"]["start_ms"] = start_ms
+assert all(placements[key]["placement"]["start_ms"] == value
+           for key, value in edits.items())
 bound.validate(work)
 diff = bound.diff(work)
 assert diff["changed"]  # inspect the full diff and assert all requested behavior
 frozen = bound.preview(work)  # frozen JSON and digest; no rendered media
-render = render_authoring_candidate_preview(
-    frozen, client, project=target["project_id"],
-    timeline_ref=target["timeline_id"], wait=True,
-)
-assert render.ok, render.error  # actual composed preview; retain render.run_id
 receipt = bound.publish(work, idempotency_key=frozen["candidate_digest"])
 new_head = receipt["publication"]["new_head"]
-committed_target = {**target, "head_revision_id": new_head}
-readback = client.open_authoring_target(committed_target).open()
-committed = {row["occurrence_id"]: row for row in readback["placements"]}
-assert all(committed[key]["start_ms"] == value for key, value in edits.items())
-print({"render_run": render.run_id, "new_head": new_head,
+print({"new_head": new_head,
        "candidate_digest": receipt["candidate_digest"]})
 ```
 
-`bound.open()` returns a plain candidate: `placements` hold parent occurrence
-placement fields, while `shots[shot_id]["payload"]` and
+`bound.open()` returns a plain candidate: each `placements` row has its
+`occurrence_id` and `shot_id` at the top level, with timing under
+`row["placement"]["start_ms"]` / `row["placement"]["duration_ms"]`.
+Do not add flat timing fields or mutate the derived `parent.occurrences`.
+`shots[shot_id]["payload"]` and
 `shots[shot_id]["internal_timeline"]` hold the selected shot and its nested
 clips. `bound.validate`, `bound.diff`, and `bound.preview` return plain data;
-the rendered preview returns an `InvocationResult` with `.ok`, `.error`, and
-`.run_id`. A failed render has no pixel proof and stops this example before
-publication. The returned publication head is reopened for exact readback.
+the optional rendered preview returns an `InvocationResult` with `.ok`,
+`.error`, and `.run_id`. Retain the publication receipt to identify the saved
+state. If a later check needs readback, reopen its returned `new_head`; do not
+substitute a baseline snapshot. Report a successful save separately from any
+claim about rendered pixels or sound.
 
 ```python
 from astrid.sdk import (
@@ -95,7 +167,7 @@ sequence(clips, start=0, durations=[0.1] * len(clips))
 # The child sequence does not implicitly resize its parent occurrence.
 placement = next(row for row in work["placements"]
                  if row["occurrence_id"] == "brightness-montage")
-placement["duration_ms"] = round(len(clips) * 0.1 * 1000)
+placement["placement"]["duration_ms"] = round(len(clips) * 0.1 * 1000)
 
 validate_authoring_candidate(work)
 frozen = preview_authoring_candidate(work)  # exact candidate artifact; no pixels rendered
@@ -132,6 +204,11 @@ reported before commit.
 
 ## Render an unpublished candidate
 
+Use this optional branch when a composed preview helps or is explicitly
+requested. For preview-before-save, insert it before `bound.publish` in the
+example above and inspect/deliver the returned output before publishing the
+unchanged candidate. Runtime must have `rendering.render` available.
+
 `preview_authoring_candidate(work)` freezes the complete candidate, its base
 parent head, deterministic candidate digest, and proposed publication. For a
 composed video preview, use the connected SDK client:
@@ -143,6 +220,8 @@ frozen = preview_authoring_candidate(work)
 render = render_authoring_candidate_preview(
     frozen, client, project="my-project", timeline_ref="main", wait=True,
 )
+assert render.ok, render.error
+# Inspect/deliver this run's output before saving if the user requested that order.
 ```
 
 This invokes the ordinary `rendering.render` managed run. Admission rereads the
@@ -153,3 +232,27 @@ candidate preview` and includes the exact base head, candidate digest,
 publication digest, and proposed parent revision ID. Editing `work` after the
 preview was frozen cannot alter that run. If the parent head advances before
 admission, the preview is rejected as stale.
+
+## Opening sources and returned artifacts
+
+Keep these identities distinct: a clip's `asset`/`asset_id` is a timeline-local
+registry alias; a managed media ID identifies a project media record; a
+`source_object_id` identifies managed bytes; an artifact handle identifies a
+returned view or run output. Resolve the selected clip through its owning
+registry or returned source metadata. Never pass a display alias to an API
+that asks for a managed ID, or construct an artifact URL from an alias/digest.
+
+For a returned, non-null source object, the connected SDK can retrieve bytes
+with `client.media.read_bytes(source_object_id)`. Read/open only the selected
+source needed for the task. Media metadata alone does not prove that its bytes
+were viewed or played. A missing source object is an explicit access gap.
+
+CLI responses can use `ok/data/error/receipt` envelopes, while bound authoring
+helpers return plain candidate/receipt data. Check success and inspect the
+documented payload level before selecting nested fields; do not assume every
+operation returns the same top-level shape. Use returned verified local paths
+with the host's file/image/audio tools when available. An `artifact://` value
+is not a filesystem path, and a host's numeric artifact reader may not accept
+Astrid's digest-based artifact handle. If no compatible opening action or
+materialized path is returned, report that access limitation; do not invent a
+URL or claim to have inspected the artifact.

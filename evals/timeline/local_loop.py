@@ -2,8 +2,9 @@
 
 This is a small execution/evidence loop, not a grader. It does not use fixture
 readiness as an admission gate and never assigns a score. A case is recorded as
-completed when OMP exits successfully; an absent or malformed optional worker
-``result.json`` is retained as a reporting defect rather than a semantic result.
+completed when OMP exits successfully. Worker-authored ``result.json`` is an
+optional narrative artifact; the coordinator's before/after capture is the
+authoritative outcome evidence.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .fixture_manifest import DEFAULT_FIXTURE_ROOT
 from .fixture_preparation import PreparedCase, prepare_case, render_case_brief
+from .result_adapter import build_outcome_record, worker_protocol_record
 from .run import load_json
 
 LOOP_KIND = "astrid.timeline-eval.local-manual-loop.v1"
@@ -53,6 +55,7 @@ class ManualCaseRecord:
     returncode: int | None
     setup_error: str | None
     notes: tuple[str, ...]
+    coordinator_result: str | None = None
 
     def __post_init__(self) -> None:
         if self.execution not in EXECUTION_STATUSES:
@@ -90,7 +93,7 @@ _AMBIENT_RUNTIME_BLOCK_FRAGMENTS = (
 )
 
 
-def _case_child_environment(prepared: PreparedCase) -> dict[str, str]:
+def _case_child_environment(prepared: PreparedCase, *, work: Path) -> dict[str, str]:
     """Remove ambient Runtime inputs and add this case's live connection.
 
     Navigation cases also get a disposable Runtime during coordinator
@@ -108,6 +111,14 @@ def _case_child_environment(prepared: PreparedCase) -> dict[str, str]:
         raise ValueError("prepared case has no explicit Runtime endpoint and credential")
     env["ASTRID_TIMELINE_EVAL_ENDPOINT"] = prepared.endpoint
     env["ASTRID_TIMELINE_EVAL_CREDENTIAL"] = str(prepared.credential_file)
+    env["ASTRID_TIMELINE_EVAL_REALM_ID"] = str(getattr(prepared, "realm_id", None) or "")
+    env["ASTRID_TIMELINE_EVAL_ACTOR_ID"] = str(getattr(prepared, "actor_id", None) or "")
+    # Filmstrip materialization is a client-side post-processing step.  The
+    # worker is deliberately denied the canonical/runtime support roots, so
+    # give that cache an explicit home inside the selected case workspace.
+    # This keeps the public SDK path intact while making the isolated worker
+    # able to complete the same inspect/readback flow as a normal host.
+    env["BANODOCO_LOCAL_DATA_ROOT"] = str((work / ".astrid-data").resolve())
     source_root = Path(__file__).resolve().parents[2]
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
@@ -165,7 +176,10 @@ def _case_worker_boundary(
         source_root / "evals",
         source_root / "tests" / "evals",
         source_root / ".git",
-        *(path for path in (explicit_canonical, *canonical_store_paths) if path is not None),
+        # The checkout itself is the public CLI/SDK source and must remain
+        # readable.  Only its private stores are denied; the write deny below
+        # still protects the canonical checkout from edits.
+        *canonical_store_paths,
         *storage_denials,
     )))
     protected_writes = tuple(dict.fromkeys(path.resolve() for path in (
@@ -209,6 +223,19 @@ def _case_worker_boundary(
         f'(deny file-read* (subpath "{_sandbox_quote(private_checkout_root)}"))',
         f'(deny file-write* (subpath "{_sandbox_quote(private_checkout_root)}"))',
     ))
+    # The worker must be able to execute the public product surface it is
+    # instructed to use.  Keep this read-only and narrow: the SDK/CLI,
+    # generated transport package, and the timeline guide are public inputs;
+    # evaluator code, evidence, and canonical stores remain denied above.
+    public_product_reads = (
+        source_root / "astrid",
+        source_root / "banodoco_workspace_client",
+        source_root / "docs" / "timeline-editing-guide.md",
+    )
+    lines.extend(
+        f'(allow file-read* (subpath "{_sandbox_quote(path)}"))'
+        for path in public_product_reads
+    )
     # The public worker credential is the sole exception to its denied store.
     # It is read-only; the endpoint remains governed by the worker's existing
     # provider/network behavior.
@@ -294,12 +321,9 @@ def _public_task(case: Mapping[str, Any], *, work: Path | None = None) -> str:
             f"Use only this disposable case folder: `{work}`.",
             f"The local project identifier is `astrid-eval-{case_id}`.",
             "Do not open, edit, or publish the canonical Astrid project.",
+            "Use the public Astrid timeline surface for every timeline read. Exact text command: `python -m astrid timelines show --project " + str(case.get("project_id", "<project-id>")) + " " + str(case.get("timeline_id", "<timeline-id>")) + " --json`; exact visual command: `python -m astrid timelines visualize --project " + str(case.get("project_id", "<project-id>")) + " " + str(case.get("timeline_id", "<timeline-id>")) + " --mode inputs --json`. The case connection is already in the environment; never substitute a URL or token.",
+            "Do not call Runtime HTTP endpoints directly (including curl), use web search, or read fixture, evaluator, baseline, or prior-result JSON to answer the task. If the public command is unavailable, report that missing capability instead of bypassing it.",
         ))
-    lines.extend((
-        "", "Write exactly one JSON object to `result.json` in this working directory.",
-        "It must have the keys `status`, `answer`, and `evidence`.",
-        "Use a concise status and explain what you actually did. Do not claim evidence you did not collect.",
-    ))
     return "\n".join(lines) + "\n"
 
 
@@ -315,15 +339,92 @@ def _result_problem(path: Path) -> str | None:
     return None
 
 
+def _preserved_final_text(raw: Any, trace_path: Path) -> tuple[str | None, str | None]:
+    """Recover optional final narration without treating it as a grade."""
+    if isinstance(raw, Mapping):
+        for key in ("answer", "final_text", "final_response"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value, "worker_result"
+    if trace_path.is_symlink() or not trace_path.is_file():
+        return None, None
+    candidates: list[tuple[str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            event = str(value.get("event", value.get("type", ""))).lower()
+            if event in {"assistant_final", "final_response", "agent_final"}:
+                content = value.get("text", value.get("content"))
+                if isinstance(content, str) and content.strip():
+                    candidates.append((content, "trace_final_event"))
+            if event == "agent_output":
+                content = value.get("text")
+                if isinstance(content, str) and content.strip():
+                    try:
+                        nested = json.loads(content)
+                    except json.JSONDecodeError:
+                        nested = None
+                    if nested is not None:
+                        visit(nested)
+                    else:
+                        candidates.append((content, "trace_agent_output"))
+            for child in value.values():
+                if isinstance(child, (Mapping, list)):
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    try:
+        with trace_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    try:
+                        visit(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+    except (OSError, UnicodeDecodeError):
+        return None, None
+    return candidates[-1] if candidates else (None, None)
+
+
+def _coordinator_review(case_root: Path) -> tuple[str, str, str, str, tuple[str, ...]] | None:
+    """Project coordinator assessment into the existing manual record fields."""
+    path = _regular_file(case_root / "coordinator-result.json")
+    if path is None:
+        return None
+    try:
+        value = load_json(path)
+    except Exception:  # noqa: BLE001 - malformed capture remains unassessed
+        return None
+    assessment = value.get("semantic_outcome") if isinstance(value, Mapping) else None
+    if not isinstance(assessment, Mapping):
+        return None
+    status = assessment.get("status")
+    reason = str(assessment.get("reason") or "coordinator assessment is incomplete")
+    if status == "failed":
+        return "failed", "fail", "sufficient", "unknown", (reason,)
+    if status == "undetermined":
+        evidence = "insufficient" if assessment.get("evidence") else "unavailable"
+        outcome = "partial" if assessment.get("evidence") else "not_assessed"
+        return outcome, "undetermined", evidence, "unknown", (reason,)
+    if status == "succeeded":
+        return "completed", "pass", "sufficient", "unknown", (reason,)
+    return None
+
+
 def _case_timeout(case: Mapping[str, Any], override: float | None) -> float:
     if override is not None:
         return max(1.0, float(override))
     timeout = case.get("timeout")
     value = timeout.get("value", 3600) if isinstance(timeout, Mapping) else 3600
     try:
-        return max(1.0, float(value))
+        # Keep every live agent attempt bounded to the requested ten-minute
+        # ceiling.  Render preparation has its own explicit timeout; a worker
+        # must not turn a single confused case into a 20–60 minute suite.
+        return min(600.0, max(1.0, float(value)))
     except (TypeError, ValueError):
-        return 3600.0
+        return 600.0
 
 
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -397,13 +498,14 @@ def run_local_loop(
     omp_bin: str = "omp",
     model: str = DEFAULT_MODEL,
     thinking: str = DEFAULT_THINKING,
-    timeout_seconds: float | None = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
     case_ids: Sequence[str] | None = None,
     process_launcher: ProcessLauncher | None = None,
     fixture_root: Path = DEFAULT_FIXTURE_ROOT,
     canonical_endpoint: str | None = None,
     canonical_realm_id: str | None = None,
     canonical_root: Path | None = None,
+    rendering_host_source: Path | None = None,
     case_preparer: Callable[..., PreparedCase] | None = None,
 ) -> dict[str, Any]:
     """Create a sequential run; execution is opt-in and uses direct OMP argv."""
@@ -433,6 +535,14 @@ def run_local_loop(
         case_root = root / "cases" / case_id
         work = case_root / "work"
         work.mkdir(parents=True, exist_ok=True)
+        assertion_policy = suite.get("assertion_policy", {}) if isinstance(suite, Mapping) else {}
+        policy = assertion_policy.get(case_id) if isinstance(assertion_policy, Mapping) else None
+        if isinstance(policy, Mapping):
+            _write_json(case_root / "assertion-policy.json", {
+                "kind": "astrid.timeline-eval.case-assertion-policy.v1",
+                "case_id": case_id,
+                **dict(policy),
+            })
         project = work / "project"
         brief = work / "brief.md"
         result_path = work / "result.json"
@@ -441,6 +551,7 @@ def run_local_loop(
         notes: list[str] = []
         returncode: int | None = None
         setup_error: str | None = None
+        coordinator_result_path: Path | None = None
 
         if not execute:
             project.mkdir(exist_ok=True)
@@ -456,13 +567,18 @@ def run_local_loop(
         else:
             prepared: PreparedCase | None = None
             before_observation: Any = None
+            final_render_artifacts: Any = None
             preparer = case_preparer or prepare_case
             try:
+                preparation_options: dict[str, Any] = {}
+                if rendering_host_source is not None:
+                    preparation_options["rendering_host_source"] = rendering_host_source
                 prepared = preparer(
                     case_id, case_root=project, fixture_root=fixture_root,
                     canonical_endpoint=canonical_endpoint or "",
                     canonical_realm_id=canonical_realm_id or "",
                     canonical_root=canonical_root or Path(""),
+                    **preparation_options,
                 )
                 before_observation = prepared.baseline_observer()
                 _write_json(case_root / "fixture-receipt.json", dict(prepared.fixture_receipt))
@@ -524,7 +640,7 @@ def run_local_loop(
                         if process_launcher is None:
                             process = launcher(
                                 launch_argv, work, _case_timeout(raw, timeout_seconds), trace_path, log_path,
-                                env=_case_child_environment(prepared),
+                                env=_case_child_environment(prepared, work=work),
                             )
                         else:
                             process = launcher(launch_argv, work, _case_timeout(raw, timeout_seconds), trace_path, log_path)
@@ -560,23 +676,29 @@ def run_local_loop(
                         execution = "launcher_failed"
                         notes.append(f"OMP exited with status {process.returncode}")
                     else:
-                        # A worker result is a useful reporting artifact, but it
-                        # is not coordinator evidence and must not turn a
-                        # successful process into a semantic pass/failure.  A
-                        # missing or malformed optional result is therefore a
-                        # reporting defect while trace, process status, and
-                        # coordinator before/after observations remain usable.
+                        # A worker result is optional narration, not evidence
+                        # that can override the independent state capture.
                         execution = "completed"
                         problem = _result_problem(result_path)
                         if problem:
-                            notes.append(f"reporting defect: {problem}")
-                        else:
-                            notes.append("OMP completed; semantic outcome requires independent review")
+                            notes.append(f"optional worker report unavailable: {problem}")
             finally:
                 if prepared is not None:
                     try:
                         after_observation = prepared.baseline_observer()
                         _write_json(case_root / "after.json", after_observation)
+                        output_policy = policy.get("output") if isinstance(policy, Mapping) else None
+                        if output_policy in {"required-after-edit", "required-audio"}:
+                            capture = getattr(prepared, "final_output_capture", None)
+                            if callable(capture):
+                                final_render_artifacts = capture()
+                            else:
+                                final_render_artifacts = {
+                                    "kind": "astrid.timeline-eval.final-render.v1",
+                                    "status": "unavailable",
+                                    "reason": "prepared case has no managed final-output capture route",
+                                }
+                            _write_json(case_root / "final-render.json", final_render_artifacts)
                         _write_json(case_root / "readback.json", {
                             "case_id": case_id,
                             "before_observed": before_observation is not None,
@@ -584,6 +706,41 @@ def run_local_loop(
                             "status": "pass",
                             "scope": "prepared-fixture-observation",
                         })
+                        # The coordinator owns the minimal outcome envelope.
+                        # A worker may add a narrative result, but the loop
+                        # never requires it and never treats it as the grade.
+                        worker_raw: Any = None
+                        worker_parse_error: str | None = None
+                        if result_path.is_file():
+                            try:
+                                worker_raw = load_json(result_path)
+                            except Exception as exc:  # noqa: BLE001 - preserve as evidence
+                                worker_parse_error = f"{type(exc).__name__}: {exc}"
+                        worker_protocol = worker_protocol_record(
+                            raw=worker_raw,
+                            case=raw,
+                            parse_error=worker_parse_error,
+                        )
+                        final_text, final_text_source = _preserved_final_text(worker_raw, trace_path)
+                        coordinator_result_path = case_root / "coordinator-result.json"
+                        _write_json(coordinator_result_path, build_outcome_record(
+                            raw,
+                            worker_protocol=worker_protocol,
+                            conclusion={
+                                "final_text": final_text,
+                                "final_text_source": final_text_source,
+                            },
+                            independent_before=before_observation,
+                            independent_after=after_observation,
+                            independent_readback={
+                                "case_id": case_id,
+                                "before_observed": before_observation is not None,
+                                "after_observed": after_observation is not None,
+                                "status": "captured" if before_observation is not None and after_observation is not None else "incomplete",
+                            },
+                            render_artifacts=final_render_artifacts,
+                            execution=execution,
+                        ))
                     except Exception as exc:  # capture gaps remain explicit; never mask worker status
                         notes.append(f"coordinator after-capture failed: {type(exc).__name__}: {exc}")
                     finally:
@@ -593,6 +750,10 @@ def run_local_loop(
                             notes.append(f"prepared case cleanup failed: {type(exc).__name__}: {exc}")
 
         outcome, manual, evidence, safety, review_notes = _review(case_root)
+        if not (case_root / "manual-review.json").exists():
+            assessed = _coordinator_review(case_root)
+            if assessed is not None:
+                outcome, manual, evidence, safety, review_notes = assessed
         notes.extend(review_notes)
         records.append(ManualCaseRecord(
             case_id=case_id, kind=str(raw.get("kind", "unknown")), execution=execution,
@@ -600,6 +761,7 @@ def run_local_loop(
             case_root=str(case_root), transcript=_relative(log_path, root),
             trace=_relative(trace_path, root), result=_relative(result_path, root),
             returncode=returncode, setup_error=setup_error, notes=tuple(dict.fromkeys(notes)),
+            coordinator_result=_relative(coordinator_result_path, root),
         ))
         _write_json(loop_path, _matrix(suite, records, execute=execute,
                                       launch_count=launch_count, interrupted=interrupted))
@@ -618,12 +780,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--canonical-endpoint")
     parser.add_argument("--canonical-realm-id")
     parser.add_argument("--canonical-root", type=Path)
+    parser.add_argument(
+        "--rendering-host-source", type=Path,
+        help="opt in to starting the managed Astrid pack host from this source checkout for each disposable Runtime",
+    )
     parser.add_argument("--execute", action="store_true", help="launch one fresh OMP process per selected case")
     parser.add_argument("--omp-bin", default="omp")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--thinking", default=DEFAULT_THINKING)
-    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS,
-                        help="per-case timeout (default: 600 seconds)")
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=None,
+        help="override the suite timeout for every selected case (default: each case's suite value)",
+    )
     args = parser.parse_args(argv)
     result = run_local_loop(
         args.suite, attempt_root=args.attempt_root,
@@ -634,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
         canonical_endpoint=args.canonical_endpoint,
         canonical_realm_id=args.canonical_realm_id,
         canonical_root=args.canonical_root,
+        rendering_host_source=args.rendering_host_source,
     )
     print(json.dumps({
         "status": "interrupted" if result["interrupted"] else "ok",

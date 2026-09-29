@@ -52,7 +52,7 @@
 | `rendering.render` | Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected backend. |
 | `rendering.sprite_sheet` | Generate, slice, and preview GPT Image sprite sheets for batch image work. |
 | `rendering.timeline_storyboard` | Build a static visual storyboard of image inputs associated with timeline shots. |
-| `rendering.timeline_visualize` | Build a deterministic, agent-navigable evidence pack from managed timeline event logs. |
+| `timelines visualize` | Inspect declared timeline inputs by default, or inspect an explicitly selected composed render. |
 | `runpod.exec` | Execute a script on an existing RunPod pod and download artifacts. |
 | `runpod.provision` | Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
 | `runpod.pull` | Pull artifacts from an existing RunPod pod into local storage. |

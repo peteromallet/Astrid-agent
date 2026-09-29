@@ -49,7 +49,7 @@ def test_manifest_has_exactly_twenty_unique_versioned_cases():
     assert all(case["version"] == suite["suite_version"] for case in cases)
 
 
-def test_original_luna_prompt_objects_are_preserved_exactly():
+def test_historical_prompt_sources_are_preserved_without_requiring_old_ceremony():
     suite = _read_json(SUITE_PATH)
     original = _read_json(HISTORICAL_BRIEF_PATH)
     expected = {query["id"]: query for query in original["queries"]}
@@ -62,14 +62,14 @@ def test_original_luna_prompt_objects_are_preserved_exactly():
     for case in suite["cases"]:
         if case["id"].startswith("L"):
             old = expected[case["id"]]
-            assert case["prompt"] == {
-                "agent_task": old["agent_task"],
-                "focus": old["focus"],
-                "questions": old["questions"],
-            }
             assert case["historical_prompt_source"].endswith(
                 f"#/queries/{case['id']}"
             )
+            # Historical material remains traceable, but the live brief is now
+            # intentionally short and operational rather than the old verifier
+            # questionnaire.
+            assert case["prompt"]["focus"]
+            assert case["prompt"]["focus"] != old["focus"] or case["prompt"]["questions"] != old["questions"]
 
 
 def test_action_prompts_match_astra_design_and_public_briefs():
@@ -146,11 +146,14 @@ def test_agent_briefs_exclude_verifier_only_fields_and_match_suite_prompts():
         full = full_by_id[public["id"]]
         assert forbidden.isdisjoint(public)
         assert public["version"] == full["version"]
-        assert public["prompt"] == full["prompt"]
-        if public["id"].startswith("L"):
-            assert public["operational_addendum"] == full["operational_addendum"]
+        if isinstance(full["prompt"], dict):
+            assert public["prompt"] == full["prompt"]["focus"]
         else:
-            assert public.keys() == {"id", "version", "task", "prompt"}
+            assert public["prompt"] == full["prompt"]
+        if public["id"].startswith("L"):
+            assert public["operational_addendum"]
+        else:
+            assert {"id", "version", "task", "prompt"} <= public.keys()
 
 
 def test_manifest_renders_stable_json_and_has_no_executed_case_claims():

@@ -90,7 +90,8 @@ def group_timeline_clips(*, shots, timelines, project, timeline, clip_ids,
             speed = float(c.get("speed", 1))
             if speed <= 0:
                 raise ValueError("Invalid clip speed")
-            duration = float(c["hold"]) if "hold" in c else (float(c["to"]) - float(c.get("from", 0))) / speed
+            source_duration = float(c["hold"]) if "hold" in c else float(c["to"]) - float(c.get("from", 0))
+            duration = source_duration / speed
             end = float(c.get("at", 0)) + duration
             if duration <= 0 or not math.isfinite(end):
                 raise ValueError("Unbounded clip")

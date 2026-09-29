@@ -246,60 +246,84 @@ successful continuation run.
 
 ## 4. Canonical Astrid task path on a prepared RunPod pod
 
-The prepared pod needs a registered Astrid `GenericPackHost` for
-`vibecomfy.run`, connected to the same Runtime that admits the task. The host
-claims the task, runs VibeComfy, stages the result, and settles it. Keep the
-RunPod handle and task id in the receipt so the result remains traceable.
+### Provider launch is not Astrid task admission
 
-Start the worker before submitting the task, in this order:
+The supported provider-launch substrate is the existing Python
+`runpod_lifecycle` API. For the prepared RTX 5090/backup-volume release, its
+operator front end is `scripts/claim_runpod_5090_backup.py`, run with the
+repository virtualenv:
 
-1. Claim or select the exact prepared pod and record its `pod_id`, SSH address,
-   and mounted release. Start one reverse SSH tunnel from the pod to the local
-   Astrid Runtime. The acceptance run used remote port `50604` forwarding to
-   the local Runtime port `59683`; read the current local port from
-   `.astrid-data/runtime/discovery.json`.
-2. Upload the current Astrid/VibeComfy source, boot manifest, readiness profile,
-   and input objects to a fresh staging directory on `/workspace`. Put the
-   worker credential on the pod's container disk at
-   `/tmp/astrid-pack-host.token` with mode `0600`; do not use the volume copy
-   when its permissions are group/world-readable.
-   The launcher must provision the support root and place the boot manifest
-   inside that root before starting the worker. Immediately before any
-   `nohup`, `&`, or process spawn, synchronously run the same
-   `validate_manifest_path()` and `load_boot_manifest_hash()` checks used by
-   the host, including the existing-directory, non-symlink, containment, and
-   expected-digest checks. A missing root, a manifest outside it, or a digest
-   mismatch is a launcher failure and must be reported immediately; it must
-   not become a readiness timeout.
-3. Start exactly one generic host with the canonical identity and capability:
+```bash
+.venv/bin/python scripts/claim_runpod_5090_backup.py \
+  --max-wait-seconds 0 \
+  --handle-path .otto/runs/h3-next-launch/claim-handle.json
+```
 
-   ```bash
-   "$RUNTIME/venv/bin/python" -m astrid.core.execution.generic_host run \
-     --pack-root "$SRC/astrid/packs/vibecomfy" \
-     --runtime-endpoint http://127.0.0.1:50604 \
-     --credential-file /tmp/astrid-pack-host.token \
-     --executor-id astrid-pack-host --max-concurrency 1 \
-     --register --poll-seconds 1 \
-     --attempt-base "$JOB/attempts" \
-     --ready-file "$JOB/generic-host.ready.json" \
-     --source-checkout "$SRC" \
-     --support-root /tmp/astrid-host \
-     --boot-manifest-path /tmp/astrid-host/boot-manifest.json \
-     --boot-manifest-hash "$BOOT_HASH" \
-     --readiness-profile-path "$JOB/hc03-readiness.json" \
-     --readiness-profile-hash "sha256:$PROFILE_HASH"
-   ```
+The helper uses `RunPodConfig.from_env` and `launch_when_available`, waits
+indefinitely across capacity windows by default, verifies readiness/SSH and the
+mounted release Python/Torch/CUDA, and terminates allocated pods that fail those
+checks before retrying. On success it writes a secret-free
+`astrid.runpod.claim.v1` handle and **leaves the pod running**. That is
+`pod_verified`, not worker readiness, task admission, sampling or result delivery.
+The Astrid RunPod pack and lifecycle CLI use the same substrate; do not introduce
+a second provider client. The claim handle is not a `runpod.exec` provision handle.
 
-   The shell variables are the fresh staging paths and hashes from the
-   uploaded release. Only one worker may use `astrid-pack-host` at a time;
-   pause a local worker with that identity while the RunPod worker is active.
-   `--attempt-base` is the long-lived-worker form: the host allocates a fresh
-   child directory for every claimed task attempt. Use `--attempt-root` only
-   when intentionally running one exact debug attempt; it is caller-owned and
-   is reused by subsequent tasks.
-4. Wait for the Runtime capability row `vibecomfy.run` to become `ready`.
-   A ready file only proves that the process started; it is not registration
-   proof. Submit the task only after the live capability digest is visible.
+### Deployment qualification owns the boundary
+
+The supported target composition is:
+
+```text
+claim helper / existing runpod_lifecycle provider API
+  -> coordinator accepts exact handle and cleanup ownership
+  -> stage + verify release/models; prepare Comfy and parked GenericHost
+  -> real child attachment + exact VibeComfy CPU validation
+  -> activate qualified worker; canonical Astrid task admission/retry
+  -> H3 children -> managed settlement/pullback -> lifecycle teardown
+```
+
+The coordinator-owned deployment/activation integration is **planned, not yet an
+installed end-to-end command**. See the
+[H3 single-launch plan](../.otto/runs/h3-av-simplicity-20260924-T2/deployment-handoff-plan-20260928.md)
+sections 3–5 for the manifest, handle contract, CPU gates and proposed single
+operator command; sections 6–10 specify recovery, code locations, tests and receipt.
+
+Before claimable readiness, it must independently verify pod/account placement,
+issue scoped placement authority, bind the exact claim selector, attest staged
+source/dependencies, and derive one runtime instance/epoch/schema/realm and
+canonical support root. Launch the host in its own process session, validate real
+PID/birth/PGID/argv, and publish matching state/ready/handoff generations. H3's
+canonical capacity is two lanes: `max_concurrency=2` and
+`astrid-pack-host-orchestration-executor-v1` (one orchestration slot and one
+executor slot), not two concurrent GPU samplers. A generic token, ready marker,
+capability row or successful Torch probe alone is insufficient.
+
+Generate the managed Comfy session, validator/compiler child configuration and
+effective `extra_model_paths` from one release model inventory. For this release,
+the canonical root is
+`/workspace/h3-golden/releases/h3-cu130-v1-candidate/models`, not the empty
+`runtime/ComfyUI/models` default. Pass the verified root explicitly to production
+validation/compilation; merely setting an Astrid-prefixed variable is not proof
+that the downstream validator consumes it. Verify the exact workflow's full
+model closure, per-file hashes, aliases/search precedence, custom nodes and live
+schemas in the real child before activation. No GPU prompt is submitted by
+qualification.
+
+Do not restore the earlier manual serial-host/token-swap launch instructions.
+`watch_h3_5090_storage.py` is not an alternative launcher for this procedure;
+retire it or refactor it to consume this same coordinator contract.
+
+### Existing-task recovery is not a fresh invocation
+
+For H3 task `5b908bceb1564eef9b8197c9b8cfdbd9`, preserve task/run/inputs and use
+canonical eligible retry only after qualification. The original exact pod target
+cannot silently change: if that pod is destroyed, first implement and authorize
+the plan's explicit same-task placement-recovery operation. Current retry alone
+does not relocate it. Until that prerequisite exists, stop before paid allocation.
+Do not create a replacement task.
+
+The fresh-task examples below describe ordinary new invocations, **not recovery
+of this existing H3 task**. A runbook cannot substitute for Runtime enforcing the
+preclaim qualification barrier.
 
 ### Mandatory invocation preflight
 

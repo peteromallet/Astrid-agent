@@ -150,6 +150,23 @@ def _parse_profile(value: str | Mapping[str, Any] | None) -> Mapping[str, Any] |
     if isinstance(value, Mapping):
         return dict(value)
     text = str(value).strip()
+    # A normal profile is often a large inline JSON object.  Do not ask the
+    # OS to stat that entire value as a pathname: macOS raises ENAMETOOLONG
+    # before JSON parsing can happen.  Host handoffs are deliberately limited
+    # to short, non-JSON path-like values.
+    if len(text) < 4096 and not text.startswith(("{", "[")):
+        try:
+            handoff_path = Path(text).expanduser()
+            if handoff_path.is_file():
+                try:
+                    parsed = json.loads(handoff_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError("--profile host handoff is not valid JSON") from exc
+                if not isinstance(parsed, Mapping):
+                    raise ValueError("--profile host handoff must contain a JSON object")
+                return dict(parsed)
+        except OSError:
+            pass
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -157,6 +174,13 @@ def _parse_profile(value: str | Mapping[str, Any] | None) -> Mapping[str, Any] |
             parsed = ast.literal_eval(text)
         except (ValueError, SyntaxError) as exc:
             raise ValueError("--profile must be a JSON object describing a render profile") from exc
+    if isinstance(parsed, str) and len(parsed) < 4096:
+        try:
+            nested_path = Path(parsed).expanduser()
+            if nested_path.is_file():
+                parsed = json.loads(nested_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
     if not isinstance(parsed, Mapping):
         raise ValueError("--profile must be a JSON object describing a render profile")
     return dict(parsed)

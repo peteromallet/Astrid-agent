@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
+from astrid.core.timeline.duration import clip_end_frame, clip_start_frame, clip_timeline_duration
 from astrid.core.timeline.shot_composition import MissingDependencyError
 from astrid.core.timeline.shot_composition_projection import (
     ShotCompositionProjectionError,
     project_shot_composition,
 )
+from astrid.sdk.timeline_editing import _clip_duration
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "timeline" / "shot_composition.json"
@@ -87,3 +88,125 @@ def test_blank_child_keeps_bounded_occurrence_and_blank_output_metadata() -> Non
     occurrence = next(item for item in projected.config["app"]["astrid_shot_composition"]["occurrences"] if item["occurrence_id"] == "occ-4")
     assert occurrence["blank"] is True
     assert occurrence["duration_seconds"] == 1.2
+
+
+def test_projects_all_child_audio_clips_and_preserves_legacy_audio_as_read_only_metadata() -> None:
+    source = graph()
+    revision = next(item for item in source["shot_revisions"] if item["shot_id"] == "shot-alpha" and item["revision_id"] == "rev-a")
+    timeline = revision["internal_timeline_revision"]["timeline"]
+    timeline["clips"].append({
+        "id": "alpha-audio-second",
+        "clip_type": "media",
+        "track": "audio",
+        "at_ms": 500,
+        "duration_ms": 700,
+        "asset_id": "alpha-image",
+    })
+    legacy_audio = copy.deepcopy(revision["audio"])
+
+    projected = project_shot_composition(source)
+    child_audio = [clip for clip in projected.config["clips"] if clip["track"] == "audio"]
+
+    assert {clip["id"] for clip in child_audio} >= {"occ-1:alpha-audio", "occ-1:alpha-audio-second"}
+    assert projected.graph["shot_revisions"][1]["audio"] == legacy_audio
+    assert "audio" not in projected.config
+
+
+def test_managed_media_type_is_authoritative_and_unknown_media_stays_unknown() -> None:
+    source = graph()
+    revision = next(item for item in source["shot_revisions"] if item["shot_id"] == "shot-alpha" and item["revision_id"] == "rev-a")
+    revision["assets"][0]["media_type"] = "image/png"
+    revision["assets"][0]["type"] = "video"
+    revision["assets"].append({
+        "asset_id": "future-media",
+        "object_id": "object-future-media",
+        "digest": "sha256:" + "a" * 64,
+        "scope": {"project_id": "project-001"},
+        "role": "image",
+        "media_type": "application/x-future",
+    })
+    revision["assets"].append({
+        "asset_id": "missing-kind",
+        "object_id": "object-missing-kind",
+        "digest": "sha256:" + "b" * 64,
+        "scope": {"project_id": "project-001"},
+        "role": "image",
+    })
+
+    projected = project_shot_composition(source)
+
+    assert projected.registry["assets"]["alpha-image"]["type"] == "image"
+    assert projected.registry["assets"]["future-media"]["type"] == "unknown"
+    assert projected.registry["assets"]["missing-kind"]["type"] == "unknown"
+
+
+def test_invalid_present_managed_media_type_is_rejected() -> None:
+    source = graph()
+    revision = next(item for item in source["shot_revisions"] if item["shot_id"] == "shot-alpha" and item["revision_id"] == "rev-a")
+    revision["assets"][0]["media_type"] = {"type": "image/png"}
+
+    with pytest.raises(ShotCompositionProjectionError, match="media_type must be a non-empty string"):
+        project_shot_composition(source)
+
+
+@pytest.mark.parametrize(
+    ("vector_id", "clip", "expected_duration", "expected_frames"),
+    [
+        ("hold-plain", {"id": "hold-plain", "at": 0.125, "hold": 0.5, "speed": 1}, 0.5, (4, 19)),
+        ("duration-ms-fast", {"id": "duration-ms-fast", "at": 0.001, "hold": 0.017, "speed": 2}, 0.0085, (0, 1)),
+        ("trim-slow", {"id": "trim-slow", "at": 0.1, "from": 2, "to": 3, "speed": 0.5}, 2, (3, 63)),
+        ("trim-fast", {"id": "trim-fast", "at": 0.1, "from": 2, "to": 6, "speed": 2}, 2, (3, 63)),
+        ("hold-fast-clipped", {"id": "hold-fast-clipped", "at": 0.25, "hold": 1.5, "speed": 2}, 0.75, (8, 31)),
+        ("hold-slow-clipped", {"id": "hold-slow-clipped", "at": 0, "hold": 0.625, "speed": 0.5}, 1.25, (0, 38)),
+    ],
+)
+def test_shared_visible_time_vectors_match_sdk_and_renderer_rounding(
+    vector_id: str,
+    clip: dict,
+    expected_duration: float,
+    expected_frames: tuple[int, int],
+) -> None:
+    assert _clip_duration(clip) == pytest.approx(expected_duration), vector_id
+    assert clip_timeline_duration(clip) == pytest.approx(expected_duration), vector_id
+    assert (clip_start_frame(clip, 30), clip_end_frame(clip, 30)) == expected_frames
+
+
+@pytest.mark.parametrize(
+    ("speed", "source_hold", "occurrence_duration", "expected_source_hold"),
+    [
+        (2, 4, 0.75, 1.5),
+        (0.5, 1, 1.25, 0.625),
+    ],
+)
+def test_projection_caps_visible_time_without_applying_speed_twice_or_mutating_source(
+    speed: float,
+    source_hold: float,
+    occurrence_duration: float,
+    expected_source_hold: float,
+) -> None:
+    source = graph()
+    first_occurrence = source["occurrences"][0]
+    source["occurrences"] = [first_occurrence]
+    first_occurrence["duration_ms"] = round(occurrence_duration * 1000)
+    revision = next(
+        item for item in source["shot_revisions"]
+        if item["shot_id"] == first_occurrence["shot_id"] and item["revision_id"] == first_occurrence["revision_id"]
+    )
+    timeline = revision["internal_timeline_revision"]["timeline"]
+    original_clip = copy.deepcopy(timeline["clips"][0])
+    timeline["clips"] = [{
+        **original_clip,
+        "id": "speed-vector",
+        "at_ms": 0,
+        "hold": source_hold,
+        "speed": speed,
+    }]
+    timeline["clips"][0].pop("duration_ms", None)
+
+    projected = project_shot_composition(source)
+    clip = projected.config["clips"][0]
+
+    assert clip["hold"] == pytest.approx(expected_source_hold)
+    assert clip_timeline_duration(clip) == pytest.approx(occurrence_duration)
+    assert timeline["clips"][0]["hold"] == source_hold
+    assert timeline["clips"][0]["speed"] == speed

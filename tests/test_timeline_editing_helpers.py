@@ -36,6 +36,7 @@ def test_helpers_build_duplicate_and_edit_independent_shots():
     candidate = _candidate()
     shot = add_shot(candidate, name="A")
     track = add_track(shot, name="Pictures")
+    assert track["label"] == "Pictures"
     place_media(shot, "asset-a", track=track, start=0, end=0.1)
     copied = duplicate(shot, remap_prefix="shot")
     assert copied["id"] != shot["id"]

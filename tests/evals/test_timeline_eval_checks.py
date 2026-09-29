@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from evals.timeline.checks import run_checks
+from evals.timeline.checks import (
+    AssertionPolicyError,
+    load_assertion_policy,
+    run_checks,
+    validate_assertion_policy,
+)
+
+
+SUITE_PATH = Path(__file__).resolve().parents[2] / "evals" / "timeline" / "suite.json"
 
 
 def test_wrong_media_selector_fails_independently() -> None:
@@ -138,3 +149,90 @@ def test_valid_panels_pass() -> None:
     result = run_checks([{"id": "four", "check": "panel_coverage", "path": "panels"}],
                         {"after": {"panels": panels}})[0]
     assert result.status == "pass"
+
+
+def test_assertion_policy_loader_validates_the_full_suite_table() -> None:
+    suite = json.loads(SUITE_PATH.read_text(encoding="utf-8"))
+
+    policies = load_assertion_policy(suite)
+
+    assert set(policies) == {case["id"] for case in suite["cases"]}
+    assert policies["A06"]["output"] == "required-after-edit"
+    assert policies["A06"]["samples"] == ["title interval"]
+    assert policies["A07"]["output"] == "required-audio"
+    assert policies["A07"]["tolerance"] == "fixture-derived"
+    assert policies["L01"]["output"] == "none"
+
+
+def test_assertion_policy_loader_can_select_one_case_without_mutating_suite() -> None:
+    suite = {
+        "cases": [{"id": "A06"}],
+        "assertion_policy": {
+            "A06": {
+                "target": "visible title",
+                "preserve": ["voice"],
+                "output": "required-after-edit",
+                "samples": ["title interval"],
+                "tolerance": "fixture-derived",
+                "positive": ["new title"],
+                "negative": ["script changed"],
+            },
+        },
+    }
+
+    selected = load_assertion_policy(suite, "A06")
+
+    assert selected["target"] == "visible title"
+    assert selected["samples"] == ["title interval"]
+    assert suite["assertion_policy"]["A06"]["target"] == "visible title"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("output", "render-everything", "output must be one of"),
+        ("samples", [], "samples must be a non-empty list"),
+        ("tolerance", None, "requires a tolerance"),
+    ],
+)
+def test_assertion_policy_rejects_incomplete_required_output_contract(
+    field: str, value: object, message: str,
+) -> None:
+    policy = {
+        "target": "visible title",
+        "preserve": ["voice"],
+        "output": "required-after-edit",
+        "samples": ["title interval"],
+        "tolerance": "fixture-derived",
+        "positive": ["new title"],
+        "negative": ["script changed"],
+    }
+    policy[field] = value
+
+    with pytest.raises(AssertionPolicyError, match=message):
+        validate_assertion_policy(policy, case_id="A06")
+
+
+def test_assertion_policy_loader_rejects_case_table_drift() -> None:
+    suite = {
+        "cases": [{"id": "L01"}],
+        "assertion_policy": {
+            "L01": {
+                "target": "opening shot",
+                "preserve": ["head"],
+                "output": "none",
+                "positive": ["selected image"],
+                "negative": ["history mistaken for selection"],
+            },
+            "A01": {
+                "target": "opening image",
+                "preserve": ["timing"],
+                "output": "none",
+                "positive": ["new image"],
+                "negative": ["old image"],
+            },
+        },
+    }
+
+    with pytest.raises(AssertionPolicyError, match="do not match suite cases"):
+        load_assertion_policy(suite)

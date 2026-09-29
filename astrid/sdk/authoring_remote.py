@@ -16,6 +16,7 @@ task-bound authoring capability.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Mapping
 
 from astrid.core.timeline.authoring_bundle import (
@@ -58,6 +59,23 @@ def _required_text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AuthoringRemoteError(f"authoring target requires a non-empty {field}")
     return value.strip()
+
+
+def _transport_idempotency_key(value: str) -> str:
+    """Normalize a stable caller key to Runtime's transport spelling."""
+    key = value.strip()
+    if not key:
+        raise AuthoringRemoteError("idempotency_key must be a non-empty string")
+    if key.startswith("sha256:"):
+        key = "candidate-" + key.removeprefix("sha256:")
+    key = re.sub(r"[^A-Za-z0-9._~-]", "-", key)
+    if not key[0].isalnum():
+        key = f"candidate-{key}"
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise AuthoringRemoteError("idempotency_key must contain ASCII characters") from exc
+    return key[:256]
 
 
 @dataclass(frozen=True)
@@ -213,6 +231,10 @@ class TargetBoundAuthoringBundle:
         identity = self._identity
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise AuthoringRemoteError("idempotency_key must be a non-empty string")
+        # Runtime's transport contract requires an ASCII key whose first
+        # character is alphanumeric. Candidate digests conventionally use
+        # the ``sha256:`` prefix, so normalize that common caller spelling.
+        transport_idempotency_key = _transport_idempotency_key(idempotency_key)
         if not isinstance(candidate, Mapping):
             raise AuthoringRemoteError("authoring candidate must be an object")
         if candidate.get("project_id") != identity.project_id or candidate.get("timeline_id") != identity.timeline_id:
@@ -267,7 +289,7 @@ class TargetBoundAuthoringBundle:
         writer = _Writer(self._client)
         try:
             result = publish_authoring_candidate(
-                candidate, writer, idempotency_key=idempotency_key.strip()
+                candidate, writer, idempotency_key=transport_idempotency_key
             )
         except (AuthoringBundleError, WorkspaceClientError) as exc:
             raise AuthoringRemoteError(f"authoring candidate publication failed: {exc}") from exc

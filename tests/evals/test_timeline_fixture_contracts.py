@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from evals.timeline.fixture_contracts import (
     action_target_contract,
     navigation_fixture_contract,
     validate_action_target_receipt,
     validate_navigation_entrypoint,
 )
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_realistic_suite_keeps_all_case_ids_and_declares_t8_baseline_needs() -> None:
+    suite = json.loads((ROOT / "evals/timeline/suite.json").read_text(encoding="utf-8"))
+    briefs = json.loads((ROOT / "evals/timeline/cases/agent_briefs.json").read_text(encoding="utf-8"))
+    expected_ids = [*(f"L{i:02d}" for i in range(1, 11)), *(f"A{i:02d}" for i in range(1, 11))]
+    assert [row["id"] for row in suite["cases"]] == expected_ids
+    assert [row["id"] for row in briefs["cases"]] == expected_ids
+    assert suite["acceptance_cadence"]["t8_full_run"] == expected_ids
+    baseline_cases = {"L04", "L09", "A06", "A08", "A09"}
+    assert {row["id"] for row in suite["cases"] if row.get("baseline_view")} == baseline_cases
+    assert {row["id"] for row in briefs["cases"] if row.get("baseline_view")} == baseline_cases
 
 
 def test_missing_navigation_surface_inputs_remain_typed_blockers() -> None:
@@ -153,7 +171,7 @@ def test_a01_complete_disposable_receipt_satisfies_route_contract() -> None:
 def test_a03_exposes_group_move_and_independent_readback_contract() -> None:
     contract = action_target_contract({"id": "A03"})
     assert contract.status == "ready"
-    assert contract.edit_route == "Astrid SDK move_occurrence_group() + publish_authoring_candidate"
+    assert contract.edit_route == "authoring-bundle validate/commit"
     assert contract.readback_projection == "move_occurrence_group.v1"
     assert {item.path for item in contract.required_inputs} == {"target.json"}
     assert any("independent move_occurrence_group.v1 verification" in item

@@ -61,9 +61,24 @@ def test_move_occurrence_group_rejects_invalid_targets_without_mutation(occurren
     assert bundle == before
 
 
-def test_move_occurrence_group_rejects_gaps_or_invalid_duration_without_partial_edit():
+def test_move_occurrence_group_preserves_gaps_and_total_end_time():
+    bundle = {"placements": _placements()}
+    bundle["placements"][1]["placement"]["start_ms"] = 120
+    bundle["placements"][2]["placement"]["start_ms"] = 340
+    bundle["placements"][3]["placement"]["start_ms"] = 680
+    before = copy.deepcopy(bundle["placements"])
+
+    move_occurrence_group(bundle, "d", before_occurrence_id="b")
+
+    assert [row["occurrence_id"] for row in bundle["placements"]] == ["a", "d", "b", "c"]
+    assert [row["placement"]["start_ms"] for row in bundle["placements"]] == [0, 120, 540, 780]
+    assert bundle["placements"][-1]["placement"]["start_ms"] + bundle["placements"][-1]["duration_ms"] == \
+        before[-1]["placement"]["start_ms"] + before[-1]["duration_ms"]
+
+
+def test_move_occurrence_group_rejects_overlaps_or_invalid_duration_without_partial_edit():
     for mutate in (
-        lambda placements: placements[2]["placement"].update(start_ms=301),
+        lambda placements: placements[2]["placement"].update(start_ms=299),
         lambda placements: placements[2].update(duration_ms=0),
     ):
         bundle = {"placements": _placements()}

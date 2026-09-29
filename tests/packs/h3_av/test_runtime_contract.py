@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.packs.h3_av.orchestrators.transform.run import (
+    _execution_request_for_child,
     _generation_intent,
     _invoke,
     _materialize_output,
@@ -60,6 +61,24 @@ def test_transform_invokes_children_through_the_connected_client(tmp_path: Path)
     assert result.ok is True
     assert calls[0]["capability_id"] == "h3_av.prepare"
     assert calls[0]["wait"] is True
+
+
+def test_nested_execution_request_does_not_inherit_the_parent_input_set() -> None:
+    parent = {
+        "schema_version": 1,
+        "inputs": [{
+            "name": "request",
+            "object_id": "sha256:" + "a" * 64,
+            "digest": "sha256:" + "a" * 64,
+            "filename": "request.json",
+            "required": True,
+        }],
+        "target": {"kind": "runpod", "pod_id": "pod-1"},
+    }
+    child = _execution_request_for_child(parent)
+    assert child is not None
+    assert "inputs" not in child
+    assert child["target"] == parent["target"]
 
 
 def test_generation_intent_comes_only_from_the_sealed_compilation_contract() -> None:

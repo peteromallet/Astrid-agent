@@ -28,7 +28,6 @@ keywords:
 - animation
 capabilities:
 - render_timeline
-- timeline_visualize
 - generate_sprite_sheet
 - scaffold_html_canvas_effect
 agent:
@@ -36,7 +35,6 @@ agent:
   do_not_use_for: Publishing rendered output to external services.
   normal_entrypoints:
   - rendering.render
-  - rendering.timeline_visualize
   - rendering.sprite_sheet
 content:
   executors: executors

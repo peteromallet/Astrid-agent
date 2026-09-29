@@ -444,16 +444,19 @@ def project_timeline_document(
         hold = raw.get("hold", raw.get("duration", raw.get("duration_ms")))
         hold_is_ms = hold is not None and "duration_ms" in raw and "hold" not in raw and "duration" not in raw
         source_to = raw.get("to")
+        speed = raw.get("speed", 1)
         if hold is None and source_to is not None:
             source_from = raw.get("from", 0)
-            speed = raw.get("speed", 1)
             try:
-                hold = max(Fraction(0), (_finite(source_to, "source end") - _finite(source_from, "source start")) / _finite(speed, "speed", nonnegative=False))
+                hold = max(Fraction(0), _finite(source_to, "source end") - _finite(source_from, "source start"))
             except (TypeError, ValueError, ZeroDivisionError):
                 hold = None
         try:
             start_sec = _seconds(at, milliseconds=at_is_ms)
-            duration_sec = _seconds(hold, milliseconds=hold_is_ms) if hold is not None else None
+            speed_value = _finite(speed, "speed", nonnegative=False)
+            if speed_value <= 0:
+                raise ValueError("speed must be positive")
+            duration_sec = _seconds(hold, milliseconds=hold_is_ms) / speed_value if hold is not None else None
             end_sec = start_sec + duration_sec if duration_sec is not None else None
             if start_sec < 0 or (end_sec is not None and end_sec <= start_sec):
                 raise ValueError("clip timing must have non-negative start and positive duration")

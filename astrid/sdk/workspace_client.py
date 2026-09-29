@@ -236,6 +236,7 @@ class WorkspaceClient:
                 "create_timeline_document", "update_timeline_document", "list_timelines",
                 "get_timeline", "get_project_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
                 "recover_timeline", "list_project_shots", "create_project_shot",
+                "inspect_timeline", "create_timeline_view",
                 "get_project_shot", "update_project_shot", "archive_project_shot",
                 "recover_project_shot", "add_shot_item", "remove_shot_item",
                 "get_project_shot_revision", "get_project_timeline_revision",
@@ -471,6 +472,33 @@ class WorkspaceClient:
         if project_id is None:
             raise WorkspaceClientError(404, "not_found", "timeline not found", {"timeline_id": timeline_id})
         return self._call_generated("get_project_timeline", project_id, timeline_id)
+
+    def inspect_timeline(
+        self,
+        project_id: str,
+        timeline_id: str,
+        options: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Read one bounded, immutable timeline closure from Runtime.
+
+        Inspection is a native Runtime operation.  It must not discover or
+        start an executor/pack host, and the options mapping is passed through
+        the generated contract unchanged.
+        """
+        return self._call_generated(
+            "inspect_timeline", project_id, timeline_id, options=options or {}
+        )
+
+    def create_timeline_view(
+        self,
+        project_id: str,
+        timeline_id: str,
+        options: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Create a Runtime-owned declared-input timeline view."""
+        return self._call_generated(
+            "create_timeline_view", project_id, timeline_id, options=options or {}
+        )
 
     def list_timeline_history(self, timeline_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_timeline_history", timeline_id, cursor=cursor, limit=limit)
@@ -725,6 +753,7 @@ class WorkspaceClient:
         storage_estimate: Mapping[str, int] | None = None,
         required_facts: Mapping[str, Any] | None = None,
         execution_request: Mapping[str, Any] | None = None,
+        child_delegation: Mapping[str, Any] | None = None,
     ) -> Any:
         """Admit one task through the Runtime-owned admission contract.
 
@@ -783,6 +812,7 @@ class WorkspaceClient:
             "generation_intent": generation_intent,
             "storage_estimate": storage_estimate,
             "required_facts": required_facts,
+            "child_delegation": child_delegation,
         }
         if execution_request is not None:
             admission["execution_request"] = normalized

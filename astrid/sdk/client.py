@@ -256,6 +256,32 @@ class AstridClient:
         from astrid.sdk.autobootstrap import AutoBootstrapError, ensure_runtime
         from astrid.sdk.exceptions import ServiceUnavailableError
 
+        # The timeline evaluation loop supplies an explicit, case-local
+        # Runtime connection to the worker.  Prefer that connection over the
+        # normal launcher path so `python -m astrid timelines ...` exercises
+        # the same public SDK surface against the disposable case realm.  It
+        # is deliberately all-or-nothing: a partial override must never fall
+        # through to an ambient canonical Runtime.
+        eval_endpoint = os.environ.get("ASTRID_TIMELINE_EVAL_ENDPOINT", "").strip()
+        eval_credential = os.environ.get("ASTRID_TIMELINE_EVAL_CREDENTIAL", "").strip()
+        eval_realm = os.environ.get("ASTRID_TIMELINE_EVAL_REALM_ID", "").strip()
+        eval_actor = os.environ.get("ASTRID_TIMELINE_EVAL_ACTOR_ID", "").strip()
+        if any((eval_endpoint, eval_credential, eval_realm, eval_actor)):
+            if not all((eval_endpoint, eval_credential, eval_realm, eval_actor)):
+                raise ServiceUnavailableError(
+                    "case-local Runtime connection is incomplete",
+                    details={"next_action": "prepare a complete timeline evaluation Runtime context"},
+                )
+            return cls.open(
+                endpoint=eval_endpoint,
+                credential=Path(eval_credential),
+                realm_id=eval_realm,
+                actor_id=eval_actor,
+                client_name=client_name,
+                client_version=client_version,
+                protocol_version=protocol_version,
+            )
+
         try:
             result = (
                 ensure_runtime()

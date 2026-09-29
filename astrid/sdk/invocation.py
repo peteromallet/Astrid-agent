@@ -47,6 +47,7 @@ from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_m
 
 _MAX_GENERATION_METADATA_BYTES = 16 * 1024
 _MAX_GENERATION_METADATA_DEPTH = 8
+_INTERNAL_DISPATCH_TOKEN = object()
 
 
 def _validate_generation_metadata(value: Any) -> dict[str, Any]:
@@ -2138,6 +2139,23 @@ def _kernel_invoke(
                 )
             input_manifest.append(transcript_input["digest"])
 
+    # A filmstrip authority snapshot can mention the rendered video both as
+    # the explicit ``rendered_video`` input and as a registry entry.  The
+    # execution-request contract is an ordered *set* of CAS identities, so
+    # collapse repeated witnesses before admission while retaining the first
+    # occurrence's order.  Without this, an otherwise valid render->visualize
+    # handoff is rejected as ``input_object_ids contains duplicate object IDs``.
+    if input_manifest:
+        unique_manifest: list[str] = []
+        seen_manifest: set[str] = set()
+        for object_id in input_manifest:
+            normalized_id = str(object_id)
+            if normalized_id in seen_manifest:
+                continue
+            seen_manifest.add(normalized_id)
+            unique_manifest.append(normalized_id)
+        input_manifest = unique_manifest
+
     try:
         input_manifest = merge_execution_input_manifest(
             execution_request,
@@ -2398,7 +2416,11 @@ def invoke(
     wait: bool = False,
     timeout_seconds: float = 3600.0,
     poll_seconds: float = 1.0,
+    _include_internal: bool = False,
+    _internal_dispatch_token: object | None = None,
 ) -> InvocationResult:
+    if _include_internal and _internal_dispatch_token is not _INTERNAL_DISPATCH_TOKEN:
+        raise TypeError("private capabilities can only be invoked through internal dispatch")
     try:
         normalized_execution_request = normalize_execution_request(execution_request)
     except ExecutionRequestError as exc:
@@ -2412,6 +2434,7 @@ def invoke(
         banodoco_config=banodoco_config,
         include_missing_roots=include_missing_roots,
         include_elements=include_elements,
+        include_internal=_include_internal,
     )
     # Keep the public generation entrypoint while selecting a separately
     # bounded runtime profile for Codex (the cloud profile remains closed).
@@ -2858,8 +2881,38 @@ def invoke_result(
     directory, network call, or provider request is created by this adapter.
     """
 
+    if "_include_internal" in kwargs:
+        raise TypeError("_include_internal is reserved for Astrid's private dispatch")
+    return _invoke_result(capability_id, kind=kind, include_internal=False, kwargs=kwargs)
+
+
+def _invoke_internal_result(
+    capability_id: str,
+    *,
+    kind: Any,
+    **kwargs: Any,
+) -> InvocationResult:
+    """Invoke a private backend used by a canonical product operation."""
+    return _invoke_result(capability_id, kind=kind, include_internal=True, kwargs=kwargs)
+
+
+def _invoke_result(
+    capability_id: str,
+    *,
+    kind: Any,
+    include_internal: bool,
+    kwargs: Mapping[str, Any],
+) -> InvocationResult:
     try:
-        return invoke(capability_id, kind=kind, **kwargs)
+        return invoke(
+            capability_id,
+            kind=kind,
+            _include_internal=include_internal,
+            _internal_dispatch_token=(
+                _INTERNAL_DISPATCH_TOKEN if include_internal else None
+            ),
+            **dict(kwargs),
+        )
     except AstridSDKError as exc:
         category = getattr(exc, "category", "invocation")
         error = {

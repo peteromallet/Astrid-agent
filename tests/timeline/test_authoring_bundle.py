@@ -343,6 +343,15 @@ def test_timing_is_admitted_but_competing_selected_media_fails_before_publish():
         compile_authoring_candidate(candidate)
 
 
+def test_target_bound_transport_key_normalizes_digest_prefix_and_punctuation():
+    from astrid.sdk.authoring_remote import _transport_idempotency_key
+
+    digest = "sha256:" + "a" * 64
+    assert _transport_idempotency_key(digest) == "candidate-" + "a" * 64
+    assert _transport_idempotency_key("  edit/key with spaces  ") == "edit-key-with-spaces"
+    assert _transport_idempotency_key("!leading") == "candidate--leading"
+
+
 class _Writer:
     def __init__(self):
         self.calls = []

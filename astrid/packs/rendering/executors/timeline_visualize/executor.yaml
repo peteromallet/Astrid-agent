@@ -4,8 +4,8 @@
   "name": "Timeline Visualize",
   "kind": "built_in",
   "version": "1.0",
-  "short_description": "Build a deterministic, agent-navigable filmstrip from a managed timeline render.",
-  "description": "Read one runtime-owned timeline and its successful managed render, then emit deterministic paired filmstrip JSON, Markdown, and PNG evidence under the owning run.",
+  "short_description": "Private backend for composed timeline visualization.",
+  "description": "Internal managed executor used by the canonical timelines.visualize operation to inspect an exact admitted render and produce paired filmstrip, source-decoding, waveform, or playback evidence. This backend is not a public capability and must not be invoked directly.",
   "keywords": [
     "timeline",
     "visualize",
@@ -415,6 +415,7 @@
     "requirements": []
   },
   "metadata": {
+    "visibility": "internal",
     "runtime_entrypoint": "run_sdk",
     "runtime_file": "run.py",
     "runtime_module": "astrid.packs.rendering.executors.timeline_visualize.run",
