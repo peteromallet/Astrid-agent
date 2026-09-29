@@ -42,6 +42,23 @@ The audio modality has three canonical modes:
 | `generated_audio` | `dir` | Directory at `{out}/audio/` containing generated audio files. |
 | `audio_manifest` | `file` | JSON manifest at `{out}/manifest.json` (common shape + audio extensions). |
 
+## Generation variants and promotion
+
+`astrid.generate.audio()` supports the same shared controls:
+
+```python
+astrid.generate.audio(
+    model="stable-audio-3-medium", mode="music", execution="cloud",
+    prompt="same melody, softer instrumentation", project="demo",
+    variant_of={"generation_id": "gen-123", "variant_id": "var-original"},
+    primary="preserve",  # or "promote"
+)
+```
+
+The source variant must belong to the project and have a managed object. The
+Runtime checks that source and output media families match, then settles the
+append and optional primary promotion under one generation-version CAS.
+
 ## Request validation
 
 Same hard-fail semantics as image modality: missing `requires` features fail

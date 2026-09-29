@@ -89,6 +89,27 @@ Edit).  These are separate model IDs from text-to-image checkpoints
 | `generated_images` | `dir` | Directory at `{out}/images/` containing generated image files. |
 | `image_manifest` | `file` | JSON manifest at `{out}/manifest.json` conforming to `20-manifest-schema.md` (v2). |
 
+## Generation variants and promotion
+
+The shared `astrid.generate.image()` facade can append an image result to an
+existing generation:
+
+```python
+astrid.generate.image(
+    model="qwen-image-edit", mode="edit", execution="cloud",
+    image_ref="./source.png", prompt="replace the background",
+    project="demo",
+    variant_of={"generation_id": "gen-123", "variant_id": "var-original"},
+    primary="preserve",  # or "promote"
+)
+```
+
+`preserve` is the default and leaves the generation's current primary intact.
+`promote` atomically makes the settled output primary through the generation
+version CAS. The source generation variant and managed object are checked and
+admitted as task input before the image task starts. A request without
+`variant_of` keeps the ordinary new-generation publication path.
+
 ## Request validation (hard-fail BEFORE the generation loop)
 
 The typed `astrid.generate.image()` facade uses `execution` as its sole

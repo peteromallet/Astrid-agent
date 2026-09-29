@@ -66,6 +66,26 @@ The video modality has five canonical modes.  Three are wired in Sprint 04;
 | `generated_videos` | `dir` | Directory at `{out}/videos/` containing generated video files. |
 | `video_manifest` | `file` | JSON manifest at `{out}/manifest.json` (common shape + video extensions). |
 
+## Generation variants and promotion
+
+`astrid.generate.video()` uses the same optional publication controls as image
+and audio generation. Supply an existing generation variant and choose whether
+to retain or promote the current primary:
+
+```python
+astrid.generate.video(
+    model="wan-2.2", mode="i2v", execution="cloud",
+    image_ref="./start.png", prompt="continue the shot",
+    project="demo",
+    variant_of={"generation_id": "gen-123", "variant_id": "var-original"},
+    primary="promote",
+)
+```
+
+The source variant/object lineage and generation version are checked before
+admission. Promotion is atomic; ordinary calls without `variant_of` still
+create a new generation.
+
 ## Request validation
 
 Same hard-fail semantics as image modality: missing `requires` features fail

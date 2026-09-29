@@ -137,6 +137,43 @@ clip = astrid.generate.video(
 )
 ```
 
+## Append a generation variant
+
+Image, video, and audio facades share the Runtime publication controls. Pass a
+generation source as `variant_of={"generation_id": ..., "variant_id": ...}`
+and choose `primary="preserve"` (the default) or `primary="promote"`.
+
+```python
+edited = astrid.generate.image(
+    model="flux-dev", mode="i2i", execution="cloud",
+    image_ref="./source.png", prompt="make the light warmer", project="demo",
+    variant_of={"generation_id": "gen-123", "variant_id": "var-original"},
+    primary="promote",
+)
+```
+
+Runtime resolves the source generation variant, admits its managed object as
+an immutable input, and settles through generation-version CAS. `preserve`
+keeps the current primary; `promote` atomically demotes the old primary and
+makes the settled output primary. An ordinary call with no `variant_of` still
+publishes a new generation through `generation.publish_v1`.
+
+New generation capabilities opt in through a manifest declaration; the
+executor does not implement lineage or promotion:
+
+```yaml
+metadata:
+  generation_publication:
+    modality: image
+    variant_of: {type: object}
+    primary: {type: string, enum: [preserve, promote], default: preserve}
+```
+
+This generation lineage is separate from `media.relate(kind="variant_of")`,
+which links arbitrary managed objects; `references.set_primary`, which chooses
+canonical media for a reusable reference; and timeline replacement, which is
+an explicit timeline document edit with its own head CAS.
+
 ### LoRA and extra params
 
 All keyword arguments beyond the explicit parameter list pass through to the

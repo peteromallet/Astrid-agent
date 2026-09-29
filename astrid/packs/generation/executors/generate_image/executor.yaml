@@ -225,6 +225,11 @@
   ],
   "kind": "built_in",
   "metadata": {
+    "generation_publication": {
+      "modality": "image",
+      "variant_of": {"type": "object", "description": "Existing generation_id and variant_id to append this output to."},
+      "primary": {"type": "string", "enum": ["preserve", "promote"], "default": "preserve"}
+    },
     "output_result_manifest": true,
     "requires_timeline": false,
     "api_provider": "fal",

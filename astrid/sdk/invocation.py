@@ -1570,8 +1570,9 @@ def _validate_generation_intent(
     return result
 
 
-def _generation_capability_modality(capability_id: str) -> str | None:
-    """Resolve the modality for every shipped generation executor family."""
+def _generation_capability_modality(capability: Any) -> str | None:
+    """Resolve a generation modality, including metadata opt-in capabilities."""
+    capability_id = str(getattr(capability, "id", capability))
     if capability_id.startswith("generation.generate_image"):
         return "image"
     if capability_id.startswith("generation.generate_video"):
@@ -1582,6 +1583,12 @@ def _generation_capability_modality(capability_id: str) -> str | None:
         return "video"
     if capability_id == "fal.fal_foley":
         return "audio"
+    definition = getattr(capability, "definition", None)
+    metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
+    publication = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None
+    modality = publication.get("modality") if isinstance(publication, Mapping) else None
+    if modality in {"image", "video", "audio"}:
+        return str(modality)
     return None
 
 
@@ -1685,8 +1692,15 @@ def _generation_publish_effect(
     *,
     project: str | None,
     generation_intent: Mapping[str, Any],
+    variant_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compose the sole typed publication effect from validated GEN intent."""
+    """Compose the sole typed publication effect from validated GEN intent.
+
+    ``variant_context`` is resolved from Runtime before admission.  Keeping
+    this branch here means every generation capability shares the same
+    publication contract instead of teaching individual executors about
+    generation lineage.
+    """
     if not isinstance(project, str) or not project.strip():
         raise CapabilityValidationError(
             "generation publication requires a project-scoped task"
@@ -1708,18 +1722,176 @@ def _generation_publish_effect(
                 for selector in group["selectors"]
             ],
         })
-    return {
-        "effect_type": "generation.publish_v1",
-        "target_id": project,
-        "payload": {
+    payload = {
             "version": 1,
             "modality": modality,
             "generation_type": str(capability.id),
             "metadata": _validate_generation_metadata(generation_intent.get("metadata")),
             "partial_success_policy": generation_intent["partial_success_policy"],
             "groups": groups,
+        }
+    if variant_context is None:
+        return {
+            "effect_type": "generation.publish_v1",
+            "target_id": project,
+            "payload": payload,
+        }
+
+    selectors = [selector for group in groups for selector in group["selectors"]]
+    if len(selectors) != 1:
+        raise CapabilityValidationError(
+            "variant generation requests must produce exactly one output"
+        )
+    selector = selectors[0]
+    return {
+        "effect_type": "generation.variant.append",
+        "target_id": variant_context["generation_id"],
+        "expected_version": variant_context["expected_version"],
+        "payload": {
+            "source_variant_id": variant_context["source_variant_id"],
+            "source_object_id": variant_context["source_object_id"],
+            "variant_type": "edit",
+            "output_name": selector["output_port"],
+            "output_ordinal": selector["ordinal"],
+            "primary_policy": variant_context["primary_policy"],
         },
     }
+
+
+def _domain_result_data(result: Any, *, operation: str) -> Any:
+    """Unwrap a Runtime DomainResult at the generation admission boundary."""
+    if isinstance(result, Mapping):
+        ok = result.get("ok")
+        data = result.get("data")
+        error = result.get("error")
+    else:
+        ok = getattr(result, "ok", None)
+        data = getattr(result, "data", None)
+        error = getattr(result, "error", None)
+    if ok is not True:
+        message = getattr(error, "message", None)
+        if message is None and isinstance(error, Mapping):
+            message = error.get("message")
+        raise CapabilityPreconditionError(
+            f"{operation} failed: {message or 'Runtime returned no data'}"
+        )
+    return data
+
+
+def _resolve_generation_variant(
+    client: Any | None,
+    *,
+    project: str | None,
+    variant_of: Any,
+    primary: str,
+) -> dict[str, Any]:
+    """Resolve and authorize a Runtime generation variant for publication."""
+    if not isinstance(variant_of, Mapping):
+        raise CapabilityValidationError(
+            "variant_of must be an object with generation_id and variant_id"
+        )
+    generation_id = variant_of.get("generation_id")
+    variant_id = variant_of.get("variant_id")
+    if not isinstance(generation_id, str) or not generation_id.strip():
+        raise CapabilityValidationError("variant_of.generation_id must be a non-empty string")
+    if not isinstance(variant_id, str) or not variant_id.strip():
+        raise CapabilityValidationError("variant_of.variant_id must be a non-empty string")
+    if primary not in {"preserve", "promote"}:
+        raise CapabilityValidationError("primary must be 'preserve' or 'promote'")
+    if client is None:
+        raise CapabilityPreconditionError(
+            "variant generation requests require a connected Runtime client"
+        )
+    generations = getattr(client, "generations", None)
+    show = getattr(generations, "show", None)
+    variants = getattr(generations, "variants", None)
+    if not callable(show) or not callable(variants):
+        raise CapabilityPreconditionError(
+            "connected Runtime client does not expose generation variant reads"
+        )
+    generation = _domain_result_data(
+        show(project, generation_id), operation="generation lookup"
+    )
+    if not isinstance(generation, Mapping):
+        raise CapabilityPreconditionError("generation lookup returned an invalid resource")
+    owner = generation.get("project_id")
+    if not isinstance(owner, str) or not owner:
+        raise CapabilityPreconditionError("generation lookup returned no project owner")
+    owner_matches = owner == project
+    if not owner_matches:
+        projects = getattr(client, "projects", None)
+        project_show = getattr(projects, "show", None)
+        if callable(project_show):
+            project_row = _domain_result_data(
+                project_show(project), operation="project lookup"
+            )
+            if isinstance(project_row, Mapping):
+                owner_matches = owner in {
+                    project_row.get("project_id"),
+                    project_row.get("id"),
+                    project_row.get("slug"),
+                }
+    if not owner_matches:
+        raise CapabilityPreconditionError(
+            "variant generation source belongs to a different project"
+        )
+    version = generation.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise CapabilityPreconditionError(
+            "generation lookup returned no valid current version"
+        )
+    page = _domain_result_data(
+        variants(project, generation_id), operation="generation variant lookup"
+    )
+    rows = page[0] if isinstance(page, (list, tuple)) and len(page) == 2 else page
+    if not isinstance(rows, (list, tuple)):
+        raise CapabilityPreconditionError("generation variant lookup returned an invalid page")
+    source = next(
+        (row for row in rows if isinstance(row, Mapping) and row.get("variant_id") == variant_id),
+        None,
+    )
+    if source is None:
+        raise CapabilityPreconditionError(
+            f"generation variant {variant_id!r} was not found"
+        )
+    if source.get("generation_id") not in (None, generation_id):
+        raise CapabilityPreconditionError("generation variant belongs to a different generation")
+    source_object_id = source.get("object_id")
+    if not isinstance(source_object_id, str) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", source_object_id
+    ):
+        raise CapabilityPreconditionError(
+            "variant_of must reference a generation variant with a managed object"
+        )
+    return {
+        "generation_id": generation_id,
+        "expected_version": version,
+        "source_variant_id": variant_id,
+        "source_object_id": source_object_id,
+        "primary_policy": primary,
+    }
+
+
+def _validate_variant_controls(
+    variant_of: Any,
+    primary: Any,
+    *,
+    modality: str | None,
+    primary_supplied: bool = False,
+) -> None:
+    """Validate shared publication controls before model preflight."""
+    if modality is None:
+        if variant_of is None and not primary_supplied:
+            return
+        raise CapabilityValidationError(
+            "variant_of and primary are only accepted for generation capabilities"
+        )
+    if variant_of is None and primary == "preserve":
+        return
+    if not isinstance(primary, str) or primary not in {"preserve", "promote"}:
+        raise CapabilityValidationError("primary must be 'preserve' or 'promote'")
+    if variant_of is None and primary == "promote":
+        raise CapabilityValidationError("primary='promote' requires variant_of")
 
 
 def _kernel_invoke(
@@ -1737,6 +1909,7 @@ def _kernel_invoke(
     idempotency_context: Mapping[str, Any] | None = None,
     admission_metadata: Mapping[str, Any] | None = None,
     generation_intent: Mapping[str, Any] | None = None,
+    variant_context: Mapping[str, Any] | None = None,
     execution_request: Mapping[str, Any] | None = None,
     storage_estimate: Mapping[str, int] | None = None,
     registry: Any | None = None,
@@ -1889,7 +2062,23 @@ def _kernel_invoke(
         input_digests.append({"name": name, "digest": canonical})
     if input_digests:
         spec["input_digests"] = input_digests
+    if variant_context is not None:
+        source_object_id = variant_context.get("source_object_id")
+        if not isinstance(source_object_id, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", source_object_id
+        ):
+            raise CapabilityValidationError(
+                "variant generation source object must be a managed SHA-256 digest"
+            )
+        input_manifest.append(source_object_id)
     if str(capability.id) == "generation.generate_image_codex":
+        # ``input_manifest`` already contains every declared file port,
+        # including these Codex reference roles.  Use a separate set for the
+        # role-level distinctness check; consulting ``input_manifest`` here
+        # makes the first reference appear to duplicate itself and rejects
+        # every valid Codex reference invocation.
+        seen_reference_digests: set[str] = set()
+        codex_reference_digests: list[str] = []
         for name in ("image_ref", "style_ref", "brand_ref"):
             reference = request_inputs.get(name)
             if reference is None:
@@ -1899,9 +2088,17 @@ def _kernel_invoke(
             digest = str(reference.get("digest") or "").removeprefix("sha256:")
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise CapabilityValidationError(f"{name} requires a managed SHA-256 digest")
-            if "sha256:" + digest in input_manifest:
+            canonical_digest = "sha256:" + digest
+            if canonical_digest in seen_reference_digests:
                 raise CapabilityValidationError("Codex reference roles must use distinct images")
-            input_manifest.append("sha256:" + digest)
+            seen_reference_digests.add(canonical_digest)
+            codex_reference_digests.append(canonical_digest)
+        if codex_reference_digests:
+            codex_reference_set = set(codex_reference_digests)
+            input_manifest = [
+                digest for digest in input_manifest
+                if digest not in codex_reference_set
+            ] + codex_reference_digests
     raw_snapshot = request_inputs.get("timeline_snapshot")
     if isinstance(raw_snapshot, Mapping):
         raw_registry = raw_snapshot.get("registry")
@@ -2339,8 +2536,27 @@ def invoke(
     if capability.capability_type == "element":
         raise UnsupportedCapabilityError(f"elements are not invokable via the SDK: {capability.id}")
 
-    intent_modality = _generation_capability_modality(str(capability.id))
+    intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
+    variant_context: dict[str, Any] | None = None
+    variant_of_supplied = "variant_of" in request_inputs
+    primary_supplied = "primary" in request_inputs
+    variant_of = request_inputs.pop("variant_of", None)
+    primary = request_inputs.pop("primary", "preserve")
+    if (variant_of_supplied or primary_supplied) and intent_modality is None:
+        raise CapabilityValidationError(
+            "variant_of and primary are only accepted for generation capabilities"
+        )
+    _validate_variant_controls(
+        variant_of if variant_of_supplied else None,
+        primary,
+        modality=intent_modality,
+        primary_supplied=primary_supplied,
+    )
+    if variant_of is not None:
+        # Project resolution below may use the Runtime's durable selection;
+        # defer the read-only lineage lookup until that identity is known.
+        variant_context = {"variant_of": variant_of, "primary": primary}
     generation_intent: dict[str, Any] | None = None
     if "generation_intent" in request_inputs:
         if intent_modality is None and capability.id != "vibecomfy.run":
@@ -2389,6 +2605,14 @@ def invoke(
                     operation=f"{capability.capability_type} invocation"
                 )
             )
+    if variant_context is not None:
+        resolved_variant = _resolve_generation_variant(
+            _client,
+            project=project,
+            variant_of=variant_context["variant_of"],
+            primary=variant_context["primary"],
+        )
+        variant_context = resolved_variant
 
     # Validate the public selector/format contract before the runner can
     # create a ledger row or spawn a subprocess.  The runner repeats these
@@ -2649,6 +2873,8 @@ def invoke(
         }
         if generation_intent is not None:
             kernel_kwargs["generation_intent"] = generation_intent
+        if variant_context is not None:
+            kernel_kwargs["variant_context"] = variant_context
         if normalized_execution_request is not None:
             kernel_kwargs["execution_request"] = normalized_execution_request
         if registry is not None:

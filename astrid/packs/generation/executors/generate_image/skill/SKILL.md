@@ -137,3 +137,15 @@ hatch, which gives direct access to ready-templates, custom workflows,
 and the full ComfyUI node graph.
 
 See: `vibecomfy` skill, `astrid/packs/vibecomfy/executors/run/STAGE.md`
+
+## Runtime publication controls
+
+The shared facade accepts `variant_of={"generation_id": "...",
+"variant_id": "..."}` to append exactly one image to an existing generation.
+`primary="preserve"` is the default; `primary="promote"` atomically selects
+the new variant under Runtime generation-version CAS. The source variant must
+belong to the project and have a managed object. These are publication fields,
+not executor inputs, and an ordinary image request still uses
+`generation.publish_v1`. The generation pack skill documents the same controls
+for video and audio and the boundary with media relations, references, and
+timeline replacement.
