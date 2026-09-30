@@ -7,9 +7,9 @@
   },
   "astrid": {
     "artifact": "artifacts/h3-candidate-wheels/astrid-0.1.0-py3-none-any.whl",
-    "revision": "e710f94034fb8162ff23201f5d7447804c441835",
-    "tree": "b0d01378ce0c08a24db54382cb2d35af649cb956",
-    "wheel": "00073cad67bb29c4e6efebfd78debdf33ac3e0f3a5fc87530c9bd62b7e2d6ded"
+    "revision": "170af8497c127ee491bf689159acbb0340e46c31",
+    "tree": "f44a0d68a9ab45b39a5cd9be675164df66d67719",
+    "wheel": "d4dde7ebbf0ce2f9dd8597155fd17dfa9ce0a222aaf531c919cfa39c8b878c9d"
   },
   "runpod-lifecycle": {
     "artifact": "artifacts/h3-candidate-wheels/runpod_lifecycle-0.3.1.dev0-py3-none-any.whl",
