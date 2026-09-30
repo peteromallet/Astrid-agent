@@ -70,6 +70,14 @@ out/
 # Required LanPaint workflow resources are release inputs.
 !astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png
 !astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png
+# Required local effect resources are release inputs.
+!astrid/packs/local/elements/effects/frame-overlay/assets/frame.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-0.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-1.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-2.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-3.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-4.png
+!astrid/packs/local/elements/effects/end-spanning-layer/assets/card-5.png
 # ...but committed test fixtures must stay tracked (media OUTPUT/cache stays ignored).
 !tests/**/fixtures/
 !tests/**/fixtures/**
