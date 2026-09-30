@@ -1,2 +1,2 @@
-# Selected local VibeComfy candidate; see candidate-dependencies.json.
-vibecomfy @ file:///Users/peteromalley/Documents/reigh-workspace/vibecomfy/.otto/worktrees/h3-full-merge-megado-plan-20260930
+# Selected hash-bound VibeComfy wheel; see candidate-dependencies.json.
+vibecomfy==2.8.0 --hash=sha256:1d3a54a4d72c7e7a4a58bc771ff6e2dc89343bad204c2842c63f1d11e2ed1c05

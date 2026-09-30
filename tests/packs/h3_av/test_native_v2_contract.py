@@ -5,11 +5,13 @@ from pathlib import Path
 
 import jsonschema
 import yaml
+from PIL import Image
 
 from astrid.packs.h3_av.src.compile import compile_preparation
 from astrid.packs.h3_av.src.prepare import prepare_request
 from astrid.packs.h3_av.src.request import normalize_request
 from astrid.packs.h3_av.src.request_v2 import branch_for
+from vibecomfy.cli_loader import load_workflow_any
 
 
 PACK = Path(__file__).resolve().parents[3] / "astrid/packs/h3_av"
@@ -38,7 +40,10 @@ def test_native_v2_schema_profile_and_four_branch_bindings(tmp_path: Path) -> No
     paths = {}
     for name in ("look.png", "voice.wav", "source.mp4"):
         path = tmp_path / name
-        path.write_bytes(name.encode("utf-8"))
+        if name.endswith(".png"):
+            Image.new("RGB", (16, 16), color=(32, 64, 128)).save(path)
+        else:
+            path.write_bytes(name.encode("utf-8"))
         paths[name] = str(path)
     for branch in profile["branches"]:
         raw = _case(branch)
@@ -50,6 +55,12 @@ def test_native_v2_schema_profile_and_four_branch_bindings(tmp_path: Path) -> No
         assert compiled["profile"] == "h3_av.native.v2"
         assert compiled["branch"] == branch
         assert compiled["capabilities"]["output_contract"] == "muxed_av_full_timeline"
+        workflow_path = Path(compiled["workflow"]["workflow.py"]["path"])
+        workflow = load_workflow_any(str(workflow_path))
+        assert set(compiled["workflow_inputs"]).issubset(workflow.inputs)
+        api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+        assert isinstance(api, dict) and api
+        assert workflow.validate().ok
 
 
 def test_parent_v1_source_free_generation_and_reference_capacity_are_retained() -> None:
@@ -65,6 +76,35 @@ def test_parent_v1_source_free_generation_and_reference_capacity_are_retained() 
             "overrides": {},
         }
         assert normalize_request(request).value["version"] == 1
+
+
+def test_native_v2_source_free_reference_capacity_uses_declared_ports(tmp_path: Path) -> None:
+    paths = {}
+    for index in range(9):
+        path = tmp_path / f"ref-{index}.png"
+        Image.new("RGB", (16, 16), color=(index, 32, 64)).save(path)
+        paths[f"ref-{index}.png"] = str(path)
+    for count in (1, 4, 9):
+        raw = {
+            "version": 2,
+            "prompt": f"Source-free v2 with {count} references.",
+            "duration": 5,
+            "media": [
+                {"id": f"ref-{index}", "asset": f"ref-{index}.png", "role": "reference", "modality": "image"}
+                for index in range(count)
+            ],
+            "settings": {},
+        }
+        request = normalize_request(raw)
+        compiled = compile_preparation(
+            prepare_request(request, asset_map=paths),
+            out_dir=tmp_path / f"source-free-{count}",
+        )
+        workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+        assert compiled["capabilities"]["references"] == count
+        assert set(compiled["workflow_inputs"]).issubset(workflow.inputs)
+        assert workflow.validate().ok
+        workflow.compile("api", run_inputs=compiled["workflow_inputs"])
 
 
 def test_v1_edit_continue_and_separate_av_semantics_remain_in_the_parent_contract() -> None:

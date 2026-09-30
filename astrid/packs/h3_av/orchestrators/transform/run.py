@@ -21,6 +21,7 @@ from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_mai
 from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
 from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.receipt import (
+    attest_runtime_managed_composition,
     attest_runtime_managed_publication,
     build_final_receipt,
     write_final_receipt,
@@ -941,6 +942,66 @@ def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _finalizer_generation_intent(
+    *,
+    generation_intent: Mapping[str, Any],
+    request_digest: str,
+    verification: Mapping[str, Any],
+    raw_managed_publication: Any,
+) -> dict[str, Any]:
+    """Declare one Runtime-owned final publication with sealed raw lineage."""
+
+    raw_evidence = getattr(raw_managed_publication, "evidence", None)
+    raw_publication = raw_evidence.get("publication") if isinstance(raw_evidence, Mapping) else None
+    if not isinstance(raw_publication, Mapping):
+        raise RuntimeError("cannot admit finalizer without verified raw Runtime lineage")
+    candidate_sha256 = verification.get("candidate_sha256")
+    if not isinstance(candidate_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", candidate_sha256):
+        raise RuntimeError("cannot admit finalizer without a verified candidate digest")
+    raw_object_id = _digest(raw_publication)
+    if raw_object_id is None or raw_object_id.removeprefix("sha256:") == candidate_sha256:
+        raise RuntimeError("finalizer requires distinct raw and composed hashes")
+    required = {
+        "generation_id": raw_publication.get("generation_id"),
+        "variant_id": raw_publication.get("variant_id"),
+        "association_id": raw_publication.get("association_id"),
+        "group_key": raw_publication.get("group_key"),
+        "variant_key": raw_publication.get("variant_key"),
+        "output_port": raw_publication.get("output_port"),
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        raise RuntimeError("raw Runtime lineage lacks finalizer identity")
+    return {
+        "version": 1,
+        "modality": generation_intent.get("modality", "video"),
+        "partial_success_policy": "reject",
+        "groups": [{
+            "group_key": "main",
+            "selectors": [{
+                "selector": "final-composition",
+                "ordinal": 0,
+                "variant_key": "final-composition",
+                "required": True,
+            }],
+        }],
+        "metadata": {
+            "compiled_generation_contract": True,
+            "h3_av": {
+                "request_digest": request_digest,
+                "publication_scope": "final_composition",
+                "candidate_sha256": candidate_sha256,
+                "raw_sha256": raw_object_id.removeprefix("sha256:"),
+                "raw_generation_id": required["generation_id"],
+                "raw_variant_id": required["variant_id"],
+                "raw_association_id": required["association_id"],
+                "raw_group_key": required["group_key"],
+                "raw_variant_key": required["variant_key"],
+                "raw_output_port": required["output_port"],
+            },
+        },
+    }
+
+
 def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -1182,7 +1243,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             phase="verify",
             idempotency_context=idempotency_context,
         )
-        verification_path, _ = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
+        verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
         task_evidence = {
             key: value
@@ -1201,6 +1262,63 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         )
         if isinstance(admitted_target, Mapping):
             task_evidence["target"] = _receipt_target(admitted_target)
+        final_managed_publication = None
+        if getattr(raw_managed_publication, "status", None) == "passed":
+            try:
+                finalizer_intent = _finalizer_generation_intent(
+                    generation_intent=generation_intent,
+                    request_digest=str(preparation["request_digest"]),
+                    verification=verification,
+                    raw_managed_publication=raw_managed_publication,
+                )
+                finalizer = _invoke_stage(
+                    client,
+                    "h3_av.publication_finalizer",
+                    inputs={
+                        "candidate": _descriptor(candidate_row, filename="candidate.media"),
+                        "generation_intent": finalizer_intent,
+                    },
+                    out=root / "07-finalizer",
+                    project=args.project,
+                    saved_result=root / "07-finalizer" / "invocation-result.json",
+                    resume=bool(getattr(args, "resume", False)),
+                    journal=journal,
+                    phase="finalizer",
+                    idempotency_context=idempotency_context,
+                )
+                final_path, final_row = _materialize_output(
+                    client,
+                    finalizer,
+                    "verified_candidate",
+                    root / "07-finalizer",
+                    managed_only=True,
+                )
+                final_retrieved = {
+                    **final_row,
+                    "verified": True,
+                    "size": final_path.stat().st_size,
+                    "sha256": hashlib.sha256(final_path.read_bytes()).hexdigest(),
+                }
+                final_managed_publication = attest_runtime_managed_composition(
+                    runtime_result=finalizer,
+                    request_digest=str(preparation["request_digest"]),
+                    candidate_verified={
+                        "verification_path": str(verification_path),
+                        "verification": verification,
+                    },
+                    retrieved_outputs=[final_retrieved],
+                    raw_managed_publication=raw_managed_publication,
+                )
+            except (RuntimeError, OSError, ValueError) as exc:
+                # Raw lineage and local verification remain useful, but an
+                # unproven final association must never be upgraded to final.
+                journal.record(
+                    "finalizer",
+                    "unproven",
+                    capability_id="h3_av.publication_finalizer",
+                    error=type(exc).__name__,
+                    message=str(exc)[:1000],
+                )
         receipt = build_final_receipt(
             request_digest=str(preparation["request_digest"]),
             task_succeeded=task_evidence,
@@ -1215,8 +1333,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             ),
             cleanup=cleanup_receipt,
             raw_managed_publication=raw_managed_publication,
+            final_managed_publication=final_managed_publication,
         )
-        final_receipt_path = write_final_receipt(root / "07-final-receipt.json", receipt)
+        final_receipt_path = write_final_receipt(root / "08-final-receipt.json", receipt)
         journal.record(
             "operation",
             "completed",

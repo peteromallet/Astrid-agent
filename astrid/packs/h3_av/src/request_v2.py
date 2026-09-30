@@ -206,6 +206,11 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             at, at_frame = _at(item["at"], f"{path}.at")
             occurrence.update({"at": at, "resolved_at": {"unit": "frames", "value": at_frame}, "hard": item.get("hard", False), "edit": []})
             if type(occurrence["hard"]) is not bool: raise H3RequestError(f"{path}.hard must be boolean")
+            if "range" in item:
+                if modality not in {"video", "audio"}:
+                    raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} timeline media")
+                clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
+                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
             edits = item.get("edit", [])
             if not isinstance(edits, list): raise H3RequestError(f"{path}.edit must be an array")
             for edit_index, raw_edit in enumerate(edits):

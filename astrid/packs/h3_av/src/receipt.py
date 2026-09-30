@@ -479,11 +479,36 @@ def attest_runtime_managed_composition(
         or not re.fullmatch(r"[0-9a-f]{64}", candidate_digest)
     ):
         return failed("verified composition has no candidate digest")
+    if not isinstance(raw_managed_publication, _RuntimeManagedPublication) or raw_managed_publication.status != "passed":
+        return failed("final composition has no verified raw Runtime lineage")
+    raw_task = raw_managed_publication.evidence.get("task")
+    raw_publication = raw_managed_publication.evidence.get("publication")
+    if not isinstance(raw_task, Mapping) or not isinstance(raw_publication, Mapping):
+        return failed("raw Runtime lineage is missing task or publication identity")
+    raw_object_id = _digest(raw_publication)
+    raw_identity = tuple(raw_task.get(field) for field in ("run_id", "task_id", "attempt_id"))
+    raw_generation_id = _nonempty(raw_publication.get("generation_id"))
+    raw_variant_id = _nonempty(raw_publication.get("variant_id"))
+    raw_association_id = _nonempty(raw_publication.get("association_id"))
+    raw_group_key = _nonempty(raw_publication.get("group_key"))
+    raw_variant_key = _nonempty(raw_publication.get("variant_key"))
+    raw_output_port = _nonempty(raw_publication.get("output_port"))
+    if (
+        raw_object_id is None
+        or not all(isinstance(value, str) and value for value in raw_identity)
+        or None in (raw_generation_id, raw_variant_id, raw_association_id, raw_group_key, raw_variant_key, raw_output_port)
+    ):
+        return failed("raw Runtime lineage lacks complete generation/variant/group identity")
     if not isinstance(runtime_result, InvocationResult) or runtime_result.capability_id != "h3_av.publication_finalizer" or not runtime_result.ok:
         return failed("publication source is not the canonical H3 finalizer")
     run_id, task_id, attempt_id = runtime_result.kernel_run_id, runtime_result.kernel_task_id, runtime_result.kernel_attempt_id
+    final_identity = (run_id, task_id, attempt_id)
+    if not all(isinstance(value, str) and value for value in final_identity):
+        return failed("finalizer readback lacks task identity or settlement")
+    if any(final == raw for final, raw in zip(final_identity, raw_identity)):
+        return failed("finalizer task/run/attempt must be distinct from raw Runtime lineage")
     raw = runtime_result.raw_result
-    if not all(isinstance(value, str) and value for value in (run_id, task_id, attempt_id)) or not isinstance(raw, Mapping):
+    if not isinstance(raw, Mapping):
         return failed("finalizer readback lacks task identity or settlement")
     if raw.get("state") not in {"completed", "succeeded"} or raw.get("kernel_task_id") != task_id or raw.get("kernel_attempt_id") != attempt_id:
         return failed("finalizer settlement identity is incomplete or contradictory")
@@ -501,11 +526,35 @@ def attest_runtime_managed_composition(
         return failed("finalizer publication is not the canonical H3 finalizer generation")
     metadata = payload.get("metadata") if isinstance(payload, Mapping) else None
     h3_metadata = metadata.get("h3_av") if isinstance(metadata, Mapping) else None
-    if not isinstance(h3_metadata, Mapping) or h3_metadata.get("request_digest") != request_digest:
-        return failed("finalizer publication is not bound to the H3 request digest")
+    expected_metadata = {
+        "request_digest": request_digest,
+        "publication_scope": "final_composition",
+        "candidate_sha256": candidate_digest,
+        "raw_sha256": raw_object_id.removeprefix("sha256:"),
+        "raw_generation_id": raw_generation_id,
+        "raw_variant_id": raw_variant_id,
+        "raw_association_id": raw_association_id,
+        "raw_group_key": raw_group_key,
+        "raw_variant_key": raw_variant_key,
+        "raw_output_port": raw_output_port,
+    }
+    if not isinstance(h3_metadata, Mapping) or any(
+        h3_metadata.get(field) != expected for field, expected in expected_metadata.items()
+    ):
+        return failed("finalizer publication is not bound to request, candidate, and raw lineage")
     groups = payload.get("groups") if isinstance(payload, Mapping) else None
-    selectors = groups[0].get("selectors") if isinstance(groups, list) and len(groups) == 1 and isinstance(groups[0], Mapping) else None
-    if not isinstance(selectors, list) or len(selectors) != 1 or not isinstance(selectors[0], Mapping) or selectors[0].get("output_port") != "verified_candidate":
+    group = groups[0] if isinstance(groups, list) and len(groups) == 1 and isinstance(groups[0], Mapping) else None
+    selectors = group.get("selectors") if isinstance(group, Mapping) else None
+    if (
+        not isinstance(group, Mapping)
+        or group.get("group_key") != "main"
+        or not isinstance(selectors, list)
+        or len(selectors) != 1
+        or not isinstance(selectors[0], Mapping)
+        or selectors[0].get("selector") != "final-composition"
+        or selectors[0].get("output_port") != "verified_candidate"
+        or selectors[0].get("variant_key") != "final-composition"
+    ):
         return failed("finalizer publication does not select verified_candidate")
     selector = selectors[0]
     applied = settled.get("generation_publish_v1")
@@ -516,6 +565,10 @@ def attest_runtime_managed_composition(
     object_id = _digest(variant) if isinstance(variant, Mapping) else None
     if (
         object_id != "sha256:" + candidate_digest
+        or publication.get("group_key") != "main"
+        or publication.get("missing_selectors") != []
+        or not _nonempty(publication.get("generation_id"))
+        or not _nonempty(variant.get("variant_id"))
         or variant.get("generation_id") != publication.get("generation_id")
         or variant.get("output_port") != "verified_candidate"
         or variant.get("ordinal") != selector.get("ordinal")
@@ -537,11 +590,17 @@ def attest_runtime_managed_composition(
         and _nonempty(row.get("association_id"))
     ]
     expected_size = verification.get("candidate_size") if isinstance(verification, Mapping) else None
-    retrieved = [row for row in retrieved_outputs if isinstance(row, Mapping) and _digest(row) == object_id and row.get("verified") is True and isinstance(row.get("size"), int) and (expected_size is None or row.get("size") == expected_size)]
-    if len(matches) != 1 or len(retrieved) != 1:
+    retrieved = [
+        row for row in retrieved_outputs
+        if isinstance(row, Mapping)
+        and _digest(row) == object_id
+        and row.get("verified") is True
+        and isinstance(row.get("size"), int)
+        and (expected_size is None or row.get("size") == expected_size)
+        and (row.get("sha256") in (None, candidate_digest))
+    ]
+    if len(matches) != 1 or len(retrieved) != 1 or object_id == raw_object_id:
         return failed("final composition was not uniquely associated and locally retrieved")
-    if raw_managed_publication is not None and raw_managed_publication.status == "passed" and raw_managed_publication.evidence.get("publication", {}).get("object_id") == object_id:
-        return failed("finalizer published the raw object instead of the composed candidate")
     return _RuntimeManagedPublication(
         status="passed",
         evidence={
@@ -550,7 +609,25 @@ def attest_runtime_managed_composition(
             "published_scope": "final_composition",
             "request_digest": request_digest,
             "task": {"run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "project_id": project_id},
-            "publication": {"object_id": object_id, "association_id": matches[0]["association_id"], "output_port": "verified_candidate", "ordinal": selector.get("ordinal"), "variant_key": selector.get("variant_key")},
+            "publication": {
+                "object_id": object_id,
+                "association_id": matches[0]["association_id"],
+                "generation_id": publication.get("generation_id"),
+                "variant_id": variant.get("variant_id"),
+                "output_port": "verified_candidate",
+                "group_key": "main",
+                "ordinal": selector.get("ordinal"),
+                "variant_key": selector.get("variant_key"),
+            },
+            "lineage": {
+                "raw_object_id": raw_object_id,
+                "raw_generation_id": raw_generation_id,
+                "raw_variant_id": raw_variant_id,
+                "raw_association_id": raw_association_id,
+                "raw_group_key": raw_group_key,
+                "raw_variant_key": raw_variant_key,
+                "raw_output_port": raw_output_port,
+            },
         },
         _seal=_PUBLICATION_SEAL,
     )
@@ -616,6 +693,29 @@ def _raw_publication_report(
     return _stage(status, evidence, reason=reason), status
 
 
+def _final_publication_report(
+    value: _RuntimeManagedPublication | None,
+) -> tuple[dict[str, Any], str]:
+    if value is None:
+        return {
+            "status": "not_claimed",
+            "evidence": {
+                "effect_type": "generation.publish_v1",
+                "phase": "h3_av.publication_finalizer",
+                "published_scope": "final_composition",
+            },
+        }, "not_claimed"
+    if not isinstance(value, _RuntimeManagedPublication):
+        raise ReceiptError("final_managed_publication must come from a Runtime attestation")
+    status = value.status
+    evidence = dict(value.evidence)
+    reason = evidence.get("validation_error") if status == "failed" else None
+    if status == "passed" and evidence.get("published_scope") != "final_composition":
+        status = "failed"
+        reason = "final publication evidence has the wrong publication scope"
+    return _stage(status, evidence, reason=reason), status
+
+
 def build_final_receipt(
     *,
     request_digest: str,
@@ -648,10 +748,8 @@ def build_final_receipt(
         request_digest=request_digest,
         task_status=task_status,
     )
-    final_report, final_status = _raw_publication_report(
+    final_report, final_status = _final_publication_report(
         final_managed_publication,
-        task_succeeded=task_succeeded,
-        evidence_name="final_managed_publication",
     )
     editorial_status = "passed" if editorially_approved is not None else "not_claimed"
     cleanup_target = (
@@ -686,7 +784,11 @@ def build_final_receipt(
     overall = "candidate_verified"
     if task_status != "passed" or candidate_status != "passed":
         overall = "task_failed"
-    elif final_status == "passed" and cleanup_status == "passed":
+    elif (
+        publication_status == "passed"
+        and final_status == "passed"
+        and cleanup_status == "passed"
+    ):
         overall = "complete"
     return {
         "schema_version": 1,
