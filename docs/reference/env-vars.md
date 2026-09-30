@@ -14,8 +14,12 @@ does not select a project root or open a local database/CAS.
 | `ASTRID_LOCAL_SOURCE_MANIFEST` | Astrid launcher / operator | Optional absolute source-profile manifest for editable repository development. The installed closeout profile does not require it. `BANODOCO_LOCAL_SOURCE_MANIFEST` is a deprecated alias. |
 | `ASTRID_LOCAL_DATA_ROOT` | Astrid launcher / operator | Canonical absolute installation-owned support root. The installed closeout uses an explicit root such as `~/.astrid-data` or `$PWD/.astrid-data`. `BANODOCO_LOCAL_DATA_ROOT` is a deprecated alias. |
 | `ASTRID_LOCAL_HOME` | Astrid launcher / operator | Canonical absolute home/support override for local compatibility behavior. `BANODOCO_LOCAL_HOME` is a deprecated alias. |
+| `ASTRID_LOCAL_LAUNCHER` | Astrid launcher / operator | Optional explicit executable used to invoke the installed Runtime launcher. `BANODOCO_LOCAL_LAUNCHER` is a deprecated alias. |
+| `ASTRID_LOCAL_ENABLE_REAL_REBOOT` | Test/host operator | Explicitly enables the guarded real-reboot test action when set to `1`; it is disabled by default. `BANODOCO_LOCAL_ENABLE_REAL_REBOOT` is a deprecated alias. |
 | `ASTRID_LOCAL_CLI` | Astrid launcher / operator | Optional explicit Runtime CLI command/argv used by Astrid. `ASTRID_RUNTIME_CLI` is a deprecated alias. |
+| `ASTRID_RUNTIME_ENDPOINT` | SDK / launcher boundary | Optional explicit loopback Runtime endpoint for a connection that is supplied directly. `BANODOCO_RUNTIME_ENDPOINT` is a deprecated alias. |
 | `ASTRID_COMPUTE_PROFILE` | RunPod executor / operator | Optional user compute-profile id loaded from `~/.astrid/compute-profiles/<id>.json`. |
+| `ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS` | Astrid launcher / operator | Positive finite timeout budget for Runtime admission and launcher handoff; defaults to 120 seconds. `BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS` is a deprecated alias. |
 
 These are runtime composition variables, not project-store overrides. Product
 commands use the installed Runtime artifact and invoke
@@ -26,7 +30,13 @@ takes all connection values explicitly and does not read these variables.
 The compatibility resolver gives canonical values precedence when both spellings
 match. A legacy-only value is accepted and emits one deprecation warning. If a
 canonical and legacy pair are both set to different values, resolution fails
-closed. Data-root, home, and source-manifest values must be absolute paths.
+closed. Data-root, home, and source-manifest values must be absolute paths;
+the admission timeout must be finite and positive. `ASTRID_LOCAL_LAUNCHER`
+selects the executable used for the launcher boundary, while
+`ASTRID_LOCAL_CLI` selects an explicit Runtime CLI command. They are separate
+overrides. `ASTRID_RUNTIME_ENDPOINT` is accepted only as an explicit
+loopback connection value; ordinary installed setup discovers the endpoint
+from Runtime's bounded launcher result.
 
 The `ASTRID_*` registry below remains useful for pack subprocesses, tests, and
 authoring tools. Variables marked **historical/internal** are not live workspace

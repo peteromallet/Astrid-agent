@@ -1,5 +1,11 @@
 # Astrid entrypoint and packaging surfaces
 
+> **Historical evidence.** This read-only inventory predates the installed
+> closeout launcher contract. Its command examples and source/package findings
+> are provenance, not current setup or qualification instructions. For the
+> current path use `astrid-local`, `ASTRID_LOCAL_*`, and the installed setup
+> guide.
+
 Read-only mapping of the current Astrid user/agent entrypoints, skill CLI,
 pack CLI and packaging boundary. No implementation or runtime changes were
 made.

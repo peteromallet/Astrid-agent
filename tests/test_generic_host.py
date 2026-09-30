@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,6 +247,92 @@ def test_child_environment_carries_explicit_runtime_connection(tmp_path):
     finally:
         child_env.clear()
         secrets.clear()
+
+
+def test_handoff_registration_preview_matches_actual_executor_post(tmp_path):
+    _write_manifest(tmp_path / "echo")
+
+    class CapturingRuntime:
+        endpoint = "http://127.0.0.1:8765"
+        schema_digest = "sha256:" + "1" * 64
+
+        def __init__(self):
+            self.identity = {
+                "runtime_epoch": 1,
+                "runtime_instance_id": "runtime-a",
+                "runtime_session_id": "session-a",
+            }
+            self.registration_bodies = []
+
+        def health(self):
+            return {
+                "status": "ok",
+                "protocol": "workspace.v1",
+                "schema_digest": self.schema_digest,
+                **self.identity,
+            }
+
+        def register_capability(self, *_args, **_kwargs):
+            raise AssertionError("executor registration must remain atomic")
+
+        def register_executor(self, executor_id, **kwargs):
+            body = RuntimeProtocolClient.executor_registration_body(
+                executor_id, **kwargs
+            )
+            self.registration_bodies.append(body)
+            return {"id": executor_id, "state": "registered"}
+
+    runtime = CapturingRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.register()
+    new_runtime = {
+        "endpoint": runtime.endpoint,
+        "protocol": "workspace.v1",
+        "schema_digest": runtime.schema_digest,
+        "runtime_epoch": 2,
+        "runtime_instance_id": "runtime-b",
+        "runtime_session_id": "session-b",
+    }
+    preview = host.registered_state_snapshot(runtime_override=new_runtime)
+
+    runtime.identity = {
+        "runtime_epoch": 2,
+        "runtime_instance_id": "runtime-b",
+        "runtime_session_id": "session-b",
+    }
+    host.register(deliberate=True)
+    actual_body = runtime.registration_bodies[-1]
+    canonical = json.dumps(
+        actual_body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    expected_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    assert preview["registration_actor"] == "astrid-pack-host"
+    assert preview["registration_bodies"] == {
+        "/v1/capabilities": [],
+        "/v1/executors": [actual_body],
+    }
+    assert preview["registration_allowlist"] == [
+        {
+            "method": "POST",
+            "path": "/v1/capabilities",
+            "actor": "astrid-pack-host",
+            "body_sha256": [],
+        },
+        {
+            "method": "POST",
+            "path": "/v1/executors",
+            "actor": "astrid-pack-host",
+            "body_sha256": [expected_digest],
+        },
+    ]
+    assert actual_body["runtime_epoch"] == 2
+    assert actual_body["source_epoch"] == host.source_epoch
+    assert actual_body["capabilities"][0]["capability_id"] == "test.echo"
 
 
 def _write_credential_manifest(root: Path) -> None:
@@ -745,14 +832,14 @@ def test_command_cwd_must_stay_in_attempt_or_source_scope(tmp_path):
         host._run_command_definition(record, {}, tmp_path / "attempt" / "outputs", tmp_path / "attempt")
 
 
-def test_cancellation_terminates_descendant_process_group(tmp_path):
+def test_cancellation_fails_closed_for_unregistered_descendant(tmp_path):
     root = tmp_path / "group"
     _write_manifest(root)
     manifest = json.loads((root / "executor.yaml").read_text(encoding="utf-8"))
     manifest["command"]["argv"] = [
         "{python_exec}",
         "-c",
-        "import os,time; from pathlib import Path; p=os.fork(); Path('{out}/child.pid').write_text(str(p if p else os.getpid())); time.sleep(30)",
+        "import os,time; from pathlib import Path; p=os.fork(); Path('{out}/child.pid').write_text(str(p if p else os.getpid())); time.sleep(1)",
     ]
     (root / "executor.yaml").write_text(json.dumps(manifest), encoding="utf-8")
     host = GenericPackHost(pack_roots=[tmp_path])
@@ -763,14 +850,14 @@ def test_cancellation_terminates_descendant_process_group(tmp_path):
     started = time.monotonic()
 
     def cancelled():
-        return time.monotonic() - started > 0.75
+        return time.monotonic() - started > 0.2
 
-    with pytest.raises(HostCancelled):
+    with pytest.raises(HostError, match="descendants without role-bound audit-token registrations"):
         host._run_command_definition(
             host.capabilities["test.echo"], {}, output_root, attempt, cancelled=cancelled
         )
     child_pid = int((output_root / "child.pid").read_text(encoding="utf-8"))
-    for _ in range(20):
+    for _ in range(40):
         try:
             os.kill(child_pid, 0)
         except ProcessLookupError:
@@ -781,7 +868,7 @@ def test_cancellation_terminates_descendant_process_group(tmp_path):
 
 
 def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_path):
-    """A leader that exits on TERM must not let its stubborn child escape."""
+    """An unregistered stubborn child blocks cleanup after its leader exits."""
     root = tmp_path / "leader-exits"
     _write_manifest(root)
     manifest = json.loads((root / "executor.yaml").read_text(encoding="utf-8"))
@@ -790,13 +877,14 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         "Path('{out}/child.pid').write_text(str(os.getpid())); "
         "os.write(int(sys.argv[1]), b'1'); os.close(int(sys.argv[1])); "
-        "time.sleep(30)"
+        "time.sleep(1)"
     )
     leader_code = (
-        "import os,signal,subprocess,sys,time; "
-        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
-        f"ready_r,ready_w=os.pipe(); subprocess.Popen([sys.executable,'-c',{child_code!r},str(ready_w)], pass_fds=(ready_w,)); os.close(ready_w); os.read(ready_r,1); os.close(ready_r); "
-        "time.sleep(30)"
+        "import os,signal,subprocess,sys,time\n"
+        f"ready_r,ready_w=os.pipe(); child=subprocess.Popen([sys.executable,'-c',{child_code!r},str(ready_w)], pass_fds=(ready_w,)); os.close(ready_w); os.read(ready_r,1); os.close(ready_r)\n"
+        "def stop(*_):\n    child.wait(); raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "time.sleep(2); child.wait()\n"
     )
     # Keeping the child in the inherited process group is intentional: the
     # host owns that whole group.
@@ -804,6 +892,14 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
     (root / "executor.yaml").write_text(json.dumps(manifest), encoding="utf-8")
     host = GenericPackHost(pack_roots=[tmp_path])
     host.discover()
+    launched = []
+    track_process = host._track_process
+
+    def capture_process(process):
+        launched.append(process)
+        track_process(process)
+
+    host._track_process = capture_process
     attempt = tmp_path / "attempt"
     output_root = attempt / "outputs"
     output_root.mkdir(parents=True)
@@ -812,10 +908,12 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
     def cancelled():
         return time.monotonic() - started > 0.75
 
-    with pytest.raises(HostCancelled):
+    with pytest.raises(HostError, match="cleanup-uncertain"):
         host._run_command_definition(
             host.capabilities["test.echo"], {}, output_root, attempt, cancelled=cancelled
         )
+    [leader] = launched
+    leader.wait(timeout=5)
     child_pid = int((output_root / "child.pid").read_text(encoding="utf-8"))
     for _ in range(40):
         try:
@@ -824,11 +922,11 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
             break
         time.sleep(0.05)
     else:
-        pytest.fail("SIGTERM-resistant descendant survived leader-exit cancellation")
+        pytest.fail("short-lived unregistered descendant did not exit naturally")
 
 
 def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
-    """A TERM handler may create a child after the first group census."""
+    """A TERM-handler child created after census blocks unsafe cleanup."""
     root = tmp_path / "late-child"
     _write_manifest(root)
     manifest = json.loads((root / "executor.yaml").read_text(encoding="utf-8"))
@@ -836,11 +934,11 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
         "import os,signal,sys,time; from pathlib import Path; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         "Path(sys.argv[1]).write_text(str(os.getpid())); "
-        "os.write(int(sys.argv[2]), b'1'); os.close(int(sys.argv[2])); time.sleep(30)"
+        "os.write(int(sys.argv[2]), b'1'); os.close(int(sys.argv[2])); time.sleep(3)"
     )
     leader_code = (
         "import os,signal,subprocess,sys,time\n"
-        f"def late(*_):\n    ready_r,ready_w=os.pipe(); subprocess.Popen([sys.executable,'-c',{child_code!r},'{str(root / 'child.pid')}',str(ready_w)], pass_fds=(ready_w,)); os.close(ready_w); os.read(ready_r,1); os.close(ready_r)\n"
+        f"def late(*_):\n    ready_r,ready_w=os.pipe(); child=subprocess.Popen([sys.executable,'-c',{child_code!r},'{str(root / 'child.pid')}',str(ready_w)], pass_fds=(ready_w,)); os.close(ready_w); os.read(ready_r,1); os.close(ready_r); child.wait(); raise SystemExit(0)\n"
         "signal.signal(signal.SIGTERM, late)\n"
         "time.sleep(30)\n"
     )
@@ -848,6 +946,14 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
     (root / "executor.yaml").write_text(json.dumps(manifest), encoding="utf-8")
     host = GenericPackHost(pack_roots=[tmp_path])
     host.discover()
+    launched = []
+    track_process = host._track_process
+
+    def capture_process(process):
+        launched.append(process)
+        track_process(process)
+
+    host._track_process = capture_process
     attempt = tmp_path / "attempt"
     output_root = attempt / "outputs"
     output_root.mkdir(parents=True)
@@ -856,10 +962,12 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
     def cancelled():
         return time.monotonic() - started > 0.75
 
-    with pytest.raises(HostCancelled):
+    with pytest.raises(HostError, match="cleanup-uncertain"):
         host._run_command_definition(
             host.capabilities["test.echo"], {}, output_root, attempt, cancelled=cancelled
         )
+    [leader] = launched
+    leader.wait(timeout=5)
     child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
     for _ in range(40):
         try:
@@ -868,7 +976,7 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
             break
         time.sleep(0.05)
     else:
-        pytest.fail("SIGTERM-handler child survived cancellation")
+        pytest.fail("short-lived unregistered SIGTERM-handler child did not exit naturally")
 
 
 def test_cleanup_does_not_signal_a_reused_group_after_leader_exit(monkeypatch):
@@ -883,11 +991,45 @@ def test_cleanup_does_not_signal_a_reused_group_after_leader_exit(monkeypatch):
     _terminate_process_group(process)
 
 
+def _full_process_info(
+    pid: int,
+    *,
+    ppid: int,
+    pgid: int,
+    sid: int,
+    birth: str,
+) -> process_group._ProcessInfo:
+    return process_group._ProcessInfo(
+        pid=pid,
+        ppid=ppid,
+        pgid=pgid,
+        birth=birth,
+        uid=os.getuid(),
+        sid=sid,
+        executable=str(Path(sys.executable).resolve()),
+        executable_digest="sha256:" + "a" * 64,
+        command_digest="sha256:" + "b" * 64,
+    )
+
+
+def _owned_process(info: process_group._ProcessInfo, *, exited: bool = False):
+    return SimpleNamespace(
+        pid=info.pid,
+        _astrid_process_group_id=info.pgid,
+        _astrid_process_birth=info.birth,
+        _astrid_process_identity=info,
+        _astrid_owned_group_members={
+            info.pid: process_group._OwnedMember(info, "leader", info.ppid)
+        },
+        poll=lambda: 0 if exited else None,
+    )
+
+
 def test_signal_revalidates_group_identity_immediately_before_killpg(monkeypatch):
     """A PGID census change in the final signal window fails closed."""
     process = process_group.popen_owned_group([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        initial = process_group._process_snapshot()
+        initial = process_group._process_snapshot(full_pgid=process.pid)
         leader = initial[process.pid]
         reused = dict(initial)
         reused[process.pid] = process_group._ProcessInfo(
@@ -897,24 +1039,275 @@ def test_signal_revalidates_group_identity_immediately_before_killpg(monkeypatch
             leader.birth + " (reused)",
         )
         snapshots = iter((initial, reused))
-        monkeypatch.setattr(process_group, "_process_snapshot", lambda: next(snapshots))
+        monkeypatch.setattr(
+            process_group, "_process_snapshot", lambda **_kwargs: next(snapshots)
+        )
         monkeypatch.setattr(os, "killpg", lambda *_args: pytest.fail("reused group was signalled"))
         monkeypatch.setattr(os, "kill", lambda *_args: pytest.fail("reused member was signalled"))
 
-        process_group.signal_group(process, signal.SIGTERM)
+        with pytest.raises(process_group.ProcessCleanupUncertain, match="cleanup-uncertain"):
+            process_group.signal_group(process, signal.SIGTERM)
     finally:
         monkeypatch.undo()
         process.kill()
         process.wait()
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("uid", os.getuid() + 1),
+        ("executable", "/different/executable"),
+        ("executable_digest", "sha256:" + "c" * 64),
+        ("command_digest", "sha256:" + "d" * 64),
+        ("ppid", 11),
+        ("sid", 999),
+        ("pgid", 999),
+        ("birth", "replacement-birth"),
+    ],
+)
+def test_group_signal_rejects_changed_full_process_identity(
+    monkeypatch, field, value
+):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    process = _owned_process(leader)
+    changed = replace(leader, **{field: value})
+    snapshots = iter(({100: leader}, {100: changed}))
+    monkeypatch.setattr(
+        process_group, "_process_snapshot", lambda **_kwargs: next(snapshots)
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *_args: pytest.fail("changed group was signalled")
+    )
+    monkeypatch.setattr(
+        os, "kill", lambda *_args: pytest.fail("changed member was signalled")
+    )
+
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="cleanup-uncertain"):
+        process_group.signal_group(process, signal.SIGTERM)
+
+
+def test_group_signal_rejects_missing_final_identity_observation(monkeypatch):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    process = _owned_process(leader)
+    snapshots = iter(({100: leader}, {}))
+    monkeypatch.setattr(
+        process_group, "_process_snapshot", lambda **_kwargs: next(snapshots)
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *_args: pytest.fail("unobservable group was signalled")
+    )
+    monkeypatch.setattr(
+        os, "kill", lambda *_args: pytest.fail("unobservable member was signalled")
+    )
+
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="missing from the census"):
+        process_group.signal_group(process, signal.SIGTERM)
+
+
+def test_every_group_member_is_revalidated_before_group_signal(monkeypatch):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    child = _full_process_info(200, ppid=100, pgid=100, sid=100, birth="child")
+    process = _owned_process(leader)
+    changed_child = replace(child, executable_digest="sha256:" + "c" * 64)
+    snapshots = iter(
+        (
+            {100: leader, 200: child},
+            {100: leader, 200: changed_child},
+        )
+    )
+    monkeypatch.setattr(
+        process_group, "_process_snapshot", lambda **_kwargs: next(snapshots)
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *_args: pytest.fail("partly changed group was signalled")
+    )
+
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="identity changed"):
+        process_group.signal_group(process, signal.SIGTERM)
+
+
+def test_group_identity_is_revalidated_again_between_term_and_kill(monkeypatch):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    process = _owned_process(leader)
+    expected = process_group._discover_group(process, {100: leader})
+    changed = replace(leader, command_digest="sha256:" + "c" * 64)
+    snapshots = iter(({100: leader}, {100: changed}))
+    monkeypatch.setattr(
+        process_group, "_process_snapshot", lambda **_kwargs: next(snapshots)
+    )
+    signals = []
+    broker = object.__new__(process_group.RoleBoundCustodyBroker)
+    process._astrid_custody_broker = broker
+    monkeypatch.setattr(
+        process_group.RoleBoundCustodyBroker,
+        "signal",
+        lambda self, signum, *, expected_pid: signals.append((expected_pid, signum)),
+    )
+
+    process_group._signal_group_once(process, signal.SIGTERM, expected)
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="identity changed"):
+        process_group._signal_group_once(process, signal.SIGKILL, expected)
+    assert signals == [(100, signal.SIGTERM)]
+
+
+def test_replacement_group_is_never_signalled_or_waited(monkeypatch):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    replacement = replace(
+        leader,
+        birth="replacement",
+        executable="/replacement/executable",
+        executable_digest="sha256:" + "c" * 64,
+    )
+    waited = []
+    process = _owned_process(leader, exited=True)
+    process.wait = lambda *args, **kwargs: waited.append((args, kwargs))
+    monkeypatch.setattr(
+        process_group,
+        "_process_snapshot",
+        lambda **_kwargs: {100: replacement},
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *_args: pytest.fail("replacement group was signalled")
+    )
+    monkeypatch.setattr(
+        os, "kill", lambda *_args: pytest.fail("replacement member was signalled")
+    )
+
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="leader identity changed"):
+        process_group.terminate_group(process, grace_seconds=0)
+    assert waited == []
+
+
+def test_failed_census_after_leader_exit_does_not_retire_known_descendant(
+    monkeypatch,
+):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    child = _full_process_info(200, ppid=100, pgid=100, sid=100, birth="child")
+    process = _owned_process(leader, exited=True)
+    process._astrid_owned_group_members[200] = process_group._OwnedMember(
+        child, "descendant", 100
+    )
+    waited = []
+    process.wait = lambda *args, **kwargs: waited.append((args, kwargs))
+    failed = process_group._ProcessSnapshot(
+        complete=False,
+        error="injected ps failure",
+    )
+    monkeypatch.setattr(process_group, "_process_group_snapshot", lambda _process: failed)
+    monkeypatch.setattr(
+        os, "killpg", lambda *_args: pytest.fail("unobservable group was signalled")
+    )
+    monkeypatch.setattr(
+        os, "kill", lambda *_args: pytest.fail("unobservable member was signalled")
+    )
+
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="census is unobservable"):
+        process_group.terminate_group(process, grace_seconds=0)
+    assert waited == []
+
+
+def test_complete_census_with_no_owned_members_allows_direct_child_reap(monkeypatch):
+    leader = _full_process_info(100, ppid=10, pgid=100, sid=100, birth="leader")
+    unrelated = _full_process_info(300, ppid=1, pgid=300, sid=300, birth="other")
+    process = _owned_process(leader, exited=True)
+    waited = []
+    process.wait = lambda *args, **kwargs: waited.append((args, kwargs))
+    complete = process_group._ProcessSnapshot({300: unrelated}, complete=True)
+    monkeypatch.setattr(process_group, "_process_group_snapshot", lambda _process: complete)
+
+    process_group.terminate_group(process, grace_seconds=0)
+    assert len(waited) == 1
+
+
+def test_spawn_identity_failure_remains_in_host_custody_and_blocks_admission(
+    monkeypatch,
+):
+    host = GenericPackHost(pack_roots=[])
+    unavailable = process_group._ProcessSnapshot(
+        complete=False,
+        error="injected launch census failure",
+    )
+    monkeypatch.setattr(process_group, "_process_snapshot", lambda **_kwargs: unavailable)
+    process = None
+    try:
+        with pytest.raises(HostError, match="launch cleanup uncertain"):
+            host._popen_owned_group_or_latch(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+        assert host._cleanup_uncertain is True
+        assert len(host._active_processes) == 1
+        process = next(iter(host._active_processes))
+        assert process.poll() is None
+        assert "cleanup-uncertain" in process._astrid_cleanup_uncertain
+        with pytest.raises(HostError, match="admissions are blocked"):
+            host._claim_once_unlocked()
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        host._active_processes.clear()
+
+
+def test_exact_argv_digest_preserves_argument_boundaries() -> None:
+    assert process_group._argv_digest([b"a b", b"c"]) != process_group._argv_digest(
+        [b"a", b"b c"]
+    )
+
+
+def test_os_process_argv_preserves_arguments_containing_spaces() -> None:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            "a b",
+            "c",
+        ],
+        start_new_session=True,
+    )
+    try:
+        argv = process_group._process_argv(process.pid)
+        assert argv is not None
+        assert argv[-2:] == (b"a b", b"c")
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_generic_host_latches_and_surfaces_process_cleanup_uncertainty(monkeypatch):
+    host = GenericPackHost(pack_roots=[])
+    process = SimpleNamespace(pid=100)
+    calls = []
+
+    def uncertain(*_args, **_kwargs):
+        calls.append("cleanup")
+        raise process_group.ProcessCleanupUncertain(
+            "cleanup-uncertain: executable identity changed"
+        )
+
+    monkeypatch.setattr(
+        "astrid.core.execution.generic_host._terminate_process_group", uncertain
+    )
+    with pytest.raises(HostError, match="owned process cleanup uncertain"):
+        host._terminate_process_or_latch(process)
+    assert host._cleanup_uncertain is True
+    assert "cleanup-uncertain" in process._astrid_cleanup_uncertain
+
+    with pytest.raises(HostError, match="owned process cleanup uncertain"):
+        host._terminate_process_or_latch(process)
+    assert calls == ["cleanup"]
+
+
 def test_tree_cleanup_rejects_reused_child_before_adopting_descendants(monkeypatch):
     """A reused child PID cannot pull an unrelated descendant into cleanup."""
-    process = SimpleNamespace(pid=100, _astrid_process_birth="root")
+    root = _full_process_info(100, ppid=1, pgid=100, sid=100, birth="root")
+    child = _full_process_info(200, ppid=100, pgid=100, sid=100, birth="child-old")
+    process = SimpleNamespace(pid=100, poll=lambda: None)
     known: dict[int, str] = {}
     initial = {
-        100: process_group._ProcessInfo(100, 1, 100, "root"),
-        200: process_group._ProcessInfo(200, 100, 100, "child-old"),
+        100: root,
+        200: child,
     }
     assert process_group._tree_members(process, known, initial) == {
         100: "root",
@@ -924,17 +1317,14 @@ def test_tree_cleanup_rejects_reused_child_before_adopting_descendants(monkeypat
     # PID 200 is now a different process.  Its child 300 is unrelated and
     # must not be adopted merely because the numeric parent PID matches.
     reused = {
-        100: process_group._ProcessInfo(100, 1, 100, "root"),
-        200: process_group._ProcessInfo(200, 100, 100, "child-new"),
-        300: process_group._ProcessInfo(300, 200, 100, "unrelated"),
+        100: root,
+        200: replace(child, birth="child-new"),
+        300: _full_process_info(
+            300, ppid=200, pgid=100, sid=100, birth="unrelated"
+        ),
     }
-    assert process_group._tree_members(process, known, reused) == {
-        100: "root",
-    }
-    signalled: list[int] = []
-    monkeypatch.setattr(os, "kill", lambda pid, _sig: signalled.append(pid))
-    process_group._signal_valid_tree_members(process, known, signal.SIGKILL, reused)
-    assert signalled == [100]
+    with pytest.raises(process_group.ProcessCleanupUncertain, match="identity changed"):
+        process_group._tree_members(process, known, reused)
 
 
 def test_discovery_digest_and_truthful_preflight(tmp_path):

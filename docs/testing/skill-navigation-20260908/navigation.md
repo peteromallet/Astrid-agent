@@ -1,5 +1,9 @@
 # Astrid skill navigation audit — 2026-09-08
 
+> **Historical evidence.** This trace predates the installed Runtime closeout
+> terminology. It records read-only navigation and diagnostics observations;
+> use the current setup and troubleshooting guides for operator instructions.
+
 Scope: read-only maker navigation from `astrid/packs/_core/skill/SKILL.md`; no
 conversation/audit-report reading, external search, rendering, opening, retry,
 or source/runtime mutation. Runtime calls below were discovery/read calls only.

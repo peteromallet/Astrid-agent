@@ -4,7 +4,28 @@ Start with the project health and recovery checks below. The renderer notes
 then cover the same failure-first approach for a local backend. Normative
 renderer wire details live in [render-backend-v1.md](../contracts/render-backend-v1.md).
 
-## 1. Project health and recovery
+## 1. Installed Runtime diagnostics
+
+Confirm the installed owner and selected support root before investigating a
+product error. These commands are read-only and do not require an Astrid or
+Runtime checkout:
+
+```bash
+astrid-local --provenance
+astrid-local workspace inspect --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+astrid-local status --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+astrid-local doctor --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+```
+
+Use one absolute `ASTRID_LOCAL_DATA_ROOT` for every command. If the launcher
+is unavailable, activate the installed virtual environment first. A legacy
+`BANODOCO_LOCAL_DATA_ROOT` value is accepted with a warning; setting both
+names to different roots fails closed. Installed diagnostics must not be
+repaired by adding `PYTHONPATH` or pointing at a sibling checkout. For an
+editable development profile, set `ASTRID_LOCAL_SOURCE_MANIFEST` explicitly
+and keep that profile separate from installed qualification.
+
+## 2. Project health and recovery
 
 Use the read-only doctor first through the explicit runtime launcher:
 
@@ -41,7 +62,7 @@ python3 -m astrid media verify M_01ABC --project demo \
 python3 -m astrid backup restore ./backup --destination ./restore-target --json
 ```
 
-## 2. Local renderer debugging
+## 3. Local renderer debugging
 
 Keep renderer work local and deterministic. Validate the request and output
 shape before investigating backend behavior, retain redacted logs, and never
@@ -62,7 +83,7 @@ The structured renderer failure kinds are:
 | `invalid_artifact` | Output is missing, empty, escaping, or hash-mismatched | Fix the output path and digest. |
 | `internal` | Unexpected backend failure | Preserve the redacted log and fix the backend. |
 
-## 3. SDK-level diagnostics
+## 4. SDK-level diagnostics
 
 A backend written against the rendering SDK can use `astrid.support(...)` for
 a request-sensitive support report. Product renders must be admitted through

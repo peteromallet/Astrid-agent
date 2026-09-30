@@ -1,5 +1,10 @@
 # Astrid source surfaces for external Hivemind provisioning
 
+> **Historical evidence.** This source scan is provenance for pack and source
+> composition work. It is not an installed setup, troubleshooting, or Plan A
+> qualification procedure. Use the installed `astrid-local` path and the
+> canonical `ASTRID_LOCAL_*` configuration documented in the setup guides.
+
 Read-only Luna mapping of the Astrid checkout at HEAD
 `0c852b7748f9f519413ec96f037b04b3d90e70a2a`, with substantial pre-existing
 dirty changes. No product code, runtime, or tests were changed for this report.

@@ -1,5 +1,10 @@
 # Upstream Hivemind CLI implementation report
 
+> **Historical implementation evidence.** This report records an upstream
+> Hivemind CLI change and its validation. It is not a current Astrid Runtime
+> setup or qualification runbook; follow the installed `astrid-local`
+> documentation for local lifecycle and diagnostics.
+
 Implemented in `/Users/peteromalley/Documents/banodoco-workspace/hivemind`:
 
 * Added `cli.py`, carrying the existing Hivemind human CLI command surface:

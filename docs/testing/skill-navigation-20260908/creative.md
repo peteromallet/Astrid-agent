@@ -1,5 +1,9 @@
 # Astrid creative-work navigation audit — 2026-09-08
 
+> **Historical evidence.** This warmed navigation trace predates the installed
+> Runtime closeout terminology. It records read-only skill routing only and
+> must not be used as a current setup, launcher, or qualification procedure.
+
 Scope: read-only navigation for queries 6–10. No generation, rendering, saves,
 task admission, public search, external writes, or paid actions were invoked.
 The five traces share this session's already-read core/router context; they are
@@ -124,4 +128,3 @@ zero public search/discovery calls by constraint.
 - Unnecessary reading/friction: `runs list` produced a huge payload not needed
   for route selection; default `sdk.discover()` repr was excessively verbose;
   Hivemind search was intentionally omitted by the audit constraint.
-

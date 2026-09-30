@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import socket
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -158,3 +160,905 @@ def test_activated_host_waits_for_runtime_to_enable_disabled_bearer(monkeypatch)
     monkeypatch.setattr(generic_host.time, "sleep", lambda _seconds: None)
     generic_host._await_enabled_runtime_credential(Client(), timeout_seconds=1)
     assert calls == ["health", "health", "health"]
+
+
+def _runtime_identity(*, suffix: str, epoch: int) -> dict[str, object]:
+    return {
+        "endpoint": "http://127.0.0.1:8765",
+        "protocol": "workspace.v1",
+        "schema_digest": "sha256:" + "1" * 64,
+        "runtime_epoch": epoch,
+        "runtime_instance_id": f"runtime-{suffix}",
+        "runtime_session_id": f"session-{suffix}",
+    }
+
+
+def _utf8_canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def test_unicode_registration_body_uses_canonical_utf8_bytes() -> None:
+    body = generic_host.RuntimeProtocolClient.executor_registration_body(
+        "astrid-éxecutor",
+        capabilities=[{"capability_id": "生成.vidéo"}],
+        max_concurrency=1,
+        resource_keys=["cœur"],
+        source_digest="sha256:" + "1" * 64,
+        runtime_epoch=2,
+    )
+    observed = generic_host._registration_body_digest(body)
+    ascii_escaped = "sha256:" + hashlib.sha256(
+        json.dumps(
+            body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert observed == _utf8_canonical_digest(body)
+    assert observed != ascii_escaped
+
+
+def test_unicode_host_ack_uses_same_canonical_utf8_bytes(tmp_path: Path) -> None:
+    host = generic_host.GenericPackHost(pack_roots=[])
+    activation = _grant(channel="canal-é")
+    control = generic_host.LocalWorkerHostControl(
+        host,
+        control_fd=-1,
+        activation=activation,
+        credential_file=tmp_path / "worker.token",
+    )
+    frame = {
+        "command": "pause_prepare",
+        "handoff_id": "transfert-é",
+        "nonce_digest": "sha256:" + "9" * 64,
+    }
+    acknowledgement = control._ack(
+        frame,
+        "paused",
+        activation=activation,
+    )
+    digest = acknowledgement.pop("ack_sha256")
+
+    assert digest == _utf8_canonical_digest(acknowledgement)
+
+
+def _registered_state(runtime: dict[str, object]) -> dict[str, object]:
+    executor_body = {
+        "executor_id": "astrid-pack-host",
+        "capabilities": [
+            {
+                "capability_id": "test.echo",
+                "definition_digest": "sha256:" + "2" * 64,
+                "status": "ready",
+                "required_resource_keys": ["cpu"],
+                "estimated_scratch_bytes": 1,
+                "estimated_output_bytes": 0,
+                "unavailable_reason": None,
+            }
+        ],
+        "max_concurrency": 1,
+        "resource_keys": ["cpu"],
+        "protocol": runtime["protocol"],
+        "source_digest": "source-registration-digest",
+        "source_epoch": "source-epoch-1",
+        "dependency_digest": "dependency-registration-digest",
+        "runtime_epoch": runtime["runtime_epoch"],
+        "verified_facts": {},
+    }
+    registration_bodies = {
+        "/v1/capabilities": [],
+        "/v1/executors": [executor_body],
+    }
+    return {
+        "executor_id": "astrid-pack-host",
+        "source_epoch": "source-epoch-1",
+        "runtime": dict(runtime),
+        "capabilities": [
+            {
+                "capability_id": "test.echo",
+                "capability_digest": "sha256:" + "2" * 64,
+                "source_digest": "sha256:" + "3" * 64,
+                "dependency_digest": "sha256:" + "4" * 64,
+                "ready": True,
+                "preflight_digest": "sha256:" + "5" * 64,
+            }
+        ],
+        "registration_actor": "astrid-pack-host",
+        "registration_bodies": registration_bodies,
+        "registration_allowlist": [
+            {
+                "method": "POST",
+                "path": path,
+                "actor": "astrid-pack-host",
+                "body_sha256": sorted(
+                    generic_host._registration_body_digest(body)
+                    for body in registration_bodies[path]
+                ),
+            }
+            for path in sorted(registration_bodies)
+        ],
+    }
+
+
+def _state_for_runtime(
+    state: dict[str, object], runtime: dict[str, object]
+) -> dict[str, object]:
+    value = json.loads(json.dumps(state))
+    value["runtime"] = dict(runtime)
+    bodies = value["registration_bodies"]
+    assert isinstance(bodies, dict)
+    executors = bodies["/v1/executors"]
+    assert isinstance(executors, list)
+    executors[0]["runtime_epoch"] = runtime["runtime_epoch"]
+    value["registration_allowlist"] = [
+        {
+            "method": "POST",
+            "path": path,
+            "actor": value["registration_actor"],
+            "body_sha256": sorted(
+                generic_host._registration_body_digest(body) for body in bodies[path]
+            ),
+        }
+        for path in sorted(bodies)
+    ]
+    return value
+
+
+def _pause_frame(
+    old_runtime: dict[str, object],
+    *,
+    handoff_id: str = "handoff-1",
+    nonce_digest: str = "sha256:" + "6" * 64,
+    old_owner: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "pause_prepare",
+        "handoff_id": handoff_id,
+        "nonce_digest": nonce_digest,
+        "deadline_monotonic": time.monotonic() + 30,
+        "deadline_unix_ms": int(time.time() * 1000) + 30_000,
+        "old_runtime": dict(old_runtime),
+        "old_owner": dict(old_owner or _owner_identity()),
+    }
+
+
+def _owner_identity() -> dict[str, object]:
+    return {
+        "pid": os.getpid(),
+        "birth_id": generic_host.process_birth_identity(),
+    }
+
+
+def _host_control(
+    host: generic_host.GenericPackHost,
+    *,
+    state: dict[str, object],
+    credential_file: Path,
+) -> generic_host.LocalWorkerHostControl:
+    host.registered_state_snapshot = (  # type: ignore[method-assign]
+        lambda *, revalidate=False, runtime_override=None: _state_for_runtime(
+            state,
+            dict(runtime_override or state["runtime"]),
+        )
+    )
+    return generic_host.LocalWorkerHostControl(
+        host,
+        control_fd=-1,
+        activation=_grant(),
+        credential_file=credential_file,
+    )
+
+
+def _write_credential_generation(root: Path) -> tuple[Path, dict[str, str]]:
+    token = root / "worker.token"
+    metadata = token.with_suffix(".json")
+    commit = token.with_suffix(".commit")
+    token_bytes = b"worker-secret\n"
+    metadata_bytes = b'{"actor":"astrid-pack-host","generation":"generation-1"}\n'
+    token.write_bytes(token_bytes)
+    metadata.write_bytes(metadata_bytes)
+    commit.write_text(
+        json.dumps(
+            {
+                "generation": "generation-1",
+                "token_sha256": "sha256:" + hashlib.sha256(token_bytes).hexdigest(),
+                "metadata_sha256": "sha256:"
+                + hashlib.sha256(metadata_bytes).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    for path in (token, metadata, commit):
+        path.chmod(0o600)
+    return token, generic_host.credential_generation_snapshot(token)
+
+
+def test_host_control_live_claim_refuses_pause_without_mutation(tmp_path: Path) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def claim() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    host._claim_once_unlocked = claim  # type: ignore[method-assign]
+    thread = threading.Thread(target=host.claim_once)
+    thread.start()
+    assert entered.wait(2)
+
+    before = json.loads(json.dumps(state))
+    acknowledgement = control.handle_frame(_pause_frame(old_runtime))
+
+    assert acknowledgement["status"] == "active_work"
+    assert acknowledgement["phase"] == "ACTIVE"
+    assert acknowledgement["inflight_claim_iterations"] == 1
+    assert acknowledgement["activation"] == _grant()
+    assert acknowledgement["registered_state"] == before
+    assert set(acknowledgement) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "activation", "registered_state",
+        "inflight_claim_iterations", "ack_sha256",
+    }
+    assert host.claim_gate_state == {"paused": False, "in_flight": 1}
+    assert state == before
+    release.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_host_control_pause_blocks_claims_until_pause_cancel(tmp_path: Path) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    frame = _pause_frame(old_runtime)
+
+    acknowledgement = control.handle_frame(frame)
+    assert acknowledgement["status"] == "paused"
+    assert acknowledgement["phase"] == "PAUSED"
+    assert host.claim_gate_state == {"paused": True, "in_flight": 0}
+
+    claimed = threading.Event()
+    host._claim_once_unlocked = claimed.set  # type: ignore[method-assign]
+    thread = threading.Thread(target=host.claim_once)
+    thread.start()
+    time.sleep(0.03)
+    assert not claimed.is_set()
+
+    cancelled = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "pause_cancel",
+            "handoff_id": frame["handoff_id"],
+            "nonce_digest": frame["nonce_digest"],
+            "old_owner": frame["old_owner"],
+        }
+    )
+    assert cancelled["status"] == "pause_cancelled"
+    assert cancelled["phase"] == "ACTIVE"
+    thread.join(timeout=2)
+    assert claimed.is_set()
+    assert host.claim_gate_state == {"paused": False, "in_flight": 0}
+
+
+def test_host_control_replay_and_wrong_identity_do_not_mutate_healthy_pause(
+    tmp_path: Path,
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    frame = _pause_frame(old_runtime)
+    first = control.handle_frame(frame)
+
+    assert control.handle_frame(dict(frame)) == first
+    changed = dict(frame)
+    changed["deadline_unix_ms"] = int(changed["deadline_unix_ms"]) + 1
+    with pytest.raises(generic_host.HostControlRejected, match="replay"):
+        control.handle_frame(changed)
+    with pytest.raises(generic_host.HostControlRejected, match="identity"):
+        control.handle_frame(
+            {
+                "version": generic_host.HOST_CONTROL_VERSION,
+                "command": "resume_prepare",
+                "handoff_id": "losing-contender",
+                "nonce_digest": "sha256:" + "7" * 64,
+                "new_owner": _owner_identity(),
+            }
+        )
+    assert control.state == "PAUSED"
+    assert host.claim_gate_state == {"paused": True, "in_flight": 0}
+    assert not host._shutdown.is_set()
+
+
+def test_host_control_owner_identity_is_bound_before_replay_lookup(
+    tmp_path: Path,
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    frame = _pause_frame(old_runtime)
+
+    wrong_old_owners = (
+        {"pid": os.getpid() + 100_000, "birth_id": frame["old_owner"]["birth_id"]},
+        {"pid": os.getpid(), "birth_id": "ps-lstart:wrong-old-owner"},
+    )
+    for wrong_owner in wrong_old_owners:
+        wrong_initial = json.loads(json.dumps(frame))
+        wrong_initial["old_owner"] = wrong_owner
+        with pytest.raises(generic_host.HostControlRejected, match="old owner"):
+            control.handle_frame(wrong_initial)
+    assert control.state == "ACTIVE"
+    assert host.claim_gate_state == {"paused": False, "in_flight": 0}
+
+    acknowledgement = control.handle_frame(frame)
+    assert acknowledgement["status"] == "paused"
+    wrong_replay = json.loads(json.dumps(frame))
+    wrong_replay["old_owner"]["birth_id"] = "ps-lstart:wrong-old-owner"
+    with pytest.raises(generic_host.HostControlRejected, match="old owner"):
+        control.handle_frame(wrong_replay)
+    assert control.state == "PAUSED"
+    assert host.claim_gate_state == {"paused": True, "in_flight": 0}
+
+
+def test_host_control_rebind_rejects_wrong_new_owner_without_mutation(
+    tmp_path: Path,
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime)
+    control.handle_frame(pause)
+    frame = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "rebind_prepare",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "deadline_monotonic": pause["deadline_monotonic"],
+        "deadline_unix_ms": pause["deadline_unix_ms"],
+        "new_runtime": new_runtime,
+        "credential_file": str(credential),
+        "credential_generation": generation,
+        "registered_state": state,
+        "old_owner": pause["old_owner"],
+        "new_owner": _owner_identity(),
+    }
+
+    before = (dict(host.runtime_state), dict(host.claim_gate_state), host.client)
+    wrong_new_owners = (
+        {"pid": os.getpid() + 100_000, "birth_id": frame["new_owner"]["birth_id"]},
+        {"pid": os.getpid(), "birth_id": "ps-lstart:wrong-new-owner"},
+    )
+    for wrong_owner in wrong_new_owners:
+        wrong_frame = json.loads(json.dumps(frame))
+        wrong_frame["new_owner"] = wrong_owner
+        with pytest.raises(generic_host.HostControlRejected, match="new owner"):
+            control.handle_frame(wrong_frame)
+    assert control.state == "PAUSED"
+    assert control.new_owner is None
+    assert (dict(host.runtime_state), dict(host.claim_gate_state), host.client) == before
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda frame: frame["new_runtime"].update(endpoint="http://127.0.0.1:9999"),
+            "endpoint",
+        ),
+        (
+            lambda frame: frame["new_runtime"].update(runtime_epoch=1),
+            "epoch",
+        ),
+        (
+            lambda frame: frame["new_runtime"].update(
+                runtime_instance_id="runtime-a"
+            ),
+            "runtime_instance_id",
+        ),
+        (
+            lambda frame: frame["credential_generation"].update(generation="other"),
+            "credential generation",
+        ),
+    ],
+)
+def test_host_control_rebind_prepare_rejects_wrong_owner_facts(
+    tmp_path: Path, mutation, message: str
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime)
+    control.handle_frame(pause)
+    frame = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "rebind_prepare",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "deadline_monotonic": pause["deadline_monotonic"],
+        "deadline_unix_ms": pause["deadline_unix_ms"],
+        "new_runtime": new_runtime,
+        "credential_file": str(credential),
+        "credential_generation": generation,
+        "registered_state": state,
+        "old_owner": pause["old_owner"],
+        "new_owner": _owner_identity(),
+    }
+    mutation(frame)
+
+    with pytest.raises(generic_host.HostError, match=message):
+        control.handle_frame(frame)
+    assert control.state == "PAUSED"
+    assert host.claim_gate_state["paused"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda state: state.update(registration_actor="different-worker"),
+        lambda state: state["registration_bodies"]["/v1/executors"][0].update(
+            max_concurrency=2
+        ),
+        lambda state: state["registration_bodies"].update(
+            {"/v1/alternate": state["registration_bodies"].pop("/v1/executors")}
+        ),
+    ],
+    ids=["alternate-actor", "alternate-body", "alternate-path"],
+)
+def test_host_control_rebind_prepare_rejects_altered_registration_admission(
+    tmp_path: Path, mutation
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime)
+    control.handle_frame(pause)
+    altered_state = json.loads(json.dumps(state))
+    mutation(altered_state)
+
+    with pytest.raises(generic_host.HostError, match="registered state does not match"):
+        control.handle_frame(
+            {
+                "version": generic_host.HOST_CONTROL_VERSION,
+                "command": "rebind_prepare",
+                "handoff_id": pause["handoff_id"],
+                "nonce_digest": pause["nonce_digest"],
+                "deadline_monotonic": pause["deadline_monotonic"],
+                "deadline_unix_ms": pause["deadline_unix_ms"],
+                "new_runtime": new_runtime,
+                "credential_file": str(credential),
+                "credential_generation": generation,
+                "registered_state": altered_state,
+                "old_owner": pause["old_owner"],
+                "new_owner": _owner_identity(),
+            }
+        )
+    assert control.state == "PAUSED"
+    assert host.claim_gate_state["paused"] is True
+
+
+def test_host_control_commit_deliberately_registers_then_two_stage_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_a = {"pid": 41_001, "birth_id": "owner-a-birth"}
+    owner_b = {"pid": 41_002, "birth_id": "owner-b-birth"}
+    alternate_owner = {"pid": 41_003, "birth_id": "alternate-owner-birth"}
+    owner_births = {
+        owner_a["pid"]: owner_a["birth_id"],
+        owner_b["pid"]: owner_b["birth_id"],
+        alternate_owner["pid"]: alternate_owner["birth_id"],
+    }
+
+    def observed_birth(pid=None):
+        if pid is None:
+            return "host-process-birth"
+        return owner_births.get(pid, "")
+
+    monkeypatch.setattr(generic_host, "process_birth_identity", observed_birth)
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    current_state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+
+    def state_snapshot(*, revalidate=False, runtime_override=None):
+        return _state_for_runtime(
+            current_state,
+            dict(runtime_override or current_state["runtime"]),
+        )
+
+    host.registered_state_snapshot = state_snapshot  # type: ignore[method-assign]
+    control = generic_host.LocalWorkerHostControl(
+        host,
+        control_fd=-1,
+        activation=_grant(),
+        credential_file=credential,
+    )
+    pause = _pause_frame(old_runtime, old_owner=owner_a)
+    control.handle_frame(pause)
+    prepare = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "rebind_prepare",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "deadline_monotonic": pause["deadline_monotonic"],
+        "deadline_unix_ms": pause["deadline_unix_ms"],
+        "new_runtime": new_runtime,
+        "credential_file": str(credential),
+        "credential_generation": generation,
+        "registered_state": json.loads(json.dumps(current_state)),
+        "old_owner": pause["old_owner"],
+        "new_owner": owner_b,
+    }
+    prepared = control.handle_frame(prepare)
+    assert prepared["status"] == "rebind_prepared"
+    assert prepared["credential_generation"] == generation
+    assert prepared["registered_state"]["runtime"] == new_runtime
+    assert prepared["registered_state"]["registration_bodies"][
+        "/v1/executors"
+    ][0]["runtime_epoch"] == 2
+    assert set(prepared) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "activation", "credential_generation",
+        "registered_state", "ack_sha256",
+    }
+    changed_owner_replay = json.loads(json.dumps(prepare))
+    changed_owner_replay["new_owner"]["birth_id"] = "ps-lstart:wrong-new-owner"
+    with pytest.raises(generic_host.HostControlRejected, match="new owner"):
+        control.handle_frame(changed_owner_replay)
+    assert control.state == "REBIND_PREPARED"
+    assert host.claim_gate_state["paused"] is True
+
+    created = []
+
+    class FreshRuntime:
+        def __init__(self, endpoint, token):
+            self.endpoint = endpoint
+            self.token = token
+            self.renewed = 0
+            created.append(self)
+
+        def renew_registration_session(self):
+            self.renewed += 1
+
+    monkeypatch.setattr(generic_host, "RuntimeProtocolClient", FreshRuntime)
+    host._runtime_compatibility = lambda: {  # type: ignore[method-assign]
+        key: value for key, value in new_runtime.items() if key != "endpoint"
+    }
+    deliberate_calls = []
+
+    def register(*, deliberate=False):
+        deliberate_calls.append(deliberate)
+        current_state["runtime"] = dict(new_runtime)
+        current_state["registration_bodies"]["/v1/executors"][0][
+            "runtime_epoch"
+        ] = new_runtime["runtime_epoch"]
+        return {"registration": {"state": "registered"}, "withdrawn_capabilities": []}
+
+    host.register = register  # type: ignore[method-assign]
+    commit = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "rebind_commit",
+            "handoff_id": pause["handoff_id"],
+            "nonce_digest": pause["nonce_digest"],
+            "new_owner": prepare["new_owner"],
+        }
+    )
+    assert deliberate_calls == [True]
+    assert created[0].renewed == 1
+    assert host.client is created[0]
+    assert commit["status"] == "rebind_committed"
+    assert commit["registered_state"]["runtime"] == new_runtime
+    assert commit["registration"] == {
+        "runtime_registration": {"state": "registered"},
+        "withdrawn_capabilities": [],
+    }
+    assert set(commit) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "activation", "credential_generation",
+        "registered_state", "registration", "ack_sha256",
+    }
+
+    claimed = threading.Event()
+    host._claim_once_unlocked = claimed.set  # type: ignore[method-assign]
+    thread = threading.Thread(target=host.claim_once)
+    thread.start()
+    prepared_resume = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "resume_prepare",
+            "handoff_id": pause["handoff_id"],
+            "nonce_digest": pause["nonce_digest"],
+            "new_owner": prepare["new_owner"],
+        }
+    )
+    time.sleep(0.03)
+    assert prepared_resume["phase"] == "RESUME_PREPARED"
+    assert set(prepared_resume) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "ack_sha256",
+    }
+    assert host.claim_gate_state["paused"] is True
+    assert not claimed.is_set()
+    committed_resume = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "resume_commit",
+            "handoff_id": pause["handoff_id"],
+            "nonce_digest": pause["nonce_digest"],
+            "new_owner": prepare["new_owner"],
+        }
+    )
+    thread.join(timeout=2)
+    assert committed_resume["status"] == "resumed"
+    assert committed_resume["phase"] == "RESUMED"
+    assert set(committed_resume) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "ack_sha256",
+    }
+    assert claimed.is_set()
+
+    # A lost acknowledgement may be retried only while the adoption remains
+    # unpublished and the host is still in the matching result phase.
+    assert control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "resume_commit",
+            "handoff_id": pause["handoff_id"],
+            "nonce_digest": pause["nonce_digest"],
+            "new_owner": prepare["new_owner"],
+        }
+    ) == committed_resume
+    finalize = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "handoff_finalize",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "new_owner": prepare["new_owner"],
+    }
+    finalized = control.handle_frame(finalize)
+    assert finalized["status"] == "adopted"
+    assert finalized["phase"] == "ADOPTED"
+    assert set(finalized) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "ack_sha256",
+    }
+    assert control.state == "ACTIVE"
+    assert control.handoff_id is None
+    assert control.nonce_digest is None
+    assert control.old_owner is None
+    assert control.new_owner is None
+    assert control.current_runtime == new_runtime
+    assert control.current_owner == owner_b
+    assert control._terminal_tombstone == {
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "request_digest": control._request_digest(finalize),
+        "new_owner": owner_b,
+        "ack": finalized,
+    }
+    assert control._acks == {}
+
+    def authority_snapshot():
+        return (
+            host.client,
+            dict(host.runtime_state),
+            dict(host.claim_gate_state),
+            host._shutdown.is_set(),
+            control.state,
+            control.handoff_id,
+            control.nonce_digest,
+            dict(control.current_runtime or {}),
+            dict(control.current_owner or {}),
+            dict(control.old_owner or {}),
+            dict(control.new_owner or {}),
+            dict(control._acks),
+            json.loads(json.dumps(control._terminal_tombstone)),
+        )
+
+    stale_a = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "pause_cancel",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "old_owner": pause["old_owner"],
+    }
+    for stale in (prepare, stale_a):
+        authority_before = authority_snapshot()
+        with pytest.raises(generic_host.HostControlRejected, match="finalized handoff is stale"):
+            control.handle_frame(dict(stale))
+        assert authority_snapshot() == authority_before
+
+    authority_before = authority_snapshot()
+    assert control.handle_frame(dict(finalize)) == finalized
+    assert authority_snapshot() == authority_before
+
+    for wrong_final_owner in (owner_a, alternate_owner):
+        authority_before = authority_snapshot()
+        altered_finalize = dict(finalize)
+        altered_finalize["new_owner"] = wrong_final_owner
+        with pytest.raises(
+            generic_host.HostControlRejected,
+            match="finalized handoff is stale",
+        ):
+            control.handle_frame(altered_finalize)
+        assert authority_snapshot() == authority_before
+
+    for wrong_owner in (owner_a, alternate_owner):
+        authority_before = authority_snapshot()
+        contender = _pause_frame(
+            new_runtime,
+            handoff_id=f"handoff-wrong-{wrong_owner['pid']}",
+            nonce_digest="sha256:" + str(wrong_owner["pid"])[-1] * 64,
+            old_owner=wrong_owner,
+        )
+        with pytest.raises(
+            generic_host.HostControlRejected,
+            match="not the current runtime owner",
+        ):
+            control.handle_frame(contender)
+        assert authority_snapshot() == authority_before
+
+    next_pause = _pause_frame(
+        new_runtime,
+        handoff_id="handoff-2",
+        nonce_digest="sha256:" + "8" * 64,
+        old_owner=owner_b,
+    )
+    next_paused = control.handle_frame(next_pause)
+    assert next_paused["status"] == "paused"
+    assert next_paused["phase"] == "PAUSED"
+    assert control.state == "PAUSED"
+    assert control.old_runtime == new_runtime
+    assert control.old_owner == owner_b
+    assert control.current_runtime == new_runtime
+    assert control.current_owner == owner_b
+
+    next_cancelled = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "pause_cancel",
+            "handoff_id": next_pause["handoff_id"],
+            "nonce_digest": next_pause["nonce_digest"],
+            "old_owner": owner_b,
+        }
+    )
+    assert next_cancelled["status"] == "pause_cancelled"
+    assert control.state == "ACTIVE"
+    assert control.current_runtime == new_runtime
+    assert control.current_owner == owner_b
+
+
+def test_host_control_abort_closes_engine_custody(tmp_path: Path) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    engine_closed = threading.Event()
+    host.managed_tool_session = SimpleNamespace(
+        close=lambda **_kwargs: engine_closed.set()
+    )
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime)
+    control.handle_frame(pause)
+
+    acknowledgement = control.handle_frame(
+        {
+            "version": generic_host.HOST_CONTROL_VERSION,
+            "command": "handoff_abort",
+            "handoff_id": pause["handoff_id"],
+            "nonce_digest": pause["nonce_digest"],
+            "reason": "bound_adopter_failed",
+        }
+    )
+
+    assert acknowledgement["status"] == "aborted"
+    assert acknowledgement["phase"] == "ABORTED"
+    assert set(acknowledgement) == {
+        "version", "command", "handoff_id", "nonce_digest", "status",
+        "host", "phase", "ack_sha256",
+    }
+    assert engine_closed.is_set()
+    assert host._shutdown.is_set()
+
+
+def test_host_control_abort_latches_process_cleanup_uncertainty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    class Process:
+        pid = 123
+
+    process = Process()
+    host._active_processes.add(process)
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime)
+    control.handle_frame(pause)
+
+    def uncertain(*_args, **_kwargs):
+        raise generic_host.ProcessCleanupUncertain(
+            "cleanup-uncertain: host child identity changed"
+        )
+
+    monkeypatch.setattr(generic_host, "_terminate_process_group", uncertain)
+    with pytest.raises(generic_host.HostError, match="owned process cleanup uncertain"):
+        control.handle_frame(
+            {
+                "version": generic_host.HOST_CONTROL_VERSION,
+                "command": "handoff_abort",
+                "handoff_id": pause["handoff_id"],
+                "nonce_digest": pause["nonce_digest"],
+                "reason": "bound_adopter_failed",
+            }
+        )
+
+    assert control.state == "ABORTED"
+    assert host._shutdown.is_set()
+    assert host._cleanup_uncertain is True
+    assert "cleanup-uncertain" in process._astrid_cleanup_uncertain
+
+
+def test_host_control_eof_terminates_owned_child_and_engine_custody(
+    tmp_path: Path,
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    engine_closed = threading.Event()
+    host.managed_tool_session = SimpleNamespace(
+        close=lambda **_kwargs: engine_closed.set()
+    )
+    child = generic_host.popen_owned_group(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+    host._track_process(child)
+    worker, host_socket = socket.socketpair()
+    control = _host_control(host, state=state, credential_file=credential)
+    control.control_fd = host_socket.detach()
+    thread = threading.Thread(target=control.serve)
+    thread.start()
+
+    worker.close()
+    thread.join(timeout=3)
+    child.wait(timeout=3)
+
+    assert not thread.is_alive()
+    assert host._shutdown.is_set()
+    assert engine_closed.is_set()
+    assert child.returncode is not None

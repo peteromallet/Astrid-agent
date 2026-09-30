@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import heapq
@@ -22,6 +23,7 @@ import secrets as secrets_module
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,6 +62,7 @@ from astrid.core.execution.managed_tool_session import (
     SessionBinding,
 )
 from astrid.core.execution.process_group import (
+    ProcessCleanupUncertain,
     _process_snapshot,
     popen_owned_group,
 )
@@ -108,6 +111,10 @@ class HostCancelled(HostError):
     """The runtime cancelled the attempt while the subprocess was running."""
 
 
+class HostControlRejected(HostError):
+    """A stale or losing handoff identity was rejected without mutation."""
+
+
 _VIDEO_SUFFIX_MEDIA_TYPES = {
     ".mp4": "video/mp4",
     ".mov": "video/quicktime",
@@ -122,6 +129,34 @@ _ACTIVATION_VERSION = "runtime.local-worker-activation/v1"
 _ACTIVATION_ACCEPTED_VERSION = "astrid.local-worker-activation-accepted/v1"
 _ACTIVATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTIVATION_FRAME_LIMIT = 64 * 1024
+HOST_CONTROL_VERSION = "astrid.local-worker-host-control/v1"
+HOST_CONTROL_FRAME_LIMIT = 64 * 1024
+HOST_CONTROL_COMMANDS = frozenset(
+    {
+        "pause_prepare",
+        "pause_cancel",
+        "rebind_prepare",
+        "rebind_commit",
+        "resume_prepare",
+        "resume_commit",
+        "handoff_finalize",
+        "handoff_abort",
+    }
+)
+_HOST_CONTROL_RUNTIME_KEYS = frozenset(
+    {
+        "endpoint",
+        "protocol",
+        "schema_digest",
+        "runtime_epoch",
+        "runtime_instance_id",
+        "runtime_session_id",
+    }
+)
+_HOST_CONTROL_CREDENTIAL_GENERATION_KEYS = frozenset(
+    {"generation", "token_sha256", "metadata_sha256", "commit_sha256"}
+)
+_HOST_CONTROL_OWNER_KEYS = frozenset({"pid", "birth_id"})
 
 _SETTLEMENT_OUTPUT_METADATA_FIELDS = (
     "role",
@@ -748,6 +783,97 @@ class AdapterRegistry:
 
 def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def _sha256_digest(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _host_control_ack_digest(value: Mapping[str, Any]) -> str:
+    payload = {
+        key: item
+        for key, item in value.items()
+        if key not in {"ack_digest", "ack_sha256"}
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return _sha256_digest(encoded)
+
+
+def _registration_body_digest(value: Any) -> str:
+    """Match Runtime's canonical pending-registration body digest."""
+    try:
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise HostError("registration body must be canonical JSON") from exc
+    return _sha256_digest(encoded)
+
+
+def _owner_only_regular_file(path: Path, *, label: str) -> bytes:
+    try:
+        observed = path.lstat()
+    except OSError as exc:
+        raise HostError(f"{label} is unavailable") from exc
+    if path.is_symlink() or not stat.S_ISREG(observed.st_mode):
+        raise HostError(f"{label} must be a regular non-symlink file")
+    if stat.S_IMODE(observed.st_mode) != 0o600:
+        raise HostError(f"{label} must be owner-only")
+    current_uid = getattr(os, "getuid", lambda: observed.st_uid)()
+    if observed.st_uid != current_uid:
+        raise HostError(f"{label} owner does not match the host")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise HostError(f"{label} is unreadable") from exc
+
+
+def credential_generation_snapshot(credential_file: str | Path) -> dict[str, str]:
+    """Return the secret-free committed credential generation identity."""
+
+    token_path = Path(credential_file).expanduser()
+    if not token_path.is_absolute():
+        raise HostError("credential file must be absolute")
+    metadata_path = token_path.with_suffix(".json")
+    commit_path = token_path.with_suffix(".commit")
+    token_bytes = _owner_only_regular_file(token_path, label="credential token")
+    metadata_bytes = _owner_only_regular_file(metadata_path, label="credential metadata")
+    commit_bytes = _owner_only_regular_file(commit_path, label="credential commit")
+    try:
+        commit = json.loads(commit_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HostError("credential commit is malformed") from exc
+    if not isinstance(commit, dict) or set(commit) != {
+        "generation",
+        "token_sha256",
+        "metadata_sha256",
+    }:
+        raise HostError("credential commit has an invalid shape")
+    generation = commit.get("generation")
+    if not isinstance(generation, str) or not generation or len(generation) > 256:
+        raise HostError("credential generation is invalid")
+    token_sha256 = _sha256_digest(token_bytes)
+    metadata_sha256 = _sha256_digest(metadata_bytes)
+    if commit.get("token_sha256") != token_sha256:
+        raise HostError("credential token does not match its commit")
+    if commit.get("metadata_sha256") != metadata_sha256:
+        raise HostError("credential metadata does not match its commit")
+    return {
+        "generation": generation,
+        "token_sha256": token_sha256,
+        "metadata_sha256": metadata_sha256,
+        "commit_sha256": _sha256_digest(commit_bytes),
+    }
 
 
 def _capability_digest(value: Any) -> str:
@@ -1712,7 +1838,9 @@ def process_birth_identity(pid: int | None = None) -> str:
     except (OSError, ValueError):
         pass
     info = _process_snapshot().get(value)
-    return f"ps-lstart:{info.birth}" if info is not None and info.birth else ""
+    if info is None or not info.birth:
+        return ""
+    return info.birth if info.birth.startswith(("proc-start-ticks:", "ps-lstart:")) else f"ps-lstart:{info.birth}"
 
 
 def _admitted_source_roots(root: Path, definition: Any) -> tuple[Path, ...]:
@@ -1998,17 +2126,32 @@ class RuntimeProtocolClient:
             )
         return expected
 
-    def register_executor(self, executor_id: str, *, capabilities: list[Mapping[str, Any]], max_concurrency: int, resource_keys: list[str], source_digest: str | None, dependency_digest: str | None = None, source_epoch: str | None = None, protocol_version: str = "workspace.v1", schema_digest: str | None = None, runtime_epoch: int | None = None, verified_facts: Mapping[str, Any] | None = None):
+    @staticmethod
+    def executor_registration_body(
+        executor_id: str,
+        *,
+        capabilities: list[Mapping[str, Any]],
+        max_concurrency: int,
+        resource_keys: list[str],
+        source_digest: str | None,
+        dependency_digest: str | None = None,
+        source_epoch: str | None = None,
+        protocol_version: str = "workspace.v1",
+        schema_digest: str | None = None,
+        runtime_epoch: int | None = None,
+        verified_facts: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         # Runtime schema identity is negotiated through health/compatibility;
         # source, dependency, and source-epoch identity remain part of the
         # executor registration admission envelope.  ``schema_digest`` is
         # intentionally not sent until the generated runtime client contract
         # exposes that field.
+        del schema_digest
         payload = {
             "executor_id": executor_id,
-            "capabilities": capabilities,
+            "capabilities": [dict(value) for value in capabilities],
             "max_concurrency": max_concurrency,
-            "resource_keys": resource_keys,
+            "resource_keys": list(resource_keys),
             "protocol": protocol_version,
             "source_digest": source_digest,
             "source_epoch": source_epoch,
@@ -2017,6 +2160,10 @@ class RuntimeProtocolClient:
         }
         if verified_facts is not None:
             payload["verified_facts"] = dict(verified_facts)
+        return payload
+
+    def register_executor(self, executor_id: str, **kwargs: Any):
+        payload = self.executor_registration_body(executor_id, **kwargs)
         registration = self.generated.register_executor(
             payload,
             idempotency_key=(
@@ -2404,7 +2551,7 @@ class GenericPackHost:
         self.attempt_base = Path(attempt_base).expanduser().resolve() if attempt_base else None
         self.capabilities: dict[str, CapabilityRecord] = {}
         self._registered_digests: dict[str, str] = {}
-        self._registered_state: dict[str, dict[str, str]] = {}
+        self._registered_state: dict[str, dict[str, Any]] = {}
         self._registered_runtime_state: dict[str, Any] = {}
         self.capability_matrix_path = Path(capability_matrix).expanduser().resolve() if capability_matrix else self._default_matrix_path()
         # Keep the mapping live when the default is os.environ so test/runtime
@@ -2451,6 +2598,14 @@ class GenericPackHost:
         self._active_processes: set[subprocess.Popen] = set()
         self._process_lock = threading.RLock()
         self._shutdown = threading.Event()
+        # Handoff pauses are coordinated with the complete claim iteration,
+        # not only the claim HTTP call.  One lock protects both the gate and
+        # the exact in-flight count so pause_prepare can refuse active work
+        # immediately without leaving a transient gate behind.
+        self._claim_condition = threading.Condition(threading.RLock())
+        self._claim_pause_requested = False
+        self._claim_iterations_in_flight = 0
+        self._claim_iteration_local = threading.local()
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
@@ -2504,25 +2659,310 @@ class GenericPackHost:
         # not let that small window leave an owned child running after host
         # shutdown has begun.
         if self._shutdown.is_set():
-            _terminate_process_group(process)
+            self._terminate_process_or_latch(process)
 
     def _untrack_process(self, process: subprocess.Popen) -> None:
         with self._process_lock:
             self._active_processes.discard(process)
 
+    def _popen_owned_group_or_latch(
+        self,
+        argv: list[str],
+        **kwargs: Any,
+    ) -> subprocess.Popen:
+        """Take custody before launch identity capture can fail."""
+
+        try:
+            return popen_owned_group(
+                argv,
+                custody_callback=self._track_process,
+                **kwargs,
+            )
+        except ProcessCleanupUncertain as exc:
+            process = exc.process
+            if process is not None:
+                with self._process_lock:
+                    self._active_processes.add(process)
+                message = f"owned process launch cleanup uncertain: {exc}"
+                process._astrid_cleanup_uncertain = message  # type: ignore[attr-defined]
+            else:
+                message = f"owned process launch cleanup uncertain: {exc}"
+            self._cleanup_uncertain = True
+            raise HostError(message) from exc
+
+    def _terminate_process_or_latch(
+        self,
+        process: subprocess.Popen,
+        *,
+        grace_seconds: float = 2.0,
+    ) -> None:
+        """Surface a process identity failure and block later admissions."""
+
+        prior = getattr(process, "_astrid_cleanup_uncertain", None)
+        if isinstance(prior, str) and prior:
+            self._cleanup_uncertain = True
+            raise HostError(prior)
+        try:
+            _terminate_process_group(process, grace_seconds=grace_seconds)
+        except ProcessCleanupUncertain as exc:
+            message = f"owned process cleanup uncertain: {exc}"
+            process._astrid_cleanup_uncertain = message  # type: ignore[attr-defined]
+            self._cleanup_uncertain = True
+            raise HostError(message) from exc
+
+    def _release_process_or_latch(self, process: subprocess.Popen) -> None:
+        prior = getattr(process, "_astrid_cleanup_uncertain", None)
+        if isinstance(prior, str) and prior:
+            self._cleanup_uncertain = True
+            raise HostError(prior)
+        try:
+            _release_owned_group(process)
+        except ProcessCleanupUncertain as exc:
+            message = f"owned process cleanup uncertain: {exc}"
+            process._astrid_cleanup_uncertain = message  # type: ignore[attr-defined]
+            self._cleanup_uncertain = True
+            raise HostError(message) from exc
+
     def shutdown(self) -> None:
         """Stop the host and every currently owned capability process."""
         self._shutdown.set()
+        with self._claim_condition:
+            self._claim_condition.notify_all()
         self.managed_tool_session.close(reason="host_shutdown")
         with self._process_lock:
             active = tuple(self._active_processes)
+        cleanup_errors: list[str] = []
         for process in active:
             try:
-                _terminate_process_group(process, grace_seconds=1.0)
+                self._terminate_process_or_latch(process, grace_seconds=1.0)
+            except HostError as exc:
+                cleanup_errors.append(str(exc))
             except (OSError, subprocess.SubprocessError):
                 # The process may have exited between the census and cleanup;
                 # the group helper is deliberately best effort at shutdown.
                 pass
+        if cleanup_errors:
+            raise HostError("; ".join(cleanup_errors))
+
+    @contextmanager
+    def _claim_iteration(self):
+        """Hold one complete refresh/claim/execution/cleanup iteration."""
+
+        depth = int(getattr(self._claim_iteration_local, "depth", 0))
+        if depth:
+            self._claim_iteration_local.depth = depth + 1
+            try:
+                yield True
+            finally:
+                self._claim_iteration_local.depth = depth
+            return
+        with self._claim_condition:
+            while self._claim_pause_requested and not self._shutdown.is_set():
+                self._claim_condition.wait()
+            if self._shutdown.is_set():
+                yield False
+                return
+            self._claim_iterations_in_flight += 1
+            self._claim_iteration_local.depth = 1
+        try:
+            yield True
+        finally:
+            self._claim_iteration_local.depth = 0
+            with self._claim_condition:
+                self._claim_iterations_in_flight -= 1
+                self._claim_condition.notify_all()
+
+    def _pause_claims_if_idle(self) -> tuple[bool, int]:
+        """Atomically gate the next iteration, refusing current work."""
+
+        with self._claim_condition:
+            if self._claim_pause_requested:
+                raise HostError("generic host claim gate is already paused")
+            self._claim_pause_requested = True
+            if self._claim_iterations_in_flight:
+                in_flight = self._claim_iterations_in_flight
+                self._claim_pause_requested = False
+                self._claim_condition.notify_all()
+                return False, in_flight
+            return True, 0
+
+    def _resume_claims(self) -> None:
+        with self._claim_condition:
+            self._claim_pause_requested = False
+            self._claim_condition.notify_all()
+
+    @property
+    def claim_gate_state(self) -> dict[str, Any]:
+        """Expose a secret-free exact gate snapshot for private supervision."""
+
+        with self._claim_condition:
+            return {
+                "paused": self._claim_pause_requested,
+                "in_flight": self._claim_iterations_in_flight,
+            }
+
+    def _executor_registration_kwargs(
+        self, runtime_state: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Build the one atomic Runtime executor-registration operation."""
+
+        executor_capabilities: list[dict[str, Any]] = []
+        for record in self.capabilities.values():
+            disposition = str(record.matrix.get("disposition", ""))
+            if disposition in {"unsupported", "retired"}:
+                status = disposition
+                unavailable_reason = str(
+                    record.matrix.get("evidence_reason") or disposition
+                )
+            else:
+                status = "ready" if record.ready else "unavailable"
+                unavailable_reason = (
+                    None if record.ready else _preflight_unavailable_reason(record)
+                )
+            executor_capabilities.append(
+                {
+                    "capability_id": record.id,
+                    "definition_digest": record.capability_digest,
+                    "status": status,
+                    "required_resource_keys": list(record.resource_keys),
+                    "estimated_scratch_bytes": record.estimated_scratch_bytes,
+                    "estimated_output_bytes": record.estimated_output_bytes,
+                    "unavailable_reason": unavailable_reason,
+                }
+            )
+        all_keys = sorted(
+            {key for record in self.capabilities.values() for key in record.resource_keys}
+        )
+        dependency_digests = {
+            key: record.dependency_digest for key, record in self.capabilities.items()
+        }
+        return {
+            "capabilities": sorted(
+                executor_capabilities,
+                key=lambda item: str(item["capability_id"]),
+            ),
+            "max_concurrency": self.max_concurrency,
+            "resource_keys": all_keys,
+            "source_digest": _canonical_digest(
+                {
+                    key: record.source_digest
+                    for key, record in self.capabilities.items()
+                }
+            ),
+            "dependency_digest": _canonical_digest(dependency_digests),
+            "source_epoch": self.source_epoch,
+            "protocol_version": runtime_state.get("protocol", "workspace.v1"),
+            "schema_digest": runtime_state.get("schema_digest"),
+            "runtime_epoch": runtime_state.get("runtime_epoch"),
+            "verified_facts": _registration_verified_facts(),
+        }
+
+    def _registration_admission_state(
+        self, runtime_state: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Describe the exact deliberate POST admitted during a handoff."""
+
+        executor_body = RuntimeProtocolClient.executor_registration_body(
+            self.executor_id,
+            **self._executor_registration_kwargs(runtime_state),
+        )
+        actor = self.executor_id
+        bodies = {
+            "/v1/capabilities": [],
+            "/v1/executors": [executor_body],
+        }
+        allowlist = [
+            {
+                "method": "POST",
+                "path": path,
+                "actor": actor,
+                "body_sha256": sorted(
+                    _registration_body_digest(body) for body in bodies[path]
+                ),
+            }
+            for path in sorted(bodies)
+        ]
+        return {
+            "registration_actor": actor,
+            "registration_bodies": bodies,
+            "registration_allowlist": allowlist,
+        }
+
+    def registered_state_snapshot(
+        self,
+        *,
+        revalidate: bool = False,
+        runtime_override: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the canonical complete state bound by host handoff acks."""
+
+        if not self._registered_state or not self._registered_runtime_state:
+            raise HostError("generic host has no registered state to transfer")
+        if revalidate:
+            expected_state = dict(self._registered_state)
+            expected_source_epoch = self._registered_runtime_state.get("source_epoch")
+            self.discover()
+            self.preflight()
+            current_state = {
+                key: {
+                    "capability_digest": record.capability_digest,
+                    "source_digest": record.source_digest,
+                    "dependency_digest": record.dependency_digest,
+                    "ready": bool(record.ready),
+                    "preflight_digest": _sha256_digest(
+                        json.dumps(
+                            _json_safe(record.preflight),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        ).encode("utf-8")
+                    ),
+                }
+                for key, record in self.capabilities.items()
+            }
+            if current_state != expected_state or self.source_epoch != expected_source_epoch:
+                raise HostError("registered capability state changed before handoff")
+        endpoint = getattr(self.client, "endpoint", None)
+        runtime = (
+            dict(runtime_override)
+            if runtime_override is not None
+            else {
+                "endpoint": endpoint,
+                "protocol": self._registered_runtime_state.get("protocol"),
+                "schema_digest": self._registered_runtime_state.get("schema_digest"),
+                "runtime_epoch": self._registered_runtime_state.get("runtime_epoch"),
+                "runtime_instance_id": self._registered_runtime_state.get("runtime_instance_id"),
+                "runtime_session_id": self._registered_runtime_state.get("runtime_session_id"),
+            }
+        )
+        _validate_host_control_runtime(runtime, label="registered runtime")
+        capabilities = [
+            {
+                "capability_id": key,
+                "capability_digest": record.capability_digest,
+                "source_digest": record.source_digest,
+                "dependency_digest": record.dependency_digest,
+                "ready": bool(record.ready),
+                "preflight_digest": _sha256_digest(
+                    json.dumps(
+                        _json_safe(record.preflight),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ),
+            }
+            for key, record in sorted(self.capabilities.items())
+        ]
+        return {
+            "executor_id": self.executor_id,
+            "source_epoch": self.source_epoch,
+            "runtime": runtime,
+            "capabilities": capabilities,
+            **self._registration_admission_state(runtime),
+        }
     def boot_manifest_provenance(self) -> dict[str, str] | None:
         """Return completion provenance for the root-owned manifest stamp."""
         if self.boot_manifest_path is None:
@@ -2805,6 +3245,16 @@ class GenericPackHost:
                 "capability_digest": record.capability_digest,
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
+                "ready": bool(record.ready),
+                "preflight_digest": _sha256_digest(
+                    json.dumps(
+                        _json_safe(record.preflight),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ),
             }
             for key, record in self.capabilities.items()
         }
@@ -2828,7 +3278,6 @@ class GenericPackHost:
                 invalidations.append("source epoch changed")
         if invalidations and not deliberate:
             raise HostError("registration invalidated; " + "; ".join(invalidations) + "; deliberate re-registration required")
-        verified_facts = _registration_verified_facts()
         if self.client is None:
             self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
             self._registered_state = state
@@ -2840,46 +3289,7 @@ class GenericPackHost:
         register_capability = getattr(self.client, "register_capability", None)
         if not callable(register_capability):
             raise HostError("runtime client lacks canonical capability registration operation")
-        executor_capabilities: list[dict[str, Any]] = []
-        for record in self.capabilities.values():
-            disposition = str(record.matrix.get("disposition", ""))
-            if disposition in {"unsupported", "retired"}:
-                # A declared disposition is authoritative even when the
-                # source happens to fail another preflight check; preserve its
-                # human-readable reason rather than an incidental local error.
-                status = disposition
-                unavailable_reason = str(record.matrix.get("evidence_reason") or disposition)
-            else:
-                status = "ready" if record.ready else "unavailable"
-                unavailable_reason = None if record.ready else _preflight_unavailable_reason(record)
-            executor_capabilities.append(
-                {
-                    "capability_id": record.id,
-                    "definition_digest": record.capability_digest,
-                    "status": status,
-                    "required_resource_keys": list(record.resource_keys),
-                    "estimated_scratch_bytes": record.estimated_scratch_bytes,
-                    "estimated_output_bytes": record.estimated_output_bytes,
-                    "unavailable_reason": unavailable_reason,
-                }
-            )
-        all_keys = sorted({key for record in self.capabilities.values() for key in record.resource_keys})
-        dependency_digests = {key: record.dependency_digest for key, record in self.capabilities.items()}
-        registration_kwargs = {
-            "capabilities": sorted(
-                executor_capabilities,
-                key=lambda item: str(item["capability_id"]),
-            ),
-            "max_concurrency": self.max_concurrency,
-            "resource_keys": all_keys,
-            "source_digest": _canonical_digest({key: record.source_digest for key, record in self.capabilities.items()}),
-            "dependency_digest": _canonical_digest(dependency_digests),
-            "source_epoch": self.source_epoch,
-            "protocol_version": runtime_state.get("protocol", "workspace.v1"),
-            "schema_digest": runtime_state.get("schema_digest"),
-            "runtime_epoch": runtime_state.get("runtime_epoch"),
-            "verified_facts": verified_facts,
-        }
+        registration_kwargs = self._executor_registration_kwargs(runtime_state)
         try:
             # The runtime owns one durable transaction for the executor and
             # its complete capability descriptors.  Never pre-publish
@@ -2980,6 +3390,8 @@ class GenericPackHost:
             "schema_digest": getattr(health, "schema_digest", None),
             "runtime_epoch": getattr(health, "runtime_epoch", None),
             "runtime_session_id": getattr(health, "runtime_session_id", None),
+            "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+            "coordinator_epoch": getattr(health, "coordinator_epoch", None),
         }
         actual_protocol = str(value.get("protocol", ""))
         actual_schema = str(value.get("schema_digest", ""))
@@ -4365,7 +4777,7 @@ class GenericPackHost:
             values=values,
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
-        process = popen_owned_group(
+        process = self._popen_owned_group_or_latch(
             _network_sandbox_argv(argv, attempt, broker_endpoint),
             cwd=str(cwd),
             env=env,
@@ -4373,12 +4785,11 @@ class GenericPackHost:
             stderr=subprocess.PIPE,
             text=True,
         )
-        self._track_process(process)
         try:
             while process.poll() is None:
                 _assert_live_storage_envelope(storage_estimate, attempt, output_root)
                 if cancelled is not None and cancelled():
-                    _terminate_process_group(process)
+                    self._terminate_process_or_latch(process)
                     raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
             stdout, stderr = process.communicate()
@@ -4429,12 +4840,14 @@ class GenericPackHost:
                 process_id=process_id,
             )
         finally:
-            if process.poll() is None:
-                _terminate_process_group(process)
-            self._untrack_process(process)
-            _release_owned_group(process)
-            env.clear()
-            secrets.clear()
+            try:
+                if process.poll() is None:
+                    self._terminate_process_or_latch(process)
+                self._release_process_or_latch(process)
+            finally:
+                self._untrack_process(process)
+                env.clear()
+                secrets.clear()
 
     def invoke_capability(
         self,
@@ -4525,7 +4938,7 @@ class GenericPackHost:
         )
         env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
         broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
-        process = popen_owned_group(
+        process = self._popen_owned_group_or_latch(
             _network_sandbox_argv([sys.executable, "-m", "astrid.core.execution.generic_host_worker", str(request_path)], attempt_path, broker_endpoint),
             cwd=str(attempt_path),
             env=env,
@@ -4533,12 +4946,11 @@ class GenericPackHost:
             stderr=subprocess.PIPE,
             text=True,
         )
-        self._track_process(process)
         try:
             while process.poll() is None:
                 _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs")
                 if cancelled is not None and cancelled():
-                    _terminate_process_group(process)
+                    self._terminate_process_or_latch(process)
                     raise HostCancelled(f"capability {capability_id!r} cancelled")
                 time.sleep(0.05)
             stdout, stderr = process.communicate()
@@ -4587,13 +4999,15 @@ class GenericPackHost:
                 process_id=process_id,
             )
         finally:
-            if process.poll() is None:
-                _terminate_process_group(process)
-            self._untrack_process(process)
-            _release_owned_group(process)
-            env.clear()
-            request_path.unlink(missing_ok=True)
-            result_path.unlink(missing_ok=True)
+            try:
+                if process.poll() is None:
+                    self._terminate_process_or_latch(process)
+                self._release_process_or_latch(process)
+            finally:
+                self._untrack_process(process)
+                env.clear()
+                request_path.unlink(missing_ok=True)
+                result_path.unlink(missing_ok=True)
 
     def _publish_assembled_timeline(
         self,
@@ -5863,8 +6277,8 @@ class GenericPackHost:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 
-    def claim_once(self) -> Mapping[str, Any] | None:
-        """Claim and execute one queued task through the generated boundary."""
+    def _claim_once_unlocked(self) -> Mapping[str, Any] | None:
+        """Claim and execute once while the complete-iteration gate is held."""
         if self._cleanup_uncertain:
             raise HostError("generic host admissions are blocked by cleanup uncertainty")
         if self._shutdown.is_set():
@@ -6069,15 +6483,26 @@ class GenericPackHost:
             provider_route_grant=provider_route_grant,
         )
 
+    def claim_once(self) -> Mapping[str, Any] | None:
+        """Claim and execute one queued task through the generated boundary."""
+
+        with self._claim_iteration() as admitted:
+            if not admitted:
+                return None
+            return self._claim_once_unlocked()
+
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
             try:
-                if time.monotonic() >= self._registration_refresh_deadline:
-                    self._renew_executor_registration()
-                result = self.claim_once()
+                with self._claim_iteration() as admitted:
+                    if not admitted:
+                        break
+                    if time.monotonic() >= self._registration_refresh_deadline:
+                        self._renew_executor_registration()
+                    result = self.claim_once()
             except Exception as exc:
                 # ``--once`` is a diagnostic/test surface and must preserve the
                 # exact claim failure for its caller.  The registered daemon,
@@ -6298,6 +6723,618 @@ def _await_worker_activation(
         control.close()
 
 
+def _validate_host_control_runtime(value: Any, *, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != _HOST_CONTROL_RUNTIME_KEYS:
+        raise HostError(f"{label} has an invalid shape")
+    try:
+        endpoint = validate_runtime_endpoint(value["endpoint"])
+    except (WorkspaceClientError, TypeError) as exc:
+        raise HostError(f"{label} endpoint is invalid") from exc
+    if endpoint != value["endpoint"]:
+        raise HostError(f"{label} endpoint is not canonical")
+    for key in ("protocol", "schema_digest", "runtime_instance_id", "runtime_session_id"):
+        item = value[key]
+        if not isinstance(item, str) or not item or len(item) > 512:
+            raise HostError(f"{label} {key} is invalid")
+    epoch = value["runtime_epoch"]
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
+        raise HostError(f"{label} runtime_epoch is invalid")
+    return dict(value)
+
+
+def _validate_handoff_deadline(frame: Mapping[str, Any]) -> tuple[float, int]:
+    monotonic = frame.get("deadline_monotonic")
+    unix_ms = frame.get("deadline_unix_ms")
+    if (
+        isinstance(monotonic, bool)
+        or not isinstance(monotonic, (int, float))
+        or not float(monotonic) > 0
+        or isinstance(unix_ms, bool)
+        or not isinstance(unix_ms, int)
+        or unix_ms < 1
+    ):
+        raise HostError("host-control deadline is invalid")
+    if time.monotonic() >= float(monotonic) or int(time.time() * 1000) >= unix_ms:
+        raise HostError("host-control deadline elapsed")
+    return float(monotonic), unix_ms
+
+
+def _validate_host_control_owner(value: Any, *, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != _HOST_CONTROL_OWNER_KEYS:
+        raise HostError(f"{label} has an invalid shape")
+    pid = value["pid"]
+    birth_id = value["birth_id"]
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+        raise HostError(f"{label} pid is invalid")
+    if not isinstance(birth_id, str) or not birth_id or len(birth_id) > 512:
+        raise HostError(f"{label} birth_id is invalid")
+    return {"pid": pid, "birth_id": birth_id}
+
+
+class LocalWorkerHostControl:
+    """Strict persistent Worker-to-GenericPackHost handoff controller."""
+
+    _REQUEST_KEYS = {
+        "pause_prepare": frozenset(
+            {
+                "version", "command", "handoff_id", "nonce_digest",
+                "deadline_monotonic", "deadline_unix_ms", "old_runtime",
+                "old_owner",
+            }
+        ),
+        "pause_cancel": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "old_owner"}
+        ),
+        "rebind_prepare": frozenset(
+            {
+                "version", "command", "handoff_id", "nonce_digest",
+                "deadline_monotonic", "deadline_unix_ms", "new_runtime",
+                "credential_file", "credential_generation", "registered_state",
+                "old_owner", "new_owner",
+            }
+        ),
+        "rebind_commit": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "new_owner"}
+        ),
+        "resume_prepare": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "new_owner"}
+        ),
+        "resume_commit": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "new_owner"}
+        ),
+        "handoff_finalize": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "new_owner"}
+        ),
+        "handoff_abort": frozenset(
+            {"version", "command", "handoff_id", "nonce_digest", "reason"}
+        ),
+    }
+
+    def __init__(
+        self,
+        host: GenericPackHost,
+        *,
+        control_fd: int,
+        activation: Mapping[str, Any],
+        credential_file: str | Path,
+    ) -> None:
+        self.host = host
+        self.control_fd = int(control_fd)
+        self.activation = dict(activation)
+        self.credential_file = Path(credential_file).expanduser()
+        self.state = "ACTIVE"
+        self.handoff_id: str | None = None
+        self.nonce_digest: str | None = None
+        self.deadline_monotonic: float | None = None
+        self.deadline_unix_ms: int | None = None
+        self.old_runtime: dict[str, Any] | None = None
+        self.new_runtime: dict[str, Any] | None = None
+        self.old_owner: dict[str, Any] | None = None
+        self.new_owner: dict[str, Any] | None = None
+        self.current_runtime: dict[str, Any] | None = None
+        self.current_owner: dict[str, Any] | None = None
+        self.credential_generation: dict[str, str] | None = None
+        self.pending_registered_state: dict[str, Any] | None = None
+        self._acks: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        self._terminal_tombstone: dict[str, Any] | None = None
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _identity(frame: Mapping[str, Any]) -> tuple[str, str]:
+        handoff_id = frame.get("handoff_id")
+        nonce_digest = frame.get("nonce_digest")
+        if not isinstance(handoff_id, str) or not handoff_id or len(handoff_id) > 256:
+            raise HostError("host-control handoff_id is invalid")
+        if not isinstance(nonce_digest, str) or not _ACTIVATION_DIGEST.fullmatch(nonce_digest):
+            raise HostError("host-control nonce digest is invalid")
+        return handoff_id, nonce_digest
+
+    def _require_bound_identity(self, frame: Mapping[str, Any]) -> None:
+        handoff_id, nonce_digest = self._identity(frame)
+        if handoff_id != self.handoff_id or nonce_digest != self.nonce_digest:
+            raise HostControlRejected("host-control handoff identity does not match")
+
+    @staticmethod
+    def _observe_owner(owner: Mapping[str, Any], *, label: str) -> None:
+        observed_birth = process_birth_identity(int(owner["pid"]))
+        if observed_birth != owner["birth_id"]:
+            raise HostControlRejected(f"host-control {label} identity does not match")
+
+    def _validate_frame_owners(self, command: str, frame: Mapping[str, Any]) -> None:
+        old_owner = None
+        new_owner = None
+        if "old_owner" in frame:
+            old_owner = _validate_host_control_owner(frame["old_owner"], label="old owner")
+        if "new_owner" in frame:
+            new_owner = _validate_host_control_owner(frame["new_owner"], label="new owner")
+        if command == "pause_prepare":
+            assert old_owner is not None
+            if self.current_owner is not None and old_owner != self.current_owner:
+                raise HostControlRejected(
+                    "host-control old owner is not the current runtime owner"
+                )
+            self._observe_owner(old_owner, label="old owner")
+        elif old_owner is not None:
+            if self.old_owner is None or old_owner != self.old_owner:
+                raise HostControlRejected("host-control old owner identity does not match")
+        if new_owner is not None:
+            if self.new_owner is not None and new_owner != self.new_owner:
+                raise HostControlRejected("host-control new owner identity does not match")
+            self._observe_owner(new_owner, label="new owner")
+
+    def _drop_handoff_authority(self) -> None:
+        self.handoff_id = None
+        self.nonce_digest = None
+        self.deadline_monotonic = None
+        self.deadline_unix_ms = None
+        self.old_runtime = None
+        self.new_runtime = None
+        self.old_owner = None
+        self.new_owner = None
+        self.credential_generation = None
+        self.pending_registered_state = None
+        self._acks.clear()
+
+    @staticmethod
+    def _request_digest(frame: Mapping[str, Any]) -> str:
+        return _sha256_digest(
+            json.dumps(
+                frame,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+
+    def _terminal_replay(
+        self, frame: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        if self._terminal_tombstone is None:
+            return None
+        handoff_id, nonce_digest = self._identity(frame)
+        tombstone = self._terminal_tombstone
+        if (
+            handoff_id != tombstone["handoff_id"]
+            and nonce_digest != tombstone["nonce_digest"]
+        ):
+            return None
+        if (
+            handoff_id == tombstone["handoff_id"]
+            and nonce_digest == tombstone["nonce_digest"]
+            and frame.get("command") == "handoff_finalize"
+            and frame.get("new_owner") == tombstone["new_owner"]
+            and self._request_digest(frame) == tombstone["request_digest"]
+        ):
+            return dict(tombstone["ack"])
+        raise HostControlRejected("host-control finalized handoff is stale")
+
+    def _validate_cached_replay_phase(self, command: str) -> None:
+        allowed = {
+            "pause_prepare": frozenset({"ACTIVE", "PAUSED"}),
+            "pause_cancel": frozenset({"ACTIVE"}),
+            "rebind_prepare": frozenset({"REBIND_PREPARED"}),
+            "rebind_commit": frozenset({"REBIND_COMMITTED"}),
+            "resume_prepare": frozenset({"RESUME_PREPARED"}),
+            "resume_commit": frozenset({"RESUMED"}),
+            "handoff_abort": frozenset({"ABORTED"}),
+        }.get(command, frozenset())
+        if self.state not in allowed:
+            raise HostControlRejected(
+                f"host-control {command} replay is stale in phase {self.state}"
+            )
+
+    def _host_identity(self) -> dict[str, Any]:
+        return {"pid": os.getpid(), "birth_id": process_birth_identity()}
+
+    def _ack(self, frame: Mapping[str, Any], status: str, **extra: Any) -> dict[str, Any]:
+        value = {
+            "version": HOST_CONTROL_VERSION,
+            "command": f"{frame['command']}_ack",
+            "handoff_id": frame["handoff_id"],
+            "nonce_digest": frame["nonce_digest"],
+            "status": status,
+            "host": self._host_identity(),
+            "phase": self.state,
+            **extra,
+        }
+        value["ack_sha256"] = _host_control_ack_digest(value)
+        return value
+
+    def _cached(self, command: str, frame: dict[str, Any]) -> dict[str, Any] | None:
+        cache_key = (str(frame["handoff_id"]), command)
+        request_digest = _sha256_digest(
+            json.dumps(
+                frame,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        cached = self._acks.get(cache_key)
+        if cached is None:
+            return None
+        prior_digest, ack = cached
+        if prior_digest != request_digest:
+            raise HostControlRejected(
+                f"host-control {command} replay does not match"
+            )
+        expected_phase = {
+            "pause_prepare": "PAUSED",
+            "pause_cancel": "ACTIVE",
+            "rebind_prepare": "REBIND_PREPARED",
+            "rebind_commit": "REBIND_COMMITTED",
+            "resume_prepare": "RESUME_PREPARED",
+            "resume_commit": "RESUMED",
+            "handoff_abort": "ABORTED",
+        }.get(command)
+        if ack.get("status") == "active_work":
+            expected_phase = "ACTIVE"
+        if expected_phase is None or self.state != expected_phase:
+            raise HostControlRejected(
+                f"host-control {command} replay is stale in phase {self.state}"
+            )
+        return dict(ack)
+
+    def _remember(self, command: str, frame: dict[str, Any], ack: dict[str, Any]) -> dict[str, Any]:
+        cache_key = (str(frame["handoff_id"]), command)
+        request_digest = _sha256_digest(
+            json.dumps(
+                frame,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        self._acks[cache_key] = (request_digest, dict(ack))
+        return ack
+
+    def _complete_state(
+        self,
+        *,
+        revalidate: bool,
+        runtime_override: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.host.registered_state_snapshot(
+            revalidate=revalidate,
+            runtime_override=runtime_override,
+        )
+
+    def _pause_prepare(self, frame: dict[str, Any]) -> dict[str, Any]:
+        if self.state != "ACTIVE":
+            raise HostError("pause_prepare requires an active host")
+        handoff_id, nonce_digest = self._identity(frame)
+        deadline_monotonic, deadline_unix_ms = _validate_handoff_deadline(frame)
+        old_runtime = _validate_host_control_runtime(frame["old_runtime"], label="old runtime")
+        if self.current_runtime is not None and old_runtime != self.current_runtime:
+            raise HostControlRejected(
+                "host-control old runtime is not the current runtime"
+            )
+        paused, in_flight = self.host._pause_claims_if_idle()
+        if not paused:
+            return self._ack(
+                frame,
+                "active_work",
+                activation=self.activation,
+                registered_state=self._complete_state(revalidate=False),
+                inflight_claim_iterations=in_flight,
+            )
+        try:
+            registered_state = self._complete_state(revalidate=True)
+            if old_runtime != registered_state["runtime"]:
+                raise HostError("pause_prepare old runtime does not match registered state")
+        except Exception:
+            self.host._resume_claims()
+            raise
+        self.handoff_id = handoff_id
+        self.nonce_digest = nonce_digest
+        self.deadline_monotonic = deadline_monotonic
+        self.deadline_unix_ms = deadline_unix_ms
+        self.old_runtime = old_runtime
+        self.old_owner = _validate_host_control_owner(
+            frame["old_owner"], label="old owner"
+        )
+        if self.current_runtime is None:
+            self.current_runtime = dict(old_runtime)
+        if self.current_owner is None:
+            self.current_owner = dict(self.old_owner)
+        self.state = "PAUSED"
+        return self._ack(
+            frame,
+            "paused",
+            activation=self.activation,
+            registered_state=registered_state,
+        )
+
+    def _pause_cancel(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if self.state != "PAUSED":
+            raise HostError("pause_cancel requires a paused host")
+        self.host._resume_claims()
+        self.state = "ACTIVE"
+        return self._ack(frame, "pause_cancelled")
+
+    def _rebind_prepare(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if self.state != "PAUSED":
+            raise HostError("rebind_prepare requires a paused host")
+        deadline_monotonic, deadline_unix_ms = _validate_handoff_deadline(frame)
+        if (
+            self.deadline_monotonic is None
+            or deadline_monotonic != self.deadline_monotonic
+            or deadline_unix_ms != self.deadline_unix_ms
+        ):
+            raise HostError("rebind_prepare deadline does not match pause_prepare")
+        new_runtime = _validate_host_control_runtime(frame["new_runtime"], label="new runtime")
+        if self.old_runtime is None:
+            raise HostError("rebind_prepare has no old runtime binding")
+        if new_runtime["endpoint"] != self.old_runtime["endpoint"]:
+            raise HostError("rebind_prepare changed the runtime endpoint")
+        for key in ("protocol", "schema_digest"):
+            if new_runtime[key] != self.old_runtime[key]:
+                raise HostError(f"rebind_prepare changed runtime {key}")
+        if new_runtime["runtime_epoch"] <= self.old_runtime["runtime_epoch"]:
+            raise HostError("rebind_prepare runtime epoch did not advance")
+        for key in ("runtime_instance_id", "runtime_session_id"):
+            if new_runtime[key] == self.old_runtime[key]:
+                raise HostError(f"rebind_prepare did not rotate {key}")
+        credential_file = Path(str(frame["credential_file"])).expanduser()
+        if credential_file != self.credential_file:
+            raise HostError("rebind_prepare credential reference changed")
+        generation = frame["credential_generation"]
+        if not isinstance(generation, dict) or set(generation) != _HOST_CONTROL_CREDENTIAL_GENERATION_KEYS:
+            raise HostError("rebind_prepare credential generation has an invalid shape")
+        observed_generation = credential_generation_snapshot(credential_file)
+        if generation != observed_generation:
+            raise HostError("rebind_prepare credential generation does not match local files")
+        registered_state = self._complete_state(revalidate=True)
+        if frame["registered_state"] != registered_state:
+            raise HostError("rebind_prepare registered state does not match")
+        pending_registered_state = self._complete_state(
+            revalidate=False,
+            runtime_override=new_runtime,
+        )
+        self.new_runtime = new_runtime
+        self.new_owner = _validate_host_control_owner(
+            frame["new_owner"], label="new owner"
+        )
+        self.credential_generation = dict(generation)
+        self.pending_registered_state = pending_registered_state
+        self.state = "REBIND_PREPARED"
+        return self._ack(
+            frame,
+            "rebind_prepared",
+            activation=self.activation,
+            credential_generation=self.credential_generation,
+            registered_state=pending_registered_state,
+        )
+
+    def _rebind_commit(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if self.state != "REBIND_PREPARED" or self.new_runtime is None:
+            raise HostError("rebind_commit requires a prepared rebind")
+        _validate_handoff_deadline(
+            {
+                "deadline_monotonic": self.deadline_monotonic,
+                "deadline_unix_ms": self.deadline_unix_ms,
+            }
+        )
+        observed_generation = credential_generation_snapshot(self.credential_file)
+        if observed_generation != self.credential_generation:
+            raise HostError("credential generation changed before rebind_commit")
+        token = _owner_only_regular_file(self.credential_file, label="credential token").decode(
+            "utf-8"
+        ).strip()
+        if not token:
+            raise HostError("credential token is empty")
+        candidate = RuntimeProtocolClient(self.new_runtime["endpoint"], token)
+        prior_client = self.host.client
+        prior_runtime_state = dict(self.host.runtime_state)
+        self.host.client = candidate
+        try:
+            observed_runtime = self.host._runtime_compatibility()
+            observed_runtime = {
+                "endpoint": candidate.endpoint,
+                **{
+                    key: observed_runtime.get(key)
+                    for key in _HOST_CONTROL_RUNTIME_KEYS
+                    if key != "endpoint"
+                },
+            }
+            if observed_runtime != self.new_runtime:
+                raise HostError("rebind_commit Runtime health identity does not match")
+            candidate.renew_registration_session()
+            registration_result = self.host.register(deliberate=True)
+        except Exception:
+            self.host.client = prior_client
+            self.host.runtime_state = prior_runtime_state
+            raise
+        registered_state = self._complete_state(revalidate=False)
+        if registered_state != self.pending_registered_state:
+            raise HostError(
+                "rebind_commit registration body did not match prepared admission"
+            )
+        self.state = "REBIND_COMMITTED"
+        registration = {
+            "runtime_registration": _json_safe(registration_result.get("registration")),
+            "withdrawn_capabilities": sorted(
+                str(value) for value in registration_result.get("withdrawn_capabilities", ())
+            ),
+        }
+        return self._ack(
+            frame,
+            "rebind_committed",
+            activation=self.activation,
+            credential_generation=observed_generation,
+            registered_state=registered_state,
+            registration=registration,
+        )
+
+    def _resume_prepare(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if self.state != "REBIND_COMMITTED":
+            raise HostError("resume_prepare requires a committed rebind")
+        self.state = "RESUME_PREPARED"
+        return self._ack(frame, "resume_prepared")
+
+    def _resume_commit(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if self.state != "RESUME_PREPARED":
+            raise HostError("resume_commit requires a prepared resume")
+        self.state = "RESUMED"
+        self.host._resume_claims()
+        return self._ack(frame, "resumed")
+
+    def _handoff_finalize(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        if (
+            self.state != "RESUMED"
+            or self.handoff_id is None
+            or self.nonce_digest is None
+            or self.new_runtime is None
+            or self.new_owner is None
+        ):
+            raise HostError("handoff_finalize requires a resumed host")
+        self.state = "ADOPTED"
+        acknowledgement = self._ack(frame, "adopted")
+        terminal_tombstone = {
+            "handoff_id": self.handoff_id,
+            "nonce_digest": self.nonce_digest,
+            "request_digest": self._request_digest(frame),
+            "new_owner": dict(self.new_owner),
+            "ack": dict(acknowledgement),
+        }
+        self.current_runtime = dict(self.new_runtime)
+        self.current_owner = dict(self.new_owner)
+        self._drop_handoff_authority()
+        self._terminal_tombstone = terminal_tombstone
+        self.state = "ACTIVE"
+        return acknowledgement
+
+    def _handoff_abort(self, frame: dict[str, Any]) -> dict[str, Any]:
+        self._require_bound_identity(frame)
+        reason = frame["reason"]
+        if not isinstance(reason, str) or not reason or len(reason) > 512:
+            raise HostError("handoff_abort reason is invalid")
+        self.state = "ABORTED"
+        self.host.shutdown()
+        return self._ack(frame, "aborted")
+
+    def handle_frame(self, value: Any) -> dict[str, Any]:
+        with self._lock:
+            if not isinstance(value, dict):
+                raise HostError("host-control frame must be an object")
+            command = value.get("command")
+            if command not in HOST_CONTROL_COMMANDS:
+                raise HostError("host-control command is invalid")
+            if set(value) != self._REQUEST_KEYS[command]:
+                raise HostError(f"host-control {command} frame has an invalid shape")
+            if value.get("version") != HOST_CONTROL_VERSION:
+                raise HostError("host-control version is invalid")
+            self._identity(value)
+            terminal_replay = self._terminal_replay(value)
+            if terminal_replay is not None:
+                return terminal_replay
+            if command != "pause_prepare" or self.state != "ACTIVE":
+                self._require_bound_identity(value)
+            self._validate_frame_owners(command, value)
+            cache_key = (str(value["handoff_id"]), command)
+            if cache_key in self._acks:
+                self._validate_cached_replay_phase(command)
+            cached = self._cached(command, value)
+            if cached is not None:
+                return cached
+            handler = getattr(self, f"_{command}")
+            ack = handler(value)
+            if command == "handoff_finalize":
+                return ack
+            return self._remember(command, value, ack)
+
+    def _deadline_elapsed(self) -> bool:
+        return bool(
+            self.state != "ACTIVE"
+            and self.deadline_monotonic is not None
+            and self.deadline_unix_ms is not None
+            and (
+                time.monotonic() >= self.deadline_monotonic
+                or int(time.time() * 1000) >= self.deadline_unix_ms
+            )
+        )
+
+    def serve(self) -> None:
+        """Serve until EOF; any protocol/custody loss fails closed."""
+
+        control = socket.socket(fileno=self.control_fd)
+        control.settimeout(0.25)
+        buffer = bytearray()
+        try:
+            while not self.host._shutdown.is_set():
+                try:
+                    chunk = control.recv(4096)
+                except socket.timeout:
+                    if self._deadline_elapsed():
+                        raise HostError("host-control handoff deadline elapsed")
+                    continue
+                if not chunk:
+                    raise HostError("host-control channel closed")
+                buffer.extend(chunk)
+                if len(buffer) > HOST_CONTROL_FRAME_LIMIT:
+                    raise HostError("host-control frame is too large")
+                while b"\n" in buffer:
+                    encoded, remainder = bytes(buffer).split(b"\n", 1)
+                    buffer[:] = remainder
+                    if not encoded:
+                        raise HostError("host-control frame is empty")
+                    try:
+                        frame = json.loads(encoded.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise HostError("host-control frame is malformed") from exc
+                    try:
+                        acknowledgement = self.handle_frame(frame)
+                    except HostControlRejected:
+                        # A stale contender or altered replay is not authority
+                        # to destroy a healthy graph. The current Worker has
+                        # already authenticated the private descriptor, so
+                        # return a bound rejection and keep custody unchanged.
+                        acknowledgement = self._ack(frame, "rejected")
+                    payload = json.dumps(
+                        acknowledgement,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ).encode("utf-8") + b"\n"
+                    if len(payload) > HOST_CONTROL_FRAME_LIMIT:
+                        raise HostError("host-control acknowledgement is too large")
+                    control.sendall(payload)
+        except (HostError, OSError, socket.timeout):
+            self.host.shutdown()
+        finally:
+            control.close()
+
+
 def _await_enabled_runtime_credential(
     client: "RuntimeProtocolClient", *, timeout_seconds: float
 ) -> None:
@@ -6362,6 +7399,7 @@ def _cli() -> int:
     parser.add_argument("--activation-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--activation-operation-id", help=argparse.SUPPRESS)
     parser.add_argument("--activation-channel-id", help=argparse.SUPPRESS)
+    parser.add_argument("--host-control-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument(
         "--activation-timeout-seconds", type=float, default=120.0, help=argparse.SUPPRESS
     )
@@ -6379,6 +7417,10 @@ def _cli() -> int:
         value is not None for value in activation_values
     ):
         parser.error("parked activation arguments must be supplied together")
+    if args.host_control_fd is not None and args.activation_fd is None:
+        parser.error("host control requires Worker-supervised activation")
+    if args.host_control_fd is not None and args.host_control_fd == args.activation_fd:
+        parser.error("host control must use a descriptor separate from activation")
     target_requested = bool(
         args.execution_target_json is not None
         or os.environ.get("ASTRID_EXECUTION_TARGET_JSON", "").strip()
@@ -6547,6 +7589,23 @@ def _cli() -> int:
             print(json.dumps(failure, sort_keys=True), file=sys.stderr, flush=True)
             return 1
         print(json.dumps(registration, indent=2, sort_keys=True, default=_json_safe))
+    host_control = None
+    host_control_thread = None
+    if args.host_control_fd is not None:
+        if activation is None or credential_path is None:
+            parser.error("host control requires activation and an owner-only credential file")
+        host_control = LocalWorkerHostControl(
+            host,
+            control_fd=args.host_control_fd,
+            activation=activation,
+            credential_file=credential_path,
+        )
+        host_control_thread = threading.Thread(
+            target=host_control.serve,
+            name="astrid-local-worker-host-control",
+            daemon=True,
+        )
+        host_control_thread.start()
     if ready_path is not None:
         ready_payload = {
             "status": "ready",

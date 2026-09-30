@@ -1,5 +1,9 @@
 # Astrid expanded skill navigation — measured warmed traversal
 
+> **Historical evidence.** This trace predates the installed Runtime closeout
+> terminology. It records a read-only navigation measurement and is not a
+> current setup, launcher, or qualification procedure.
+
 Date: 2026-09-08. This is a second traversal after the earlier navigation
 audit, so it is warm-context evidence, not a cold new-user measurement. For
 each query I actually reopened the core skill, then opened only the listed
