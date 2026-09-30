@@ -905,6 +905,41 @@ def _prepare_managed_render_inputs(
     values = dict(inputs or {})
     timeline_ref = values.get("timeline_ref")
     expected_version = values.get("expected_version")
+    if _client is not None:
+        timeline_service = getattr(_client, "timelines", None)
+        resolver = getattr(timeline_service, "resolve_scope", None)
+        if callable(resolver):
+            scope = resolver(project, timeline_ref)
+            if not scope.ok or not isinstance(scope.data, Mapping):
+                error = scope.error
+                raise CapabilityPreconditionError(error.message)
+            project = scope.data.get("project_ref") or project
+            timeline_ref = scope.data.get("timeline_ref") or timeline_ref
+            values["timeline_ref"] = timeline_ref
+        elif timeline_ref in (None, ""):
+            # Keep direct unit-test/older-client compatibility while all
+            # connected RemoteAstridClient instances use the shared resolver.
+            if project is None or not str(project).strip():
+                project = _runtime_selected_project(_client)
+            if project is None:
+                raise CapabilityPreconditionError(
+                    "no current project is selected; pass --project <project> or "
+                    "select a current project in the workspace runtime"
+                )
+            shown = _client.projects.show(str(project))
+            if not shown.ok:
+                error = shown.error
+                raise CapabilityPreconditionError(error.message)
+            project_row = shown.data
+            metadata = project_row.get("metadata") if isinstance(project_row, Mapping) else None
+            default_ref = metadata.get("default_timeline_id") if isinstance(metadata, Mapping) else None
+            if default_ref in (None, ""):
+                raise CapabilityPreconditionError(
+                    f"project {project!r} has no configured default canonical timeline; "
+                    "pass a timeline ref or set metadata.default_timeline_id",
+                )
+            timeline_ref = str(default_ref)
+            values["timeline_ref"] = timeline_ref
     if timeline_ref in (None, ""):
         raise CapabilityValidationError(
             "rendering.render requires timeline_ref=<runtime timeline slug/UUID/ULID>; "
@@ -2273,7 +2308,10 @@ def _kernel_invoke(
     if generation_intent is not None:
         admission["generation_intent"] = generation_intent
         admission["settlement_effect"] = _generation_publish_effect(
-            capability, project=project, generation_intent=generation_intent
+            capability,
+            project=project,
+            generation_intent=generation_intent,
+            variant_context=variant_context,
         )
     if execution_request is not None:
         admission["execution_request"] = dict(execution_request)

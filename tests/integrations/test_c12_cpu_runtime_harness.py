@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import copy
 import json
 import multiprocessing
 import os
@@ -22,17 +23,35 @@ from typing import Any, Mapping
 
 import pytest
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ROOT = Path(
     os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
-    or "/Users/hannahomalley/Documents/Codex/2026-09-13/astrid-db-final-rework-20260913/work/runtime-export-candidate"
+    or WORKSPACE_ROOT
+    / "banodoco-workspace-runtime"
+    / ".otto"
+    / "worktrees"
+    / "h3-runtime-contract-20260927"
 ).resolve()
 WORKER_ROOT = Path(
     os.environ.get("REIGH_WORKER_CHECKOUT")
-    or "/Users/hannahomalley/Documents/Codex/2026-09-09/can-you-see-the-poms-skills/work/astrid-prep/repos/reigh-worker"
+    or WORKSPACE_ROOT / "reigh-worker"
 ).resolve()
 sys.path.insert(0, str(RUNTIME_ROOT))
 sys.path.insert(0, str(WORKER_ROOT))
 
+from banodoco_workspace_client.generated import (  # noqa: E402
+    ApiError,
+    WorkspaceClient as GeneratedWorkspaceClient,
+)
+from runtime_protocol.remote_worker_activation import (  # noqa: E402
+    QualifiedRemoteWorkerLauncher,
+    _digest as _activation_digest,
+)
+from runtime_protocol.remote_worker_deployment import (  # noqa: E402
+    ArtifactReference,
+    DeploymentReference,
+    deployment_binding_from_task,
+)
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from tests.helpers.runtime import initialize_runtime_realm
 from source.runtime import supervisor  # noqa: E402
@@ -55,8 +74,8 @@ FIXTURE_PACK = Path(__file__).parents[1] / "fixtures" / "c12_cpu_pack"
 # These are the post-T7 composition pins.  Keeping them explicit makes the
 # CPU journey fail closed when a dependency checkout drifts from the reviewed
 # composition instead of silently testing another tree.
-PINNED_RUNTIME_COMMIT = "ff4e4dc4f708d003f01a6ea65e6282ffb465d650"
-PINNED_WORKER_COMMIT = "e0c6a0765bee05f27155b335bbf67110c0df6103"
+PINNED_RUNTIME_COMMIT = "53bcd6144f71d093d5b407b1cbe26ea10173137d"
+PINNED_WORKER_COMMIT = "9eeed609a9387dd329d6e12d1bb410bc37a5c7d2"
 
 
 def _assert_pinned_dependency_heads() -> None:
@@ -69,6 +88,28 @@ def _assert_pinned_dependency_heads() -> None:
             text=True,
         ).strip()
         assert observed == expected, f"dependency checkout drifted: {checkout} {observed} != {expected}"
+        tracked = subprocess.run(
+            ["git", "-C", str(checkout), "diff", "--quiet", "HEAD", "--"],
+            check=False,
+        )
+        assert tracked.returncode == 0, f"dependency checkout has tracked changes: {checkout}"
+        untracked_python = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "*.py",
+            ],
+            text=True,
+        ).strip()
+        assert not untracked_python, (
+            f"dependency checkout has untracked executable Python: {checkout}: "
+            f"{untracked_python}"
+        )
 
 
 def _worker_entry(config: supervisor.HostLaunchConfig, environ: Mapping[str, str]) -> None:
@@ -246,6 +287,532 @@ def _wait_port_available(port: int, timeout: float = 10.0) -> None:
             probe.close()
         time.sleep(0.1)
     raise AssertionError(f"owned CPU child port {port} remained bound")
+
+
+_AUTHORITY_EXECUTOR = "h3-cpu-authority-worker"
+_AUTHORITY_TARGET = {
+    "kind": "runpod",
+    "pod_id": "cpu-fixture-pod",
+    "provider_account_ref": "cpu-fixture-account",
+}
+_PARENT_CAPABILITY = "h3_av.transform"
+_VERIFY_CAPABILITY = "h3_av.verify"
+_PUBLICATION_CAPABILITY = "h3_av.publication_finalizer"
+
+
+def _capability_digest(capability_id: str) -> str:
+    return "sha256:" + hashlib.sha256(capability_id.encode("utf-8")).hexdigest()
+
+
+def _mutation_payload(value: Any) -> Mapping[str, Any]:
+    payload = _value(value, "data", value)
+    assert isinstance(payload, Mapping), payload
+    return payload
+
+
+def _task_id(value: Any) -> str:
+    payload = _mutation_payload(value)
+    nested = payload.get("task")
+    candidate = payload.get("task_id") or (
+        nested.get("id") if isinstance(nested, Mapping) else None
+    )
+    assert isinstance(candidate, str) and candidate
+    return candidate
+
+
+def _attempt_settlement(claim: Any, outputs: list[Mapping[str, Any]], **extra: Any) -> dict[str, Any]:
+    return {
+        "lease_id": str(_value(claim, "lease_id")),
+        "fence": int(_value(claim, "fence")),
+        "runtime_epoch": int(_value(claim, "runtime_epoch")),
+        "outputs": [dict(row) for row in outputs],
+        **extra,
+    }
+
+
+def _authority_reference(tmp_path: Path, daemon: RuntimeDaemon, task_id: str) -> DeploymentReference:
+    service = daemon.service
+    task = service._task_resource(service.store.get_task(task_id))
+    binding = deployment_binding_from_task(task)
+    executable = ArtifactReference(
+        "python",
+        (tmp_path / "python").resolve(),
+        "sha256:" + "2" * 64,
+    )
+    target = binding.placement.effective_target
+    return DeploymentReference(
+        deployment_id="cpu-authority-deployment",
+        revision="cpu-authority-revision",
+        task_id=task_id,
+        run_id=binding.admission_identity.run_id,
+        target_ref="runpod:cpu-fixture-pod",
+        effective_target_ref="runpod:cpu-fixture-pod",
+        executable=executable,
+        dependency_closure=(executable,),
+        source_closure_digest="sha256:" + "3" * 64,
+        data_root=(tmp_path / "data").resolve(),
+        support_root=(tmp_path / "data" / "runtime").resolve(),
+        runtime_endpoint=str(daemon.endpoint),
+        runtime_instance_id=daemon.instance_id,
+        runtime_epoch=int(service.health()["runtime_epoch"]),
+        runtime_schema_digest="sha256:" + "4" * 64,
+        model_root=(tmp_path / "models").resolve(),
+        capacity=2,
+        session_ref="cpu-authority-session",
+        session_config_digest="sha256:" + "5" * 64,
+        output_root=(tmp_path / "outputs").resolve(),
+        credential_ref=str(daemon.credentials.path_for(_AUTHORITY_EXECUTOR)),
+        executor_id=_AUTHORITY_EXECUTOR,
+        boot_manifest_path=(tmp_path / "data" / "runtime" / "boot.json").resolve(),
+        boot_manifest_hash="sha256:" + "6" * 64,
+        readiness_profile_path=(tmp_path / "data" / "runtime" / "ready.json").resolve(),
+        readiness_profile_hash="sha256:" + "7" * 64,
+        admission_identity=binding.admission_identity,
+        capability_identity=binding.capability_identity,
+        input_bindings=binding.input_bindings,
+        original_target=binding.placement.original_target,
+        effective_target=target,
+        placement_version=binding.placement.placement_version,
+        recovery_decision_digest=binding.placement.recovery_decision_digest,
+        execution_target=target,
+    )
+
+
+def _authority_observation(reference: DeploymentReference, daemon: RuntimeDaemon) -> dict[str, Any]:
+    service = daemon.service
+    return {
+        "target": dict(reference.effective_target),
+        "provider_identity": {
+            "account_ref": reference.effective_target["provider_account_ref"],
+            "pod_id": reference.effective_target["pod_id"],
+            "fixture": True,
+        },
+        "process": {
+            "pid": 12345,
+            "birth_id": "cpu-fixture-host-birth",
+            "pgid": 12345,
+            "sid": 12345,
+        },
+        "child": {
+            "attached": True,
+            "birth_id": "cpu-fixture-child-birth",
+            "lanes": ["orchestration", "executor"],
+        },
+        "runtime_instance_id": reference.runtime_instance_id,
+        "runtime_epoch": reference.runtime_epoch,
+        "runtime_session_id": service.runtime_session_id,
+        "source_closure_digest": reference.source_closure_digest,
+        "dependency_closure_digest": _activation_digest(
+            [
+                {"name": item.name, "path": str(item.path), "digest": item.digest}
+                for item in reference.dependency_closure
+            ]
+        ),
+        "model_root": str(reference.model_root),
+        "session_ref": reference.session_ref,
+        "data_root": str(reference.data_root),
+        "support_root": str(reference.support_root),
+        "capacity": reference.capacity,
+        "model_inventory_digest": "sha256:" + "8" * 64,
+        "session_config_digest": reference.session_config_digest,
+    }
+
+
+class _CpuAuthorityPreparer:
+    """Fake only provider/process I/O; Runtime credential state remains real."""
+
+    def __init__(self, daemon: RuntimeDaemon) -> None:
+        self.daemon = daemon
+        self.disabled_claim_rejected = False
+        self.calls: list[str] = []
+
+    def prepare(self, launch: Any) -> object:
+        self.calls.append("prepare")
+        return {"launch": launch}
+
+    def acknowledge(self, _handle: object, grant: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.calls.append("private_ack")
+        token = Path(str(grant["credential_file"])).read_text(encoding="utf-8").strip()
+        disabled = GeneratedWorkspaceClient(str(self.daemon.endpoint), token)
+        try:
+            disabled.claim_task(
+                executor_id=_AUTHORITY_EXECUTOR,
+                capability_ids=[_PARENT_CAPABILITY],
+                idempotency_key="disabled-before-private-ack",
+                runtime_epoch=int(self.daemon.service.health()["runtime_epoch"]),
+                target=_AUTHORITY_TARGET,
+            )
+        except ApiError as exc:
+            assert exc.status in {401, 403}
+            self.disabled_claim_rejected = True
+        else:
+            raise AssertionError("disabled remote credential claimed before activation")
+        return {
+            "activation_id": grant["activation_id"],
+            "executor_incarnation": grant["executor_incarnation"],
+            "evidence_digest": grant["evidence_digest"],
+        }
+
+    def abort(self, _handle: object) -> None:
+        self.calls.append("abort")
+
+
+class _CpuAuthorityInspector:
+    def __init__(self, observation: Mapping[str, Any]) -> None:
+        self.observation = dict(observation)
+        self.calls = 0
+
+    def observe(self, _handle: object) -> Mapping[str, Any]:
+        self.calls += 1
+        return copy.deepcopy(self.observation)
+
+
+@pytest.mark.timeout(60)
+def test_cpu_remote_authority_claim_and_verified_publication(tmp_path: Path) -> None:
+    """C3/C10 plus the canonical authority/publication subset of C11.
+
+    Provider/process observation is an explicit CPU fake. Task admission,
+    qualified credential state, claim/fence authority, delegated stage
+    lineage, CAS settlement, generation publication, and public readback are
+    the pinned Runtime implementation and Astrid's generated client.
+    """
+
+    _assert_pinned_dependency_heads()
+    support_root = (tmp_path / "support").resolve()
+    daemon = RuntimeDaemon(
+        tmp_path / "realm",
+        support_root=support_root,
+        production_worker_credentials=True,
+    ).start()
+    try:
+        owner = GeneratedWorkspaceClient(str(daemon.endpoint), daemon.token)
+        project_result = owner.create_project(
+            "CPU authority publication",
+            slug="cpu-authority-publication",
+            idempotency_key="cpu-authority-project",
+        )
+        project = _mutation_payload(project_result)
+        project_id = str(project.get("project_id") or project.get("id"))
+        assert project_id
+
+        capability_ids = (
+            _PARENT_CAPABILITY,
+            _VERIFY_CAPABILITY,
+            _PUBLICATION_CAPABILITY,
+        )
+        digests = {name: _capability_digest(name) for name in capability_ids}
+        for capability_id in capability_ids:
+            owner.register_capability(
+                capability_id,
+                digests[capability_id],
+                idempotency_key=f"register-{capability_id}",
+            )
+        owner.register_executor(
+            {
+                "executor_id": _AUTHORITY_EXECUTOR,
+                "capabilities": list(capability_ids),
+                "max_concurrency": 2,
+            },
+            idempotency_key="register-cpu-authority-worker",
+        )
+
+        effect = {
+            "effect_type": "generation.publish_v1",
+            "target_id": project_id,
+            "payload": {
+                "version": 1,
+                "modality": "video",
+                "generation_type": "h3_av_verified_cpu_fixture",
+                "metadata": {"boundary": "cpu_fixture", "provider_execution": False},
+                "partial_success_policy": "reject",
+                "groups": [
+                    {
+                        "group_key": "main",
+                        "selectors": [
+                            {
+                                "selector": "main-0",
+                                "ordinal": 0,
+                                "variant_key": "original",
+                                "output_port": "verified_candidate",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        stages = [
+            {
+                "name": "verify",
+                "capability_id": _VERIFY_CAPABILITY,
+                "capability_digest": digests[_VERIFY_CAPABILITY],
+                "target": _AUTHORITY_TARGET,
+                "inputs": [],
+            },
+            {
+                "name": "publish",
+                "capability_id": _PUBLICATION_CAPABILITY,
+                "capability_digest": digests[_PUBLICATION_CAPABILITY],
+                "target": _AUTHORITY_TARGET,
+                "inputs": [
+                    {
+                        "name": "verified_candidate",
+                        "producer_stage": "verify",
+                        "output_port": "verified_candidate",
+                    }
+                ],
+            },
+        ]
+        admitted = owner.admit_task(
+            capability_id=_PARENT_CAPABILITY,
+            capability_digest=digests[_PARENT_CAPABILITY],
+            input_object_ids=[],
+            project_id=project_id,
+            spec={"inputs": {}},
+            execution_request={
+                "schema_version": 1,
+                "target": _AUTHORITY_TARGET,
+                "inputs": [],
+            },
+            child_delegation={
+                "capabilities": [
+                    {
+                        "capability_id": capability_id,
+                        "capability_digest": digests[capability_id],
+                    }
+                    for capability_id in (_VERIFY_CAPABILITY, _PUBLICATION_CAPABILITY)
+                ],
+                "targets": [_AUTHORITY_TARGET],
+                "input_object_ids": [],
+                "stages": stages,
+                "final_publication": {
+                    "stage": "publish",
+                    "verify_stage": "verify",
+                    "verify_output_port": "verified_candidate",
+                    "effect": effect,
+                },
+            },
+            idempotency_key="cpu-authority-parent",
+        )
+        parent_task_id = _task_id(admitted)
+        parent_task = daemon.service._task_resource(
+            daemon.service.store.get_task(parent_task_id)
+        )
+        reference = _authority_reference(tmp_path, daemon, parent_task_id)
+        preparer = _CpuAuthorityPreparer(daemon)
+        inspector = _CpuAuthorityInspector(
+            _authority_observation(reference, daemon)
+        )
+        launcher = QualifiedRemoteWorkerLauncher(
+            runtime=daemon.service,
+            credentials=daemon.credentials,
+            preparer=preparer,
+            inspector=inspector,
+        )
+
+        waiting = daemon.service.claim_next(
+            {
+                "executor_id": _AUTHORITY_EXECUTOR,
+                "capability_ids": [_PARENT_CAPABILITY],
+                "runtime_epoch": int(daemon.service.health()["runtime_epoch"]),
+                "target": _AUTHORITY_TARGET,
+            },
+            idempotency_key="claim-before-activation",
+            identity={"actor": _AUTHORITY_EXECUTOR, "scopes": ["worker:execute"]},
+        )
+        assert waiting["waiting_reason"] in {
+            "execution_binding_missing",
+            "remote_activation_missing",
+        }
+        assert daemon.service.store.conn.execute(
+            "SELECT COUNT(*) FROM attempts WHERE task_id=?", (parent_task_id,)
+        ).fetchone()[0] == 0
+
+        parked = launcher.park(reference, target=_AUTHORITY_TARGET)
+        qualification = launcher.activate(parent_task, reference, parked)
+        launcher.assert_fresh(parent_task, reference, parked, qualification)
+        assert preparer.calls == ["prepare", "private_ack"]
+        assert preparer.disabled_claim_rejected is True
+        assert inspector.calls == 5
+
+        worker_token = daemon.credentials.path_for(_AUTHORITY_EXECUTOR).read_text(
+            encoding="utf-8"
+        ).strip()
+        worker = GeneratedWorkspaceClient(str(daemon.endpoint), worker_token)
+        foreign = worker.claim_task(
+            executor_id=_AUTHORITY_EXECUTOR,
+            capability_ids=[_PARENT_CAPABILITY],
+            idempotency_key="foreign-target-claim",
+            runtime_epoch=int(daemon.service.health()["runtime_epoch"]),
+            target={**_AUTHORITY_TARGET, "pod_id": "foreign-pod"},
+        )
+        assert foreign is None or _value(foreign, "waiting_reason") in {
+            "execution_binding_mismatch",
+            "remote_activation_missing",
+            "target_mismatch",
+        }
+        parent_claim = worker.claim_task(
+            executor_id=_AUTHORITY_EXECUTOR,
+            capability_ids=[_PARENT_CAPABILITY],
+            idempotency_key="exact-parent-claim",
+            runtime_epoch=int(daemon.service.health()["runtime_epoch"]),
+            target=_AUTHORITY_TARGET,
+        )
+        assert _value(parent_claim, "task_id") == parent_task_id
+        assert _value(parent_claim, "execution_binding")["actual_target"] == _AUTHORITY_TARGET
+
+        authority = worker.issue_child_authority(
+            str(_value(parent_claim, "attempt_id")),
+            lease_id=str(_value(parent_claim, "lease_id")),
+            fence=int(_value(parent_claim, "fence")),
+            runtime_epoch=int(_value(parent_claim, "runtime_epoch")),
+        )["authority"]
+        verify_admitted = worker.admit_delegated_task(
+            authority=authority,
+            task={
+                "capability_id": _VERIFY_CAPABILITY,
+                "capability_digest": digests[_VERIFY_CAPABILITY],
+                "stage": "verify",
+                "input_refs": [],
+                "spec": {"inputs": {}},
+                "execution_request": {
+                    "schema_version": 1,
+                    "target": _AUTHORITY_TARGET,
+                },
+            },
+            idempotency_key="cpu-authority-verify",
+        )
+        verify_task_id = _task_id(verify_admitted)
+        verify_claim = worker.claim_task(
+            executor_id=_AUTHORITY_EXECUTOR,
+            capability_ids=[_VERIFY_CAPABILITY],
+            idempotency_key="cpu-authority-verify-claim",
+            runtime_epoch=int(daemon.service.health()["runtime_epoch"]),
+            target=_AUTHORITY_TARGET,
+        )
+        assert _value(verify_claim, "task_id") == verify_task_id
+
+        payload = b"verified CPU H3 candidate"
+        object_id = "sha256:" + hashlib.sha256(payload).hexdigest()
+        verified_output = {
+            "name": "verified_candidate",
+            "filename": "verified-candidate.mp4",
+            "output_port": "verified_candidate",
+            "group_key": "main",
+            "variant_key": "original",
+            "ordinal": 0,
+            "role": "result",
+            "is_primary": True,
+            "kind": "object",
+            "digest": object_id,
+            "media_type": "video/mp4",
+            "size": len(payload),
+            "data_base64": base64.b64encode(payload).decode("ascii"),
+            "durability": "durable",
+        }
+        worker.settle_attempt(
+            str(_value(verify_claim, "attempt_id")),
+            _attempt_settlement(verify_claim, [verified_output]),
+            idempotency_key="cpu-authority-verify-settle",
+        )
+        verify_outputs, verify_cursor = owner.list_managed_outputs(verify_task_id)
+        assert verify_cursor is None and len(verify_outputs) == 1
+        verified = verify_outputs[0]
+        assert verified.object_id == object_id
+        assert verified.generation_id is None
+
+        publish_admitted = worker.admit_delegated_task(
+            authority=authority,
+            task={
+                "capability_id": _PUBLICATION_CAPABILITY,
+                "capability_digest": digests[_PUBLICATION_CAPABILITY],
+                "stage": "publish",
+                "input_refs": [
+                    {
+                        "name": "verified_candidate",
+                        "producer_task_id": verify_task_id,
+                        "association_id": verified.association_id,
+                        "output_port": "verified_candidate",
+                    }
+                ],
+                "spec": {
+                    "inputs": {
+                        "verified_candidate": {
+                            "object_id": object_id,
+                            "digest": object_id,
+                            "filename": "verified-candidate.mp4",
+                            "required": True,
+                        }
+                    }
+                },
+                "execution_request": {
+                    "schema_version": 1,
+                    "target": _AUTHORITY_TARGET,
+                },
+            },
+            idempotency_key="cpu-authority-publish",
+        )
+        publish_task_id = _task_id(publish_admitted)
+        publish_claim = worker.claim_task(
+            executor_id=_AUTHORITY_EXECUTOR,
+            capability_ids=[_PUBLICATION_CAPABILITY],
+            idempotency_key="cpu-authority-publish-claim",
+            runtime_epoch=int(daemon.service.health()["runtime_epoch"]),
+            target=_AUTHORITY_TARGET,
+        )
+        assert _value(publish_claim, "task_id") == publish_task_id
+        publication_settlement = _attempt_settlement(
+            publish_claim,
+            [verified_output],
+            effect=effect,
+            result={"boundary": "cpu_fixture", "provider_execution": False},
+        )
+        first_settlement = worker.settle_attempt(
+            str(_value(publish_claim, "attempt_id")),
+            publication_settlement,
+            idempotency_key="cpu-authority-publish-settle",
+        )
+        replayed_settlement = worker.settle_attempt(
+            str(_value(publish_claim, "attempt_id")),
+            publication_settlement,
+            idempotency_key="cpu-authority-publish-settle",
+        )
+        assert _mutation_payload(first_settlement) == _mutation_payload(replayed_settlement)
+
+        worker.settle_attempt(
+            str(_value(parent_claim, "attempt_id")),
+            _attempt_settlement(parent_claim, []),
+            idempotency_key="cpu-authority-parent-settle",
+        )
+
+        parent_readback = owner.get_task(parent_task_id)
+        publication_readback = owner.get_task(publish_task_id)
+        assert parent_readback.state == "succeeded"
+        assert publication_readback.state == "succeeded"
+        assert publication_readback.attempt_id == str(_value(publish_claim, "attempt_id"))
+        publish_outputs, publish_cursor = owner.list_managed_outputs(publish_task_id)
+        assert publish_cursor is None and len(publish_outputs) == 1
+        published = publish_outputs[0]
+        assert published.task_id == publish_task_id
+        assert published.attempt_id == publication_readback.attempt_id
+        assert published.output_port == "verified_candidate"
+        assert published.object_id == verified.object_id == object_id
+        assert published.generation_id is not None
+        assert bytes(owner.get_object(object_id).data) == payload
+
+        generations, generation_cursor = owner.list_generations(project_id)
+        assert generation_cursor is None and len(generations) == 1
+        generation = generations[0]
+        assert generation.generation_id == published.generation_id
+        assert generation.source_task_id == publish_task_id
+        variants, variant_cursor = owner.list_variants(generation.generation_id)
+        assert variant_cursor is None and len(variants) == 1
+        variant = variants[0]
+        assert variant.object_id == object_id
+        assert variant.metadata["provenance"]["task_id"] == publish_task_id
+        assert variant.metadata["provenance"]["attempt_id"] == publication_readback.attempt_id
+        assert published.provenance["selector"] == "main-0"
+    finally:
+        daemon.stop()
 
 
 def test_c12_observation_helpers_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:

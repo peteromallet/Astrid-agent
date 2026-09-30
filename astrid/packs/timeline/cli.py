@@ -96,12 +96,19 @@ def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
+def _add_project_arg(
+    subparser: argparse.ArgumentParser, *, required: bool = True
+) -> None:
     subparser.add_argument(
         "--project",
-        required=True,
+        required=required,
         default=None,
-        help="Owning project id or immutable slug.",
+        help=(
+            "Owning project id or immutable slug. When omitted, use the "
+            "workspace runtime's current project."
+            if not required
+            else "Owning project id or immutable slug."
+        ),
     )
 
 
@@ -712,45 +719,13 @@ def offline_inspect_main(args: list[str]) -> int:
         return 2
 
 
-def _resolve_timeline_ref(client: Any, project: str, ref: str | None) -> str | None:
-    """Return the explicit ref, falling back to the project's default timeline."""
-    if ref not in (None, ""):
-        return ref
-    shown = client.projects.show(project)
-    data = getattr(shown, "data", None)
-    if isinstance(data, Mapping):
-        metadata = data.get("metadata")
-        if isinstance(metadata, Mapping):
-            default = metadata.get("default_timeline_id")
-            if default not in (None, ""):
-                return str(default)
-    return None
-
-
 def _cmd_render(parsed: argparse.Namespace) -> int:
-    """Render one kernel timeline, defaulting to the project's default timeline."""
-    from astrid.sdk.contracts import DomainResult, ErrorObject
+    """Render one kernel timeline through the shared runtime scope resolver."""
+    from astrid.sdk.contracts import ErrorObject
 
-    ref = _resolve_timeline_ref(parsed.client, parsed.project, parsed.ref)
-    if ref is None:
-        return print_result(
-            DomainResult.failure(
-                ErrorObject(
-                    code="validation_error",
-                    message=(
-                        "no timeline ref given and project "
-                        f"{parsed.project!r} has no resolvable default timeline "
-                        "(missing project or no default set); pass a timeline "
-                        "slug or set one with astrid projects update "
-                        "<project> --settings "
-                        "'{\"default_timeline_id\": \"<timeline-id>\"}'"
-                    ),
-                    details={"project": parsed.project},
-                )
-            ),
-            as_json=parsed.json,
-        )
-    inputs: dict[str, Any] = {"timeline_ref": ref}
+    inputs: dict[str, Any] = {}
+    if parsed.ref not in (None, ""):
+        inputs["timeline_ref"] = parsed.ref
     for name in ("expected_version", "output_name", "profile", "review"):
         value = getattr(parsed, name, None)
         if value not in (None, ""):
@@ -855,7 +830,7 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
 
 
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
+    _add_project_arg(subparser, required=False)
     subparser.add_argument(
         "--include-archived",
         dest="include_archived",
@@ -867,8 +842,11 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument(
+        "ref", nargs="?", default=None,
+        help="Optional timeline UUID, ULID, or slug; omit to use the project's default timeline.",
+    )
     subparser.add_argument(
         "--summary",
         action="store_true",
@@ -941,7 +919,7 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
+    _add_project_arg(subparser, required=False)
     subparser.add_argument(
         "timeline_ref", nargs="?", default=None,
         help="Optional positional timeline slug, UUID, or ULID (prefer --timeline-slug).",
@@ -1040,7 +1018,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_render(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
+    _add_project_arg(subparser, required=False)
     subparser.add_argument("--review", action="store_true", default=None, help="Burn in shot names/time plus pinned authored speech captions at the bottom (Remotion/Three.js).")
     subparser.add_argument(
         "ref",

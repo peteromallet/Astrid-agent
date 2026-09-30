@@ -28,7 +28,7 @@ dependencies = [
     # runpod-lifecycle has been moved to [project.optional-dependencies].runpod.
     # It is not published on public PyPI and requires a configured private index
     # or local wheelhouse to resolve.  Install with: pip install 'astrid[runpod]'
-    # "runpod-lifecycle>=0.3",
+    # "runpod-lifecycle>=0.3.1.dev0,<0.4",
 ]
 
 [project.scripts]
@@ -71,7 +71,7 @@ dev = [
 # source) because runpod-lifecycle is not published on public PyPI.
 # Install: pip install 'astrid[runpod]'
 runpod = [
-    "runpod-lifecycle>=0.3",
+    "runpod-lifecycle>=0.3.1.dev0,<0.4",
 ]
 
 [tool.setuptools]

@@ -177,6 +177,27 @@ def test_run_orchestrator_rejects_missing_required_input(tmp_path: Path) -> None
         run_orchestrator(request, registry)
 
 
+def test_local_command_orchestrator_rejects_managed_file_descriptor(
+    tmp_path: Path,
+) -> None:
+    orch = _command_orchestrator(
+        inputs=(Port(name="request", type="file", required=True),),
+        argv=(sys.executable, "-c", "pass", "{request}"),
+    )
+    registry = _registry(orch)
+    request = OrchestratorRunRequest(
+        orchestrator_id=orch.id,
+        out=tmp_path,
+        inputs={"request": {"object_id": "sha256:" + "0" * 64}},
+    )
+
+    with pytest.raises(
+        OrchestratorRunnerError,
+        match="must be local path strings, not managed descriptors",
+    ):
+        run_orchestrator(request, registry)
+
+
 def test_command_orchestrator_preserves_declared_passthrough_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

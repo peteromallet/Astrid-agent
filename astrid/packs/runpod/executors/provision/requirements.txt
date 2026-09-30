@@ -7,4 +7,4 @@
 # ``pip install 'astrid[runpod]'`` (requires a configured private index;
 # see pyproject.toml).  This pack is skipped when the dependency is not
 # resolvable.
-runpod-lifecycle>=0.3
+runpod-lifecycle>=0.3.1.dev0,<0.4

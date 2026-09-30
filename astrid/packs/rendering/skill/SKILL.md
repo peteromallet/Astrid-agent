@@ -1,26 +1,25 @@
 ---
-name: astrid-timeline
+name: timeline_editing
 description: >
-  Downstream rendering, visual evidence, playback, and compatibility guidance
-  for runtime-owned Astrid timelines after the video-editing detached-candidate
-  route. Use when pixel/render evidence or a managed playback artifact is
-  needed; existing timeline editing starts in video_editing.
+  Author, inspect, edit, preview, render, and open runtime-owned Astrid
+  timelines, including Remotion output and render-time animation, transition,
+  and effect elements.
 ---
 
-# Astrid timeline rendering evidence (compatibility)
+# Timeline editing
 
-Existing timeline editing is owned by the [video editing skill](../../video_editing/skill/SKILL.md).
-Follow its inspect → edit → validate → save route. Render only when requested
-or needed for composed evidence; honor explicit preview-before-save ordering. This
-skill is the downstream rendering/evidence and playback compatibility layer;
-it is not an alternate editorial source of truth. In a checkout the source is
+This is the canonical skill for runtime-owned timeline work: inspect → edit →
+validate → save, with Remotion rendering and effect/evidence workflows when
+needed. The broader [video editing skill](../../video_editing/skill/SKILL.md)
+owns production orchestrators such as hype edits, talks, thumbnails, and logo
+grids; it is not a second timeline-authoring route. In a checkout the source is
 `astrid/packs/rendering/skill/SKILL.md`; in an installed skill view it is
 `packs/rendering/SKILL.md`.
 
-This compatibility workflow renders, inspects render/input evidence, and opens
-timeline output after the editorial route has produced a candidate or
-published state. Rendering is one downstream evidence action, not a second
-timeline authority or the name of the editing model. When the request also needs
+Use this skill to render, inspect render/input evidence, and open timeline
+output for a candidate or published state. Rendering is an optional downstream
+evidence action within the same timeline route, not a second timeline authority.
+When the request also needs
 new generated media (for example Foley audio), use [creative work](../../_core/skill/creative-work/SKILL.md)
 to find its generation capability, then return here to assemble the result.
 
@@ -53,10 +52,14 @@ switch to a mutable child document because it is easier to read.
 
 Use this loop for every inspection or edit:
 
-1. **Resolve and pin scope.** Resolve the project and timeline explicitly, then
-   capture one current authoring head, candidate digest, or explicit historical
-   render identity. Label the lifecycle (`current`, `candidate preview`,
-   `historical`, or `unverified legacy`) in the answer.
+1. **Resolve and pin scope.** Explicit project and timeline arguments always win.
+   For the timeline discovery/read/visualize/render commands, omitted scope is
+   resolved by the connected Runtime: the workspace's current project, then
+   that project's `metadata.default_timeline_id`. If either selection is
+   missing, stop with the recovery command instead of guessing from names or
+   ordering. Capture one current authoring head, candidate digest, or explicit
+   historical render identity and label the lifecycle (`current`, `candidate
+   preview`, `historical`, or `unverified legacy`) in the answer.
 2. **Start broad, then narrow.** Get the compact structural overview first.
    Expand an occurrence, then its clip/track/property, then exact text or
    source media. Use the visual view to confirm what is on screen at the same
@@ -114,18 +117,123 @@ This contract deliberately favors simple primitives for common work and code
 for complex batch work. It does not add a DSL, persistent checkout, new media
 store, or automatic merge service.
 
+## Extension data and programmatic passes
+
+Use the shared schema's open maps when a timeline needs application data. Keep
+the scope explicit:
+
+| Scope | Extension point | Good use |
+| --- | --- | --- |
+| Whole timeline | `candidate["parent"]["config"]["app"]["structure"]` | delivery-pass version or project-wide structure |
+| One shot/revision | `candidate["shots"][shot_id]["payload"]["metadata"]` | delivery instructions, review status, or generation notes |
+| One occurrence | `candidate["placements"][i]["provenance"]` | occurrence-specific processing state or receipt |
+| One internal clip/effect | clip `app` or `params` | labels, effect controls, or local analysis |
+
+`config.app.structure` is the intentional timeline extension point; an
+unregistered top-level `config.structure` is invalid. These maps are retained
+by the detached authoring bundle and published through the same validation,
+diff, preview, and compare-and-swap boundary. They are storage extensions, so
+the browser/editor needs an explicit projection before it can display or edit
+an arbitrary key. Use a namespaced object such as `metadata["delivery"]` for
+agent-owned state. If a shot revision is placed more than once, keep different
+per-occurrence state in that placement's `provenance` rather than overwriting
+shared shot metadata.
+
+For a repeatable pass, use canonical `timelines show`/`open_composition` to pin
+the current head and enumerate occurrence identities, then open the same
+coordinator-issued target as a detached bundle. The target's
+`head_revision_id` must equal the inspected `summary.head_revision_id`:
+
+```python
+shown = client.timelines.open_composition(project_id, timeline_ref, detail=True)
+assert shown.ok
+inspection = shown.data
+assert target["head_revision_id"] == inspection["summary"]["head_revision_id"]
+
+bound = client.open_authoring_target(target)  # same project/timeline/head
+work = bound.open()                          # exact immutable closure
+work["parent"].setdefault("config", {}).setdefault("app", {}).setdefault(
+    "structure", {}
+)["delivery_pass"] = {"version": 1, "status": "queued"}
+
+for index, placement in enumerate(work["placements"]):
+    shot = work["shots"][placement["shot_id"]]
+    clips = shot["internal_timeline"].get("clips", [])
+    shot["payload"].setdefault("metadata", {})["delivery"] = {
+        "instructions": "Match the approved reference and preserve the cut.",
+        "status": "queued",
+        "source_head": inspection["summary"]["head_revision_id"],
+        "clip_count": len(clips),
+    }
+    placement.setdefault("provenance", {})["delivery_index"] = index
+
+bound.validate(work)
+diff = bound.diff(work)       # inspect requested paths before saving
+frozen = bound.preview(work)  # candidate JSON; no pixels are rendered
+receipt = bound.publish(work, idempotency_key=frozen["candidate_digest"])
+```
+
+This is one candidate and one publication, so the status ledger and timeline
+change share one head. On a stale-head/CAS error, discard the detached
+candidate, run `timelines show` again, and rerun the deterministic pass. Do not
+merge stale JSON or publish one shot at a time. For a report-only pass, walk
+the ordered occurrences in `inspection`; for an item-level report or edit, use
+the same `work["shots"][...]["internal_timeline"]` closure:
+
+```python
+report = []
+for placement in work["placements"]:
+    shot = work["shots"][placement["shot_id"]]
+    for clip in shot["internal_timeline"].get("clips", []):
+        report.append({
+            "occurrence_id": placement["occurrence_id"],
+            "clip_id": clip["id"],
+            "track": clip.get("track"),
+            "at": clip.get("at"),
+            "from": clip.get("from"),
+            "to": clip.get("to"),
+        })
+        clip.setdefault("app", {})["report_label"] = placement["occurrence_id"]
+
+# For duration changes, use retime/quantize helpers with an explicit policy;
+# then repeat validate -> diff -> preview -> publish on this same candidate.
+bound.validate(work)
+```
+
+Stable Runtime identities remain immutable; compilation and CAS publication
+allocate or reuse revisions as appropriate. The full extension-field example
+and report/edit guide are in
+[`docs/timeline-editing-guide.md`](../../../docs/timeline-editing-guide.md).
+
+### Renderer and skill boundary
+
+Remotion and timeline effects stay on this route: edit the admitted internal
+timeline `effects`/clip `app` or `params`, freeze the candidate, and use
+`render_authoring_candidate_preview` when composed pixels are required. Do not
+create a renderer-specific timeline format or send effect edits through the
+production orchestrators in `video_editing`. The source pack directory and
+capability IDs intentionally remain `rendering` for runtime compatibility;
+the agent-facing skill name is `timeline_editing`. After changing this skill,
+refresh the writable views with `python3 -m astrid.skills sync --all` and verify
+with `python3 -m astrid.skills sync --check --json` so the root gateway and
+installed pack view do not route existing-timeline work back to video editing.
+
 ## Discover and inspect
 
-Resolve the project explicitly whenever more than one project is visible. List
-timelines for a compact inventory, then show the selected timeline for its
-identity, current head, and version. Canonical head-only reads may omit the
+Resolve the project explicitly whenever more than one project is visible. When
+the workspace already has the intended project selected, the `--project` flag
+and timeline ref can be omitted; the Runtime uses its current project and the
+project's `metadata.default_timeline_id`. List timelines for a compact
+inventory, then show the selected timeline for its identity, current head, and
+version. Canonical head-only reads may omit the
 legacy `config` and `registry` fields; use the SDK composition opener below
 for the pinned structural view:
 
 ```bash
 python3 -m astrid projects list --json
-python3 -m astrid timelines list --project <project> --json
-python3 -m astrid timelines show --project <project> <slug-or-id> --json
+python3 -m astrid projects current --json
+python3 -m astrid timelines list [--project <project>] --json
+python3 -m astrid timelines show [--project <project>] [<slug-or-id>] --json
 python3 -m astrid timelines history --project <project> <slug-or-id> --json
 python3 -m astrid timelines diff --project <project> <slug-or-id> --json
 ```
@@ -141,10 +249,14 @@ frame access from `media.show` alone:
 
 ```python
 opened = client.timelines.open_composition(
-    "<project>", "<timeline>", occurrence="<occurrence-id>",
+    None, None, occurrence="<occurrence-id>",
     range_value="10..15", limit=20, detail=True,
 )
 ```
+
+Passing `None` for either scope uses the same Runtime selection rules as the
+CLI; pass an explicit project or timeline ref whenever you need a different
+scope.
 
 Keep the returned `head`, parent/revision identity, candidate digest, and
 render identity together. A cursor is valid only for that complete scope;

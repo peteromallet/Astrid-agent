@@ -17,8 +17,10 @@ from astrid.packs.h3_av.orchestrators.transform.run import (
     _generation_intent,
     _invoke,
     _materialize_output,
+    _qualified_execution_request,
     _retrieve_compiled_workflow,
     _import_runtime_file,
+    _receipt_target,
 )
 from astrid.packs.h3_av.src.compile import compile_preparation
 from astrid.packs.h3_av.src.compose import compose_candidate
@@ -29,6 +31,7 @@ from astrid.packs.h3_av.src.input_bundle import (
     build_input_bundle, bundle_digest, materialize_input_bundle, resolve_preparation_assets,
 )
 from astrid.packs.vibecomfy.asset_manifest import AssetManifestError, read_archive
+from astrid.sdk.results import InvocationResult
 
 
 def _request():
@@ -79,6 +82,62 @@ def test_nested_execution_request_does_not_inherit_the_parent_input_set() -> Non
     assert child is not None
     assert "inputs" not in child
     assert child["target"] == parent["target"]
+
+
+def test_receipt_target_preserves_nested_storage_identity() -> None:
+    target = {
+        "kind": "runpod",
+        "pod_id": "pod-1",
+        "storage": {"network_volume_id": "volume-1"},
+        "ignored": "field",
+    }
+
+    assert _receipt_target(target) == {
+        "kind": "runpod",
+        "pod_id": "pod-1",
+        "storage": {"network_volume_id": "volume-1"},
+    }
+
+
+def test_qualified_execution_request_preserves_existing_nested_storage() -> None:
+    from tests.core.execution.test_worker_qualification import _receipt
+
+    qualification = _receipt()
+    storage = {"network_volume_id": "volume-1", "mount_path": "/workspace"}
+    qualification["target"]["storage"] = storage
+    request = {
+        "target": {
+            "kind": "runpod",
+            "pod_id": "pod-1",
+            "provider_account_ref": "runpod",
+            "storage": {"network_volume_id": "volume-1", "mount_path": "/workspace"},
+        },
+        "lifecycle": {"mode": "leave_running"},
+    }
+
+    admitted, qualified_target = _qualified_execution_request(qualification, request)
+
+    assert admitted["target"]["storage"] == request["target"]["storage"]
+    assert admitted["target"]["storage"] is storage
+    assert qualified_target["storage"] is storage
+
+
+def test_qualified_execution_request_rejects_existing_storage_disagreement() -> None:
+    from tests.core.execution.test_worker_qualification import _receipt
+
+    qualification = _receipt()
+    qualification["target"]["storage"] = {"network_volume_id": "qualified-volume"}
+    request = {
+        "target": {
+            "kind": "runpod",
+            "pod_id": "pod-1",
+            "provider_account_ref": "runpod",
+            "storage": {"network_volume_id": "request-volume"},
+        }
+    }
+
+    with pytest.raises(ValueError, match="target disagrees"):
+        _qualified_execution_request(qualification, request)
 
 
 def test_generation_intent_comes_only_from_the_sealed_compilation_contract() -> None:
@@ -446,6 +505,46 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     attempts = []
     pack = Path(transform.__file__).resolve().parents[2]
 
+    # The real validator now requires the worker-attested model-root binding
+    # for model-bearing H3 bundles. Keep this CPU test offline by making a
+    # small nonempty fixture for every model family used by the packaged H3
+    # workflows; no model service or provider operation is involved.
+    from astrid.core.generation.model_root import (
+        MODEL_ROOT_BINDING_ENV,
+        MODEL_ROOT_ENV,
+        canonical_model_inventory_digest,
+    )
+
+    model_root = tmp_path / "models"
+    model_files = {
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors": b"h3-ref2va",
+        "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors": b"h3-fl2va",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors": b"h3-text",
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors": b"h3-video-vae",
+        "vae/minimax_h3_video_vae_fp16.safetensors": b"h3-video-vae-fp16",
+        "vae/minimax_h3_audio_vae_fp32.safetensors": b"h3-audio-vae",
+        "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors": b"h3-lora",
+    }
+    inventory = []
+    for relative, payload in sorted(model_files.items()):
+        path = model_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        inventory.append({
+            "name": path.name,
+            "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+            "subdir": path.parent.relative_to(model_root).as_posix(),
+        })
+    binding = {
+        "schema_version": 1,
+        "path": str(model_root),
+        "inventory": inventory,
+        "inventory_digest": canonical_model_inventory_digest(inventory),
+    }
+    monkeypatch.setenv(MODEL_ROOT_ENV, str(model_root))
+    monkeypatch.setenv(MODEL_ROOT_BINDING_ENV, json.dumps(binding, sort_keys=True))
+
     def settle(path, name, **extra):
         payload = Path(path).read_bytes()
         digest = "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -518,11 +617,47 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 rows = [settle(Path(port["path_template"].format(out=out)), port["name"])
                         for port in manifest["outputs"]]
             elif capability_id == "vibecomfy.validate":
-                # Workflow graph validation/model execution are outside this
-                # transport regression; canonical bundle identity is real.
-                assert set(inputs) == {"python", "companion", "source", "python_execution_consent"}
+                assert set(inputs) == {
+                    "python", "companion", "source", "python_execution_consent",
+                    "workflow_inputs",
+                }
                 assert inputs["python_execution_consent"] == "confirmed"
-                rows = []
+                # Exercise the real canonical validator at the same transport
+                # seam as the staged H3 executors.  The workflow projection is
+                # CPU-safe; only the later sampling branch remains synthetic.
+                validator_inputs = {
+                    name: inputs[name]
+                    for name in ("python", "companion", "source")
+                }
+                staged: dict[str, Path] = {}
+                for name, filename in (
+                    ("python", "workflow.py"),
+                    ("companion", "workflow.vibe.json"),
+                    ("source", "source.json"),
+                ):
+                    descriptor = validator_inputs[name]
+                    assert isinstance(descriptor, dict)
+                    object_id = descriptor["object_id"]
+                    staged_path = out / filename
+                    staged_path.write_bytes(objects[object_id])
+                    staged[name] = staged_path
+                validator = importlib.import_module(
+                    "astrid.packs.vibecomfy.executors.validate.run"
+                )
+                validation_out = out
+                assert validator.main([
+                    "validate", "",
+                    "--python", str(staged["python"]),
+                    "--companion", str(staged["companion"]),
+                    "--source", str(staged["source"]),
+                    "--python-execution-consent", "confirmed",
+                    "--workflow-inputs", inputs["workflow_inputs"],
+                    "--out", str(validation_out),
+                ]) == 0
+                report_path = validation_out / "validation-report.json"
+                report = json.loads(report_path.read_text())
+                assert report["concrete_workflow_inputs_projected"] is True
+                rows = [settle(report_path, "validation")]
             else:
                 assert capability_id == "vibecomfy.run"
                 if operation in {"continue", "generate"}:
@@ -541,8 +676,109 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                     rows = [settle(generated, "video", media_type="video/mp4"),
                             settle(audio, "audio", media_type="audio/wav")]
             shutil.rmtree(attempt)
-            return SimpleNamespace(ok=True, capability_id=capability_id, outputs={"artifacts": rows},
-                                   raw_result={}, kernel_task_id="task-cpu", kernel_run_id="run-cpu", kernel_attempt_id="attempt-cpu")
+            if capability_id == "vibecomfy.run":
+                intent = inputs["generation_intent"]
+                public_row = next(
+                    row for row in rows
+                    if row.get("media_type") == "video/mp4"
+                )
+                public_row.update({
+                    "kind": "object",
+                    "role": "result",
+                    "output_port": "vibecomfy_run",
+                    "group_key": "main",
+                    "variant_key": "original",
+                    "ordinal": 0,
+                })
+                selector = {
+                    **intent["groups"][0]["selectors"][0],
+                    "output_port": "vibecomfy_run",
+                }
+                effect = {
+                    "effect_type": "generation.publish_v1",
+                    "target_id": "cpu-test",
+                    "payload": {
+                        "version": 1,
+                        "modality": intent["modality"],
+                        "generation_type": "vibecomfy.run",
+                        "metadata": intent["metadata"],
+                        "partial_success_policy": intent["partial_success_policy"],
+                        "groups": [{"group_key": "main", "selectors": [selector]}],
+                    },
+                }
+                publication = {
+                    "effect_type": "generation.publish_v1",
+                    "publications": [{
+                        "group_key": "main",
+                        "generation_id": "generation-cpu",
+                        "missing_selectors": [],
+                        "variants": [{
+                            "generation_id": "generation-cpu",
+                            "variant_id": "variant-cpu",
+                            "object_id": public_row["object_id"],
+                            "output_port": "vibecomfy_run",
+                            "ordinal": 0,
+                            "variant_key": "original",
+                        }],
+                    }],
+                }
+                settled = {
+                    "outputs": rows,
+                    "generation_publish_v1": publication,
+                }
+                managed_rows = []
+                for index, row in enumerate(rows):
+                    is_public = row is public_row
+                    managed_rows.append({
+                        **row,
+                        "association_id": f"association-{index}",
+                        "task_id": "task-cpu",
+                        "run_id": "run-cpu",
+                        "attempt_id": "attempt-cpu",
+                        "project_id": "cpu-test",
+                        "generation_id": "generation-cpu" if is_public else None,
+                    })
+                task = {
+                    "task_id": "task-cpu",
+                    "run_id": "run-cpu",
+                    "attempt_id": "attempt-cpu",
+                    "project_id": "cpu-test",
+                    "state": "succeeded",
+                    "generation_intent": intent,
+                    "expected_effect": effect,
+                    "result": settled,
+                }
+                raw_result = {
+                    "ok": True,
+                    "state": "completed",
+                    "kernel_run_id": "run-cpu",
+                    "kernel_task_id": "task-cpu",
+                    "kernel_attempt_id": "attempt-cpu",
+                    "task": task,
+                    "result": settled,
+                    "outputs": {"artifacts": rows},
+                    "managed_outputs": managed_rows,
+                }
+                return InvocationResult(
+                    capability_id=capability_id,
+                    capability_type="executor",
+                    native_kind="executor",
+                    ok=True,
+                    outputs={"artifacts": rows, "managed_outputs": managed_rows},
+                    raw_result=raw_result,
+                    kernel_task_id="task-cpu",
+                    kernel_run_id="run-cpu",
+                    kernel_attempt_id="attempt-cpu",
+                )
+            return SimpleNamespace(
+                ok=True,
+                capability_id=capability_id,
+                outputs={"artifacts": rows},
+                raw_result={},
+                kernel_task_id="task-cpu",
+                kernel_run_id="run-cpu",
+                kernel_attempt_id="attempt-cpu",
+            )
 
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
@@ -553,6 +789,10 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     assert result["status"] == "verified"
     assert Path(result["candidate"]).is_file()
     assert Path(result["final_receipt"]).is_file()
+    final_receipt = json.loads(Path(result["final_receipt"]).read_text())
+    assert final_receipt["overall_status"] == "candidate_verified"
+    assert final_receipt["states"]["raw_managed_publication"]["status"] == "passed"
+    assert final_receipt["publication_contract"]["final_composition_publication"] == "deferred"
     assert not caller.exists() and all(not attempt.exists() for attempt in attempts)
     assert [name for name, _ in calls] == ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate",
                                          "vibecomfy.run", "h3_av.compose", "h3_av.verify"]

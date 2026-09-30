@@ -61,6 +61,27 @@ def test_serial_admission_and_settlement_are_one_shot() -> None:
         manager.settle(token, result_evidence=evidence)
 
 
+def test_compatible_binding_reuses_owned_session_without_replacement() -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter()
+    binding = _binding("a")
+    first = manager.open(
+        capability=CapabilityDescriptor("vibecomfy.run"),
+        binding=binding,
+        adapter=adapter,
+    )
+    reused = manager.open(
+        capability=CapabilityDescriptor("vibecomfy.run"),
+        binding=binding,
+        adapter=_Adapter(),
+    )
+
+    assert first.state == "cold"
+    assert reused.state == "warm"
+    assert reused.generation == first.generation
+    assert adapter.events == []
+
+
 def test_incompatible_binding_fences_and_releases_before_replacement() -> None:
     manager = ManagedToolSession()
     old_adapter = _Adapter()
@@ -134,6 +155,32 @@ def test_uncertain_cancellation_fences_the_session() -> None:
     with pytest.raises(UncertainCancellation):
         manager.cancel(token, outcome="uncertain")
     assert manager.generation == 2
+    with pytest.raises(StaleAdmissionError):
+        manager.settle(
+            token,
+            result_evidence={
+                "cas": "sha256:late",
+                "generation": token.generation,
+                "binding_identity": list(token.binding_identity),
+            },
+        )
+
+
+def test_confirmed_cancellation_requires_adapter_evidence() -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter()
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+    token = manager.admit(capability_id="checkout_server", invocation_id="task-a")
+
+    with pytest.raises(UncertainCancellation, match="not verified"):
+        manager.cancel(token, outcome="confirmed")
+
+    assert manager.active is False
+    assert manager.occupied is True
     with pytest.raises(StaleAdmissionError):
         manager.settle(
             token,

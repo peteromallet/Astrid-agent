@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +59,7 @@ __all__ = [
     "_storage_required",
     "_preflight_storage",
     "_build_pod_handle",
+    "_build_provisional_pod_handle",
     "_terminate_pod_id",
     "_ssh_target_from_handle",
     "_build_scp_pull_command",
@@ -130,9 +134,34 @@ def _get_hourly_rate(api_key: str, gpu_type) -> float:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write *payload* as indented JSON, creating parent directories."""
+    """Atomically replace *path* with an indented JSON document."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+    data = (json.dumps(payload, indent=2, default=str) + "\n").encode("utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _create_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
+    """Create one custody document without replacing an existing owner."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(payload, indent=2, default=str) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _cost_entry(amount: float, source: str, basis: str) -> dict[str, Any]:
@@ -290,6 +319,64 @@ _RUNPOD_COMPUTE_DEFAULTS: dict[str, Any] = {
     },
 }
 
+_DEFAULT_RUNPOD_IMAGE = str(_RUNPOD_COMPUTE_DEFAULTS["image"])
+_CUDA_13_GPU_MARKER = "5090"
+
+
+def _is_cuda_13_route(gpu_type: str | list[str] | tuple[str, ...]) -> bool:
+    candidates = (gpu_type,) if isinstance(gpu_type, str) else tuple(gpu_type)
+    return any(_CUDA_13_GPU_MARKER in candidate for candidate in candidates)
+
+
+def _launch_contract(
+    *,
+    gpu_type: str | list[str] | tuple[str, ...],
+    image: Any,
+    allowed_cuda_versions: Any,
+) -> tuple[str, tuple[str, ...], str | None]:
+    """Return an explicit image/CUDA/template contract for one launch."""
+    normalized_image = str(image or "").strip()
+    versions = tuple(str(version).strip() for version in (allowed_cuda_versions or ()) if str(version).strip())
+    if not _is_cuda_13_route(gpu_type):
+        return normalized_image, versions, None
+    if not normalized_image or normalized_image == _DEFAULT_RUNPOD_IMAGE:
+        raise AstridError(
+            "RTX 5090 provisioning requires an explicit CUDA-13-compatible worker image",
+            recovery_command="supply the validated CUDA 13 image together with --allowed-cuda-versions 13.0",
+        )
+    if versions != ("13.0",):
+        raise AstridError(
+            "RTX 5090 provisioning requires the explicit allowed CUDA version 13.0",
+            recovery_command="set --allowed-cuda-versions 13.0 for the validated 5090 route",
+        )
+    # An empty template ID is intentional: runpod-lifecycle forwards only
+    # truthy template IDs, so the explicit image cannot inherit its legacy
+    # runpod-torch-v240 default.
+    return normalized_image, versions, ""
+
+
+def _new_runpod_config(
+    config_type: Any,
+    *,
+    datacenter_id: str | None,
+    template_id: str | None,
+    **kwargs: Any,
+) -> Any:
+    """Construct the installed lifecycle config without dropping constraints."""
+    parameters = inspect.signature(config_type).parameters.values()
+    accepts_extra = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    parameter_names = {parameter.name for parameter in parameters}
+    if datacenter_id:
+        if "datacenter_id" not in parameter_names and not accepts_extra:
+            raise AstridError(
+                "the installed runpod-lifecycle does not support datacenter-constrained allocation",
+                recovery_command="install a lifecycle revision whose RunPodConfig accepts datacenter_id before using this profile",
+            )
+        kwargs["datacenter_id"] = datacenter_id
+    if template_id is not None:
+        kwargs["template_id"] = template_id
+    return config_type(**kwargs)
+
 
 def _resolve_compute_profile(args: argparse.Namespace, produces_dir: Path) -> dict[str, Any]:
     """Resolve RunPod settings and persist a secret-free execution snapshot.
@@ -434,8 +521,11 @@ def _build_pod_handle(
     api_key_ref: str = "RUNPOD_API_KEY",
     volume_mount_path: str = "/workspace",
     allowed_cuda_versions: Any = (),
+    template_id: str | None = None,
+    operation_id: str | None = None,
+    request_name: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    handle = {
         "pod_id": pod.id,
         "ssh": f"root@{ssh['ip']} -p {ssh['port']}",
         "name": pod.name,
@@ -455,8 +545,228 @@ def _build_pod_handle(
             "network_volume_id": network_volume_id,
             "ports": ports or "8888/http,22/tcp",
             "allowed_cuda_versions": list(allowed_cuda_versions or ()),
+            "template_id": template_id,
         },
     }
+    if operation_id:
+        handle["operation_id"] = operation_id
+    if request_name:
+        handle["request_name"] = request_name
+    return handle
+
+
+def _build_provisional_pod_handle(
+    *,
+    pod: Any,
+    name_prefix: str,
+    terminate_at: str,
+    provisioned_at: str,
+    gpu_type: Any,
+    hourly_rate: float,
+    datacenter_id: str | None,
+    image: str | None,
+    container_disk_gb: int,
+    volume_in_gb: int,
+    storage_name: str | None,
+    network_volume_id: Any,
+    ports: str | None,
+    api_key_ref: str,
+    volume_mount_path: str,
+    allowed_cuda_versions: Any,
+    template_id: str | None,
+    operation_id: str,
+    request_name: str,
+) -> dict[str, Any]:
+    """Build a reloadable, secret-safe pre-readiness ownership breadcrumb."""
+    return {
+        "schema_version": "astrid.runpod.provisional-handle.v1",
+        "pod_id": str(pod.id),
+        "name": str(getattr(pod, "name", name_prefix) or name_prefix),
+        "name_prefix": name_prefix,
+        "terminate_at": terminate_at,
+        "gpu_type": gpu_type,
+        "hourly_rate": hourly_rate,
+        "provisioned_at": provisioned_at,
+        "operation_id": operation_id,
+        "request_name": request_name,
+        "config_snapshot": {
+            "api_key_ref": api_key_ref or "RUNPOD_API_KEY",
+            "datacenter_id": datacenter_id,
+            "image": image,
+            "container_disk_in_gb": container_disk_gb,
+            "volume_in_gb": volume_in_gb,
+            "volume_mount_path": volume_mount_path,
+            "storage_name": storage_name,
+            "network_volume_id": network_volume_id,
+            "ports": ports or "8888/http,22/tcp",
+            "allowed_cuda_versions": list(allowed_cuda_versions or ()),
+            "template_id": template_id,
+        },
+        "state": "provisioning",
+    }
+
+
+def _mark_cleanup_pending(
+    handle_path: Path,
+    handle: dict[str, Any] | None,
+    *,
+    reason: str,
+    phase: str,
+) -> None:
+    """Persist that a provider handle still needs cleanup/reconciliation."""
+    if handle is None:
+        return
+    handle.update(
+        {
+            "state": "cleanup_pending",
+            "cleanup_pending": True,
+            "cleanup_phase": phase,
+            "cleanup_error": reason,
+            "cleanup_pending_at": _utc_now_iso(),
+        }
+    )
+    operation_id = handle.get("operation_id")
+    if operation_id:
+        _replace_custody_record(handle_path, handle, operation_id=str(operation_id))
+    else:
+        _write_json(handle_path, handle)
+
+
+def _existing_custody_error(handle_path: Path) -> AstridError:
+    try:
+        previous = json.loads(handle_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return AstridError(
+            f"RunPod custody record at {handle_path} already exists and cannot be read safely: {exc}",
+            recovery_command="inspect and reconcile the existing custody record before retrying",
+        )
+    if previous.get("state") in {"allocation_pending", "allocation_unknown"}:
+        return AstridError(
+            f"RunPod allocation request {previous.get('request_name')!r} requires reconciliation before retry",
+            recovery_command="reconcile this request name with the provider account; use the exact pod ID for teardown if one exists",
+            code="allocation_unknown",
+            state_snapshot={
+                "handle_path": str(handle_path),
+                "operation_id": previous.get("operation_id"),
+                "request_name": previous.get("request_name"),
+                "reconciliation_required": True,
+            },
+        )
+    if previous.get("pod_id"):
+        return AstridError(
+            f"RunPod handle at {handle_path} already identifies pod {previous['pod_id']}",
+            recovery_command="teardown or move the existing handle before starting another allocation in this output directory",
+            state_snapshot={
+                "handle_path": str(handle_path),
+                "operation_id": previous.get("operation_id"),
+                "pod_id": previous["pod_id"],
+            },
+        )
+    return AstridError(
+        f"RunPod custody record already exists at {handle_path}",
+        recovery_command="inspect and reconcile the existing record before retrying",
+        state_snapshot={"handle_path": str(handle_path)},
+    )
+
+
+def _replace_custody_record(
+    handle_path: Path,
+    payload: dict[str, Any],
+    *,
+    operation_id: str,
+) -> None:
+    """Atomically transition a custody record owned by *operation_id*."""
+    try:
+        current = json.loads(handle_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AstridError(
+            f"cannot verify RunPod custody at {handle_path}: {exc}",
+            recovery_command="reconcile the existing custody record before continuing",
+        ) from exc
+    if current.get("operation_id") != operation_id:
+        raise AstridError(
+            f"RunPod custody at {handle_path} belongs to another operation",
+            recovery_command="do not overwrite the record; reconcile its operation_id before retrying",
+            state_snapshot={
+                "handle_path": str(handle_path),
+                "expected_operation_id": operation_id,
+                "actual_operation_id": current.get("operation_id"),
+            },
+        )
+    if payload.get("operation_id") != operation_id:
+        raise AstridError("replacement RunPod custody record changed operation identity")
+    _write_json(handle_path, payload)
+
+
+def _remove_custody_record(handle_path: Path, *, operation_id: str) -> None:
+    """Remove only the custody record owned by *operation_id*."""
+    current = json.loads(handle_path.read_text(encoding="utf-8"))
+    if current.get("operation_id") != operation_id:
+        raise AstridError(
+            f"refusing to remove RunPod custody for another operation at {handle_path}",
+            state_snapshot={
+                "handle_path": str(handle_path),
+                "expected_operation_id": operation_id,
+                "actual_operation_id": current.get("operation_id"),
+            },
+        )
+    handle_path.unlink()
+
+
+def _start_allocation_attempt(
+    handle_path: Path, *, name_prefix: str, api_key_ref: str,
+    gpu_type: str | list[str], storage_name: str | None,
+) -> dict[str, Any]:
+    """Claim exclusive custody before a potentially billable create."""
+    operation_id = uuid.uuid4().hex
+    request_name = f"{name_prefix}-{operation_id[:12]}"
+    attempt = {
+        "schema_version": "astrid.runpod.allocation-attempt.v1",
+        "state": "allocation_pending",
+        "operation_id": operation_id,
+        "request_name": request_name,
+        "api_key_ref": api_key_ref,
+        "gpu_type": gpu_type,
+        "storage_name": storage_name,
+        "requested_at": _utc_now_iso(),
+        "reconciliation_required": True,
+    }
+    try:
+        _create_json_exclusive(handle_path, attempt)
+    except FileExistsError as exc:
+        raise _existing_custody_error(handle_path) from exc
+    return attempt
+
+
+def _record_allocation_unknown(
+    handle_path: Path, attempt: dict[str, Any], exc: Any,
+) -> AstridError:
+    attempt.update({
+        "state": "allocation_unknown",
+        "gpu_type_attempted": exc.gpu_type,
+        "ram_tier_attempted": exc.ram_tier,
+        "storage_name_attempted": exc.storage_name,
+        "storage_volume_id_attempted": exc.storage_volume_id,
+        "reconciliation_required": True,
+        "unresolved_at": _utc_now_iso(),
+    })
+    _replace_custody_record(
+        handle_path,
+        attempt,
+        operation_id=str(attempt["operation_id"]),
+    )
+    return AstridError(
+        str(exc),
+        recovery_command="reconcile the request name with the provider account; terminate by exact pod ID if allocated, then clear the marker before retry",
+        code="allocation_unknown",
+        state_snapshot={
+            "handle_path": str(handle_path),
+            "operation_id": attempt["operation_id"],
+            "request_name": exc.request_name,
+            "allocation_unknown": True,
+            "reconciliation_required": True,
+        },
+    )
 
 
 async def _terminate_pod_id(pod_id: str, config: Any, *, name: str | None = None) -> bool:
@@ -521,6 +831,13 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
     from runpod_lifecycle import RunPodConfig
 
     handle = json.loads(handle_path.read_text(encoding="utf-8"))
+    if handle.get("state") in {"allocation_pending", "allocation_unknown"}:
+        raise AstridError(
+            f"allocation request {handle.get('request_name')!r} has no confirmed pod ID",
+            recovery_command="reconcile the request name with the provider account before any exact-ID teardown",
+            code="allocation_unknown",
+            state_snapshot={"handle_path": str(handle_path), "request_name": handle.get("request_name"), "reconciliation_required": True},
+        )
     if handle.get("schema_version") == "astrid.runpod.claim.v1":
         # Claim waiters deliberately emit an operator/lifecycle handle rather
         # than pretending that a reused pod was provisioned by Astrid.  The
@@ -561,6 +878,7 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
             "api_key_ref": api_key_ref,
             "datacenter_id": None,
             "image": handle.get("worker_image"),
+            "template_id": handle.get("template_id"),
             "container_disk_in_gb": int(handle.get("container_disk_gb", 200)),
             "volume_in_gb": int(handle.get("network_volume_size_gb", 0)),
             "volume_mount_path": str(handle.get("volume_mount_path") or "/workspace"),
@@ -586,9 +904,16 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
     api_key = credential.value
 
     snap = handle["config_snapshot"]
-    config = RunPodConfig(
+    gpu_type = handle.get("gpu_type", "NVIDIA GeForce RTX 4090")
+    template_id = snap.get("template_id")
+    if _is_cuda_13_route(gpu_type) and template_id is None:
+        template_id = ""
+    config = _new_runpod_config(
+        RunPodConfig,
+        datacenter_id=snap.get("datacenter_id"),
+        template_id=template_id,
         api_key=api_key,
-        gpu_type=handle.get("gpu_type", "NVIDIA GeForce RTX 4090"),
+        gpu_type=gpu_type,
         worker_image=snap.get("image") or "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
         container_disk_gb=snap.get("container_disk_in_gb", 200),
         disk_size_gb=snap.get("volume_in_gb", 0),
@@ -617,7 +942,7 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
 
 def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
     """Provision a RunPod GPU pod → pod_handle.json + cost.json."""
-    from runpod_lifecycle import RunPodConfig, launch
+    from runpod_lifecycle import AllocationUnknown, LaunchFailure, RunPodConfig, launch
 
     from astrid.core.compute_profile import credential_env_ref
 
@@ -646,18 +971,16 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
     max_runtime = int(resolved["max_runtime_seconds"])
     ports = resolved.get("ports")
 
-    _preflight_storage(
-        storage_name,
-        required=storage_required,
-        context="RunPod provision",
-        api_key=api_key,
+    image, allowed_cuda_versions, template_id = _launch_contract(
+        gpu_type=gpu_type,
+        image=image,
+        allowed_cuda_versions=allowed_cuda_versions,
     )
 
-    hourly_rate = _get_hourly_rate(api_key, gpu_type)
-    provisioned_at = _utc_now_iso()
-    t0 = time.monotonic()
-
-    config = RunPodConfig(
+    config = _new_runpod_config(
+        RunPodConfig,
+        datacenter_id=datacenter_id,
+        template_id=template_id,
         api_key=api_key,
         gpu_type=gpu_type,
         worker_image=image,
@@ -665,6 +988,7 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
         disk_size_gb=volume_in_gb,
         volume_mount_path=volume_mount_path,
         storage_name=storage_name,
+        attach_only=bool(storage_name and volume_in_gb == 0),
         name_prefix=name_prefix,
         ports=ports,
         allowed_cuda_versions=allowed_cuda_versions,
@@ -681,18 +1005,101 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
         env_vars=_host_hf_token_env_vars(resolved),
     )
 
+    _preflight_storage(
+        storage_name,
+        required=storage_required,
+        context="RunPod provision",
+        api_key=api_key,
+    )
+
+    hourly_rate = _get_hourly_rate(api_key, gpu_type)
+    provisioned_at = _utc_now_iso()
+    t0 = time.monotonic()
+
+    handle_path = produces_dir / "pod_handle.json"
+    attempt = _start_allocation_attempt(
+        handle_path, name_prefix=name_prefix, api_key_ref=api_key_ref,
+        gpu_type=gpu_type, storage_name=storage_name,
+    )
+    operation_id = str(attempt["operation_id"])
+    request_name = str(attempt["request_name"])
+    pod_id: str | None = None
+    handle: dict[str, Any] | None = None
+    failure_phase = "allocation"
+
     async def _provision() -> tuple[Any, dict[str, Any]]:
-        pod = await launch(config, name=f"{name_prefix}-{int(time.time())}")
+        nonlocal pod_id, handle, failure_phase
+        pod = await launch(config, name=request_name)
+        # Provider allocation is already billable and must be recoverable even
+        # when readiness or SSH discovery fails immediately afterwards.
+        pod_id = str(pod.id)
+        terminate_at_dt = datetime.now(timezone.utc).timestamp() + max_runtime
+        terminate_at = datetime.fromtimestamp(terminate_at_dt, tz=timezone.utc).isoformat()
+        handle = _build_provisional_pod_handle(
+            pod=pod,
+            name_prefix=name_prefix,
+            terminate_at=terminate_at,
+            provisioned_at=provisioned_at,
+            gpu_type=gpu_type,
+            hourly_rate=hourly_rate,
+            datacenter_id=datacenter_id,
+            image=image,
+            container_disk_gb=container_disk_gb,
+            volume_in_gb=volume_in_gb,
+            storage_name=storage_name,
+            network_volume_id=getattr(pod, "_storage_volume", None),
+            ports=ports,
+            api_key_ref=api_key_ref,
+            volume_mount_path=volume_mount_path,
+            allowed_cuda_versions=allowed_cuda_versions,
+            template_id=template_id,
+            operation_id=operation_id,
+            request_name=request_name,
+        )
+        _replace_custody_record(handle_path, handle, operation_id=operation_id)
+
+        failure_phase = "readiness"
         await pod.wait_ready(timeout=900)
+        failure_phase = "ssh"
         ssh = await pod._ensure_ssh_details()
         return pod, ssh
 
     try:
         pod, ssh = asyncio.run(_provision())
+    except AllocationUnknown as exc:
+        raise _record_allocation_unknown(handle_path, attempt, exc) from exc
+    except LaunchFailure as exc:
+        if pod_id is None:
+            _remove_custody_record(handle_path, operation_id=operation_id)
+        else:
+            _mark_cleanup_pending(handle_path, handle, reason=str(exc), phase=failure_phase)
+        raise AstridError(str(exc), recovery_command="check RunPod capacity and configuration before retry") from exc
     except Exception as exc:
+        if pod_id is None:
+            attempt.update({"state": "allocation_unknown", "unresolved_at": _utc_now_iso()})
+            _replace_custody_record(handle_path, attempt, operation_id=operation_id)
+        _mark_cleanup_pending(
+            handle_path,
+            handle,
+            reason=str(exc),
+            phase=failure_phase,
+        )
         raise AstridError(
             str(exc),
-            recovery_command="check your RunPod API key, GPU type availability, and account balance, then retry",
+            recovery_command=(
+                f"retry teardown using the cleanup_pending handle at {handle_path}"
+                if pod_id
+                else "reconcile the request name with the provider account before retrying"
+            ),
+            state_snapshot={
+                "pod_id": pod_id,
+                "handle_path": handle_path,
+                "cleanup_pending": bool(pod_id),
+                "cleanup_phase": failure_phase if pod_id else None,
+                "request_name": request_name if pod_id is None else None,
+                "reconciliation_required": pod_id is None,
+            },
+            code="allocation_unknown" if pod_id is None else None,
         ) from exc
 
     terminate_at_dt = datetime.now(timezone.utc).timestamp() + max_runtime
@@ -716,9 +1123,12 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
         api_key_ref=api_key_ref or "RUNPOD_API_KEY",
         volume_mount_path=volume_mount_path,
         allowed_cuda_versions=allowed_cuda_versions,
+        template_id=template_id,
+        operation_id=operation_id,
+        request_name=request_name,
     )
 
-    _write_json(produces_dir / "pod_handle.json", handle)
+    _replace_custody_record(handle_path, handle, operation_id=operation_id)
 
     duration = time.monotonic() - t0
     _write_cost_sidecar(produces_dir, duration_seconds=duration, hourly_rate=hourly_rate, basis_prefix="provision")
@@ -941,7 +1351,7 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
     can recover orphaned pods on crash.  Deletes the handle on graceful
     teardown.
     """
-    from runpod_lifecycle import RunPodConfig, launch
+    from runpod_lifecycle import AllocationUnknown, LaunchFailure, RunPodConfig, launch
 
     from astrid.core.compute_profile import credential_env_ref
 
@@ -980,17 +1390,16 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
     )
     excludes = set(str(resolved["excludes"]).split(",")) if resolved.get("excludes") else set()
 
-    _preflight_storage(
-        storage_name,
-        required=storage_required,
-        context="RunPod session",
-        api_key=api_key,
+    image, allowed_cuda_versions, template_id = _launch_contract(
+        gpu_type=gpu_type,
+        image=image,
+        allowed_cuda_versions=allowed_cuda_versions,
     )
 
-    hourly_rate = _get_hourly_rate(api_key, gpu_type)
-    provisioned_at = _utc_now_iso()
-
-    config = RunPodConfig(
+    config = _new_runpod_config(
+        RunPodConfig,
+        datacenter_id=datacenter_id,
+        template_id=template_id,
         api_key=api_key,
         gpu_type=gpu_type,
         worker_image=image,
@@ -998,6 +1407,7 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
         disk_size_gb=volume_in_gb,
         volume_mount_path=volume_mount_path,
         storage_name=storage_name,
+        attach_only=bool(storage_name and volume_in_gb == 0),
         name_prefix=name_prefix,
         ports=ports,
         allowed_cuda_versions=allowed_cuda_versions,
@@ -1014,36 +1424,66 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
         env_vars=_host_hf_token_env_vars(resolved),
     )
 
+    _preflight_storage(
+        storage_name,
+        required=storage_required,
+        context="RunPod session",
+        api_key=api_key,
+    )
+
+    hourly_rate = _get_hourly_rate(api_key, gpu_type)
+    provisioned_at = _utc_now_iso()
+
     t0 = time.monotonic()
     pod_id: str | None = None
     handle: dict[str, Any] | None = None
     handle_path = produces_dir / "pod_handle.json"
+    attempt = _start_allocation_attempt(
+        handle_path, name_prefix=name_prefix, api_key_ref=api_key_ref,
+        gpu_type=gpu_type, storage_name=storage_name,
+    )
+    operation_id = str(attempt["operation_id"])
+    request_name = str(attempt["request_name"])
     exit_code = 99  # sentinel for crash-before-exec
+    cleanup_pending = False
+    cleanup_error: str | None = None
 
     try:
         # ---- provision -------------------------------------------------
         async def _provision() -> tuple[Any, dict[str, Any]]:
             nonlocal pod_id, handle
-            pod = await launch(config, name=f"{name_prefix}-{int(time.time())}")
+            pod = await launch(config, name=request_name)
             # Capture custody immediately after the provider returns a pod.
             # Readiness and SSH discovery can fail after allocation; delaying
             # pod_id assignment until both succeed leaves the finally block
             # unable to terminate that orphan.
             pod_id = str(pod.id)
-            provisional_name = str(getattr(pod, "name", name_prefix) or name_prefix)
             provisional_terminate_at = datetime.fromtimestamp(
                 datetime.now(timezone.utc).timestamp() + max_runtime,
                 tz=timezone.utc,
             ).isoformat()
-            handle = {
-                "schema_version": "astrid.runpod.provisional-handle.v1",
-                "pod_id": pod_id,
-                "name": provisional_name,
-                "provisioned_at": provisioned_at,
-                "terminate_at": provisional_terminate_at,
-                "state": "provisioning",
-            }
-            _write_json(handle_path, handle)
+            handle = _build_provisional_pod_handle(
+                pod=pod,
+                name_prefix=name_prefix,
+                terminate_at=provisional_terminate_at,
+                provisioned_at=provisioned_at,
+                gpu_type=gpu_type,
+                hourly_rate=hourly_rate,
+                datacenter_id=datacenter_id,
+                image=image,
+                container_disk_gb=container_disk_gb,
+                volume_in_gb=volume_in_gb,
+                storage_name=storage_name,
+                network_volume_id=getattr(pod, "_storage_volume", None),
+                ports=ports,
+                api_key_ref=api_key_ref,
+                volume_mount_path=volume_mount_path,
+                allowed_cuda_versions=allowed_cuda_versions,
+                template_id=template_id,
+                operation_id=operation_id,
+                request_name=request_name,
+            )
+            _replace_custody_record(handle_path, handle, operation_id=operation_id)
             await pod.wait_ready(timeout=900)
             ssh = await pod._ensure_ssh_details()
             return pod, ssh
@@ -1071,10 +1511,13 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
             api_key_ref=api_key_ref or "RUNPOD_API_KEY",
             volume_mount_path=volume_mount_path,
             allowed_cuda_versions=allowed_cuda_versions,
+            template_id=template_id,
+            operation_id=operation_id,
+            request_name=request_name,
         )
 
         # *** Write pod_handle.json IMMEDIATELY (sweeper breadcrumb) ***
-        _write_json(handle_path, handle)
+        _replace_custody_record(handle_path, handle, operation_id=operation_id)
 
         # ---- exec ------------------------------------------------------
         if remote_script:
@@ -1137,14 +1580,26 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
         total_duration = time.monotonic() - t0
         _write_cost_sidecar(produces_dir, duration_seconds=total_duration, hourly_rate=hourly_rate, basis_prefix="session")
 
-        return exit_code
-
+    except AllocationUnknown as exc:
+        total_duration = time.monotonic() - t0
+        _write_cost_sidecar(produces_dir, duration_seconds=total_duration, hourly_rate=hourly_rate, basis_prefix="session (allocation unknown)")
+        raise _record_allocation_unknown(handle_path, attempt, exc) from exc
     except Exception as exc:
+        if isinstance(exc, LaunchFailure) and pod_id is None:
+            _remove_custody_record(handle_path, operation_id=operation_id)
+        elif pod_id is None:
+            attempt.update({"state": "allocation_unknown", "unresolved_at": _utc_now_iso()})
+            _replace_custody_record(handle_path, attempt, operation_id=operation_id)
         total_duration = time.monotonic() - t0
         _write_cost_sidecar(produces_dir, duration_seconds=total_duration, hourly_rate=hourly_rate, basis_prefix="session (failed)")
         raise AstridError(
             str(exc),
-            recovery_command="check your RunPod API key, GPU availability, and remote script syntax, then retry",
+            recovery_command=(
+                "reconcile the request name with the provider account before retrying"
+                if pod_id is None and not isinstance(exc, LaunchFailure)
+                else "check your RunPod API key, GPU availability, and remote script syntax, then retry"
+            ),
+            code="allocation_unknown" if pod_id is None and not isinstance(exc, LaunchFailure) else None,
         ) from exc
 
     finally:
@@ -1155,13 +1610,37 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
                 teardown_ok = asyncio.run(
                     _terminate_pod_id(pod_id, config, name=handle.get("name") if handle else None)
                 )
+                if not teardown_ok:
+                    cleanup_error = "provider termination did not confirm cleanup"
             except Exception as exc:
+                cleanup_error = str(exc)
                 log_and_swallow(exc, context="runpod.exec.session_teardown_failed")
             if teardown_ok:
                 try:
-                    handle_path.unlink(missing_ok=True)
+                    _remove_custody_record(handle_path, operation_id=operation_id)
                 except Exception as exc:  # noqa: BLE001
                     log_and_swallow(exc, context="runpod.exec.handle_cleanup")
+            else:
+                cleanup_pending = True
+                _mark_cleanup_pending(
+                    handle_path,
+                    handle,
+                    reason=cleanup_error or "provider termination did not confirm cleanup",
+                    phase="session_teardown",
+                )
+
+    if cleanup_pending and exit_code == 0:
+        raise AstridError(
+            f"session completed but cleanup is pending for pod {pod_id}: {cleanup_error}",
+            recovery_command=f"retry teardown using the cleanup_pending handle at {handle_path}",
+            state_snapshot={
+                "pod_id": pod_id,
+                "handle_path": handle_path,
+                "cleanup_pending": True,
+                "cleanup_phase": "session_teardown",
+            },
+        )
+    return exit_code
 
 
 # ---------------------------------------------------------------------------

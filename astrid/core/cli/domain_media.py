@@ -242,6 +242,16 @@ def _cmd_variant_thumbnail_backfill(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _cmd_timeline_thumbnail_backfill(parsed: argparse.Namespace) -> int:
+    result = parsed.client.media.backfill_timeline_thumbnails(
+        parsed.project,
+        timeline=parsed.timeline,
+        limit=parsed.limit,
+        dry_run=parsed.dry_run,
+    )
+    return print_result(result, as_json=parsed.json)
+
+
 # -- parser ----------------------------------------------------------------
 
 
@@ -406,6 +416,16 @@ def _configure_thumbnails(subparser: argparse.ArgumentParser) -> None:
     variants.add_argument("--dry-run", action="store_true")
     _add_json_flag(variants)
     variants.set_defaults(handler=_cmd_variant_thumbnail_backfill)
+    timeline = nested.add_parser(
+        "backfill-timeline",
+        help="Ensure missing source-frame thumbnails for a pinned canonical timeline.",
+    )
+    _add_project_arg(timeline)
+    timeline.add_argument("--timeline", required=True, help="Canonical timeline id or slug.")
+    timeline.add_argument("--limit", type=int, default=100, choices=range(1, 101), metavar="1..100")
+    timeline.add_argument("--dry-run", action="store_true")
+    _add_json_flag(timeline)
+    timeline.set_defaults(handler=_cmd_timeline_thumbnail_backfill)
 
 
 COMMANDS: tuple[CommandSpec, ...] = (

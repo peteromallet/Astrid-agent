@@ -2,11 +2,27 @@
 
 ## Choose the canonical path
 
-For H3 transformations, use `h3_av.transform`: it is the single path that
-prepares the request, submits the Astrid task, composes and verifies the
-candidate, and writes the final lifecycle receipt. The standalone lifecycle
-runner below is a transport/capacity diagnostic only; it does not create an
-Astrid task or Generation.
+For the prepared H3 RTX 5090 target, the operator flow is:
+
+1. claim capacity with `scripts/claim_runpod_5090_backup.py` and its durable
+   canonical handle;
+2. optionally watch that local evidence with `scripts/watch_h3_claim_flow.py`;
+3. write an execution request bound to the returned pod and provider account;
+4. submit that request through the `h3_av.transform` orchestrator for the
+   intended Astrid project; and
+5. retrieve and verify the managed result while honoring the declared
+   `leave_running` lifecycle.
+
+This is the canonical H3 path. Do not substitute generic `runpod.provision`,
+`runpod.session`, or `runpod.exec`, and do not execute the H3 workload with a
+direct `runpod-lifecycle run`. Those interfaces do not own the H3
+prepare/compile/validate/run/compose/verify sequence or its managed result and
+final receipt.
+
+`h3_av.transform` prepares the request, submits the Astrid child tasks,
+composes and verifies the candidate, and writes the final lifecycle receipt.
+The standalone lifecycle material later in this guide is retained only for
+bounded transport diagnosis; it is not an alternative H3 execution recipe.
 
 ### Transport diagnostic only
 
@@ -71,40 +87,49 @@ A mismatch must fail before upload. Never “repair” it by silently creating a
 
 ### Wait for the prepared 5090 capacity
 
-When the storage-backed RTX 5090 is not currently available, use the repository
-waiter rather than repeatedly issuing ad-hoc provider requests:
+Run the canonical claim from the repository root exactly as follows:
 
 ```bash
-cd /absolute/path/to/Astrid
-mkdir -p .runpod-jobs
-.venv/bin/python scripts/claim_runpod_5090_backup.py \
-  --gpu-type "NVIDIA GeForce RTX 5090" \
-  --storage-name backup \
-  --poll-seconds 30 \
-  --max-wait-seconds 0 \
-  --handle-path .runpod-jobs/claim-5090-backup.json
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
 ```
 
-`--max-wait-seconds 0` means wait indefinitely. For a bounded seven-hour
-window, use `--max-wait-seconds 25200`. The script opens repeated capacity
-windows, waits for provider readiness, verifies the mounted H3 CUDA-13 release
-and prints a secret-free handle. It does not submit an Astrid task or replace
-the canonical task path. The handle file is local operational state and must
-not be committed.
+The 43,200-second bound is 12 hours. Capacity polling is 120 seconds by
+default; the explicit flag keeps the operator command self-describing. A
+5-second interval can be explicitly requested for a short, deliberate watch,
+but it generates substantially more provider API traffic and is not the
+normal setting.
 
-Do not treat allocation alone as success. The waiter reports success only
-after readiness, SSH metadata and the release Python/Torch/CUDA preflight pass.
-If a pod was allocated but readiness or preflight fails, it terminates that
-exact pod before retrying. If the waiter is interrupted before a successful
-claim, resume the same command; do not create a second watcher or manually
-switch to another job.
+The claim helper uses the existing `backup` network volume and discovers its
+current size. It requests `attach_only=True` with `disk_size_gb=0`, so it does
+not create, replace, or resize that persistent storage. The 200 GB value is
+the disposable container disk only. It pins the prepared CUDA-13 image, allows
+CUDA 13.0, uses no generic provider template, waits for readiness and SSH, and
+verifies the mounted H3 release venv with a real Torch/CUDA initialization.
+It does not call generic `runpod.provision` and does not submit an H3 task.
+
+Before the provider request, the helper exclusively creates a secret-free
+allocation-attempt marker at the handle path. A successful claim atomically
+replaces that marker with an `astrid.runpod.claim.v1` handle. Allocation alone
+is not success: if readiness, SSH discovery, or release preflight fails after
+a pod is allocated, the handle becomes `allocated_unverified`, the exact pod
+is left running, and the command fails. It does not terminate that pod, retry
+with a replacement, or silently relinquish custody.
+
+The handle path is an exclusive custody boundary. Active claims and
+pending/unknown allocation handles fail closed before a new provider launch.
+A stale terminal handle can roll over only when a local JSON cleanup receipt
+matches the complete prior handle digest, exact pod ID, exact backup volume
+ID, `cleanup_status: "complete"`, a terminal status of `terminated`,
+`already_gone`, or `absent`, and `backup_volume_preserved: true`. The old bytes
+are archived before the new allocation marker is written. Missing, malformed,
+mismatched, or incomplete evidence never authorizes rollover.
 
 After a successful claim, use the returned pod identity for the canonical
-Astrid worker/task setup below. Do not submit H3 work directly with
-`runpod-lifecycle run`; that command remains a transport diagnostic and does
-not create the managed task/Generation lifecycle.
+execution request and H3 orchestrator setup below. Do not submit H3 work
+directly with `runpod-lifecycle run`; that command remains a transport
+diagnostic and does not create the managed task/Generation lifecycle.
 
-## 2. Stage and execute a bounded job; leave the pod running
+## 2. Transport diagnostic: stage and execute a bounded job
 
 Put only this job's script, workflow and required input files in a dedicated
 local directory. The CLI uploads the script's parent directory recursively.
@@ -163,7 +188,7 @@ Current operational limits:
   feed all stdout directly into json.loads. Preserve the log and parse the
   final object, or use the typed library return value.
 
-## 3. Collect and verify results
+## 3. Transport diagnostic: collect and verify results
 
 The detached runner collects only remote_root/out and remote_root/output into
 the local script directory's artifacts/ folder. Arrange for the workload to
@@ -182,7 +207,7 @@ task history. If project custody is required, import selected results through
 runtime. That records media ingestion; it does not retroactively establish a
 managed generation task or a scheduler execution binding.
 
-## 3a. Run the continuation-guide test
+## 3a. Historical continuation transport test
 
 For an H3 continuation test, use
 [Anchor-to-anchor video generation](anchor-to-anchor-video-generation.md) for
@@ -220,8 +245,9 @@ that path is not present on the current pod. Adapt them to the mounted
 of running them unchanged. In particular, do not treat an old result or PID
 file on the persistent volume as evidence that the current server is alive.
 
-Submit the bounded workload through the canonical lifecycle runner and leave
-the existing pod running:
+When diagnosing transport rather than running a canonical H3 task, submit the
+bounded workload through the standalone lifecycle runner and leave the existing
+pod running:
 
 ```bash
 runpod-lifecycle run 8f18jbuh81vko9 \
@@ -248,44 +274,31 @@ successful continuation run.
 
 ### Provider launch is not Astrid task admission
 
-The supported provider-launch substrate is the existing Python
-`runpod_lifecycle` API. For the prepared RTX 5090/backup-volume release, its
-operator front end is `scripts/claim_runpod_5090_backup.py`, run with the
-repository virtualenv:
+Use the claim command from section 1. The exact current operation is:
 
 ```bash
-.venv/bin/python scripts/claim_runpod_5090_backup.py \
-  --max-wait-seconds 0 \
-  --handle-path .otto/runs/h3-next-launch/claim-handle.json
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
 ```
 
-The helper uses `RunPodConfig.from_env` and `launch_when_available`, waits
-indefinitely across capacity windows by default, verifies readiness/SSH and the
-mounted release Python/Torch/CUDA, and terminates allocated pods that fail those
-checks before retrying. On success it writes a secret-free
-`astrid.runpod.claim.v1` handle and **leaves the pod running**. That is
-`pod_verified`, not worker readiness, task admission, sampling or result delivery.
-The Astrid RunPod pack and lifecycle CLI use the same substrate; do not introduce
-a second provider client. The claim handle is not a `runpod.exec` provision handle.
+On success, read the exact `pod_id` from that handle. The claim is
+`pod_verified`; it is not worker readiness, task admission, sampling, managed
+delivery, or editorial approval. The helper's successful and
+`allocated_unverified` outcomes both preserve the exact allocated pod under
+`lifecycle.mode=leave_running`. It never turns this handle into a generic
+`runpod.exec` provision handle.
 
 ### Deployment qualification owns the boundary
 
-The supported target composition is:
+The supported target composition is now:
 
 ```text
-claim helper / existing runpod_lifecycle provider API
-  -> coordinator accepts exact handle and cleanup ownership
+canonical claim helper and durable claim handle
+  -> execution request binds exact pod/account and leave_running policy
   -> stage + verify release/models; prepare Comfy and parked GenericHost
   -> real child attachment + exact VibeComfy CPU validation
-  -> activate qualified worker; canonical Astrid task admission/retry
-  -> H3 children -> managed settlement/pullback -> lifecycle teardown
+  -> activate qualified worker; canonical Astrid task admission
+  -> h3_av.transform children -> managed settlement/pullback -> final receipt
 ```
-
-The coordinator-owned deployment/activation integration is **planned, not yet an
-installed end-to-end command**. See the
-[H3 single-launch plan](../.otto/runs/h3-av-simplicity-20260924-T2/deployment-handoff-plan-20260928.md)
-sections 3–5 for the manifest, handle contract, CPU gates and proposed single
-operator command; sections 6–10 specify recovery, code locations, tests and receipt.
 
 Before claimable readiness, it must independently verify pod/account placement,
 issue scoped placement authority, bind the exact claim selector, attest staged
@@ -310,7 +323,147 @@ qualification.
 
 Do not restore the earlier manual serial-host/token-swap launch instructions.
 `watch_h3_5090_storage.py` is not an alternative launcher for this procedure;
-retire it or refactor it to consume this same coordinator contract.
+the local-only watcher below is the supported observation tool.
+
+### Read-only claim-to-H3 watch
+
+Use `scripts/watch_h3_claim_flow.py` when an operator only needs progress from
+the local canonical evidence. It reads the claim handle, optional execution
+request, numbered H3 output stages, final receipt, and cleanup state. It does
+not call RunPod, allocate or terminate a pod, submit an H3 task, or alter any
+provider/runtime state. Missing local evidence is reported as
+`allocation_pending/unknown` or `pending/unknown`; it is not upgraded to a
+provider claim.
+
+From the repository root, use the exact canonical run directory and normal
+120-second interval:
+
+```bash
+.venv/bin/python scripts/watch_h3_claim_flow.py .otto/runs/h3-av-simplicity-20260924-T2 --poll-seconds 120
+```
+
+For one non-blocking snapshot, use:
+
+```bash
+.venv/bin/python scripts/watch_h3_claim_flow.py .otto/runs/h3-av-simplicity-20260924-T2 --poll-seconds 120 --once
+```
+
+The watcher prints only changed local observations, in this order:
+
+1. `allocation`: missing local custody is `allocation_pending/unknown`; a
+   marker can be `allocation_pending` or `allocation_unknown`; a completed
+   handle is `claimed`.
+2. `pod`: the exact pod ID and local readiness evidence. A valid final claim
+   implies the claim helper's readiness/release preflight passed. Exact
+   terminal cleanup evidence takes precedence over stale historical readiness.
+3. `execution_request`: missing, invalid, present, or `target_mismatch`, plus
+   the target pod ID, request status, and lifecycle mode.
+4. `h3_receipt`: `prepare`, `compile`, `validate`, `run`, `compose`, `verify`,
+   and `final`, derived only from matching local JSON artifacts.
+5. `cleanup`: an exact cleanup receipt if one exists; otherwise
+   `leave_running` when that is the request policy, or `pending/unknown`.
+
+The watcher does not call RunPod, allocate, retry, terminate, submit a task, or
+mutate Runtime state. Missing local evidence remains missing or unknown; the
+watcher never upgrades it through an implicit provider lookup. Its own poll
+interval is local filesystem polling and does not change the claim helper's
+provider polling.
+
+### Bind the claimed pod in the execution request
+
+After the claim succeeds, write
+`.otto/runs/h3-av-simplicity-20260924-T2/execution-request.json`. Replace
+`<returned-pod-id>` with the exact `pod_id` in the successful claim handle and
+use the provider account reference returned by the configured/qualified
+target. The current canonical example uses `runpod`:
+
+```json
+{
+  "target": {
+    "kind": "runpod",
+    "pod_id": "<returned-pod-id>",
+    "provider_account_ref": "runpod"
+  },
+  "lifecycle": {
+    "mode": "leave_running"
+  },
+  "limits": {
+    "max_queue_seconds": 1800,
+    "max_runtime_seconds": 3600
+  }
+}
+```
+
+Do not copy a pod ID from an older example or provider inventory. The execution
+request must match the newly returned claim and qualified account exactly. The
+watcher reports a differing target as `target_mismatch`; it does not repair it.
+The queue and runtime limits bound canonical task execution. They are not
+authorization to terminate the pod and are not a provider capacity-wait limit.
+
+### Submit through the H3 orchestrator
+
+The canonical SDK dispatch launches the H3 orchestrator with the request,
+asset map, output root, execution request, and project. For the current Matrix
+Minkhole example, its runner-owned command resolves to:
+
+```bash
+.venv/bin/python -m astrid.packs.h3_av.orchestrators.transform.run \
+  --request runs/matrix-minkhole/h3-canonical-submit-20260924/request.json \
+  --asset-map runs/matrix-minkhole/h3-canonical-submit-20260924/asset-map.json \
+  --out .otto/runs/h3-av-simplicity-20260924-T2/receipts/h3-transform \
+  --execution-request .otto/runs/h3-av-simplicity-20260924-T2/execution-request.json \
+  --project matrix-minkhole
+```
+
+That module command is runner-owned and guarded against ad-hoc direct use. The
+operator submits the same values through the public SDK so Astrid creates that
+command in the canonical invocation context:
+
+```python
+from pathlib import Path
+
+import astrid.sdk as sdk
+
+result = sdk.invoke_result(
+    "h3_av.transform",
+    kind="orchestrator",
+    project="matrix-minkhole",
+    inputs={
+        "request": Path("runs/matrix-minkhole/h3-canonical-submit-20260924/request.json"),
+        "asset_map": Path("runs/matrix-minkhole/h3-canonical-submit-20260924/asset-map.json"),
+        "execution_request": Path(
+            ".otto/runs/h3-av-simplicity-20260924-T2/execution-request.json"
+        ),
+    },
+    out=Path(
+        ".otto/runs/h3-av-simplicity-20260924-T2/receipts/h3-transform"
+    ),
+)
+if not result.ok:
+    raise RuntimeError(result.error)
+```
+
+The orchestrator owns `request -> prepare -> compile -> validate -> run ->
+compose -> verify -> final receipt`. Only its canonical `vibecomfy.run` child
+receives the execution target. Do not hand-submit a second VibeComfy task for
+the same request.
+
+### Leave-running and later cleanup
+
+`leave_running` is exact: neither the claim helper nor successful H3 settlement
+terminates the pod. An allocated pod whose readiness/SSH/release preflight
+fails is also left running and recorded as `allocated_unverified`; reconcile
+that exact pod before any retry. A queue/runtime timeout does not change this
+postcondition.
+
+If a separately authorized owner later terminates the pod, cleanup must target
+the exact claimed `pod_id`, never a GPU type or volume. Preserve the `backup`
+network volume. The cleanup receipt must bind the complete claim-handle digest,
+repeat the exact pod ID at top level and in `cleanup`, record
+`cleanup_status: "complete"`, record `terminated`, `already_gone`, or `absent`,
+repeat the exact backup volume ID, and set
+`backup_volume_preserved: true`. Until that evidence exists, the watcher
+reports `leave_running` and the claim handle cannot roll over.
 
 ### Existing-task recovery is not a fresh invocation
 
@@ -321,9 +474,9 @@ the plan's explicit same-task placement-recovery operation. Current retry alone
 does not relocate it. Until that prerequisite exists, stop before paid allocation.
 Do not create a replacement task.
 
-The fresh-task examples below describe ordinary new invocations, **not recovery
-of this existing H3 task**. A runbook cannot substitute for Runtime enforcing the
-preclaim qualification barrier.
+The `h3_av.transform` example above describes an ordinary new invocation,
+**not recovery of this existing H3 task**. A runbook cannot substitute for
+Runtime enforcing the preclaim qualification barrier.
 
 ### Mandatory invocation preflight
 
@@ -343,14 +496,14 @@ transport change, run `pytest tests/packs/h3_av/test_runtime_contract.py` from
 the Astrid environment; its CPU regression removes earlier attempt directories
 and tests native continuation and separate video/audio composition handoffs.
 
-There is one more gate between live capability readiness and `tasks create`.
-For a canonical VibeComfy run, the task must carry the complete sibling bundle
-and filename-bearing managed asset descriptors. Astrid's SDK runs the shared
-CPU-only invocation preflight at this boundary and fails closed before task
-admission when the configured VibeComfy environment is unavailable or the
-invocation is not executable.
+There is one more gate between live capability readiness and orchestrator
+admission. For the canonical VibeComfy child, the task must carry the complete
+sibling bundle and filename-bearing managed asset descriptors. Astrid's SDK
+runs the shared CPU-only invocation preflight at this boundary and fails closed
+before task admission when the configured VibeComfy environment is unavailable
+or the invocation is not executable.
 
-Run this admission command from the Astrid virtualenv with the VibeComfy
+Set the admission environment so the Astrid virtualenv runs with the VibeComfy
 checkout explicitly importable. VibeComfy is a sibling checkout in the normal
 development layout, so relying on whichever `python3` happens to be first on
 `PATH` can produce a false preflight failure (`No module named vibecomfy`) before
@@ -361,10 +514,10 @@ export ASTRID_PYTHON=/absolute/path/to/Astrid/.venv/bin/python
 export VIBECOMFY_CHECKOUT=/absolute/path/to/vibecomfy
 export PYTHONPATH="$VIBECOMFY_CHECKOUT${PYTHONPATH:+:$PYTHONPATH}"
 export VIBECOMFY_HEADLESS=1
-"$ASTRID_PYTHON" -m astrid tasks create ...
 ```
 
-The command must fail before admission if that import check cannot pass; do not
+Run the public `h3_av.transform` SDK invocation from the preceding section in
+this shell. It must fail before admission if that import check cannot pass; do not
 work around it by submitting directly to ComfyUI or by omitting the canonical
 task route. Treat the import environment as part of the local admission
 preflight and record it with the task receipt.
@@ -416,104 +569,17 @@ These are three distinct validation boundaries:
    final media. If delivery fails after generation, keep the attempt failed or
    incomplete; never retroactively mark it successful from a Comfy log alone.
 
-Create the task through Astrid, rather than calling ComfyUI directly. Put the
-generation intent at the admission level. Its `metadata` object is the light
-association layer for caller labels such as `shot_id`; Runtime copies it to
-the Generation published by the task. The raw `tasks create` route also needs
-the generic `generation.publish_v1` settlement effect. The higher-level SDK
-invocation route composes that effect from the registered capability, so this
-is publication metadata, not an H3 adapter.
+Create the work through `h3_av.transform`, rather than calling ComfyUI,
+`vibecomfy.run`, or raw `tasks create` directly. The orchestrator derives the
+generation intent from the sealed compilation's public-generation contract and
+publishes the managed candidate through the registered capability. A second
+hand-written task would split authority and can duplicate generation or
+publication.
 
-```bash
-# Replace the angle-bracket placeholders with the claimed pod, project, and
-# managed workflow object before running this command.
-cat > /tmp/task-spec.json <<'JSON'
-{
-  "inputs": {
-    "python": {"digest": "sha256:<workflow.py-object>", "object_id": "sha256:<workflow.py-object>", "filename": "workflow.py"},
-    "companion": {"digest": "sha256:<companion-object>", "object_id": "sha256:<companion-object>", "filename": "workflow.vibe.json"},
-    "source": {"digest": "sha256:<source.json-object>", "object_id": "sha256:<source.json-object>", "filename": "source.json"},
-    "source_video": {"digest": "sha256:<source-video-object>", "object_id": "sha256:<source-video-object>", "filename": "speaking-prefix.mov"},
-    "prompt": "<exact prompt encoded in the canonical workflow>"
-  },
-  "input_digests": [
-    {"name": "python", "digest": "sha256:<workflow.py-object>"},
-    {"name": "companion", "digest": "sha256:<companion-object>"},
-    {"name": "source", "digest": "sha256:<source.json-object>"},
-    {"name": "source_video", "digest": "sha256:<source-video-object>"}
-  ]
-}
-JSON
-
-cat > /tmp/generation-intent.json <<'JSON'
-{
-  "version": 1,
-  "modality": "video",
-  "partial_success_policy": "reject",
-  "groups": [{
-    "group_key": "main",
-    "selectors": [{
-      "selector": "main-0",
-      "ordinal": 0,
-      "variant_key": "original",
-      "required": true
-    }]
-  }],
-  "metadata": {
-    "shot_id": "shot-17",
-    "scene_id": "scene-3",
-    "take": 2
-  }
-}
-JSON
-
-cat > /tmp/generation-effect.json <<'JSON'
-{
-  "effect_type": "generation.publish_v1",
-  "target_id": "<project-id>",
-  "payload": {
-    "version": 1,
-    "modality": "video",
-    "generation_type": "vibecomfy.run",
-    "metadata": {"shot_id": "shot-17", "scene_id": "scene-3", "take": 2},
-    "partial_success_policy": "reject",
-    "groups": [{
-      "group_key": "main",
-      "selectors": [{
-        "selector": "main-0",
-        "ordinal": 0,
-        "variant_key": "original",
-        "required": true,
-        "output_port": "vibecomfy_run"
-      }]
-    }]
-  }
-}
-JSON
-
-python3 -m astrid tasks create --project <project-id> \
-  --capability vibecomfy.run \
-  --spec "$(cat /tmp/task-spec.json)" \
-  --input-manifest '["sha256:<workflow-object>"]' \
-  --generation-intent "$(cat /tmp/generation-intent.json)" \
-  --settlement-effect "$(cat /tmp/generation-effect.json)" \
-  --execution-request '{"target":{"kind":"runpod","pod_id":"<claimed-pod-id>","provider_account_ref":"runpod-default"},"lifecycle":{"mode":"leave_running"},"limits":{"max_queue_seconds":300,"max_runtime_seconds":1800}}' \
-  --idempotency-key "generation-<unique-key>" \
-  --json
-```
-
-The effect's `target_id` must be the same project id passed to the command. For
-a capability whose primary output port differs, use that declared port in the
-generic effect. Do not put `generation_intent` inside `spec`: that makes it
-opaque executor input and does not publish a Generation. If using
-`client.invoke_result("vibecomfy.run", kind="executor", ...)`, pass the intent
-in `inputs`; the SDK validates it and composes the same settlement effect.
-
-Follow the returned `task_id` until it is `succeeded` or `settled`. Then read
-the task's managed output associations and the Generation created by the
-`generation.publish_v1` settlement. Download each selected object through the
-Runtime object API, verify its SHA-256 and media decode locally, and only then
-terminate the exact pod id:
+Follow the orchestrator's returned task/run evidence until it is succeeded or
+settled. Then read the managed output association and Generation created by
+the canonical settlement, download the selected object through the Runtime
+object API, and verify its SHA-256 and media decode locally:
 
 ```python
 from astrid.sdk import AstridClient
@@ -525,120 +591,62 @@ with AstridClient.open_from_launcher() as client:
     data = client.media.read_bytes(outputs.data[0]["object_id"])
 ```
 
-The task id, attempt id, output association, Generation id, `shot_id`, local
-path, byte count and digest belong in the receipt. A direct Comfy/VibeComfy
-smoke is useful diagnosis, but it does not replace this task-to-Generation
-check.
+The task ID, attempt ID, output association, Generation ID, local path, byte
+count, and digest belong in the receipt. A direct Comfy/VibeComfy smoke is
+useful diagnosis, but it does not replace this task-to-Generation check.
 
-After the local object downloads and media checks pass, terminate the exact
-pod that was used. Do not terminate by GPU type or by the storage volume:
+Managed retrieval does not override `leave_running`. Close the H3 operation
+with the pod still running unless a separately authorized cleanup owner
+terminates that exact pod and emits the identity-bound cleanup receipt
+described above. The final receipt deliberately keeps these facts separate:
 
-```bash
-runpod-lifecycle terminate <claimed-pod-id> --yes
-runpod-lifecycle list
+```text
+task_succeeded -> candidate_verified -> editorially_approved -> cleanup_verified
 ```
 
-The final list must show no pods before the run is closed.
+Successful generation does not imply editorial approval or cleanup. Under
+`leave_running`, `cleanup_verified` remains distinct and the watcher reports
+the explicit leave-running postcondition.
 
-The acceptance run on 2026-09-22 used task
-`2e61fe96ac544d1c96e85800c24b2850`, published Generation
-`generation-5f60f79456bb0309c8c394f765e219f7ebcb9ca343765fc74ba3d9e0c6f0cf6c`,
-verified two decoded MP4 outputs locally, and terminated the claimed pod. The
-local receipt is kept under
-`Astrid/.otto/runs/astrid-runpod-task-queue-20260918/artifacts/managed-generation-8step-20260921-r5i/`.
+## 5. Generic RunPod pack boundary
 
-## 5. Astrid-native lifecycle invocation
+`runpod.provision`, `runpod.exec`, and `runpod.session` remain useful generic
+RunPod capabilities, but they are not the canonical H3 route documented here.
+Their handles, lifecycle ownership, task shape, and settlement receipts differ
+from the dedicated `astrid.runpod.claim.v1` plus `h3_av.transform` flow. Do not
+normalize the canonical claim handle into a generic provision handle, invent
+missing account/cost fields, or insert `runpod.exec` between claim and H3
+orchestration.
 
-Use the connected SDK and exact manifest input names:
-
-```python
-from astrid.sdk import AstridClient
-
-with AstridClient.open_from_launcher() as client:
-    result = client.invoke_result(
-        "runpod.exec",
-        kind="executor",
-        project="astrid-intro",
-        inputs={
-            "pod_handle": "/path/to/astrid-provision-pod_handle.json",
-            "local_root": "/path/to/job",
-            "remote_script": "/path/to/job/run.sh",
-            "remote_root": "/workspace/unique-job-id",
-            "timeout": 900,
-            "upload_mode": "sftp_walk",
-        },
-        wait=True,
-    )
-    if not result.ok:
-        raise RuntimeError(result.error)
-```
-
-This API exists, but this review did not live-verify the native wrapper.
-Its prerequisites differ from the proven standalone CLI:
-
-- Use the handle emitted by runpod.provision. The current
-  5090-backup-pod.json has schema astrid.runpod.claim.v1 and lacks the
-  config_snapshot and hourly_rate expected by runpod.exec. Do not pass it
-  unchanged or invent account/cost fields. Use its exact pod_id with the
-  lifecycle CLI until canonical handle resolution is added.
-- Astrid doctor must pass with matching installed runtime/client contracts.
-  The reviewed Astrid .venv cannot import runpod_lifecycle; ensure the actual
-  executor environment has the required package before invocation.
-- The current RunPod executor network manifest admits API HTTPS destinations,
-  while the library uses direct Paramiko SSH. The generic host's broker/sandbox
-  path must support and admit that resolved SSH destination. This remains an
-  integration concern, not a reason to bypass the sandbox.
-- Require successful Runtime settlement and visible output digests, not merely
-  an exec_result.json or a local download directory. The task capability here
-  is runpod.exec; it is not a remote vibecomfy.run task.
+The same boundary applies to direct `runpod-lifecycle run`: it can diagnose
+upload/SSH/remote-exec/download behavior, but it does not produce the H3 child
+lineage, managed Generation, composition/verification evidence, or final
+receipt. Sections 2 and 3 retain that diagnostic material for incidents where
+transport itself is under test.
 
 ## 6. New pods, only when requested
 
 For the prepared H3 release, use the repository claim waiter. It is a thin
-operator wrapper around the canonical lifecycle launch path: it preserves the
-existing `backup` volume, requests the validated CUDA-13 image/host profile,
-waits for SSH readiness, verifies the mounted release venv with a real CUDA
-initialization, and terminates an allocated pod that fails that preflight.
-It leaves a passing pod running and prints a secret-free lifecycle handle.
+operator wrapper around the existing provider substrate: it attaches the
+existing `backup` volume without resize, requests the validated CUDA-13
+image/host profile, waits for SSH readiness, verifies the mounted release venv
+with a real CUDA initialization, and leaves the exact allocated pod running.
+It prints a secret-free lifecycle handle only after successful verification.
 
 ```bash
-.venv/bin/python scripts/claim_runpod_5090_backup.py \
-  --gpu-type "NVIDIA GeForce RTX 5090" \
-  --storage-name backup \
-  --container-disk-gb 200 \
-  --image "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404" \
-  --allowed-cuda-versions 13.0 \
-  --handle-path /absolute/path/h3-cu130-pod-handle.json
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
 ```
 
-Do not omit the image or CUDA constraint for this release: the generic
-`runpod-torch-v240` default is Torch 2.4/CUDA 12.4 and is not an H3 target.
-The claim handle is lifecycle-oriented; normalize it through the canonical
-`runpod.provision` contract before passing it to Astrid `runpod.exec`.
-
-The equivalent raw lifecycle launch command is:
-
-```bash
-runpod-lifecycle launch --gpu-type "NVIDIA GeForce RTX 5090" \
-  --storage-name backup --container-disk-gb 200 \
-  --image "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404" \
-  --allowed-cuda-versions "13.0" --detach
-```
-
-Use the installed CLI help to verify flags. The reviewed current checkout
-supports --allowed-cuda-versions. Pin existing volume size if a launch
-configuration could otherwise resize it; the claim script does this. After
-launch, the release path is
+The script defaults pin the prepared image and CUDA 13.0 constraint; do not
+replace them with the generic Torch 2.4/CUDA 12.4 template. After launch, the
+release path is
 `/workspace/h3-golden/releases/h3-cu130-v1-candidate/runtime/venv/bin/python`
 and the Comfy entrypoint is
 `/workspace/h3-golden/releases/h3-cu130-v1-candidate/runtime/launch-comfy.sh`.
-Do not use --probe-only: it claims and terminates a pod.
-
-The Astrid equivalent is runpod.provision followed by runpod.exec. Provision
-leaves the pod running; runpod.session intentionally tears it down and is not
-the keep-running route. Never delete the backup volume during pod cleanup.
-Keeping a pod running continues provider billing; runner timeout is not a
-pod-lifetime limit.
+There is no generic-provision equivalent in this canonical procedure. Continue
+with the execution request and `h3_av.transform`, and never delete the backup
+volume during any later cleanup. Keeping a pod running continues provider
+billing; claim, queue, and runtime timeouts are not pod-lifetime limits.
 
 ## Live review and H3 boundary
 
@@ -648,11 +656,10 @@ confirmation that the same pod remained RUNNING on backup. It ran no inference
 and admitted no Astrid task. Evidence:
 [practical-path review](../docs/projects/astrid-unified-execution/runpod-practical-path-review-20260921.md).
 
-This does not establish H3 readiness. The current pod image is the Torch
-2.4/CUDA 12.4 provider default. The candidate H3 virtualenv exists, but a bounded
-import torch probe failed with ModuleNotFoundError. Follow the CUDA, node/model,
-backend, input and capacity gates in [RunPod lifecycle](runpod-lifecycle.md)
-before the continuation test; SSH/GPU presence is insufficient.
+That historical transport result does not establish H3 readiness and predates
+the prepared CUDA-13 claim flow. Follow the claim helper's release preflight
+and the H3 orchestrator's target-schema, node/model, backend, input, managed
+delivery, and verification gates. SSH/GPU presence remains insufficient.
 
 The [remote task-manager build brief](../docs/projects/astrid-unified-execution/runpod-task-execution-build-brief.md)
 is an optional future integration for scheduler-enforced placement and remote

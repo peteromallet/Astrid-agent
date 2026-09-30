@@ -18,6 +18,96 @@ from astrid.core.contracts.errors import AstridError
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("command", ["provision", "session"])
+def test_outer_adapter_allocation_unknown_keeps_identity_and_blocks_another_launch(
+    command: str, produces_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrid.packs.runpod.executors import _common
+    from runpod_lifecycle import AllocationUnknown
+
+    resolved = {
+        **_common._RUNPOD_COMPUTE_DEFAULTS,
+        "gpu_type": "NVIDIA GeForce RTX 5090",
+        "allowed_cuda_versions": ["13.0"],
+        "image": "runpod/base:cuda1300",
+        "storage_name": "existing",
+        "volume_in_gb": 0,
+        "require_storage": True,
+        "datacenter_id": None,
+    }
+
+    launches: list[str] = []
+
+    async def ambiguous_launch(config, *, name):
+        assert config.attach_only is True
+        assert config.disk_size_gb == 0
+        assert config.storage_name == "existing"
+        assert config.worker_image == "runpod/base:cuda1300"
+        assert config.allowed_cuda_versions == ("13.0",)
+        assert config.template_id == ""
+        launches.append(name)
+        marker = json.loads((produces_dir / "pod_handle.json").read_text())
+        assert marker["state"] == "allocation_pending"
+        assert marker["request_name"] == name
+        assert marker["operation_id"][:12] in name
+        raise AllocationUnknown(name, "NVIDIA GeForce RTX 5090", 72, "existing", "vol-id")
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key-rpa_0000000000000000000000000000000000000000000000")
+    with patch("runpod_lifecycle.launch", ambiguous_launch), \
+         patch.object(_common, "_resolve_compute_profile", return_value=resolved), \
+         patch.object(_common, "_preflight_storage"), \
+         patch.object(_common, "_get_hourly_rate", return_value=0.5):
+        with pytest.raises(AstridError) as first:
+            _common.main([command, "--produces-dir", str(produces_dir)])
+        assert first.value.code == "allocation_unknown"
+        first_marker = json.loads((produces_dir / "pod_handle.json").read_text())
+        with pytest.raises(AstridError, match="requires reconciliation") as second:
+            _common.main([command, "--produces-dir", str(produces_dir)])
+        assert second.value.code == "allocation_unknown"
+        assert second.value.state_snapshot["operation_id"] == first_marker["operation_id"]
+        with pytest.raises(AstridError, match="no confirmed pod ID"):
+            _common._load_handle_and_config(produces_dir / "pod_handle.json")
+
+    assert len(launches) == 1
+    marker = json.loads((produces_dir / "pod_handle.json").read_text())
+    assert marker["state"] == "allocation_unknown"
+    assert marker["reconciliation_required"] is True
+    assert marker["operation_id"] == first_marker["operation_id"]
+    assert marker["request_name"] == launches[0]
+    assert marker["storage_volume_id_attempted"] == "vol-id"
+    assert "pod_id" not in marker
+    assert "test-key-rpa_" not in (produces_dir / "pod_handle.json").read_text()
+
+
+def test_datacenter_is_forwarded_only_when_lifecycle_config_supports_it() -> None:
+    from astrid.packs.runpod.executors import _common
+
+    class SupportedConfig:
+        def __init__(self, *, api_key: str, datacenter_id: str | None = None) -> None:
+            self.api_key = api_key
+            self.datacenter_id = datacenter_id
+
+    class UnsupportedConfig:
+        def __init__(self, *, api_key: str) -> None:
+            self.api_key = api_key
+
+    config = _common._new_runpod_config(
+        SupportedConfig,
+        datacenter_id="EU-RO-1",
+        template_id=None,
+        api_key="secret",
+    )
+    assert config.datacenter_id == "EU-RO-1"
+
+    with pytest.raises(AstridError, match="does not support datacenter"):
+        _common._new_runpod_config(
+            UnsupportedConfig,
+            datacenter_id="EU-RO-1",
+            template_id=None,
+            api_key="secret",
+        )
+
+
 @pytest.fixture
 def produces_dir() -> Path:
     """Create a temporary produces directory for executor output."""
@@ -305,6 +395,150 @@ def test_provision_writes_pod_handle_and_cost(
                 del os.environ["RUNPOD_API_KEY"]
 
 
+@pytest.mark.parametrize(
+    ("failure_phase", "failure"),
+    [
+        ("readiness", TimeoutError("readiness timeout")),
+        ("ssh", ConnectionError("ssh discovery failed")),
+    ],
+)
+def test_provision_persists_allocation_before_readiness_and_marks_cleanup_pending(
+    produces_dir: Path,
+    mock_launch: MagicMock,
+    mock_get_pod: MagicMock,
+    mock_pod: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+    failure: Exception,
+) -> None:
+    """A post-allocation edge leaves a reloadable, truthful recovery breadcrumb."""
+    observed: dict[str, object] = {}
+
+    async def wait_ready(*, timeout: int) -> None:
+        observed["before_failure"] = json.loads(
+            (produces_dir / "pod_handle.json").read_text(encoding="utf-8")
+        )
+        if failure_phase == "readiness":
+            raise failure
+
+    async def ensure_ssh_details() -> dict[str, object]:
+        observed["before_failure"] = json.loads(
+            (produces_dir / "pod_handle.json").read_text(encoding="utf-8")
+        )
+        raise failure
+
+    mock_pod.wait_ready = AsyncMock(side_effect=wait_ready)
+    mock_pod._ensure_ssh_details = AsyncMock(side_effect=ensure_ssh_details)
+
+    class Args:
+        gpu_type = "NVIDIA GeForce RTX 4090"
+        storage_name = None
+        max_runtime_seconds = None
+        name_prefix = None
+        image = None
+        container_disk_gb = None
+        datacenter_id = None
+        produces_dir = produces_dir
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key-rpa_0000000000000000000000000000000000000000000000")
+    with patch("runpod_lifecycle.launch", mock_launch), \
+         patch("runpod_lifecycle.get_pod", mock_get_pod), \
+         patch("runpod_lifecycle.RunPodConfig", MagicMock()), \
+         patch("astrid.packs.runpod.executors._common._get_hourly_rate", return_value=0.5):
+        with pytest.raises(AstridError, match=str(failure)) as raised:
+            from astrid.packs.runpod.executors.provision.run import cmd_provision
+
+            cmd_provision(Args(), produces_dir)
+
+    before_failure = observed["before_failure"]
+    assert isinstance(before_failure, dict)
+    assert before_failure["pod_id"] == "pod-abc123"
+    assert before_failure["state"] == "provisioning"
+    assert "ssh" not in before_failure
+    assert before_failure["hourly_rate"] == 0.5
+    assert before_failure["config_snapshot"]["api_key_ref"] == "RUNPOD_API_KEY"
+    for key in _CONFIG_SNAPSHOT_REQUIRED_KEYS:
+        assert key in before_failure["config_snapshot"]
+
+    handle = json.loads((produces_dir / "pod_handle.json").read_text(encoding="utf-8"))
+    assert handle["pod_id"] == "pod-abc123"
+    assert handle["state"] == "cleanup_pending"
+    assert handle["cleanup_pending"] is True
+    assert handle["cleanup_phase"] == failure_phase
+    assert str(failure) in handle["cleanup_error"]
+    assert raised.value.state_snapshot["cleanup_pending"] is True
+
+    class TeardownArgs:
+        pod_handle = None
+        produces_dir = produces_dir
+
+    from astrid.packs.runpod.executors.provision.run import cmd_teardown
+
+    with patch("runpod_lifecycle.get_pod", mock_get_pod), \
+         patch("runpod_lifecycle.RunPodConfig", MagicMock()):
+        assert cmd_teardown(TeardownArgs(), produces_dir) == 0
+    receipt = json.loads((produces_dir / "teardown_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["pod_id"] == "pod-abc123"
+    assert receipt["status"] == "terminated"
+    mock_get_pod.assert_awaited_once_with("pod-abc123", ANY, name="astrid-test-pod-1700000000")
+    mock_pod.terminate.assert_awaited_once()
+
+
+def test_provisional_handle_retains_cleanup_pending_until_reconciliation(
+    produces_dir: Path,
+    mock_launch: MagicMock,
+    mock_get_pod: MagicMock,
+    mock_pod: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed cleanup remains recoverable and a later exact-pod retry succeeds."""
+    mock_pod.wait_ready = AsyncMock(side_effect=TimeoutError("readiness timeout"))
+    mock_pod.terminate = AsyncMock(side_effect=[RuntimeError("teardown transport failed"), None])
+
+    class ProvisionArgs:
+        gpu_type = "NVIDIA GeForce RTX 4090"
+        storage_name = None
+        max_runtime_seconds = None
+        name_prefix = None
+        image = None
+        container_disk_gb = None
+        datacenter_id = None
+        produces_dir = produces_dir
+
+    class TeardownArgs:
+        pod_handle = None
+        produces_dir = produces_dir
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key-rpa_0000000000000000000000000000000000000000000000")
+    with patch("runpod_lifecycle.launch", mock_launch), \
+         patch("runpod_lifecycle.get_pod", mock_get_pod), \
+         patch("runpod_lifecycle.RunPodConfig", MagicMock()), \
+         patch("astrid.packs.runpod.executors._common._get_hourly_rate", return_value=0.5):
+        from astrid.packs.runpod.executors.provision.run import cmd_provision, cmd_teardown
+
+        with pytest.raises(AstridError, match="readiness timeout"):
+            cmd_provision(ProvisionArgs(), produces_dir)
+
+        with pytest.raises(AstridError, match="teardown failed: teardown transport failed"):
+            cmd_teardown(TeardownArgs(), produces_dir)
+
+        pending = json.loads((produces_dir / "pod_handle.json").read_text(encoding="utf-8"))
+        assert pending["pod_id"] == "pod-abc123"
+        assert pending["state"] == "cleanup_pending"
+        assert pending["cleanup_pending"] is True
+
+        assert cmd_teardown(TeardownArgs(), produces_dir) == 0
+
+    receipt = json.loads((produces_dir / "teardown_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["pod_id"] == "pod-abc123"
+    assert receipt["status"] == "terminated"
+    assert mock_get_pod.await_args_list == [
+        (("pod-abc123", ANY), {"name": "astrid-test-pod-1700000000"}),
+        (("pod-abc123", ANY), {"name": "astrid-test-pod-1700000000"}),
+    ]
+    assert mock_pod.terminate.await_count == 2
+
+
 def test_provision_forwards_and_persists_allowed_cuda_versions(
     produces_dir: Path, mock_launch: MagicMock, mock_pod: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -336,7 +570,7 @@ def test_provision_forwards_and_persists_allowed_cuda_versions(
          patch("astrid.packs.runpod.executors._common._get_hourly_rate", return_value=0.5):
         assert cmd_provision(Args(), produces_dir) == 0
 
-    assert captured["allowed_cuda_versions"] == ["13.0"]
+    assert captured["allowed_cuda_versions"] == ("13.0",)
     handle = json.loads((produces_dir / "pod_handle.json").read_text())
     assert handle["config_snapshot"]["allowed_cuda_versions"] == ["13.0"]
     resolved = json.loads((produces_dir / "compute_resolved.json").read_text())
@@ -1034,7 +1268,9 @@ def test_session_captures_pod_id_before_readiness_failure_and_terminates(
 
             provisional = json.loads((produces_dir / "pod_handle.json").read_text(encoding="utf-8"))
             assert provisional["pod_id"] == "pod-abc123"
-            assert provisional["state"] == "provisioning"
+            assert provisional["state"] == "cleanup_pending"
+            assert provisional["cleanup_pending"] is True
+            assert provisional["cleanup_phase"] == "session_teardown"
             cleanup.assert_awaited_once_with("pod-abc123", ANY, name="astrid-test-pod-1700000000")
     finally:
         if os.environ.get("RUNPOD_API_KEY") == "test-key-rpa_0000000000000000000000000000000000000000000000":
@@ -1184,7 +1420,7 @@ def test_session_keeps_breadcrumb_when_teardown_fails(
     mock_ship_and_run_detached: MagicMock,
     mock_pod: MagicMock,
 ) -> None:
-    """Session removes the transient handle only after successful/idempotent teardown."""
+    """Session reports cleanup_pending instead of returning success on teardown failure."""
     import os
     os.environ["RUNPOD_API_KEY"] = "test-key-rpa_0000000000000000000000000000000000000000000000"
     mock_pod.terminate = AsyncMock(side_effect=RuntimeError("teardown transport failed"))
@@ -1212,13 +1448,16 @@ def test_session_keeps_breadcrumb_when_teardown_fails(
                 excludes = None
                 produces_dir = produces_dir
 
-            exit_code = cmd_session(Args(), produces_dir)
+            with pytest.raises(AstridError, match="cleanup is pending"):
+                cmd_session(Args(), produces_dir)
 
-            assert exit_code == 0
             handle_path = produces_dir / "pod_handle.json"
             assert handle_path.is_file(), "pod_handle.json must remain when teardown fails"
             handle = json.loads(handle_path.read_text())
             _assert_pod_handle_shape(handle)
+            assert handle["state"] == "cleanup_pending"
+            assert handle["cleanup_pending"] is True
+            assert handle["cleanup_phase"] == "session_teardown"
     finally:
         if os.environ.get("RUNPOD_API_KEY") == "test-key-rpa_0000000000000000000000000000000000000000000000":
             del os.environ["RUNPOD_API_KEY"]

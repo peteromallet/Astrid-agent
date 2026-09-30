@@ -49,7 +49,7 @@
     "network": true,
     "env_passthrough": ["RUNPOD_SSH_IDENTITY_PATH"],
     "requirements": [
-      "runpod-lifecycle>=0.3"
+      "runpod-lifecycle>=0.3.1.dev0,<0.4"
     ]
   },
   "keywords": [
@@ -83,7 +83,7 @@
     "pack_id": "runpod",
     "prompts": [],
     "requirements": [
-      "runpod-lifecycle>=0.3"
+      "runpod-lifecycle>=0.3.1.dev0,<0.4"
     ],
     "requirements_source": "requirements.txt",
     "runtime_file": "run.py",

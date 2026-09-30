@@ -8,6 +8,7 @@ published.
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -76,7 +77,12 @@ def _write_image_thumbnail(source: Path, destination: Path) -> tuple[int, int]:
     return width, height
 
 
-def _write_video_thumbnail(source: Path, destination: Path, ffmpeg: str) -> tuple[int, int]:
+def _write_video_thumbnail(
+    source: Path,
+    destination: Path,
+    ffmpeg: str,
+    source_time_seconds: float = 0.001,
+) -> tuple[int, int]:
     command = [
         ffmpeg,
         "-hide_banner",
@@ -84,7 +90,7 @@ def _write_video_thumbnail(source: Path, destination: Path, ffmpeg: str) -> tupl
         "error",
         "-y",
         "-ss",
-        "0.001",
+        str(source_time_seconds),
         "-i",
         str(source),
         "-frames:v",
@@ -125,12 +131,29 @@ def extract_thumbnail(
     media_type: str,
     *,
     ffmpeg_path: str | None = None,
+    source_time_seconds: float | None = None,
 ) -> ThumbnailResult:
-    """Extract a bounded JPEG thumbnail from one local visual media file."""
+    """Extract a bounded JPEG thumbnail from one local visual media file.
+
+    ``source_time_seconds`` selects a frame for video. When omitted, the
+    historical near-opening sample (0.001 seconds) is retained. For images the
+    timestamp has no visual effect, but a supplied value is still validated.
+    """
 
     source = Path(source)
     destination = Path(destination)
     normalized_type = str(media_type or "").strip().lower()
+    if source_time_seconds is not None:
+        if isinstance(source_time_seconds, bool):
+            raise ThumbnailError("source_time_seconds must be a finite non-negative number")
+        try:
+            source_time_seconds = float(source_time_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ThumbnailError(
+                "source_time_seconds must be a finite non-negative number"
+            ) from exc
+        if not math.isfinite(source_time_seconds) or source_time_seconds < 0:
+            raise ThumbnailError("source_time_seconds must be a finite non-negative number")
     if not source.is_file():
         raise ThumbnailError(f"thumbnail source does not exist: {source}")
     if normalized_type.startswith("image/"):
@@ -141,7 +164,8 @@ def extract_thumbnail(
         if not ffmpeg:
             raise ThumbnailError("ffmpeg is required for video thumbnail extraction")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        width, height = _write_video_thumbnail(source, destination, ffmpeg)
+        sample_time = 0.001 if source_time_seconds is None else source_time_seconds
+        width, height = _write_video_thumbnail(source, destination, ffmpeg, sample_time)
     else:
         raise UnsupportedThumbnailMedia(normalized_type or "missing media type")
 
