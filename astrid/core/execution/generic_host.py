@@ -85,6 +85,14 @@ from astrid.core.execution.thumbnails import (
     extract_thumbnail,
     is_visual_media_type,
 )
+from astrid.core.generation.model_root import (
+    MODEL_ROOT_BINDING_ENV,
+    MODEL_ROOT_ENV,
+    MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV,
+    ModelRootBinding,
+    ModelRootBindingError,
+    model_root_binding_from_profile,
+)
 from astrid.core.generation.vibecomfy_dependency import (
     VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV,
     VIBECOMFY_ATTESTED_REVISION_ENV,
@@ -303,6 +311,17 @@ class _ManagedTaskAdapter:
         self.fenced = True
         self._cancel_signal.set()
         return {"ok": True, "fenced": True, "reason": reason}
+
+    def cancel(self, *, reason: str) -> dict[str, Any]:
+        self._cancel_signal.set()
+        if self._process_census is not None and self._process_census():
+            return {
+                "ok": False,
+                "cancelled": False,
+                "reason": reason,
+                "active_processes": True,
+            }
+        return {"ok": True, "cancelled": True, "reason": reason}
 
     def release(self, *, reason: str) -> dict[str, Any]:
         if self._process_census is not None and self._process_census():
@@ -1696,6 +1715,50 @@ def source_checkout_digest(checkout: str | Path) -> str:
     return _source_digest(pack_root)
 
 
+def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
+    """Measure the executable host closure owned by this checkout.
+
+    The legacy pack digest remains the capability-admission identity.  This
+    separate receipt covers the process host, Astrid core, SDK/bootstrap,
+    package entrypoints, launcher, and vendored workspace-client files that
+    can change what an admitted executable does.
+    """
+    root = Path(checkout).expanduser().resolve()
+    components = {
+        "host": root / "astrid" / "core" / "execution" / "generic_host.py",
+        "core": root / "astrid" / "core",
+        "sdk": root / "astrid" / "sdk",
+        "launcher": root / "astrid" / "omp_agent.py",
+        "astrid_entrypoint": root / "astrid" / "__init__.py",
+        "astrid_version": root / "astrid" / "version.py",
+        "astrid_main": root / "astrid" / "__main__.py",
+        "astrid_runtime_cli": root / "astrid" / "runtime_cli.py",
+        "vendored_workspace_client": root / "banodoco_workspace_client",
+    }
+    measured: list[dict[str, str]] = []
+    for name, path in components.items():
+        if path.is_symlink() or not path.exists():
+            raise ValueError(f"source closure component is missing or symlinked: {name}")
+        if path.is_dir() and any(child.is_symlink() for child in path.rglob("*")):
+            raise ValueError(f"source closure component contains a symlink: {name}")
+        measured.append({
+            "component": name,
+            "path": str(path.relative_to(root)),
+            "sha256": _source_digest(path),
+        })
+    measured.sort(key=lambda item: item["component"])
+    return {
+        "schema_version": 1,
+        "components": measured,
+        "digest": _canonical_digest(measured),
+    }
+
+
+def source_checkout_closure_digest(checkout: str | Path) -> str:
+    """Return the deterministic digest for the executable source closure."""
+    return str(source_checkout_closure(checkout)["digest"])
+
+
 def process_birth_identity(pid: int | None = None) -> str:
     """Return the OS birth token used to distinguish a reused PID."""
     info = _process_snapshot().get(int(pid if pid is not None else os.getpid()))
@@ -2306,6 +2369,7 @@ def _startup_identity_attestation(
     source_checkout: Path | None,
     source_inventory_identity: str | None,
     expected_source_checkout_digest: str | None = None,
+    expected_source_closure_digest: str | None = None,
     boot_manifest_hash: str | None = None,
     require_target: bool = False,
     target_json: str | None = None,
@@ -2328,7 +2392,10 @@ def _startup_identity_attestation(
     if source_checkout is None:
         if expected_source_checkout_digest:
             raise HostError("source checkout digest was supplied without a source checkout")
+        if expected_source_closure_digest:
+            raise HostError("source closure digest was supplied without a source checkout")
         source_digest = None
+        source_closure = None
     else:
         try:
             source_digest = source_checkout_digest(source_checkout)
@@ -2340,6 +2407,16 @@ def _startup_identity_attestation(
                 "worker source identity mismatch: "
                 f"expected {expected!r}, observed {source_digest!r}"
             )
+        try:
+            source_closure = source_checkout_closure(source_checkout)
+        except (OSError, ValueError) as exc:
+            raise HostError(f"worker executable source closure could not be verified: {exc}") from exc
+        expected_closure = str(expected_source_closure_digest or "").strip()
+        if expected_closure and expected_closure != source_closure["digest"]:
+            raise HostError(
+                "worker executable source closure mismatch: "
+                f"expected {expected_closure!r}, observed {source_closure['digest']!r}"
+            )
     return {
         "schema_version": 1,
         "target": target,
@@ -2349,6 +2426,8 @@ def _startup_identity_attestation(
         "source": {
             "checkout": str(source_checkout) if source_checkout is not None else None,
             "checkout_digest": source_digest,
+            "closure_digest": source_closure["digest"] if source_closure else None,
+            "closure": source_closure["components"] if source_closure else None,
             "inventory_identity": str(source_inventory_identity or ""),
         },
         "boot_manifest_hash": boot_manifest_hash,
@@ -3926,7 +4005,7 @@ class GenericPackHost:
         # snapshot rather than the normal published dependency pin.  The
         # candidate is selected only by the digest-bound HC-03 profile; never
         # accept an ambient candidate variable from the pod environment.
-        if record.id == "vibecomfy.run":
+        if record.id in {"vibecomfy.run", "vibecomfy.validate"}:
             # Canonical bundle loading imports VibeComfy custom-node modules
             # before the child reaches the live checkout server. Keep that
             # host-side preflight headless too; the actual Comfy daemon keeps
@@ -3941,11 +4020,20 @@ class GenericPackHost:
                 if isinstance(revision, str) and isinstance(content_digest, str):
                     explicit[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                     explicit[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
-            launch = profile.get("launch") if isinstance(profile, Mapping) else None
-            if isinstance(launch, Mapping):
-                model_root = launch.get("model_root")
-                if isinstance(model_root, str) and model_root:
-                    explicit["ASTRID_VIBECOMFY_MODELS_ROOT"] = model_root
+            if profile is not None:
+                try:
+                    model_root_binding = model_root_binding_from_profile(
+                        profile, verify_files=False
+                    )
+                except ModelRootBindingError as exc:
+                    raise HostError(f"VibeComfy model-root binding is invalid: {exc}") from exc
+                explicit[MODEL_ROOT_ENV] = str(model_root_binding.path)
+                explicit[MODEL_ROOT_BINDING_ENV] = json.dumps(
+                    model_root_binding.as_dict(), sort_keys=True, separators=(",", ":")
+                )
+                receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
+                if receipt_dir:
+                    explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
             candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
             if isinstance(candidate, Mapping) and candidate.get("kind") == "local_snapshot":
                 revision = candidate.get("revision")
@@ -6370,6 +6458,7 @@ def _cli() -> int:
     parser.add_argument("--ready-file", help="write host registration/readiness metadata before entering the claim loop")
     parser.add_argument("--source-checkout", help="absolute source checkout bound to this host")
     parser.add_argument("--source-checkout-digest", help="expected digest for the source checkout's pack tree")
+    parser.add_argument("--source-closure-digest", help="expected digest for the executable host/source closure")
     parser.add_argument("--support-root", help="absolute runtime support directory bound to this host")
     parser.add_argument("--runtime-instance-id", help="runtime instance identity bound to this host")
     parser.add_argument("--source-inventory-identity", help="verified managed source inventory identity bound to this host")
@@ -6423,6 +6512,7 @@ def _cli() -> int:
             )
         except HostError as exc:
             parser.error(str(exc))
+    verified_model_root: ModelRootBinding | None = None
     if args.readiness_profile_path is not None:
         readiness_path = Path(args.readiness_profile_path).expanduser()
         if (
@@ -6452,13 +6542,27 @@ def _cli() -> int:
             if isinstance(revision, str) and isinstance(content_digest, str):
                 os.environ[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                 os.environ[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
-        launch = profile.get("launch") if isinstance(profile, Mapping) else None
-        if isinstance(launch, Mapping):
-            model_root = launch.get("model_root")
-            if isinstance(model_root, str) and model_root:
-                if not os.path.isabs(model_root):
-                    parser.error("readiness profile launch.model_root must be absolute")
-                os.environ["ASTRID_VIBECOMFY_MODELS_ROOT"] = model_root
+        try:
+            qualification_receipt_dir = (
+                Path(args.support_root).expanduser() / "model-verification"
+                if args.support_root
+                else None
+            )
+            verified_model_root = model_root_binding_from_profile(
+                profile,
+                verify_files=True,
+                qualification_receipt_dir=qualification_receipt_dir,
+            )
+        except ModelRootBindingError as exc:
+            parser.error(f"readiness profile model-root binding is invalid: {exc}")
+        os.environ[MODEL_ROOT_ENV] = str(verified_model_root.path)
+        os.environ[MODEL_ROOT_BINDING_ENV] = json.dumps(
+            verified_model_root.as_dict(), sort_keys=True, separators=(",", ":")
+        )
+        if qualification_receipt_dir is not None:
+            os.environ[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = str(
+                qualification_receipt_dir
+            )
         if isinstance(candidate, Mapping) and candidate.get("kind") == "local_snapshot":
             revision = candidate.get("revision")
             content_digest = candidate.get("source_content_digest")
@@ -6514,6 +6618,7 @@ def _cli() -> int:
             source_checkout=source_checkout,
             source_inventory_identity=args.source_inventory_identity,
             expected_source_checkout_digest=args.source_checkout_digest,
+            expected_source_closure_digest=args.source_closure_digest,
             boot_manifest_hash=boot_manifest_hash,
             require_target=args.require_target_attestation,
         )
@@ -6588,6 +6693,7 @@ def _cli() -> int:
             "support_root": str(support_root) if support_root else None,
             "source_checkout": str(source_checkout) if source_checkout else None,
             "source_checkout_digest": source_checkout_digest(source_checkout) if source_checkout else None,
+            "source_closure_digest": identity_attestation["source"].get("closure_digest"),
             "source_inventory_identity": host.source_inventory_identity,
             "boot_manifest_path": str(boot_manifest),
             "boot_manifest_hash": boot_manifest_hash,
@@ -6596,6 +6702,9 @@ def _cli() -> int:
             "runtime_epoch": host.runtime_state.get("runtime_epoch"),
             "schema_digest": host.runtime_state.get("schema_digest"),
             "identity_attestation": identity_attestation,
+            "model_root_binding": (
+                verified_model_root.as_dict() if verified_model_root is not None else None
+            ),
             "activation": {
                 key: activation[key]
                 for key in (

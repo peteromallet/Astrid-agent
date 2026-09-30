@@ -141,7 +141,8 @@ def test_ir_executors_are_manifested_without_growing_the_gateway() -> None:
         "workflow", "python", "companion", "source", "python_execution_consent"
     }
     assert {item.name for item in validate_manifest.inputs} == {
-        "workflow", "python", "companion", "source", "python_execution_consent"
+        "workflow", "python", "companion", "source", "python_execution_consent",
+        "workflow_inputs",
     }
     assert {item.name for item in run_manifest.inputs} == {
         "workflow",

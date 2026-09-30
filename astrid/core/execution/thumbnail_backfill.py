@@ -9,6 +9,7 @@ does not write SQLite, Supabase, or browser state.
 from __future__ import annotations
 
 import hashlib
+import math
 import tempfile
 import uuid
 from collections.abc import Mapping
@@ -23,6 +24,8 @@ from astrid.core.execution.thumbnails import (
     is_visual_media_type,
 )
 from astrid.core.receipts.canonical import canonical_json
+from astrid.core.timeline.authoring_bundle import open_authoring_bundle
+from astrid.core.timeline.duration import clip_timeline_duration
 from astrid.sdk.pagination import page_pair
 
 THUMBNAIL_BACKFILL_CAPABILITY_ID = "media.thumbnail_backfill"
@@ -82,6 +85,29 @@ class VariantThumbnailBackfillReport:
         value["variant_ids"] = list(self.variant_ids)
         value["diagnostics"] = [dict(item) for item in self.diagnostics]
         value["receipts"] = [dict(item) for item in self.receipts]
+        return value
+
+
+@dataclass(frozen=True)
+class TimelineThumbnailBackfillReport:
+    project_id: str
+    timeline_id: str
+    head_revision_id: str
+    scanned: int = 0
+    attached: int = 0
+    already_ready: int = 0
+    unsupported: int = 0
+    unavailable: int = 0
+    failed: int = 0
+    source_fetches: int = 0
+    dry_run: bool = False
+    requests: tuple[dict[str, Any], ...] = ()
+    diagnostics: tuple[dict[str, str], ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["requests"] = [dict(item) for item in self.requests]
+        value["diagnostics"] = [dict(item) for item in self.diagnostics]
         return value
 
 
@@ -261,6 +287,67 @@ def _unwrap_mutation(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
     raise ThumbnailBackfillError("Runtime mutation returned an invalid resource")
+
+
+def ensure_imported_source_thumbnail(
+    runtime: Any,
+    *,
+    project_id: str,
+    source_object_id: str,
+    source_bytes: bytes,
+    media_type: str,
+    idempotency_key: str,
+    source_time_seconds: float = 0.001,
+) -> Mapping[str, Any] | None:
+    """Attach the standard typed thumbnail while importing a video object.
+
+    This is deliberately an object-level enhancement: it never creates a
+    Generation or edits a timeline. Images remain object-only because their
+    source bytes are already directly displayable.
+    """
+    if not str(media_type).lower().startswith("video/"):
+        return None
+    existing = _plain(runtime.get_source_frame_thumbnail(
+        project_id,
+        source_object_id,
+        source_time_seconds,
+        recipe_version=THUMBNAIL_RECIPE_VERSION,
+    ))
+    if isinstance(existing, Mapping) and isinstance(existing.get("thumbnail"), Mapping):
+        return existing["thumbnail"]
+    identity = _stable_key(project_id, source_object_id, f"{source_time_seconds:.6f}", str(THUMBNAIL_RECIPE_VERSION))
+    with tempfile.TemporaryDirectory(prefix="astrid-import-thumbnail-") as workdir:
+        root = Path(workdir)
+        source_path = root / "source"
+        thumbnail_path = root / THUMBNAIL_OUTPUT_FILENAME
+        source_path.write_bytes(source_bytes)
+        extract_thumbnail(source_path, thumbnail_path, media_type, source_time_seconds=source_time_seconds)
+        uploaded = _unwrap_mutation(runtime.ingest_project_object(
+            project_id,
+            thumbnail_path.read_bytes(),
+            media_type="image/jpeg",
+            filename=f"thumbnail-{identity[:16]}.jpg",
+            idempotency_key=f"{idempotency_key}:thumbnail:upload",
+        ))
+    thumbnail_object_id = uploaded.get("object_id")
+    if not isinstance(thumbnail_object_id, str):
+        raise ThumbnailBackfillError("Runtime thumbnail ingest returned no object_id")
+    descriptor = {
+        "object_id": thumbnail_object_id,
+        "source_object_id": source_object_id,
+        "recipe_version": THUMBNAIL_RECIPE_VERSION,
+        "selection": {"kind": "source_frame", "source_time_seconds": round(source_time_seconds, 6)},
+    }
+    ensured = _plain(runtime.ensure_source_frame_thumbnail(
+        project_id,
+        descriptor,
+        idempotency_key=f"{idempotency_key}:thumbnail:ensure",
+    ))
+    if isinstance(ensured, Mapping) and isinstance(ensured.get("data"), Mapping):
+        return ensured["data"]
+    if isinstance(ensured, Mapping):
+        return ensured
+    raise ThumbnailBackfillError("Runtime source-frame ensure returned an invalid descriptor")
 
 
 def _claim_task(runtime: Any, *, actor_id: str, epoch: int) -> Mapping[str, Any]:
@@ -1009,13 +1096,299 @@ def run_variant_thumbnail_backfill(
     )
 
 
+def _timeline_closure(runtime: Any, project_id: str, timeline_ref: str) -> tuple[str, str, Mapping[str, Any]]:
+    """Read one exact parent/shot/internal-timeline closure from Runtime."""
+    timelines = _paged(
+        runtime.list_timelines, project_id, limit=THUMBNAIL_BACKFILL_PAGE_SIZE,
+        operation="timeline listing",
+    )
+    match = next((row for row in timelines if isinstance(row, Mapping) and timeline_ref in {
+        str(row.get("timeline_id", "")), str(row.get("slug", "")),
+    }), None)
+    if match is None:
+        raise ThumbnailBackfillError(f"canonical timeline {timeline_ref!r} was not found")
+    timeline_id = match.get("timeline_id") or match.get("id")
+    head = match.get("head_revision_id") or match.get("parent_revision_id")
+    if not isinstance(timeline_id, str) or not timeline_id:
+        raise ThumbnailBackfillError("Runtime timeline listing omitted timeline_id")
+    if not isinstance(head, str) or not head:
+        raise ThumbnailBackfillError("Runtime timeline listing omitted its canonical head revision")
+    parent = _plain(runtime.get_project_parent_composition_revision(project_id, timeline_id, head))
+    if isinstance(parent, Mapping) and isinstance(parent.get("data"), Mapping):
+        parent = parent["data"]
+    if not isinstance(parent, Mapping) or parent.get("revision_id") != head:
+        raise ThumbnailBackfillError("Runtime did not return the requested pinned parent revision")
+    payload = parent.get("payload")
+    occurrences = payload.get("occurrences") if isinstance(payload, Mapping) else None
+    if not isinstance(occurrences, list):
+        raise ThumbnailBackfillError("pinned parent revision has no occurrence list")
+    shot_rows: dict[str, Mapping[str, Any]] = {}
+    timeline_rows: dict[str, Mapping[str, Any]] = {}
+    for occurrence in occurrences:
+        if not isinstance(occurrence, Mapping):
+            continue
+        shot_id = occurrence.get("shot_id")
+        shot_revision_id = occurrence.get("shot_revision_id") or occurrence.get("revision_id")
+        if not isinstance(shot_id, str) or not isinstance(shot_revision_id, str):
+            raise ThumbnailBackfillError("pinned occurrence omits its shot revision identity")
+        if shot_revision_id not in shot_rows:
+            shot = _plain(runtime.get_project_shot_revision(project_id, shot_id, shot_revision_id))
+            if isinstance(shot, Mapping) and isinstance(shot.get("data"), Mapping):
+                shot = shot["data"]
+            if not isinstance(shot, Mapping) or shot.get("revision_id") != shot_revision_id:
+                raise ThumbnailBackfillError(f"Runtime did not return pinned shot revision {shot_revision_id}")
+            shot_rows[shot_revision_id] = shot
+        shot = shot_rows[shot_revision_id]
+        shot_payload = shot.get("payload")
+        internal_id = shot.get("internal_timeline_revision_id")
+        if not isinstance(internal_id, str) and isinstance(shot_payload, Mapping):
+            internal_id = shot_payload.get("internal_timeline_revision_id")
+        if not isinstance(internal_id, str):
+            raise ThumbnailBackfillError(f"shot revision {shot_revision_id} omits its internal timeline revision")
+        if internal_id not in timeline_rows:
+            internal = _plain(runtime.get_project_timeline_revision(project_id, timeline_id, internal_id))
+            if isinstance(internal, Mapping) and isinstance(internal.get("data"), Mapping):
+                internal = internal["data"]
+            if not isinstance(internal, Mapping) or internal.get("revision_id") != internal_id:
+                raise ThumbnailBackfillError(f"Runtime did not return pinned internal revision {internal_id}")
+            timeline_rows[internal_id] = internal
+    # The existing authoring-bundle reader validates the immutable closure and
+    # provides the exact authored clip/registry shapes used by timeline tools.
+    candidate = open_authoring_bundle(
+        parent,
+        shot_revisions=list(shot_rows.values()),
+        internal_timeline_revisions=list(timeline_rows.values()),
+    )
+    return timeline_id, head, candidate
+
+
+def _timeline_thumbnail_requests(candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Select a deterministic primary-track source frame for each placement."""
+    requests: list[dict[str, Any]] = []
+    placements = candidate.get("placements")
+    shots = candidate.get("shots")
+    if not isinstance(placements, list) or not isinstance(shots, Mapping):
+        raise ThumbnailBackfillError("canonical authoring read model has invalid placements or shots")
+    for placement in placements:
+        if not isinstance(placement, Mapping):
+            continue
+        occurrence_id = str(placement.get("occurrence_id", ""))
+        shot_id = placement.get("shot_id")
+        shot = shots.get(shot_id) if isinstance(shot_id, str) else None
+        internal = shot.get("internal_timeline") if isinstance(shot, Mapping) else None
+        if not isinstance(internal, Mapping):
+            requests.append({"occurrence_id": occurrence_id, "reason": "internal_timeline_unavailable"})
+            continue
+        tracks = internal.get("tracks")
+        clips = internal.get("clips")
+        registry = internal.get("registry")
+        assets = registry.get("assets") if isinstance(registry, Mapping) else None
+        visual_ids = [
+            row.get("id") for row in tracks if isinstance(row, Mapping)
+            and row.get("kind") == "visual" and isinstance(row.get("id"), str)
+        ] if isinstance(tracks, list) else []
+        if not visual_ids:
+            requests.append({"occurrence_id": occurrence_id, "reason": "no_visual_track"})
+            continue
+        duration_ms = placement.get("duration_ms")
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)) or duration_ms < 0:
+            requests.append({"occurrence_id": occurrence_id, "reason": "invalid_shot_duration"})
+            continue
+        midpoint = float(duration_ms) / 2000.0
+        primary_track = visual_ids[0]
+        candidates: list[dict[str, Any]] = []
+        for clip in clips if isinstance(clips, list) else []:
+            if not isinstance(clip, Mapping) or clip.get("track") != primary_track:
+                continue
+            if clip.get("active") is False or clip.get("disabled") is True:
+                continue
+            clip_type = clip.get("clipType", clip.get("clip_type", "media"))
+            if clip_type not in {"media", "video", "image"}:
+                continue
+            asset_id = clip.get("asset", clip.get("asset_id"))
+            asset = assets.get(asset_id) if isinstance(assets, Mapping) and isinstance(asset_id, str) else None
+            if not isinstance(asset, Mapping):
+                continue
+            source_id = asset.get("media_id") or asset.get("object_id")
+            if not isinstance(source_id, str) or not source_id.startswith("sha256:") or len(source_id) != 71:
+                continue
+            try:
+                normalized_clip = dict(clip)
+                for source, target in (("at_ms", "at"), ("from_ms", "from"), ("to_ms", "to")):
+                    if source in normalized_clip and target not in normalized_clip:
+                        normalized_clip[target] = float(normalized_clip[source]) / 1000.0
+                if "duration_ms" in normalized_clip and "hold" not in normalized_clip and "to" not in normalized_clip:
+                    normalized_clip["hold"] = float(normalized_clip["duration_ms"]) / 1000.0
+                start = float(normalized_clip.get("at", 0))
+                duration = clip_timeline_duration(normalized_clip)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(start) or not math.isfinite(duration) or duration <= 0:
+                continue
+            candidates.append({"clip": normalized_clip, "asset": asset, "source_object_id": source_id,
+                               "start": start, "end": start + duration,
+                               "center": start + duration / 2})
+        if not candidates:
+            requests.append({"occurrence_id": occurrence_id, "reason": "no_visual_asset_on_primary_track"})
+            continue
+        covering = [row for row in candidates if row["start"] <= midpoint < row["end"]]
+        selected = min(covering, key=lambda row: (row["start"], row["center"])) if covering else min(
+            candidates, key=lambda row: (abs(row["center"] - midpoint), row["center"])
+        )
+        clip = selected["clip"]
+        asset = selected["asset"]
+        raw_type = asset.get("media_type") or asset.get("type")
+        media_type = str(raw_type or "").lower()
+        if media_type in {"image", "video", "audio"}:
+            media_type += "/unknown"
+        if not is_visual_media_type(media_type):
+            requests.append({"occurrence_id": occurrence_id, "reason": "non_visual_asset"})
+            continue
+        source_from = float(clip.get("from", 0) or 0)
+        speed = float(clip.get("speed", 1) or 1)
+        source_time = source_from if media_type.startswith("video/") else 0.0
+        if media_type.startswith("video/"):
+            selected_local_time = min(max(midpoint, selected["start"]), selected["end"])
+            source_time += max(0.0, selected_local_time - selected["start"]) * speed
+        if not math.isfinite(source_time) or source_time < 0 or source_time > 4e9:
+            requests.append({"occurrence_id": occurrence_id, "reason": "invalid_source_time"})
+            continue
+        source_time = round(source_time, 6)
+        requests.append({
+            "occurrence_id": occurrence_id,
+            "shot_id": str(placement.get("shot_id", "")),
+            "clip_id": str(clip.get("id", "")),
+            "source_object_id": selected["source_object_id"],
+            "source_time_seconds": source_time,
+            "media_type": media_type,
+        })
+    return requests
+
+
+def run_timeline_thumbnail_backfill(
+    runtime: Any,
+    *,
+    project: str,
+    timeline: str,
+    limit: int = 100,
+    dry_run: bool = False,
+) -> TimelineThumbnailBackfillReport:
+    """Ensure source-frame thumbnails for visual clips at one pinned timeline head."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= THUMBNAIL_BACKFILL_MAX_LIMIT:
+        raise ThumbnailBackfillError(f"limit must be an integer between 1 and {THUMBNAIL_BACKFILL_MAX_LIMIT}")
+    project_id = _project_id(runtime, project)
+    timeline_id, head, candidate = _timeline_closure(runtime, project_id, timeline)
+    requests = _timeline_thumbnail_requests(candidate)
+    eligible = [row for row in requests if "source_object_id" in row]
+    if len(eligible) > limit:
+        eligible = eligible[:limit]
+    # Identical source/time/recipe requests share one lookup, fetch, upload and association.
+    deduped: dict[tuple[str, float], dict[str, Any]] = {}
+    for item in eligible:
+        deduped.setdefault((item["source_object_id"], item["source_time_seconds"]), item)
+    ready = attached = unavailable = failed = unsupported = source_fetches = 0
+    diagnostics: list[dict[str, str]] = []
+    source_cache: dict[str, tuple[bytes, str]] = {}
+    source_failures: dict[str, str] = {}
+    for item in deduped.values():
+        source_id = item["source_object_id"]
+        source_time = item["source_time_seconds"]
+        try:
+            existing = runtime.get_source_frame_thumbnail(
+                project_id, source_id, source_time, recipe_version=THUMBNAIL_RECIPE_VERSION
+            )
+            existing = _plain(existing)
+            if isinstance(existing, Mapping) and isinstance(existing.get("data"), Mapping):
+                existing = existing["data"]
+            if isinstance(existing, Mapping) and existing.get("object_id"):
+                ready += 1
+                continue
+        except Exception as exc:  # noqa: BLE001 - Runtime reports a missing relation as an HTTP error.
+            if getattr(exc, "code", None) not in {"not_found", "404"} and getattr(exc, "status", None) != 404:
+                failed += 1
+                diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": f"thumbnail_lookup_failed: {exc}"[:240]})
+                continue
+        if dry_run:
+            attached += 1
+            continue
+        try:
+            if source_id in source_failures:
+                unavailable += 1
+                diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": source_failures[source_id]})
+                continue
+            if source_id not in source_cache:
+                try:
+                    response = _plain(runtime.get_object(source_id))
+                except Exception as exc:  # noqa: BLE001 - Runtime transport failures are reported per source.
+                    source_failures[source_id] = f"source_read_failed: {exc}"[:240]
+                    unavailable += 1
+                    diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": source_failures[source_id]})
+                    continue
+                data = response.get("data") if isinstance(response, Mapping) else None
+                if not isinstance(data, bytes) or not data:
+                    source_failures[source_id] = "source_bytes_unavailable"
+                    unavailable += 1
+                    diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": source_failures[source_id]})
+                    continue
+                media_type = item["media_type"]
+                source_cache[source_id] = (data, media_type)
+                source_fetches += 1
+            source_bytes, media_type = source_cache[source_id]
+            with tempfile.TemporaryDirectory(prefix="astrid-timeline-thumbnail-") as workdir:
+                source_path = Path(workdir) / "source"
+                thumbnail_path = Path(workdir) / THUMBNAIL_OUTPUT_FILENAME
+                source_path.write_bytes(source_bytes)
+                extract_thumbnail(source_path, thumbnail_path, media_type, source_time_seconds=source_time)
+                thumbnail_bytes = thumbnail_path.read_bytes()
+            identity = _stable_key(project_id, source_id, f"{source_time:.6f}", str(THUMBNAIL_RECIPE_VERSION))
+            uploaded = _unwrap_mutation(runtime.ingest_project_object(
+                project_id, thumbnail_bytes, media_type="image/jpeg", filename=f"thumbnail-{identity[:16]}.jpg",
+                idempotency_key="source-frame-thumbnail-upload-" + identity,
+            ))
+            thumbnail_object_id = uploaded.get("object_id")
+            if not isinstance(thumbnail_object_id, str):
+                raise ThumbnailBackfillError("Runtime thumbnail ingest returned no object_id")
+            descriptor = {
+                "object_id": thumbnail_object_id,
+                "source_object_id": source_id,
+                "recipe_version": THUMBNAIL_RECIPE_VERSION,
+                "selection": {"kind": "source_frame", "source_time_seconds": source_time},
+            }
+            result = _plain(runtime.ensure_source_frame_thumbnail(
+                project_id, descriptor, idempotency_key="source-frame-thumbnail-ensure-" + identity,
+            ))
+            if isinstance(result, Mapping) and isinstance(result.get("receipt"), Mapping):
+                pass
+            attached += 1
+        except ThumbnailError as exc:
+            failed += 1
+            diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": str(exc)[:240]})
+        except Exception as exc:  # noqa: BLE001 - report one failed thumbnail and continue.
+            failed += 1
+            diagnostics.append({"occurrence_id": item["occurrence_id"], "reason": str(exc)[:240]})
+    excluded = [row for row in requests if "source_object_id" not in row]
+    unsupported = sum(row.get("reason") == "non_visual_asset" for row in excluded)
+    unavailable += sum(row.get("reason") in {"internal_timeline_unavailable", "no_visual_track", "no_visual_asset_on_primary_track"} for row in excluded)
+    for row in excluded:
+        diagnostics.append({"occurrence_id": row.get("occurrence_id", ""), "reason": str(row.get("reason", "no_visual_asset"))})
+    return TimelineThumbnailBackfillReport(
+        project_id=project_id, timeline_id=timeline_id, head_revision_id=head,
+        scanned=len(requests), attached=attached, already_ready=ready, unsupported=unsupported,
+        unavailable=unavailable, failed=failed, source_fetches=source_fetches, dry_run=dry_run,
+        requests=tuple(dict(row) for row in requests), diagnostics=tuple(diagnostics),
+    )
+
+
 __all__ = [
     "THUMBNAIL_BACKFILL_CAPABILITY_DIGEST",
     "THUMBNAIL_BACKFILL_CAPABILITY_ID",
     "THUMBNAIL_BACKFILL_MAX_LIMIT",
     "ThumbnailBackfillError",
     "ThumbnailBackfillReport",
+    "TimelineThumbnailBackfillReport",
+    "ensure_imported_source_thumbnail",
     "VariantThumbnailBackfillReport",
     "run_thumbnail_backfill",
+    "run_timeline_thumbnail_backfill",
     "run_variant_thumbnail_backfill",
 ]

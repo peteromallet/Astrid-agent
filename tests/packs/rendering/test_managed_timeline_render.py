@@ -428,6 +428,19 @@ def test_managed_preflight_requires_runtime_ref_and_rejects_file_mode(tmp_path: 
         )
 
 
+def test_managed_preflight_resolves_selected_project_default_timeline() -> None:
+    runtime = _Runtime()
+    runtime.project["metadata"] = {"default_timeline_id": "main"}
+    runtime.projects.current = lambda: _result(
+        {"project": {"project_id": "project-demo", "slug": "demo"}}
+    )
+    prepared, authority = _prepare_managed_render_inputs(
+        {}, project=None, _client=runtime
+    )
+    assert prepared["timeline_ref"] == "main"
+    assert authority["project_slug"] == "demo"
+
+
 def test_managed_preflight_rejects_malformed_frozen_speech_before_admission() -> None:
     runtime = _Runtime()
     speech = {

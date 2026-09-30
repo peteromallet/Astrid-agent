@@ -325,7 +325,7 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision"}
+        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
@@ -358,6 +358,8 @@ class _RemoteFamily:
             elif operation == "get_project_shot_revision": value = self._client.get_project_shot_revision(*args, **kwargs)
             elif operation == "get_project_timeline_revision": value = self._client.get_project_timeline_revision(*args, **kwargs)
             elif operation == "get_project_parent_composition_revision": value = self._client.get_project_parent_composition_revision(*args, **kwargs)
+            elif operation == "get_source_frame_thumbnail":
+                value = self._client.get_source_frame_thumbnail(*args, **kwargs)
             elif operation == "get_project_shot_text_binding": value = self._client.get_project_shot_text_binding(*args, **kwargs)
             elif operation == "get_managed_output": value = self._client.get_managed_output(*args, **kwargs)
             elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
@@ -366,6 +368,8 @@ class _RemoteFamily:
             elif operation == "create_timeline_view": value = self._client.create_timeline_view(*args, **kwargs)
             elif operation == "fail_attempt": value = self._client.fail_attempt(*args, **kwargs)
             elif operation == "head_object": value = self._client.head_object(*args, **kwargs)
+            elif operation == "ensure_source_frame_thumbnail":
+                value = self._client.ensure_source_frame_thumbnail(*args, **kwargs)
             elif operation == "ingest_project_object": value = self._client.ingest_project_object(*args, **kwargs)
             elif operation == "link_references": value = self._client.link_references(*args, **kwargs)
             elif operation == "list_events": value = self._client.list_events(*args, **kwargs)
@@ -456,8 +460,59 @@ class RemoteTimelines(_RemoteFamily):
 
     def create(self, *, project, config: Mapping[str, Any], registry: Mapping[str, Any], slug=None, name=None, timeline_id=None, idempotency_key=None):
         return self._retired_document_route("create", idempotency_key=idempotency_key)
+
+    def _resolve_project_ref(self, project) -> DomainResult[str]:
+        """Resolve an explicit project or the runtime's selected project.
+
+        Timeline reads share this one scope rule: an explicit project always
+        wins; otherwise the workspace runtime's durable current selection is
+        used.  No local preference or timeline-name inference is allowed.
+        """
+        if project not in (None, "") and str(project).strip():
+            return DomainResult.success(str(project).strip())
+        selected = self._typed("current_project")
+        if not selected.ok:
+            return selected
+        data = selected.data
+        row = data.get("project") if isinstance(data, Mapping) else None
+        if not isinstance(row, Mapping):
+            return DomainResult(
+                ok=False,
+                data=None,
+                error=ErrorObject(
+                    "not_found",
+                    "no current project is selected",
+                    {"next_action": "astrid projects select <project>"},
+                ),
+                receipt=None,
+                idempotency_key="",
+            )
+        ref = row.get("project_id") or row.get("id") or row.get("slug")
+        if not isinstance(ref, str) or not ref.strip():
+            return DomainResult(
+                ok=False,
+                data=None,
+                error=ErrorObject(
+                    "protocol_error",
+                    "runtime current project returned no project identity",
+                    {},
+                ),
+                receipt=None,
+                idempotency_key="",
+            )
+        return DomainResult.success(
+            ref.strip(),
+            receipt=selected.receipt,
+            idempotency_key=selected.idempotency_key,
+        )
+
     def list(self, project, *, cursor=None, limit=50, include_archived=False):
-        result = self._typed("list_timelines", project, cursor=cursor, limit=limit)
+        resolved_project = self._resolve_project_ref(project)
+        if not resolved_project.ok:
+            return resolved_project
+        result = self._typed(
+            "list_timelines", resolved_project.data, cursor=cursor, limit=limit
+        )
         if not result.ok or include_archived or not isinstance(result.data, (list, tuple)):
             return result
         # Older/runtime deployments return archived rows from this endpoint
@@ -485,22 +540,50 @@ class RemoteTimelines(_RemoteFamily):
         that endpoint returns the legacy document projection (including
         mutable config/registry bytes) and is not a current-head authority.
         """
-        rows = paged_rows(self._client.list_timelines, str(project), limit=50)
+        resolved_project = self._resolve_project_ref(project)
+        if not resolved_project.ok:
+            return resolved_project
+        project_ref = str(resolved_project.data)
+        resolved_ref = ref
+        if resolved_ref in (None, ""):
+            shown = self._typed("get_project", project_ref)
+            if not shown.ok:
+                return shown
+            project_row = shown.data
+            metadata = project_row.get("metadata") if isinstance(project_row, Mapping) else None
+            default = metadata.get("default_timeline_id") if isinstance(metadata, Mapping) else None
+            if default in (None, ""):
+                return DomainResult.failure(
+                    ErrorObject(
+                        "not_found",
+                        "project has no configured default canonical timeline",
+                        {
+                            "project": project_ref,
+                            "next_action": (
+                                "set metadata.default_timeline_id with "
+                                "astrid projects update <project> --settings "
+                                "'{\"default_timeline_id\": \"<timeline-id>\"}'"
+                            ),
+                        },
+                    )
+                )
+            resolved_ref = str(default)
+        rows = paged_rows(self._client.list_timelines, project_ref, limit=50)
         if rows is None:
             return DomainResult.failure(
-                ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
+                ErrorObject("not_found", "timeline not found", {"project": project_ref, "ref": str(resolved_ref)})
             )
         match = next(
             (
                 item for item in rows
                 if isinstance(item, Mapping)
-                and str(ref) in {str(item.get("timeline_id", "")), str(item.get("slug", ""))}
+                and str(resolved_ref) in {str(item.get("timeline_id", "")), str(item.get("slug", ""))}
             ),
             None,
         )
         if match is None:
             return DomainResult.failure(
-                ErrorObject("not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
+                ErrorObject("not_found", "timeline not found", {"project": project_ref, "ref": str(resolved_ref)})
             )
         timeline_id = match.get("timeline_id") or match.get("id")
         if not isinstance(timeline_id, str) or not timeline_id:
@@ -508,10 +591,21 @@ class RemoteTimelines(_RemoteFamily):
                 ErrorObject(
                     "protocol_error",
                     "Runtime timeline listing omitted its canonical timeline id",
-                    {"project": str(project), "ref": str(ref)},
+                    {"project": project_ref, "ref": str(resolved_ref)},
                 )
             )
-        return DomainResult.success({**dict(match), "timeline_id": timeline_id})
+        return DomainResult.success(
+            {
+                **dict(match),
+                "timeline_id": timeline_id,
+                "project_ref": project_ref,
+                "timeline_ref": str(resolved_ref),
+            }
+        )
+
+    def resolve_scope(self, project=None, ref=None):
+        """Resolve the canonical project/timeline pair without reading a document."""
+        return self._resolve_timeline(project, ref)
 
     def show(self, project, ref):
         """Canonical current-head alias retained for SDK callers."""
@@ -567,6 +661,7 @@ class RemoteTimelines(_RemoteFamily):
         detail=False,
         neighbors=0,
         cursor=None,
+        _resolved_timeline=None,
     ):
         """Inspect an exact Runtime timeline closure through the native route."""
         if not callable(getattr(self._client, "inspect_timeline", None)):
@@ -577,10 +672,15 @@ class RemoteTimelines(_RemoteFamily):
                     {"project": str(project), "timeline": str(ref)},
                 )
             )
-        timeline = self._resolve_timeline(project, ref)
+        timeline = (
+            _resolved_timeline
+            if isinstance(_resolved_timeline, DomainResult)
+            else self._resolve_timeline(project, ref)
+        )
         if not timeline.ok or not isinstance(timeline.data, Mapping):
             return timeline
         timeline_id = timeline.data["timeline_id"]
+        project_ref = timeline.data.get("project_ref") or project
         pinned_revision = revision_id or timeline.data.get("head_revision_id") or timeline.data.get("parent_revision_id")
         options = self._native_options(
             revision_id=pinned_revision,
@@ -595,7 +695,7 @@ class RemoteTimelines(_RemoteFamily):
             neighbors=neighbors,
             cursor=cursor,
         )
-        return self._typed("inspect_timeline", str(project), timeline_id, options=options)
+        return self._typed("inspect_timeline", str(project_ref), timeline_id, options=options)
 
     def visualize(
         self,
@@ -639,6 +739,8 @@ class RemoteTimelines(_RemoteFamily):
         if not timeline.ok or not isinstance(timeline.data, Mapping):
             return timeline
         timeline_id = timeline.data["timeline_id"]
+        project_ref = timeline.data.get("project_ref") or project
+        timeline_ref = timeline.data.get("timeline_ref") or ref
         pinned_revision = revision_id or timeline.data.get("head_revision_id") or timeline.data.get("parent_revision_id")
         view_options = dict(options or {})
         requested_run = view_options.get("render_run")
@@ -649,17 +751,17 @@ class RemoteTimelines(_RemoteFamily):
             # revision, so current-head discovery must not filter it out.  The
             # filmstrip admission below still verifies project ownership,
             # timeline authority, successful lifecycle, and managed output.
-            project_id = str(project)
+            project_id = str(project_ref)
             exact_render = str(requested_run)
         elif selected_mode != "inputs":
             project_reader = getattr(self._client, "get_project", None)
-            project_row = project_reader(str(project)) if callable(project_reader) else None
+            project_row = project_reader(str(project_ref)) if callable(project_reader) else None
             project_id = (
                 str(timeline.data.get("project_id"))
                 if timeline.data.get("project_id")
                 else str(project_row.get("project_id") or project_row.get("id"))
                 if isinstance(project_row, Mapping) and (project_row.get("project_id") or project_row.get("id"))
-                else str(project)
+                else str(project_ref)
             )
             from astrid.sdk.timeline_filmstrip import matching_composed_render
 
@@ -684,7 +786,7 @@ class RemoteTimelines(_RemoteFamily):
             )
         else:
             exact_render = None
-            project_id = str(project)
+            project_id = str(project_ref)
         if selected_mode == "composed" and exact_render is None:
             return DomainResult.failure(
                 ErrorObject(
@@ -694,8 +796,8 @@ class RemoteTimelines(_RemoteFamily):
                         "project_id": project_id,
                         "timeline_id": timeline_id,
                         "next_actions": [
-                            {"label": "Render this timeline", "command": f"astrid timelines render --project {project} {ref}"},
-                            {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project} {ref} --mode inputs"},
+                            {"label": "Render this timeline", "command": f"astrid timelines render --project {project_ref} {timeline_ref}"},
+                            {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project_ref} {timeline_ref} --mode inputs"},
                         ],
                     },
                 )
@@ -706,19 +808,19 @@ class RemoteTimelines(_RemoteFamily):
                     ErrorObject("unavailable", "composed visualization requires the canonical invocation route", {"render_run": exact_render})
                 )
             executor_inputs: dict[str, Any] = {
-                "timeline_slug": ref,
+                "timeline_slug": timeline_ref,
                 "view": "filmstrip",
                 "render_run": exact_render,
                 "formats": list(formats or ("md", "png")),
             }
             executor_inputs.update(view_options)
             executor_inputs["render_run"] = exact_render
-            executor_inputs.setdefault("timeline_slug", ref)
+            executor_inputs.setdefault("timeline_slug", timeline_ref)
             executor_inputs.setdefault("show", ["output", "inputs", "text", "audio"])
             return self._invoker(
                 "rendering.timeline_visualize",
                 kind="executor",
-                project=project,
+                project=project_ref,
                 inputs=executor_inputs,
                 out=None,
                 wait=True,
@@ -748,7 +850,7 @@ class RemoteTimelines(_RemoteFamily):
             cursor=view_options.get("cursor"),
             formats=formats,
         )
-        return self._typed("create_timeline_view", str(project), timeline_id, options=options)
+        return self._typed("create_timeline_view", str(project_ref), timeline_id, options=options)
 
     @staticmethod
     def _native_projection(data: Mapping[str, Any], *, project, ref) -> dict[str, Any]:
@@ -856,9 +958,14 @@ class RemoteTimelines(_RemoteFamily):
                     {"project": str(project), "timeline": str(ref)},
                 )
             )
+        resolved = self._resolve_timeline(project, ref)
+        if not resolved.ok or not isinstance(resolved.data, Mapping):
+            return resolved
+        resolved_project = resolved.data.get("project_ref") or project
+        resolved_ref = resolved.data.get("timeline_ref") or ref
         inspected = self.inspect(
-            project,
-            ref,
+            resolved_project,
+            resolved_ref,
             limit=limit,
             clip=clip,
             occurrence=occurrence,
@@ -869,10 +976,13 @@ class RemoteTimelines(_RemoteFamily):
             detail=detail,
             neighbors=neighbors,
             cursor=cursor,
+            _resolved_timeline=resolved,
         )
         if not inspected.ok or not isinstance(inspected.data, Mapping):
             return inspected
-        projection = self._native_projection(inspected.data, project=project, ref=ref)
+        projection = self._native_projection(
+            inspected.data, project=resolved_project, ref=resolved_ref
+        )
         return DomainResult.success(
             projection,
             receipt=inspected.receipt,
@@ -1201,7 +1311,40 @@ class RemoteMedia(_RemoteFamily):
         except OSError: return DomainResult.failure(ErrorObject("not_found", "media source is unavailable", {}), idempotency_key=idempotency_key or "")
         if project is None: return DomainResult.failure(ErrorObject("validation_error", "media import requires a project", {"field": "project"}), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
-        return self._typed("ingest_project_object", project, data, key=key, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream", idempotency_key=key, filename=path.name)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        result = self._typed("ingest_project_object", project, data, key=key, media_type=media_type, idempotency_key=key, filename=path.name)
+        if not result.ok or not isinstance(result.data, Mapping):
+            return result
+        object_id = result.data.get("object_id")
+        if not isinstance(object_id, str):
+            return result
+        thumbnail_error: str | None
+        try:
+            from astrid.core.execution.thumbnail_backfill import (
+                ThumbnailBackfillError,
+                ensure_imported_source_thumbnail,
+            )
+            from astrid.core.execution.thumbnails import ThumbnailError
+
+            thumbnail = ensure_imported_source_thumbnail(
+                self._client,
+                project_id=str(project),
+                source_object_id=object_id,
+                source_bytes=data,
+                media_type=media_type,
+                idempotency_key=key,
+            )
+        except (ThumbnailBackfillError, ThumbnailError, WorkspaceClientError, OSError, ValueError) as exc:
+            thumbnail = None
+            thumbnail_error = str(exc)
+        else:
+            thumbnail_error = None
+        payload = dict(result.data)
+        if thumbnail is not None:
+            payload["thumbnail"] = dict(thumbnail)
+        if thumbnail_error:
+            payload["thumbnail_diagnostics"] = [{"code": "thumbnail_extraction_failed", "message": thumbnail_error[:240]}]
+        return DomainResult.success(payload, receipt=result.receipt, idempotency_key=result.idempotency_key)
     def import_directory(self, *, project: str, directory: Path, realm="managed_local", idempotency_key=None):
         realm_error = self._managed_realm_error(realm, idempotency_key=idempotency_key)
         if realm_error is not None:
@@ -1331,6 +1474,34 @@ class RemoteMedia(_RemoteFamily):
                 self._client,
                 project=project,
                 generation_id=generation_id,
+                limit=limit,
+                dry_run=dry_run,
+            )
+        except ThumbnailBackfillError as exc:
+            return DomainResult.failure(ErrorObject("validation_error", str(exc), {}))
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details))
+        return DomainResult.success(report.as_dict())
+
+    def backfill_timeline_thumbnails(
+        self,
+        project: str,
+        *,
+        timeline: str,
+        limit: int = 100,
+        dry_run: bool = False,
+    ) -> DomainResult[Any]:
+        """Repair missing frame thumbnails referenced by a pinned canonical timeline."""
+        from astrid.core.execution.thumbnail_backfill import (
+            ThumbnailBackfillError,
+            run_timeline_thumbnail_backfill,
+        )
+
+        try:
+            report = run_timeline_thumbnail_backfill(
+                self._client,
+                project=project,
+                timeline=timeline,
                 limit=limit,
                 dry_run=dry_run,
             )

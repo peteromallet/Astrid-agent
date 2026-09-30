@@ -67,6 +67,9 @@ out/
 *.jpg
 *.jpeg
 *.png
+# Required LanPaint workflow resources are release inputs.
+!astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png
+!astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png
 # ...but committed test fixtures must stay tracked (media OUTPUT/cache stays ignored).
 !tests/**/fixtures/
 !tests/**/fixtures/**

@@ -505,7 +505,7 @@ The intended hierarchy is:
 ```text
 astrid (core skill)
   -> summarizes the product families and routes timeline-specific work
-  -> astrid-timeline (deep timeline skill)
+  -> timeline_editing (deep timeline skill)
        -> canonical timeline authority and terminology
        -> inspect/visualize/edit/version/history/event workflow
        -> clip timing, track layering, element/source boundaries

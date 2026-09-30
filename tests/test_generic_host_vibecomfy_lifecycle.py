@@ -10,6 +10,7 @@ import pytest
 
 from astrid.core.execution import generic_host
 from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.generation.model_root import canonical_model_inventory_digest
 from tests.test_generic_host import FakeRuntime
 
 
@@ -89,6 +90,14 @@ def _profile() -> dict[str, object]:
             "driver": "driver", "root": "/tmp/root", "port": 8188,
         }, "minimum": {"vram_bytes": 1, "scratch_bytes": 1}},
         "runtime": {"runtime_instance_id": "00000000-0000-4000-8000-000000000001"},
+        "launch": {
+            "model_root": {
+                "schema_version": 1,
+                "path": str(Path(__file__).resolve().parent),
+                "inventory": [],
+                "inventory_digest": canonical_model_inventory_digest([]),
+            }
+        },
         "vibecomfy_session": {
             "session_dir": "/tmp/session", "process_birth_id": "process-a", "comfy_process_birth_id": "comfy-a",
             "server_url": "http://127.0.0.1:8188", "source_revision": "source-a",
@@ -141,6 +150,26 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     assert "profile-pid:103" in events
     assert events.count("release:capacity_replacement") == 1
     host.managed_tool_session.close()
+
+
+def test_vibecomfy_child_receives_only_the_profile_model_root_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fixture(tmp_path)
+    monkeypatch.setattr(generic_host, "_read_readiness_profile_document", _profile)
+    monkeypatch.setenv("ASTRID_VIBECOMFY_MODELS_ROOT", "/ambient/override")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    record = host.discover()[0]
+
+    child_env, secrets = host._child_environment(record, tmp_path / "attempt")
+    try:
+        expected_root = str(Path(__file__).resolve().parent)
+        assert child_env["ASTRID_VIBECOMFY_MODELS_ROOT"] == expected_root
+        binding = json.loads(child_env["ASTRID_VIBECOMFY_MODEL_ROOT_BINDING"])
+        assert binding["path"] == expected_root
+    finally:
+        child_env.clear()
+        secrets.clear()
 
 
 def test_generic_host_pip_embedded_route_does_not_require_hc03(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -423,6 +423,23 @@ def _validate_orchestrator_inputs(
         )
     if not provided or orchestrator.runtime.kind != "command":
         return
+    file_ports = {
+        port.name
+        for port in orchestrator.inputs
+        if str(getattr(port, "type", "")).lower() == "file"
+    }
+    descriptor_inputs = sorted(
+        name
+        for name in provided
+        if name in file_ports and isinstance(request.inputs[name], Mapping)
+    )
+    if descriptor_inputs:
+        raise OrchestratorRunnerError(
+            f"orchestrator {orchestrator.id!r} is a local command runner; file input(s) "
+            f"{', '.join(descriptor_inputs)} must be local path strings, not managed "
+            "descriptors; managed descriptors are only valid for child executor "
+            "submissions"
+        )
     command = orchestrator.runtime.command
     if command is None:
         return

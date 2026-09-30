@@ -13,9 +13,21 @@ from typing import Any, Mapping
 
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 from astrid.sdk import AstridClient
-from astrid.packs.h3_av.src.receipt import build_final_receipt, write_final_receipt
+from astrid.core.execution.worker_qualification import (
+    WorkerQualificationError,
+    ensure_runpod_worker,
+    load_worker_qualification,
+    qualification_digest,
+)
+from astrid.packs.h3_av.src.receipt import (
+    attest_runtime_managed_publication,
+    build_final_receipt,
+    write_final_receipt,
+)
 from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
+from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.request import load_request
+from astrid.sdk.results import InvocationResult
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project")
     parser.add_argument("--execution-request", type=Path)
     parser.add_argument(
+        "--worker-qualification",
+        type=Path,
+        help="deployment-owned qualified-worker receipt required before targeted admission",
+    )
+    parser.add_argument(
+        "--require-worker-qualification",
+        action="store_true",
+        help="fail before admission unless --worker-qualification is supplied and valid",
+    )
+    parser.add_argument(
         "--editorial-approved",
         action="store_true",
         help="record explicit editorial approval in the final receipt",
@@ -34,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--cleanup-receipt",
         type=Path,
         help="JSON receipt listing exact owned-resource cleanup postconditions",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume delivery from a saved canonical run result without resampling",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -471,6 +498,281 @@ def _execution_request_for_child(
     return {key: value for key, value in execution_request.items() if key != "inputs"}
 
 
+def _qualified_execution_request(
+    qualification: Mapping[str, Any],
+    execution_request: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    expected_target = (
+        execution_request.get("target")
+        if isinstance(execution_request, Mapping)
+        else None
+    )
+    qualified_target = ensure_runpod_worker(
+        qualification, expected_target=expected_target
+    )
+    target = {
+        key: qualified_target[key]
+        for key in (
+            "kind",
+            "pod_id",
+            "provider_account_ref",
+            "backup_volume_id",
+            "network_volume_id",
+            "volume_id",
+            "storage",
+        )
+        if key in qualified_target
+    }
+    if execution_request is None:
+        request = {
+            "target": target,
+            "lifecycle": {"mode": "leave_running"},
+            "limits": {"max_queue_seconds": 1800, "max_runtime_seconds": 3600},
+        }
+    else:
+        request = dict(execution_request)
+        request["target"] = target
+    return request, qualified_target
+
+
+def _receipt_target(target: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep admitted placement and nested storage identity in task evidence."""
+
+    return {
+        key: target[key]
+        for key in (
+            "kind",
+            "pod_id",
+            "provider_account_ref",
+            "backup_volume_id",
+            "network_volume_id",
+            "volume_id",
+            "storage",
+        )
+        if key in target
+    }
+
+
+def _invocation_payload(result: InvocationResult) -> dict[str, Any]:
+    to_dict = getattr(result, "to_dict", None)
+    payload = (
+        to_dict()
+        if callable(to_dict)
+        else {
+            field: getattr(result, field, None)
+            for field in (
+                "capability_id",
+                "capability_type",
+                "native_kind",
+                "ok",
+                "error",
+                "manifest_path",
+                "raw_result",
+                "run_id",
+                "run_root",
+                "outputs",
+                "executor_version",
+                "kernel_run_id",
+                "kernel_task_id",
+                "kernel_attempt_id",
+            )
+        }
+    )
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("canonical invocation result did not serialize to an object")
+    return dict(payload)
+
+
+def _save_invocation_result(path: Path, result: InvocationResult, *, input_digest: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    result_payload = _invocation_payload(result)
+    envelope = {
+        "schema_version": 1,
+        "input_digest": input_digest,
+        "result_digest": _stable_digest(result_payload),
+        "result": result_payload,
+    }
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(envelope, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_invocation_result(path: Path, *, expected_input_digest: str) -> InvocationResult:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot load saved canonical run result: {exc}") from exc
+    if not isinstance(value, Mapping) or value.get("schema_version") != 1:
+        raise RuntimeError("saved canonical run result envelope is unsupported")
+    if value.get("input_digest") != expected_input_digest:
+        raise RuntimeError("saved canonical run result belongs to different stage inputs")
+    result_payload = value.get("result")
+    if not isinstance(result_payload, Mapping):
+        raise RuntimeError("saved canonical run result must contain an object")
+    if value.get("result_digest") != _stable_digest(result_payload):
+        raise RuntimeError("saved canonical run result failed its integrity check")
+    value = result_payload
+    required = ("capability_id", "capability_type", "native_kind", "ok")
+    if any(key not in value for key in required):
+        raise RuntimeError("saved canonical run result is incomplete")
+    raw_result = value.get("raw_result")
+    outputs = value.get("outputs")
+    return InvocationResult(
+        capability_id=str(value["capability_id"]),
+        capability_type=str(value["capability_type"]),  # type: ignore[arg-type]
+        native_kind=str(value["native_kind"]),
+        ok=bool(value["ok"]),
+        error=value.get("error") if isinstance(value.get("error"), Mapping) else None,
+        manifest_path=value.get("manifest_path") if isinstance(value.get("manifest_path"), str) else None,
+        raw_result=raw_result if isinstance(raw_result, Mapping) else {},
+        run_id=value.get("run_id") if isinstance(value.get("run_id"), str) else None,
+        run_root=value.get("run_root") if isinstance(value.get("run_root"), str) else None,
+        outputs=outputs if isinstance(outputs, Mapping) else {},
+        executor_version=value.get("executor_version") if isinstance(value.get("executor_version"), str) else None,
+        kernel_run_id=value.get("kernel_run_id") if isinstance(value.get("kernel_run_id"), str) else None,
+        kernel_task_id=value.get("kernel_task_id") if isinstance(value.get("kernel_task_id"), str) else None,
+        kernel_attempt_id=value.get("kernel_attempt_id") if isinstance(value.get("kernel_attempt_id"), str) else None,
+    )
+
+
+def _invoke_stage(
+    client: Any,
+    capability_id: str,
+    *,
+    inputs: Mapping[str, Any],
+    out: Path,
+    project: str | None,
+    saved_result: Path,
+    resume: bool,
+    journal: OperationJournal,
+    phase: str,
+    execution_request: Mapping[str, Any] | None = None,
+) -> InvocationResult:
+    """Invoke one canonical stage once, or reuse its settled DTO on resume."""
+
+    input_digest = _stable_digest({
+        "capability_id": capability_id,
+        "inputs": inputs,
+        "project": project,
+        "execution_request": execution_request,
+    })
+    if resume and saved_result.is_file():
+        result = _load_invocation_result(saved_result, expected_input_digest=input_digest)
+        if not result.ok:
+            raise RuntimeError(f"saved {phase} result is not successful")
+        if result.capability_id != capability_id:
+            raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
+        journal.record(phase, "reused", capability_id=capability_id)
+        return result
+    previous = journal.latest(phase)
+    if resume and previous is not None and previous.get("status") in {"started", "uncertain", "completed"}:
+        raise RuntimeError(f"cannot resume {phase}: invocation result is missing after {previous.get('status')}")
+    journal.record(phase, "started", capability_id=capability_id, input_digest=input_digest)
+    try:
+        result = _invoke(
+            client,
+            capability_id,
+            inputs=inputs,
+            out=out,
+            project=project,
+            execution_request=execution_request,
+        )
+    except Exception as exc:
+        journal.record(
+            phase, "uncertain", capability_id=capability_id,
+            input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
+        )
+        raise
+    _save_invocation_result(saved_result, result, input_digest=input_digest)
+    journal.record(phase, "completed", capability_id=capability_id)
+    return result
+
+
+def _stable_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _invoke_canonical_run(
+    client: Any,
+    *,
+    inputs: Mapping[str, Any],
+    execution_request: Mapping[str, Any] | None,
+    out: Path,
+    project: str | None,
+    saved_result: Path,
+    journal: OperationJournal,
+    resume: bool,
+) -> InvocationResult:
+    """Admit once; an unsettled or identity-free response cannot be replayed."""
+
+    admission_payload = {
+        "capability_id": "vibecomfy.run",
+        "inputs": inputs,
+        "execution_request": execution_request,
+    }
+    admission_digest = _stable_digest(admission_payload)
+    run_input_digest = _stable_digest({
+        **admission_payload,
+        "project": project,
+    })
+    prior_run = journal.latest("run")
+    if resume and prior_run is not None and journal.admission_digest is None:
+        raise RuntimeError("cannot resume canonical run: journal has no frozen admission identity")
+    try:
+        journal.freeze_admission(admission_digest)
+    except OperationJournalError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    if resume and saved_result.is_file():
+        result = _load_invocation_result(saved_result, expected_input_digest=run_input_digest)
+        if not result.ok:
+            raise RuntimeError("saved canonical run result is not successful")
+        if result.capability_id != "vibecomfy.run":
+            raise RuntimeError("saved canonical run result has the wrong capability identity")
+        identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
+        if not all(isinstance(value, str) and value for value in identity):
+            raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
+        journal.set_admission_phase("settled")
+        journal.record(
+            "run", "reused", task_id=identity[0], run_id=identity[1],
+            attempt_id=identity[2], admission_digest=admission_digest,
+        )
+        return result
+
+    if resume and journal.admission_phase in {"admission_started", "uncertain", "settled"}:
+        raise RuntimeError(
+            "cannot resume canonical run: admission may have occurred but its settled result is unavailable"
+        )
+    if resume and prior_run is not None:
+        raise RuntimeError("cannot resume canonical run: journal phase and saved result disagree")
+
+    journal.set_admission_phase("admission_started")
+    journal.record("run", "admission_started", admission_digest=admission_digest)
+    try:
+        result = _invoke(
+            client, "vibecomfy.run", inputs=inputs, out=out, project=project,
+            execution_request=execution_request,
+        )
+        identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
+        if not all(isinstance(value, str) and value for value in identity):
+            raise RuntimeError("canonical run result is missing task/run/attempt identity")
+        _save_invocation_result(saved_result, result, input_digest=run_input_digest)
+    except Exception as exc:
+        journal.set_admission_phase("uncertain")
+        journal.record(
+            "run", "uncertain", admission_digest=admission_digest,
+            error=type(exc).__name__, message=str(exc)[:1000],
+        )
+        raise
+    journal.set_admission_phase("settled")
+    journal.record(
+        "run", "completed", task_id=identity[0], run_id=identity[1],
+        attempt_id=identity[2], admission_digest=admission_digest,
+    )
+    return result
+
+
 def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
     """Derive the child publication declaration from the sealed compilation."""
 
@@ -504,12 +806,49 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify"],
         }
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    qualification: dict[str, Any] | None = None
+    if args.worker_qualification is not None:
+        try:
+            qualification = load_worker_qualification(args.worker_qualification)
+            execution_request, qualified_target = _qualified_execution_request(
+                qualification, execution_request
+            )
+        except WorkerQualificationError as exc:
+            raise RuntimeError(f"worker qualification failed before admission: {exc}") from exc
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "00-worker-qualification.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "accepted",
+                    "qualification_digest": qualification_digest(qualification),
+                    "target": qualified_target,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    elif args.require_worker_qualification:
+        raise RuntimeError(
+            "worker qualification is required before targeted H3 admission"
+        )
     cleanup_receipt = _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
     # second local pack host here would compete with that existing authority.
     with AstridClient.open_from_launcher(start_pack_host=False) as client:
         request = load_request(args.request)
+        try:
+            journal = OperationJournal(
+                root / "operation-state.json", request_digest=request.digest
+            )
+        except OperationJournalError as exc:
+            raise RuntimeError(f"cannot open H3 operation journal: {exc}") from exc
+        if journal.has_history and not getattr(args, "resume", False):
+            raise RuntimeError("operation journal already has history; use --resume to continue it")
+        journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
         staging = root / "staged-inputs"
         staging.mkdir(parents=True, exist_ok=True)
         bundle_path = build_input_bundle(
@@ -532,19 +871,27 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             source_inputs["source"] = _import_runtime_file(
                 client, project=args.project, path=source_path, filename=source_path.name
             )
-        prepared = _invoke(
+        prepared = _invoke_stage(
             client, "h3_av.prepare",
             inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
             out=root / "01-prepare", project=args.project,
+            saved_result=root / "01-prepare" / "invocation-result.json",
+            resume=bool(getattr(args, "resume", False)),
+            journal=journal,
+            phase="prepare",
         )
         preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
         preparation = _json_mapping(preparation_path)
-        compiled = _invoke(
+        compiled = _invoke_stage(
             client, "h3_av.compile", inputs={
                 "preparation": _descriptor(preparation_row, filename="preparation.json"),
                 "input_bundle": bundle_descriptor,
             },
             out=root / "02-compile", project=args.project,
+            saved_result=root / "02-compile" / "invocation-result.json",
+            resume=bool(getattr(args, "resume", False)),
+            journal=journal,
+            phase="compile",
         )
         compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
         managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
@@ -559,12 +906,24 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         # Canonical workflow Python is executable input.  Carry the explicit
         # consent scalar required by VibeComfy's audited validation gate;
         # execution-request targeting is not itself Python consent.
-        _invoke(
+        _invoke_stage(
             client,
             "vibecomfy.validate",
-            inputs={**bundle_inputs, "python_execution_consent": "confirmed"},
+            inputs={
+                **bundle_inputs,
+                "python_execution_consent": "confirmed",
+                "workflow_inputs": json.dumps(
+                    compilation["workflow_inputs"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
             out=root / "03-validate",
             project=args.project,
+            saved_result=root / "03-validate" / "invocation-result.json",
+            resume=bool(getattr(args, "resume", False)),
+            journal=journal,
+            phase="validate",
         )
         generation_metadata = {"h3_av": provenance}
         generation_intent = _generation_intent(compilation)
@@ -575,11 +934,17 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
             "generation_intent": generation_intent,
         }
-        run = _invoke(
-            client, "vibecomfy.run",
+        saved_run_path = root / "04-run" / "run-result.json"
+        child_execution_request = _execution_request_for_child(execution_request)
+        run = _invoke_canonical_run(
+            client,
             inputs=run_inputs,
-            out=root / "04-run", project=args.project,
-            execution_request=_execution_request_for_child(execution_request),
+            execution_request=child_execution_request,
+            out=root / "04-run",
+            project=args.project,
+            saved_result=saved_run_path,
+            journal=journal,
+            resume=bool(getattr(args, "resume", False)),
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None
@@ -601,6 +966,13 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             )
         else:
             raise RuntimeError(f"unsupported H3 output contract: {output_contract!r}")
+        journal.record("pullback", "completed")
+        raw_managed_publication = attest_runtime_managed_publication(
+            runtime_result=run,
+            request_digest=str(preparation["request_digest"]),
+            generation_intent=generation_intent,
+            retrieved_outputs=[row for _path, row in generated_outputs.values()],
+        )
         runtime_provenance = {
             "run_id": getattr(run, "kernel_run_id", None),
             "task_id": getattr(run, "kernel_task_id", None),
@@ -628,7 +1000,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             path=generated_input_path,
             filename=generated_input_path.name,
         )
-        composed = _invoke(
+        composed = _invoke_stage(
             client, "h3_av.compose",
             inputs={
                 "preparation": preparation_descriptor,
@@ -636,10 +1008,14 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                 **source_inputs,
             },
             out=root / "05-compose", project=args.project,
+            saved_result=root / "05-compose" / "invocation-result.json",
+            resume=bool(getattr(args, "resume", False)),
+            journal=journal,
+            phase="compose",
         )
         composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
         candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
-        verified = _invoke(
+        verified = _invoke_stage(
             client, "h3_av.verify",
             inputs={
                 "preparation": preparation_descriptor,
@@ -648,6 +1024,10 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                 **source_inputs,
             },
             out=root / "06-verify", project=args.project,
+            saved_result=root / "06-verify" / "invocation-result.json",
+            resume=bool(getattr(args, "resume", False)),
+            journal=journal,
+            phase="verify",
         )
         verification_path, _ = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
@@ -661,6 +1041,13 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             }.items()
             if value is not None
         }
+        admitted_target = (
+            execution_request.get("target")
+            if isinstance(execution_request, Mapping)
+            else None
+        )
+        if isinstance(admitted_target, Mapping):
+            task_evidence["target"] = _receipt_target(admitted_target)
         receipt = build_final_receipt(
             request_digest=str(preparation["request_digest"]),
             task_succeeded=task_evidence,
@@ -674,8 +1061,14 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                 else None
             ),
             cleanup=cleanup_receipt,
+            raw_managed_publication=raw_managed_publication,
         )
         final_receipt_path = write_final_receipt(root / "07-final-receipt.json", receipt)
+        journal.record(
+            "operation",
+            "completed",
+            final_receipt=str(final_receipt_path),
+        )
     return {
         "status": "verified",
         "preparation": str(preparation_path),

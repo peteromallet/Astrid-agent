@@ -49,6 +49,121 @@ separate detached bundle opened from an exact parent/shot/internal-timeline
 revision closure; that bundle is then validated and published as
 one complete candidate through the existing Runtime writer.
 
+## Extension data and repeatable passes
+
+The shared schema provides open maps for application data, so a timeline can
+carry a small processing ledger without a parallel document or a new schema.
+Use the narrowest scope that matches the meaning of the value:
+
+- timeline-wide structure: `candidate["parent"]["config"]["app"]["structure"]`
+- one shot/revision: `candidate["shots"][shot_id]["payload"]["metadata"]`
+- one occurrence: `candidate["placements"][i]["provenance"]`
+- one internal clip or effect: its `app` or `params` map
+
+`config.app.structure` is the schema's intentional timeline extension point. A
+direct `config.structure` field is rejected by `TimelineConfig`. Shot payloads
+are open so application metadata survives a lossless read/edit/publication
+round trip, while the common timeline schema still governs known structure and
+timing fields. The editor may not display arbitrary keys until a UI projection
+is added. Keep agent-owned values under a namespace such as
+`metadata["delivery"]`; if one shot revision is reused by two placements, put
+different delivery state under each placement's `provenance`.
+
+### Example: inspect every placement and track delivery state
+
+`timelines show` (or `client.timelines.open_composition`) is the canonical
+current-head read. It gives the ordered occurrence IDs, names, timing, tracks,
+and pinned head. The read projection is not editable. Use a coordinator-issued
+authoring target for the same project, timeline, and head, then open that exact
+immutable closure as a detached bundle:
+
+```python
+shown = client.timelines.open_composition(project_id, timeline_ref, detail=True)
+assert shown.ok
+inspection = shown.data
+assert target["head_revision_id"] == inspection["summary"]["head_revision_id"]
+
+bound = client.open_authoring_target(target)
+work = bound.open()
+work["parent"].setdefault("config", {}).setdefault("app", {}).setdefault(
+    "structure", {}
+)["delivery_pass"] = {"version": 1, "status": "queued"}
+
+for index, placement in enumerate(work["placements"]):
+    shot = work["shots"][placement["shot_id"]]
+    clips = shot["internal_timeline"].get("clips", [])
+    shot["payload"].setdefault("metadata", {})["delivery"] = {
+        "instructions": "Match the approved reference and preserve the cut.",
+        "status": "queued",
+        "source_head": inspection["summary"]["head_revision_id"],
+        "clip_count": len(clips),
+    }
+    placement.setdefault("provenance", {})["delivery_index"] = index
+
+bound.validate(work)
+diff = bound.diff(work)       # inspect changed paths before saving
+frozen = bound.preview(work)  # exact candidate JSON; no pixels
+receipt = bound.publish(work, idempotency_key=frozen["candidate_digest"])
+```
+
+This is one candidate and one publication, so the status ledger and timeline
+change share one head. If publication reports a stale head, discard the
+detached candidate, run `timelines show` again, and rerun the deterministic
+pass. Do not merge stale JSON or publish one shot at a time. The exact SDK
+target is deliberately separate from the read projection: it carries the
+Runtime endpoint, edit capability, project/timeline identity, and pinned head.
+
+### Example: report or edit every internal item
+
+Use the same pinned bundle when the question is about clips, tracks, effects,
+or item-level metadata. The report is read-only until the `app` label below is
+retained in the candidate:
+
+```python
+report = []
+for placement in work["placements"]:
+    shot = work["shots"][placement["shot_id"]]
+    for clip in shot["internal_timeline"].get("clips", []):
+        report.append({
+            "occurrence_id": placement["occurrence_id"],
+            "clip_id": clip["id"],
+            "track": clip.get("track"),
+            "at": clip.get("at"),
+            "from": clip.get("from"),
+            "to": clip.get("to"),
+        })
+        clip.setdefault("app", {})["report_label"] = placement["occurrence_id"]
+
+# For duration changes, call retime/quantize with an explicit frame/ripple
+# policy rather than inventing renderer-specific timing keys.
+bound.validate(work)
+diff = bound.diff(work)
+frozen = bound.preview(work)
+receipt = bound.publish(work, idempotency_key=frozen["candidate_digest"])
+```
+
+The report uses occurrence IDs for navigation and the bundle's authoring shot
+IDs for mutation. Stable Runtime IDs remain immutable; compilation and CAS
+publication allocate or reuse revisions as appropriate. `preview` freezes
+candidate JSON but does not render pixels; use the managed Remotion preview
+path when visual proof is required. These extension maps do not automatically
+appear in `timelines show` or the browser: exposing them to a UI requires an
+explicit Runtime inspection field and regenerated consumers.
+
+### Renderer and skill boundary
+
+Remotion is the visual proof path for a frozen candidate, not a second timeline
+authority. Keep effects in the admitted internal timeline `effects` and clip
+`app`/`params` fields, then call `render_authoring_candidate_preview` when
+composed pixels are required. Production orchestrators remain in
+`video_editing`; canonical timeline authoring, visualization, effects, and
+Remotion rendering remain in `timeline_editing`. The source directory and
+runtime capability IDs stay `rendering` for compatibility, so the safe rename
+is the skill/frontmatter and routing text rather than a pack-ID migration. After
+editing the source skill, run `python3 -m astrid.skills sync --all` followed by
+`python3 -m astrid.skills sync --check --json` to refresh and verify the root
+gateway and installed views.
+
 ## Read the live timeline first
 
 Use the connected Runtime for discovery and readback. `timelines show` is the
@@ -56,10 +171,15 @@ native structural/text operation. For declared visual placement, use its
 sibling native Runtime operation:
 
 ```bash
-python3 -m astrid timelines show --project <project> <timeline> --json
-python3 -m astrid timelines visualize <timeline> --project <project> \
+python3 -m astrid projects current --json
+python3 -m astrid timelines show [--project <project>] [<timeline>] --json
+python3 -m astrid timelines visualize [<timeline>] [--project <project>] \
   --mode inputs --format md --format png --occurrence <occurrence-id> --json
 ```
+
+Explicit scope wins. If it is omitted, the Runtime uses the workspace current
+project and that project's `metadata.default_timeline_id`; it does not infer a
+timeline from names or list order. A missing selection is an actionable error.
 
 Pin the head returned by `show`, then carry the exact `occurrence_id` returned
 by the live response into any input view or later focused inspection. Do not replace

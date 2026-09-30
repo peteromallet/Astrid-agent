@@ -173,6 +173,7 @@ def _host_identity_matches(state: Mapping[str, Any]) -> bool:
         str(state.get("credential_file") or ""),
         str(state.get("support_root") or ""),
         str(state.get("endpoint") or ""),
+        str(state.get("source_closure_digest") or ""),
         str(state.get("boot_manifest_path") or ""),
         str(state.get("boot_manifest_hash") or ""),
     )
@@ -396,10 +397,15 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
     # Bind the process to the exact source and runtime instance it registered
     # against.  The health read is intentionally performed with the worker
     # credential, never the owner credential or an ambient environment token.
-    from astrid.core.execution.generic_host import RuntimeProtocolClient, source_checkout_digest
+    from astrid.core.execution.generic_host import (
+        RuntimeProtocolClient,
+        source_checkout_closure_digest,
+        source_checkout_digest,
+    )
 
     try:
         source_digest = source_checkout_digest(source_path)
+        source_closure_digest = source_checkout_closure_digest(source_path)
     except (OSError, ValueError) as exc:
         raise PackHostBootstrapError(
             f"generic Astrid pack source tree is not a safe checkout; {reconfigure_action}"
@@ -484,6 +490,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "support_root": str(runtime_support),
             "source_checkout": str(source_path),
             "source_checkout_digest": source_digest,
+            "source_closure_digest": source_closure_digest,
             "source_inventory_identity": inventory_identity,
             "runtime_instance_id": str(runtime_instance_id),
             "runtime_epoch": runtime_epoch,
@@ -507,6 +514,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
                 "host_runtime_instance_id": str(runtime_instance_id),
                 "host_runtime_epoch": runtime_epoch,
                 "host_source_checkout_digest": source_digest,
+                "host_source_closure_digest": source_closure_digest,
                 "host_source_inventory_identity": inventory_identity,
                 "host_boot_manifest_path": str(boot_manifest_path),
                 "host_boot_manifest_hash": boot_manifest_hash,
@@ -535,6 +543,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "--support-root", str(runtime_support),
             "--source-checkout", str(source_path),
             "--source-checkout-digest", source_digest,
+            "--source-closure-digest", source_closure_digest,
             "--runtime-instance-id", str(runtime_instance_id),
             "--register",
             "--source-inventory-identity", inventory_identity,
@@ -635,6 +644,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "host_runtime_instance_id": str(runtime_instance_id),
             "host_runtime_epoch": runtime_epoch,
             "host_source_checkout_digest": source_digest,
+            "host_source_closure_digest": source_closure_digest,
             "host_source_inventory_identity": inventory_identity,
             "host_boot_manifest_path": str(boot_manifest_path),
             "host_boot_manifest_hash": boot_manifest_hash,

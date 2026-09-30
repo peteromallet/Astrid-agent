@@ -23,6 +23,7 @@ from astrid.core.generation.backends.vibecomfy import (
     vibecomfy_warmth_hint,
 )
 from astrid.core.model_catalog.schema import BackendSpec, ModeSpec, ModelEntry
+from astrid.core.generation.model_root import canonical_model_inventory_digest
 
 RUNTIME_A = "c3d4e5f6-a7b8-49cd-8e01-23456789abcd"
 
@@ -457,7 +458,7 @@ def test_generate_rejects_unscoped_fingerprint_override(
 
 
 def test_checkout_server_records_pinned_engine_contract() -> None:
-    assert VIBECOMFY_ENGINE_REVISION == "a6a0cdb493c2f8bea4115740b96ec4c118af7ad1"
+    assert VIBECOMFY_ENGINE_REVISION == "b554ed14dbb481130b96dd0c927e1fde4f02e447"
     assert COMFYUI_VERSION == "0.26.0"
 
 def test_generate_failure_discards_prepared_warmth(
@@ -500,6 +501,16 @@ def _hc03_profile(tmp_path: Path, *, model_digest: str = "sha256:" + "a" * 64) -
     )
 
     (tmp_path / "outputs").mkdir()
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    model_fixture = models_root / "fixture.safetensors"
+    model_fixture.write_bytes(b"nonempty-model-fixture")
+    model_inventory = [{
+        "name": model_fixture.name,
+        "sha256": "sha256:" + hashlib.sha256(model_fixture.read_bytes()).hexdigest(),
+        "size": model_fixture.stat().st_size,
+        "subdir": ".",
+    }]
     comfy_output = tmp_path / "comfy-output"
     comfy_output.mkdir()
     session_dir = tmp_path / "sessions" / "default"
@@ -551,7 +562,15 @@ def _hc03_profile(tmp_path: Path, *, model_digest: str = "sha256:" + "a" * 64) -
         "verified_facts": facts,
         "verified_facts_digest": backend_module._canonical_sha256(facts),
         "runtime": {"runtime_instance_id": RUNTIME_A},
-        "launch": {"output_root": str(tmp_path / "outputs")},
+        "launch": {
+            "output_root": str(tmp_path / "outputs"),
+            "model_root": {
+                "schema_version": 1,
+                "path": str(models_root),
+                "inventory": model_inventory,
+                "inventory_digest": canonical_model_inventory_digest(model_inventory),
+            },
+        },
         "vibecomfy_session": {
             "session_dir": str(session_dir),
             "server_url": server_url,
@@ -644,6 +663,24 @@ def test_from_host_session_rejects_reachability_without_binding(
         )
 
 
+def test_from_host_session_rejects_model_root_inventory_digest_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _hc03_profile(tmp_path)
+    launch = profile["launch"]
+    assert isinstance(launch, dict)
+    model_root = launch["model_root"]
+    assert isinstance(model_root, dict)
+    model_root["inventory_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(ValueError, match="model-root binding"):
+        CheckoutServerAdapter.from_host_session(
+            hc03_profile=profile,
+            model_id="z-image",
+            template_id="image/z_image",
+            invocation_identity="task-1",
+        )
+
+
 def test_from_host_session_rejects_source_content_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -697,14 +734,30 @@ def test_run_compiled_workflow_uses_bundle_and_private_output_custody(
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    compile_observations: list[tuple[dict[str, object], str | None]] = []
+
+    def compile(**kwargs: object) -> object:
+        compile_observations.append((dict(kwargs), os.environ.get("VIBECOMFY_MODELS_ROOT")))
+        return object()
+
+    bundle.compile.side_effect = compile
+    monkeypatch.setenv("VIBECOMFY_MODELS_ROOT", "prior-model-root")
     monkeypatch.setattr(workflow_bundle, "load_bundle", lambda _: bundle)
     adapter._run_workflow = Mock(return_value=SimpleNamespace(metadata_path=metadata_path))  # type: ignore[method-assign]
     generated = adapter.run_compiled_workflow(workflow, output_root / "task-1")
     bundle.require_canonical_authority.assert_called_once_with("checkout_server execution")
     select_schema.assert_called_once_with(server_url=adapter._origin)
     target_schema.refresh.assert_called_once_with()
-    bundle.compile.assert_called_once_with(schema_provider=target_schema, models_root=None)
+    bundle.compile.assert_called_once_with(
+        schema_provider=target_schema, models_root=str(tmp_path / "models")
+    )
+    assert compile_observations == [
+        (
+            {"schema_provider": target_schema, "models_root": str(tmp_path / "models")},
+            str(tmp_path / "models"),
+        )
+    ]
+    assert os.environ["VIBECOMFY_MODELS_ROOT"] == "prior-model-root"
     assert generated[0].read_bytes() == b"artifact"
 
 
@@ -744,7 +797,9 @@ def test_run_rejects_target_schema_failure_before_generation(
     if failure_at == "refresh":
         bundle.compile.assert_not_called()
     else:
-        bundle.compile.assert_called_once_with(schema_provider=target_schema, models_root=None)
+        bundle.compile.assert_called_once_with(
+            schema_provider=target_schema, models_root=str(tmp_path / "models")
+        )
     adapter._run_workflow.assert_not_called()
 
 
@@ -915,7 +970,9 @@ def test_run_compiled_workflow_accepts_canonical_bundle_loader_result(
     bundle.require_canonical_authority.assert_called_once_with(
         "checkout_server execution"
     )
-    bundle.compile.assert_called_once_with(schema_provider=ANY, models_root=None)
+    bundle.compile.assert_called_once_with(
+        schema_provider=ANY, models_root=str(tmp_path / "models")
+    )
     assert generated[0].read_bytes() == b"artifact"
 
 

@@ -24,6 +24,11 @@
         "input": "python_execution_consent",
         "flag": "--python-execution-consent",
         "optional": true
+      },
+      {
+        "input": "workflow_inputs",
+        "flag": "--workflow-inputs",
+        "optional": true
       }
     ]
   },
@@ -34,7 +39,8 @@
       "python",
       "companion",
       "source",
-      "python_execution_consent"
+      "python_execution_consent",
+      "workflow_inputs"
     ],
     "provides": [
       "vibecomfy_validation"
@@ -73,6 +79,12 @@
     {
       "description": "Required only for canonical Python bundles; exact accepted value is confirmed. Omit for static UI JSON validation.",
       "name": "python_execution_consent",
+      "required": false,
+      "type": "string"
+    },
+    {
+      "description": "Optional concrete JSON bindings. When supplied, validation resolves the declared model root through the same public bundle compiler used by execution.",
+      "name": "workflow_inputs",
       "required": false,
       "type": "string"
     }

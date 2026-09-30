@@ -339,8 +339,17 @@ class ManagedToolSession:
                 raise UncertainCancellation(
                     "native cancellation is uncertain; session fenced for reconciliation"
                 )
-            native = self._call_adapter(active.adapter, "cancel", reason="confirmed")
-            if isinstance(native, Mapping) and native.get("ok") is False:
+            try:
+                native = self._call_adapter(
+                    active.adapter, "cancel", reason="confirmed"
+                )
+            except Exception as exc:
+                active.in_flight.pop(token.token_id, None)
+                self._fence_locked(reason="cancellation_not_verified")
+                raise UncertainCancellation(
+                    "native cancellation was not verified; session fenced for reconciliation"
+                ) from exc
+            if not isinstance(native, Mapping) or native.get("ok") is not True:
                 active.in_flight.pop(token.token_id, None)
                 self._fence_locked(reason="cancellation_not_verified")
                 raise UncertainCancellation(

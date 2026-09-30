@@ -258,6 +258,7 @@ class WorkspaceClient:
                 "list_project_runs", "list_events", "list_run_events", "list_managed_outputs",
                 "get_managed_output", "list_generations",
                 "get_generation", "list_variants", "attach_variant_thumbnail",
+                "get_source_frame_thumbnail", "ensure_source_frame_thumbnail",
                 "mark_variant_viewed", "mark_generation_variants_viewed",
                 "create_generation", "create_variant",
                 "list_capabilities", "register_capability", "claim_task", "register_executor",
@@ -734,6 +735,36 @@ class WorkspaceClient:
 
     def get_object(self, object_id: str) -> Any:
         return self._call_generated("get_object", object_id)
+
+    def get_source_frame_thumbnail(
+        self,
+        project_id: str,
+        source_object_id: str,
+        source_time_seconds: float,
+        *,
+        recipe_version: int = 1,
+    ) -> Any:
+        return self._call_generated(
+            "get_source_frame_thumbnail",
+            project_id,
+            source_object_id,
+            source_time_seconds,
+            recipe_version=recipe_version,
+        )
+
+    def ensure_source_frame_thumbnail(
+        self,
+        project_id: str,
+        thumbnail: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> Any:
+        return self._call_generated(
+            "ensure_source_frame_thumbnail",
+            project_id,
+            thumbnail,
+            idempotency_key=idempotency_key,
+        )
 
     def head_object(self, object_id: str) -> Any:
         return self._call_generated("head_object", object_id)

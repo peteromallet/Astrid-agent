@@ -44,6 +44,53 @@ class _NativeTransport:
         }
 
 
+class _SelectedNativeTransport(_NativeTransport):
+    def current_project(self):
+        return {"project": {"project_id": "project-1", "slug": "demo"}}
+
+    def get_project(self, project):
+        assert project == "project-1"
+        return {
+            "project_id": "project-1",
+            "slug": "demo",
+            "metadata": {"default_timeline_id": "main"},
+        }
+
+
+def test_remote_show_uses_runtime_current_project_and_project_default() -> None:
+    transport = _SelectedNativeTransport()
+    result = RemoteTimelines(transport).show(None, None)
+    assert result.ok
+    assert transport.inspect_calls[0][0:2] == ("project-1", "tl-1")
+
+
+def test_remote_list_without_selection_returns_recovery_error() -> None:
+    class _NoSelection(_SelectedNativeTransport):
+        def current_project(self):
+            return {"selection": None}
+
+    result = RemoteTimelines(_NoSelection()).list(None)
+    assert not result.ok
+    assert result.error.code == "not_found"
+    assert result.error.details["next_action"] == "astrid projects select <project>"
+
+
+def test_remote_default_timeline_must_belong_to_selected_project() -> None:
+    class _CrossProjectDefault(_SelectedNativeTransport):
+        def get_project(self, project):
+            row = super().get_project(project)
+            row["metadata"] = {"default_timeline_id": "other-project-timeline"}
+            return row
+
+    result = RemoteTimelines(_CrossProjectDefault()).show(None, None)
+    assert not result.ok
+    assert result.error.code == "not_found"
+    assert result.error.details == {
+        "project": "project-1",
+        "ref": "other-project-timeline",
+    }
+
+
 def test_remote_open_composition_uses_runtime_inspection_authority() -> None:
     transport = _NativeTransport()
     result = RemoteTimelines(transport).open_composition(

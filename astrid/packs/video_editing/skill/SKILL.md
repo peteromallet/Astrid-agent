@@ -37,95 +37,19 @@ optional theme, then produces `hype.timeline.json`, `hype.assets.json`,
 and `hype.metadata.json` — the three-file input to rendering.render.
 
 For edits to an existing runtime-owned timeline, route through the
-existing-timeline path in this skill. The rendering pack is downstream evidence
-for that path; it does not replace the editorial route. The orchestrators and
-`cut` executor remain for their stated creation/assembly workflows; do not
-invent a second timeline editing path here.
+[timeline editing skill](../../rendering/skill/SKILL.md). That skill owns the
+canonical inspect → edit → validate → save loop, Remotion rendering, and
+timeline effects. The orchestrators and `cut` executor here remain for their
+stated creation/assembly workflows; do not invent a second timeline editing
+path here.
 
 ## Existing timeline editing
 
-This is the primary agent-facing route for an already-created Runtime
-timeline: **inspect → edit → validate → save**. Use the same identity and time
-window in any views you choose:
-
-1. **Open and pin** the explicit project/timeline and current authoring head.
-2. **Inspect the exact target** in the structural/text view, expanding the
-   occurrence, clip, track, property, and source handle only as needed.
-3. **Choose the evidence view**: text for roles, ownership, and exact values;
-   visual/input inspection for placement; rendered visual inspection only when
-   pixels are needed.
-4. **Edit a detached candidate** opened from that pinned parent/shot/internal
-   closure. Use the smallest supported primitive or ordinary Python against the
-   same-schema candidate; never mutate the checkout or canonical source.
-5. **Validate and diff** the complete candidate against the requested edit and
-   preserved fields.
-6. **Save** through the compare-and-swap/idempotent publication boundary and
-   retain its receipt. Iterate and save again as needed. Reopening the returned
-   committed closure is an optional check, not a required step for every edit.
-
-Rendering and visualization are optional unless explicitly requested or
-needed to establish an output claim. For “show me the preview, then save”
-(including the A01 replacement brief), render the unpublished candidate,
-inspect/deliver its output, then publish that same candidate. A JSON freeze is
-not a visual preview; a failed required preview leaves the candidate unsaved.
-Do not replace this ordering with a render after publication. Other edits may
-save without rendering. Report saved changes and any unavailable visual/audio
-verification accurately.
-
-In the detached bundle, `work["placements"]` contains occurrence rows: select
-the returned `occurrence_id`, then edit `row["placement"]["start_ms"]` or
-`row["placement"]["duration_ms"]`. Identity fields such as `shot_id` remain on
-the row. Child clips live in `work["shots"][shot_id]["internal_timeline"]`;
-shot payload fields live in `work["shots"][shot_id]["payload"]`. Preserve the
-returned schema instead of adding flat timing fields or editing derived
-`parent.occurrences`.
-
-### Native timeline discovery and visual inspection
-
-For read-only discovery, the connected Runtime is the authority. Use
-`timelines show` for bounded structural/text facts and
-`timelines visualize --mode inputs` for the Runtime-owned
-declared-input view. These are sibling native Runtime operations over the same
-project, timeline, head, and occurrence identity; the input view does not
-decode source pixels or render a final video. Use the exact returned
-`occurrence_id` when moving between the two calls. Shot names, list positions,
-and fixture aliases are display conveniences, not substitutes for occurrence
-identity.
-
-Use the single `timelines visualize` operation for visual inspection. Its
-default `auto` mode shows declared inputs and includes composed output only when
-a fresh matching render already exists; it never starts a render. Use
-`--mode inputs` for a render-free declared-input view. To inspect composed
-pixels or sound, render the exact saved state or candidate, then pass the
-returned run with `--mode composed --render-run <ID>`. A supplied run shows
-that run's state, which may be historical or a candidate preview. Read facts
-from live Runtime responses and returned artifacts, never fixture/evaluator
-JSON, seed maps, or prior result files.
-
-```bash
-python3 -m astrid timelines show --project <project> <timeline> --json
-python3 -m astrid timelines visualize <timeline> --project <project> \
-  --mode inputs --format md --format png --occurrence <occurrence-id> --json
-```
-
-Checkout source path: `astrid/packs/video_editing/skill/SKILL.md`.
-Installed/public skill-view path: `packs/video_editing/SKILL.md` (the public
-timeline package also carries the downstream compatibility skill at
-`packs/rendering/SKILL.md`). Relative links in either view must resolve within
-that view; do not treat a checkout path as an installed path.
-
-For optional render, filmstrip, and playback evidence,
-see the [rendering compatibility skill](../../rendering/skill/SKILL.md).
-For a supplied target and credential, see the executable
-[target-bound SDK edit example](../../../../docs/timeline-editing-guide.md).
-
-For source access, use returned managed media/object identities, not a clip's
-timeline-local `asset` alias. An artifact handle is also distinct from a local
-path or a host reader's numeric artifact ID. Follow the returned opening action
-or verified local path; if unavailable, report the gap. The linked guide
-describes the current response envelopes and source-byte route. Keep SDK work
-in the connected shell environment or pass the supplied connection explicitly;
-a persistent evaluator does not necessarily inherit that shell's connection.
+Use the [timeline editing skill](../../rendering/skill/SKILL.md) for all
+existing Runtime timeline inspection, visualisation, detached edits, validation,
+publication, Remotion rendering, and effects. This pack only owns the
+production orchestrators and the arrangement-to-Remotion `cut` executor listed
+above.
 
 ## When to use
 

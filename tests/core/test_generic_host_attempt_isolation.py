@@ -1,8 +1,27 @@
 from pathlib import Path
+import threading
 
 import pytest
 
-from astrid.core.execution.generic_host import GenericPackHost, HostError
+from astrid.core.execution.generic_host import (
+    GenericPackHost,
+    HostError,
+    _ManagedTaskAdapter,
+)
+
+
+def test_managed_task_cancel_acknowledges_only_empty_process_census() -> None:
+    cancel_signal = threading.Event()
+    busy = _ManagedTaskAdapter(cancel_signal, process_census=lambda: True)
+    assert busy.cancel(reason="runtime_cancelled")["ok"] is False
+    assert cancel_signal.is_set()
+
+    idle = _ManagedTaskAdapter(threading.Event(), process_census=lambda: False)
+    assert idle.cancel(reason="runtime_cancelled") == {
+        "ok": True,
+        "cancelled": True,
+        "reason": "runtime_cancelled",
+    }
 
 
 def test_attempt_base_allocates_one_child_per_attempt(tmp_path: Path) -> None:

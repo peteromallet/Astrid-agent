@@ -2,14 +2,61 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.sdk import host_bootstrap
-from astrid.core.execution.generic_host import source_checkout_digest
+from astrid.core.execution.generic_host import (
+    source_checkout_closure_digest,
+    source_checkout_digest,
+)
 from astrid.core._shared.boot_manifest import load_boot_manifest_hash
+
+
+def _mock_host_launch(monkeypatch, fake_popen) -> None:
+    # Keep the fake launch local to bootstrap.  Patching the shared subprocess
+    # module would also intercept VibeComfy's real git identity probes.
+    monkeypatch.setattr(
+        host_bootstrap,
+        "subprocess",
+        SimpleNamespace(**{**vars(subprocess), "Popen": fake_popen}),
+    )
+
+
+def _materialize_source_closure(source: Path) -> None:
+    (source / "astrid" / "core" / "execution").mkdir(parents=True)
+    (source / "astrid" / "core" / "execution" / "generic_host.py").write_text(
+        "# host fixture\n", encoding="utf-8"
+    )
+    (source / "astrid" / "sdk").mkdir(parents=True)
+    (source / "astrid" / "sdk" / "marker.py").write_text(
+        "# sdk fixture\n", encoding="utf-8"
+    )
+    (source / "astrid" / "omp_agent.py").write_text(
+        "# launcher fixture\n", encoding="utf-8"
+    )
+    (source / "astrid" / "__init__.py").write_text("# package fixture\n", encoding="utf-8")
+    (source / "astrid" / "version.py").write_text(
+        "__version__ = 'fixture'\n", encoding="utf-8"
+    )
+    (source / "astrid" / "__main__.py").write_text("# main fixture\n", encoding="utf-8")
+    (source / "astrid" / "runtime_cli.py").write_text("# runtime cli fixture\n", encoding="utf-8")
+    (source / "astrid" / "sdk" / "workspace_client.py").write_text(
+        "# workspace client fixture\n", encoding="utf-8"
+    )
+    (source / "banodoco_workspace_client").mkdir()
+    (source / "banodoco_workspace_client" / "__init__.py").write_text(
+        "# vendored client fixture\n", encoding="utf-8"
+    )
+    (source / "banodoco_workspace_client" / "generated.py").write_text(
+        "# generated client fixture\n", encoding="utf-8"
+    )
+    (source / "banodoco_workspace_client" / "contract_metadata.py").write_text(
+        "# contract fixture\n", encoding="utf-8"
+    )
 
 
 def test_host_pid_alive_rejects_macos_zombie(monkeypatch) -> None:
@@ -34,6 +81,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     source = tmp_path / "source"
     (source / "astrid" / "packs").mkdir(parents=True)
     (source / "astrid" / "packs" / "marker.txt").write_text("pack", encoding="utf-8")
+    _materialize_source_closure(source)
     managed = tmp_path / "managed-pack"
     managed.mkdir()
     support = tmp_path / "support" / "nested"
@@ -103,6 +151,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
                 "support_root": str(credential.parent.parent),
             "source_checkout": str(source),
             "source_checkout_digest": source_checkout_digest(source),
+            "source_closure_digest": source_checkout_closure_digest(source),
             "source_inventory_identity": inventory.identity,
             "boot_manifest_path": str(boot_manifest),
             "boot_manifest_hash": load_boot_manifest_hash(
@@ -117,7 +166,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
 
     monkeypatch.setattr(host_bootstrap, "_read_object", fake_read)
     monkeypatch.setattr(host_bootstrap, "_write_object", fake_write)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", fake_popen)
+    _mock_host_launch(monkeypatch, fake_popen)
     monkeypatch.setattr(host_bootstrap, "_host_birth_identity", lambda _pid: "birth-1")
     monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda current: terminated.append(dict(current)))
 
@@ -156,6 +205,7 @@ def test_bootstrap_stops_on_correlated_terminal_registration_failure(
     (source / "astrid" / "packs" / "marker.txt").write_text(
         "pack", encoding="utf-8"
     )
+    _materialize_source_closure(source)
     support = tmp_path / "support"
     credentials = support / "credentials"
     credentials.mkdir(parents=True)
@@ -226,7 +276,7 @@ def test_bootstrap_stops_on_correlated_terminal_registration_failure(
         return FakeProcess()
 
     monkeypatch.setattr(host_bootstrap, "_read_object", fake_read)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", fake_popen)
+    _mock_host_launch(monkeypatch, fake_popen)
     monkeypatch.setattr(
         host_bootstrap, "_host_birth_identity", lambda _pid: "birth-failed"
     )
@@ -252,6 +302,7 @@ def test_bootstrap_refuses_runtime_health_without_ok_status(
 ) -> None:
     source = tmp_path / "source"
     (source / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(source)
     credentials = tmp_path / "support" / "credentials"
     credentials.mkdir(parents=True)
     credential = credentials / "worker.token"
@@ -283,9 +334,8 @@ def test_bootstrap_refuses_runtime_health_without_ok_status(
             }
 
     monkeypatch.setattr(generic_host, "RuntimeProtocolClient", UnhealthyRuntime)
-    monkeypatch.setattr(
-        host_bootstrap.subprocess,
-        "Popen",
+    _mock_host_launch(
+        monkeypatch,
         lambda *_args, **_kwargs: pytest.fail("unhealthy runtime launched pack host"),
     )
 

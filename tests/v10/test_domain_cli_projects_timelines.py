@@ -761,7 +761,7 @@ class _DefaultTimelineClient(_FakeClient):
         self.projects = _DefaultTimelineProjects(self)
 
 
-def test_timelines_render_without_ref_uses_project_default_timeline(capsys) -> None:
+def test_timelines_render_without_ref_delegates_default_resolution(capsys) -> None:
     client = _DefaultTimelineClient()
     rc = _run(
         "timelines",
@@ -769,21 +769,43 @@ def test_timelines_render_without_ref_uses_project_default_timeline(capsys) -> N
         client=client,
     )
     assert rc == 0
-    assert client.calls[0] == ("projects.show", {"ref": "demo"})
-    _, kwargs = client.calls[-1]
+    _, kwargs = client.calls[0]
     assert kwargs["capability_id"] == "rendering.render"
-    assert kwargs["inputs"]["timeline_ref"] == "TL-9"
+    assert kwargs["inputs"] == {}
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
-def test_timelines_render_without_ref_and_without_default_fails_cleanly(capsys) -> None:
+def test_timelines_render_without_ref_forwards_to_runtime_admission(capsys) -> None:
     client = _FakeClient()
     rc = _run("timelines", ["render", "--project", "demo", "--json"], client=client)
+    assert rc == 0
+    assert [verb for verb, _ in client.calls] == ["invoke_result"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+
+
+def test_timelines_render_without_ref_surfaces_typed_runtime_error(capsys) -> None:
+    class _FailingClient(_FakeClient):
+        def invoke_result(self, capability_id, **kwargs):
+            self.calls.append(("invoke_result", {"capability_id": capability_id, **kwargs}))
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=False,
+                error={
+                    "message": "project has no configured default canonical timeline",
+                    "sdk_category": "precondition",
+                },
+                raw_result={"ok": False},
+            )
+
+    client = _FailingClient()
+    rc = _run("timelines", ["render", "--json"], client=client)
     assert rc == 1
-    assert [verb for verb, _ in client.calls] == ["projects.show"]
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
-    assert "default timeline" in json.dumps(payload)
+    assert "default canonical timeline" in payload["error"]["message"]
 
 
 def test_timelines_visualize_help_describes_filmstrip_navigation(
@@ -947,6 +969,16 @@ def test_timelines_show_is_one_sdk_call(capsys) -> None:
         "asset": None, "range_value": None, "detail": False,
     })]
     assert json.loads(capsys.readouterr().out)["data"]["kind"] == "timeline-inspection"
+
+
+def test_timelines_show_allows_runtime_selected_scope(capsys) -> None:
+    client = _FakeClient()
+    rc = _run("timelines", ["show", "--json"], client=client)
+    assert rc == 0
+    assert client.calls[0][0] == "timelines.open_composition"
+    assert client.calls[0][1]["project"] is None
+    assert client.calls[0][1]["ref"] is None
+    assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
 def test_timelines_show_summary_is_bounded_and_keeps_clip_timing(capsys) -> None:

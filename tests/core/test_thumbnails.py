@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from astrid.core.execution import thumbnails
 from astrid.core.execution.thumbnails import (
     THUMBNAIL_MAX_EDGE,
     ThumbnailError,
@@ -34,6 +36,81 @@ def test_extract_thumbnail_rejects_nonvisual_media(tmp_path: Path):
 
     with pytest.raises(UnsupportedThumbnailMedia):
         extract_thumbnail(source, tmp_path / "thumb.jpg", "audio/mpeg")
+
+
+@pytest.mark.parametrize(
+    ("source_time_seconds", "expected_arg"),
+    [(None, "0.001"), (12.5, "12.5")],
+)
+def test_extract_thumbnail_passes_video_sample_time_to_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_time_seconds: float | None,
+    expected_arg: str,
+) -> None:
+    source = tmp_path / "source.mp4"
+    destination = tmp_path / "thumb.jpg"
+    source.write_bytes(b"video")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        Image.new("RGB", (32, 18), (0, 0, 255)).save(command[-1], format="JPEG")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(thumbnails.subprocess, "run", fake_run)
+
+    extract_thumbnail(
+        source,
+        destination,
+        "video/mp4",
+        ffmpeg_path="ffmpeg-test-double",
+        source_time_seconds=source_time_seconds,
+    )
+
+    command = commands[0]
+    assert command[command.index("-ss") + 1] == expected_arg
+    assert isinstance(command, list)  # passed as argv; no shell interpolation
+    assert destination.is_file()
+
+
+@pytest.mark.parametrize(
+    "source_time_seconds",
+    [-0.001, float("nan"), float("inf"), -float("inf")],
+)
+def test_extract_thumbnail_rejects_invalid_video_sample_time(
+    tmp_path: Path,
+    source_time_seconds: float,
+) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+
+    with pytest.raises(
+        ThumbnailError,
+        match="source_time_seconds must be a finite non-negative number",
+    ):
+        extract_thumbnail(
+            source,
+            tmp_path / "thumb.jpg",
+            "video/mp4",
+            ffmpeg_path="ffmpeg-test-double",
+            source_time_seconds=source_time_seconds,
+        )
+
+
+def test_extract_thumbnail_validates_but_ignores_sample_time_for_image(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 16), (10, 40, 90)).save(source)
+
+    result = extract_thumbnail(
+        source,
+        tmp_path / "thumb.jpg",
+        "image/png",
+        source_time_seconds=12.5,
+    )
+
+    assert result.width == 24
+    assert result.height == 16
 
 
 def test_extract_thumbnail_converts_pillow_decompression_bomb_to_bounded_error(

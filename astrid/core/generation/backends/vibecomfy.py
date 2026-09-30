@@ -35,6 +35,13 @@ from astrid.core.generation.backends.base import (
     parse_dimension_pair,
     split_feature_support,
 )
+from astrid.core.generation.model_root import (
+    MODEL_ROOT_ENV,
+    ModelRootBindingError,
+    model_root_binding_from_profile,
+    use_attested_vibecomfy_models_root,
+    validate_model_root_binding,
+)
 from astrid.core.generation.vibecomfy_dependency import (
     VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV,
     VIBECOMFY_ATTESTED_REVISION_ENV,
@@ -1413,6 +1420,12 @@ class CheckoutServerAdapter(VibeComfyBackend):
         session = hc03_profile.get("vibecomfy_session")
         if not isinstance(runtime, Mapping) or not isinstance(launch, Mapping):
             raise ValueError("checkout_server HC-03 runtime/launch facts are missing")
+        try:
+            model_root_binding = model_root_binding_from_profile(
+                hc03_profile, verify_files=False
+            )
+        except ModelRootBindingError as exc:
+            raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
         if not isinstance(session, Mapping):
             raise ValueError(
                 "checkout_server requires a manager-owned vibecomfy_session binding"
@@ -1564,6 +1577,8 @@ class CheckoutServerAdapter(VibeComfyBackend):
             "source_content_digest": source_content_digest,
             "config_digest": config_digest,
             "model_bytes_digest": model_bytes_digest,
+            "model_root": str(model_root_binding.path),
+            "model_root_binding": model_root_binding.as_dict(),
             "output_directory": (
                 str(session_output_directory)
                 if session_output_directory is not None
@@ -2054,6 +2069,9 @@ class CheckoutServerAdapter(VibeComfyBackend):
 
         try:
             self._revalidate_host_session()
+            host_session = self._host_session
+            if host_session is None:
+                raise ValueError("checkout_server has no verified host-session binding")
             from vibecomfy.workflow import VibeWorkflow
             from vibecomfy.workflow_bundle import WorkflowBundle, load_bundle
 
@@ -2094,22 +2112,28 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # same verified root explicitly.  Without this, a worker with an
             # otherwise healthy session falls back to VibeComfy's empty
             # default models directory and falsely reports a missing model.
-            models_root = os.environ.get("ASTRID_VIBECOMFY_MODELS_ROOT")
-            if models_root is not None:
-                models_root = models_root.strip()
-                if not models_root or not os.path.isabs(models_root):
-                    raise ValueError(
-                        "checkout_server attested model root must be an absolute path"
-                    )
+            try:
+                bound_model_root = validate_model_root_binding(
+                    host_session.get("model_root_binding"),
+                    verify_files=False,
+                )
+            except ModelRootBindingError as exc:
+                raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
+            environment_model_root = os.environ.get(MODEL_ROOT_ENV)
+            if environment_model_root is not None and environment_model_root != str(bound_model_root.path):
+                raise ValueError(
+                    "checkout_server environment model root disagrees with its HC-03 binding"
+                )
             compile_kwargs: dict[str, Any] = {
                 "schema_provider": target_schema,
-                "models_root": models_root,
+                "models_root": str(bound_model_root.path),
             }
             if run_inputs is not None:
                 if not isinstance(run_inputs, Mapping):
                     raise ValueError("checkout_server workflow run inputs must be an object")
                 compile_kwargs["run_inputs"] = dict(run_inputs)
-            approved = bundle.compile(**compile_kwargs)
+            with use_attested_vibecomfy_models_root(bundle, bound_model_root.path):
+                approved = bundle.compile(**compile_kwargs)
             model_bytes_digest = self._engine._validate_model_bytes_digest(
                 self._bound_host_model_digest()
             )
@@ -2128,7 +2152,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # artifact verification can recognize a shared RunPod filesystem
             # and probe the actual file before delivery. A workflow may not
             # redirect a host-owned checkout session to an arbitrary directory.
-            host_output_directory = self._host_session.get("output_directory")
+            host_output_directory = host_session.get("output_directory")
             if not isinstance(host_output_directory, str) or not host_output_directory:
                 raise ValueError(
                     "checkout_server has no verified host-owned output directory"

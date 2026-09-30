@@ -806,6 +806,38 @@ source_revision = current_source_revision()
 source_content_digest = current_source_content_digest()
 if not source_revision or not source_content_digest:
     raise SystemExit('managed VibeComfy source attestation is unavailable')
+models_root = base / 'models'
+model_inventory = []
+seen_model_names = set()
+for model_path in sorted(models_root.rglob('*')):
+    if model_path.is_symlink():
+        raise SystemExit(f'model root contains a symlink: {model_path}')
+    if not model_path.is_file():
+        continue
+    relative = model_path.relative_to(models_root)
+    name = relative.name
+    if name in seen_model_names:
+        raise SystemExit(f'model root contains a shadow basename: {name}')
+    seen_model_names.add(name)
+    digest = hashlib.sha256()
+    with model_path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    model_inventory.append({
+        'name': name,
+        'sha256': 'sha256:' + digest.hexdigest(),
+        'size': model_path.stat().st_size,
+        'subdir': relative.parent.as_posix() if str(relative.parent) != '.' else '',
+    })
+model_inventory.sort(key=lambda item: (item['subdir'], item['name']))
+model_root_binding = {
+    'schema_version': 1,
+    'path': str(models_root),
+    'inventory': model_inventory,
+    'inventory_digest': 'sha256:' + hashlib.sha256(
+        json.dumps(model_inventory, sort_keys=True, separators=(',', ':')).encode()
+    ).hexdigest(),
+}
 profile = {
     'schema_version': 'hc03-worker-readiness.v1',
     'status': 'ready',
@@ -823,7 +855,7 @@ profile = {
     # and digest-bound through the readiness profile.
     'launch': {
         'output_root': str(test / 'astrid-output'),
-        'model_root': str(base / 'models'),
+        'model_root': model_root_binding,
     },
     'vibecomfy_session': {
         'session_dir': str(session),
