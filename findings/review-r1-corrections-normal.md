@@ -140,6 +140,13 @@ authorization is claimed.
 
 ## Final candidate commits
 
-The final Astrid commit/tree and corrected Vibe commit/tree are recorded after
-the findings file is committed; RunPod is unchanged at the reviewed candidate
-identity above.
+- Astrid correction commit: `047149edf38dd9aec5690d1d348d8b28b3e349ed`,
+  tree `5d23e859ae9a801bb8436ac7b7b9878471127508`.
+- VibeComfy dependency correction commit: `3a1cf1bc013620459220e3abdc250019ece2d8d6`,
+  tree `9609654b124126933d0af39c5e22a8f365207a2d`.
+- RunPod remains unchanged at reviewed HEAD
+  `15748580e4a5922eb4a856b36d88faa1f67004e1`, tree
+  `ff6da3f8360e7544580ed7512117d3a8ef828680`.
+
+The final Astrid handoff commit contains only this identity clarification; the
+implementation commit above is the candidate code commit.
