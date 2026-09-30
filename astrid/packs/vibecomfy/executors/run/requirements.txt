@@ -1,2 +1,2 @@
-# Canonical published VibeComfy revision.
-vibecomfy @ git+https://github.com/peteromallet/VibeComfy.git@b554ed14dbb481130b96dd0c927e1fde4f02e447
+# Selected local VibeComfy candidate; see candidate-dependencies.json.
+vibecomfy @ file:///Users/peteromalley/Documents/reigh-workspace/vibecomfy/.otto/worktrees/h3-full-merge-megado-plan-20260930

@@ -142,7 +142,7 @@ def _audio_change(value: Any, index: int) -> dict[str, Any]:
     return result
 
 
-def normalize_request(raw: Mapping[str, Any]) -> H3Request:
+def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     if not isinstance(raw, Mapping):
         raise H3RequestError("request must be an object")
     _unknown(raw, {"version", "operation", "source", "output", "content", "changes", "references", "overrides"}, "request")
@@ -247,7 +247,27 @@ def normalize_request(raw: Mapping[str, Any]) -> H3Request:
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 
 
-def load_request(path: str | Path) -> H3Request:
+def normalize_request(
+    raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None
+) -> H3Request:
+    """Normalize either the retained parent-v1 or native-v2 contract.
+
+    The v1 branch intentionally remains unchanged, including source-free
+    generation. Native-v2 is a separate media-list contract and is imported
+    lazily so the parent-v1 path has no new dependency surface.
+    """
+    if not isinstance(raw, Mapping):
+        raise H3RequestError("request must be an object")
+    if raw.get("version") == 2:
+        from .request_v2 import normalize_v2
+
+        return normalize_v2(raw, asset_modalities=asset_modalities)
+    return _normalize_v1(raw)
+
+
+def load_request(
+    path: str | Path, *, asset_modalities: Mapping[str, str] | None = None
+) -> H3Request:
     source = Path(path).expanduser().resolve(strict=True)
     try:
         text = source.read_text(encoding="utf-8")
@@ -264,4 +284,4 @@ def load_request(path: str | Path) -> H3Request:
             raw = json.loads(text)
     except (ValueError, TypeError) as exc:
         raise H3RequestError(f"request is not valid JSON/YAML: {exc}") from exc
-    return normalize_request(raw)
+    return normalize_request(raw, asset_modalities=asset_modalities)

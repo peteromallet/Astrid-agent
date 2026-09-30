@@ -825,7 +825,8 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     final_receipt = json.loads(Path(result["final_receipt"]).read_text())
     assert final_receipt["overall_status"] == "candidate_verified"
     assert final_receipt["states"]["raw_managed_publication"]["status"] == "passed"
-    assert final_receipt["publication_contract"]["final_composition_publication"] == "deferred"
+    assert final_receipt["publication_contract"]["published_scope"] == "raw_internal_lineage"
+    assert final_receipt["publication_contract"]["final_composition_publication"] == "required"
     assert not caller.exists() and all(not attempt.exists() for attempt in attempts)
     assert [name for name, _ in calls] == ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate",
                                          "vibecomfy.run", "h3_av.compose", "h3_av.verify"]

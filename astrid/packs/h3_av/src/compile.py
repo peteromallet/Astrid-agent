@@ -14,7 +14,8 @@ from astrid.packs.vibecomfy.asset_manifest import (
     build_asset_manifest,
 )
 
-from .request import H3Request, normalize_request
+from .request import H3Request, H3RequestError, normalize_request
+from .request_v2 import branch_for, read_prepared_request
 from .timing import ContinuationTimingError, plan_continuation
 
 
@@ -59,9 +60,16 @@ def _resolved_request(preparation: Mapping[str, Any]) -> H3Request:
     raw = preparation.get("request")
     if not isinstance(raw, Mapping):
         raise CompilationError("preparation is missing its normalized request")
-    request = normalize_request(raw)
-    if request.digest != preparation.get("request_digest"):
-        raise CompilationError("preparation request digest does not match its request")
+    expected_digest = preparation.get("request_digest")
+    if isinstance(raw, Mapping) and raw.get("version") == 2:
+        try:
+            request = read_prepared_request(raw, expected_digest, require_normalized_v2=True)
+        except H3RequestError as exc:
+            raise CompilationError(str(exc)) from exc
+    else:
+        request = normalize_request(raw)
+        if request.digest != expected_digest:
+            raise CompilationError("preparation request digest does not match its request")
     return request
 
 
@@ -439,12 +447,106 @@ def _compile_lanpaint(request: H3Request, assets: Mapping[str, Path], destinatio
     return result
 
 
+def _compile_native_v2(
+    request: H3Request, assets: Mapping[str, Path], destination: Path
+) -> dict[str, Any]:
+    """Bind native-v2 media semantics without changing the parent-v1 graph."""
+    branch = branch_for(request)
+    if not assets:
+        raise CompilationError("native-v2 requires resolved media assets")
+    destination.mkdir(parents=True, exist_ok=True)
+    bindings: dict[str, Path] = {}
+    asset_bindings: dict[str, str] = {}
+    for index, item in enumerate(request.value["media"]):
+        asset_id = str(item["asset"])
+        if asset_id not in assets:
+            raise CompilationError(f"native-v2 asset {asset_id!r} is missing from preparation")
+        binding = f"media_{index}_{item['role']}"
+        bindings[binding] = assets[asset_id]
+        asset_bindings.setdefault(asset_id, binding)
+        for edit in item.get("edit", []):
+            mask = edit.get("mask")
+            if isinstance(mask, Mapping) and isinstance(mask.get("asset"), str):
+                mask_id = str(mask["asset"])
+                if mask_id not in assets:
+                    raise CompilationError(f"native-v2 mask asset {mask_id!r} is missing from preparation")
+                mask_binding = f"mask_{len(bindings)}"
+                bindings[mask_binding] = assets[mask_id]
+                asset_bindings.setdefault(mask_id, mask_binding)
+    asset_manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
+    members = _member_by_binding(asset_manifest)
+    frozen = _copy_workflow_bundle(
+        _pack_root() / _REFERENCE_WORKFLOW, destination / "workflow-bundle"
+    )
+    workflow_inputs = {
+        "profile": "h3_av.native.v2",
+        "branch": branch,
+        "prompt": request.value["prompt"],
+        "duration": request.value["duration"],
+        "media": [
+            {
+                "occurrence_id": item["occurrence_id"],
+                "role": item["role"],
+                "modality": item.get("modality"),
+                "member": members[asset_bindings[str(item["asset"])]],
+                **({"model_tag": item["model_tag"]} if "model_tag" in item else {}),
+            }
+            for item in request.value["media"]
+        ],
+    }
+    workflow_identity = {
+        name: {"path": str(frozen[name]), "sha256": _sha256(frozen[name])}
+        for name in sorted(frozen)
+    }
+    manifest: dict[str, Any] = {
+        "schema_version": 2,
+        "kind": "h3_av_compilation",
+        "status": "compiled",
+        "profile": "h3_av.native.v2",
+        "branch": branch,
+        "request_digest": request.digest,
+        "workflow": workflow_identity,
+        "workflow_inputs": workflow_inputs,
+        "managed_assets": {
+            "path": str(destination / "managed-assets.zip"),
+            "sha256": _sha256(destination / "managed-assets.zip"),
+            "manifest": asset_manifest,
+        },
+        "capabilities": {
+            "operation": "transform",
+            "native_v2_branch": branch,
+            "output_contract": "muxed_av_full_timeline",
+            "public_generation": {
+                "modality": "video",
+                "selectors": [{"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
+                "internal_outputs": [],
+            },
+        },
+        "limitations": [
+            "native-v2 branch binding is CPU-verifiable; model quality and GPU compatibility remain unqualified",
+            "raw H3 output remains internal lineage and must pass composition before publication",
+        ],
+    }
+    digest_payload = {
+        **{key: value for key, value in manifest.items() if key not in {"workflow", "managed_assets", "compilation_digest"}},
+        "workflow": {name: {"sha256": value["sha256"]} for name, value in workflow_identity.items()},
+        "managed_assets": {"sha256": manifest["managed_assets"]["sha256"], "manifest": asset_manifest},
+    }
+    manifest["compilation_digest"] = hashlib.sha256(_canonical_bytes(digest_payload)).hexdigest()
+    manifest_path = destination / "compilation.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
+
+
 def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) -> dict[str, Any]:
     """Compile one prepared request into immutable runtime bindings and assets."""
     request = _resolved_request(preparation)
     assets = _asset_paths(preparation)
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
+    if request.value.get("version") == 2:
+        return _compile_native_v2(request, assets, destination)
     if request.value["operation"] == "generate":
         return _compile_generation(request, assets, destination)
     if request.value["operation"] == "edit":
