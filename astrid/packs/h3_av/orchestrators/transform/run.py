@@ -467,7 +467,16 @@ def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], pr
     return path
 
 
-def _invoke(client: Any, capability_id: str, *, inputs: Mapping[str, Any], out: Path, project: str | None, execution_request: Mapping[str, Any] | None = None) -> Any:
+def _invoke(
+    client: Any,
+    capability_id: str,
+    *,
+    inputs: Mapping[str, Any],
+    out: Path,
+    project: str | None,
+    execution_request: Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
+) -> Any:
     result = client.invoke_result(
         capability_id,
         kind="executor",
@@ -475,6 +484,7 @@ def _invoke(client: Any, capability_id: str, *, inputs: Mapping[str, Any], out: 
         out=out,
         project=project,
         execution_request=execution_request,
+        idempotency_context=idempotency_context,
         wait=True,
     )
     if not result.ok:
@@ -743,6 +753,7 @@ def _invoke_stage(
     journal: OperationJournal,
     phase: str,
     execution_request: Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Invoke one canonical stage once, or reuse its settled DTO on resume."""
 
@@ -752,16 +763,31 @@ def _invoke_stage(
         "project": project,
         "execution_request": execution_request,
     })
+    previous = journal.latest(phase)
     if resume and saved_result.is_file():
+        if previous is None:
+            raise RuntimeError(
+                f"cannot resume {phase}: saved result has no matching journal admission"
+            )
         result = _load_invocation_result(saved_result, expected_input_digest=input_digest)
         if not result.ok:
             raise RuntimeError(f"saved {phase} result is not successful")
         if result.capability_id != capability_id:
             raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
+        recorded_identity = tuple(
+            previous.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
+        result_identity = (
+            result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id
+        )
+        if all(isinstance(value, str) and value for value in recorded_identity):
+            if recorded_identity != result_identity:
+                raise RuntimeError(
+                    f"cannot resume {phase}: saved result identity disagrees with journal admission"
+                )
         result = _reobserve_saved_result(client, result, phase=phase)
         journal.record(phase, "reused", capability_id=capability_id)
         return result
-    previous = journal.latest(phase)
     if resume and previous is not None and previous.get("status") in {"started", "uncertain", "completed"}:
         raise RuntimeError(f"cannot resume {phase}: invocation result is missing after {previous.get('status')}")
     journal.record(phase, "started", capability_id=capability_id, input_digest=input_digest)
@@ -773,6 +799,7 @@ def _invoke_stage(
             out=out,
             project=project,
             execution_request=execution_request,
+            idempotency_context=idempotency_context,
         )
     except Exception as exc:
         journal.record(
@@ -781,7 +808,14 @@ def _invoke_stage(
         )
         raise
     _save_invocation_result(saved_result, result, input_digest=input_digest)
-    journal.record(phase, "completed", capability_id=capability_id)
+    journal.record(
+        phase,
+        "completed",
+        capability_id=capability_id,
+        task_id=result.kernel_task_id,
+        run_id=result.kernel_run_id,
+        attempt_id=result.kernel_attempt_id,
+    )
     return result
 
 
@@ -800,6 +834,7 @@ def _invoke_canonical_run(
     saved_result: Path,
     journal: OperationJournal,
     resume: bool,
+    idempotency_context: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
@@ -822,6 +857,10 @@ def _invoke_canonical_run(
         raise RuntimeError(str(exc)) from exc
 
     if resume and saved_result.is_file():
+        if prior_run is None:
+            raise RuntimeError(
+                "cannot resume canonical run: saved result has no matching journal admission"
+            )
         result = _load_invocation_result(saved_result, expected_input_digest=run_input_digest)
         if not result.ok:
             raise RuntimeError("saved canonical run result is not successful")
@@ -830,6 +869,14 @@ def _invoke_canonical_run(
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
             raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
+        recorded_identity = tuple(
+            prior_run.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
+        if all(isinstance(value, str) and value for value in recorded_identity):
+            if recorded_identity != identity:
+                raise RuntimeError(
+                    "cannot resume canonical run: saved result identity disagrees with journal admission"
+                )
         result = _reobserve_saved_result(client, result, phase="canonical run")
         journal.set_admission_phase("settled")
         journal.record(
@@ -851,6 +898,7 @@ def _invoke_canonical_run(
         result = _invoke(
             client, "vibecomfy.run", inputs=inputs, out=out, project=project,
             execution_request=execution_request,
+            idempotency_context=idempotency_context,
         )
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
@@ -947,6 +995,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         if journal.has_history and not getattr(args, "resume", False):
             raise RuntimeError("operation journal already has history; use --resume to continue it")
         journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
+        idempotency_context = {"h3_submission_id": journal.submission_id}
         staging = root / "staged-inputs"
         staging.mkdir(parents=True, exist_ok=True)
         bundle_path = build_input_bundle(
@@ -977,6 +1026,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="prepare",
+            idempotency_context=idempotency_context,
         )
         preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
         preparation = _json_mapping(preparation_path)
@@ -990,6 +1040,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compile",
+            idempotency_context=idempotency_context,
         )
         compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
         managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
@@ -1022,6 +1073,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="validate",
+            idempotency_context=idempotency_context,
         )
         generation_metadata = {"h3_av": provenance}
         generation_intent = _generation_intent(compilation)
@@ -1043,6 +1095,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             saved_result=saved_run_path,
             journal=journal,
             resume=bool(getattr(args, "resume", False)),
+            idempotency_context=idempotency_context,
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None
@@ -1110,6 +1163,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compose",
+            idempotency_context=idempotency_context,
         )
         composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
         candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
@@ -1126,6 +1180,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="verify",
+            idempotency_context=idempotency_context,
         )
         verification_path, _ = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)

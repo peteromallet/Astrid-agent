@@ -8,6 +8,7 @@ interruption without sampling an already-settled child again.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,6 +29,7 @@ class OperationJournal:
         self.events: list[dict[str, Any]] = []
         self.admission_digest: str | None = None
         self.admission_phase: str | None = None
+        self.submission_id = uuid.uuid4().hex
         if self.path.is_file():
             try:
                 value = json.loads(self.path.read_text(encoding="utf-8"))
@@ -49,6 +51,16 @@ class OperationJournal:
                 raise OperationJournalError("operation journal admission phase is malformed")
             self.admission_digest = admission_digest
             self.admission_phase = admission_phase
+            submission_id = value.get("submission_id")
+            if submission_id is not None:
+                if not isinstance(submission_id, str) or not submission_id:
+                    raise OperationJournalError("operation journal submission identity is malformed")
+                self.submission_id = submission_id
+            elif isinstance(admission_digest, str) and admission_digest:
+                # Preserve the identity of a pre-D10 journal while refusing to
+                # use its saved DTO as authority. A new journal always gets a
+                # fresh nonce above.
+                self.submission_id = admission_digest
 
     @property
     def has_history(self) -> bool:
@@ -85,6 +97,7 @@ class OperationJournal:
             "request_digest": self.request_digest,
             "admission_digest": self.admission_digest,
             "admission_phase": self.admission_phase,
+            "submission_id": self.submission_id,
             "events": self.events,
         }
         temporary = self.path.with_name(f".{self.path.name}.tmp")

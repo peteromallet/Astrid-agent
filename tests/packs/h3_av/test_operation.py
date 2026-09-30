@@ -128,6 +128,49 @@ def test_settled_canonical_run_is_reused_with_original_identity(tmp_path) -> Non
     assert calls == ["vibecomfy.run"]
 
 
+def test_fresh_canonical_operations_get_distinct_submission_context(tmp_path) -> None:
+    contexts = []
+
+    class Client:
+        def invoke_result(self, capability_id, **kwargs):
+            contexts.append(kwargs["idempotency_context"])
+            ordinal = len(contexts)
+            identity = (f"canonical-task-{ordinal}", f"canonical-run-{ordinal}", f"canonical-attempt-{ordinal}")
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id=identity[0],
+                kernel_run_id=identity[1],
+                kernel_attempt_id=identity[2],
+            )
+
+    kwargs = {
+        "inputs": {"workflow": {"digest": "sha256:workflow"}},
+        "execution_request": None,
+        "out": tmp_path / "run",
+        "project": "project-1",
+    }
+    first_journal = OperationJournal(tmp_path / "first-state.json", request_digest="request-a")
+    first = _invoke_canonical_run(
+        Client(), journal=first_journal, resume=False,
+        saved_result=tmp_path / "first-result.json", **kwargs,
+        idempotency_context={"h3_submission_id": first_journal.submission_id},
+    )
+    second_journal = OperationJournal(tmp_path / "second-state.json", request_digest="request-a")
+    second = _invoke_canonical_run(
+        Client(), journal=second_journal, resume=False,
+        saved_result=tmp_path / "second-result.json", **kwargs,
+        idempotency_context={"h3_submission_id": second_journal.submission_id},
+    )
+
+    assert first.kernel_task_id != second.kernel_task_id
+    assert contexts[0] != contexts[1]
+    assert contexts[0]["h3_submission_id"] == first_journal.submission_id
+    assert contexts[1]["h3_submission_id"] == second_journal.submission_id
+
+
 def test_saved_canonical_dto_cannot_override_unsettled_runtime_task(tmp_path) -> None:
     journal_path = tmp_path / "operation-state.json"
     result_path = tmp_path / "run-result.json"
@@ -179,6 +222,45 @@ def test_saved_canonical_dto_cannot_override_unsettled_runtime_task(tmp_path) ->
         _invoke_canonical_run(
             ResumeClient(),
             journal=OperationJournal(journal_path, request_digest="request-a"),
+            resume=True,
+            **kwargs,
+        )
+
+
+def test_saved_canonical_dto_without_journal_admission_is_not_authority(tmp_path) -> None:
+    result_path = tmp_path / "run-result.json"
+    source_journal_path = tmp_path / "source-state.json"
+    kwargs = {
+        "inputs": {"workflow": {"digest": "sha256:workflow"}},
+        "execution_request": None,
+        "out": tmp_path / "run",
+        "project": "project-1",
+        "saved_result": result_path,
+    }
+
+    class SubmitClient:
+        def invoke_result(self, capability_id, **kwargs):
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id="historical-task",
+                kernel_run_id="historical-run",
+                kernel_attempt_id="historical-attempt",
+            )
+
+    _invoke_canonical_run(
+        SubmitClient(),
+        journal=OperationJournal(source_journal_path, request_digest="request-a"),
+        resume=False,
+        **kwargs,
+    )
+
+    with pytest.raises(RuntimeError, match="no matching journal admission"):
+        _invoke_canonical_run(
+            SubmitClient(),
+            journal=OperationJournal(tmp_path / "fresh-state.json", request_digest="request-a"),
             resume=True,
             **kwargs,
         )
