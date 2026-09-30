@@ -14,7 +14,8 @@ from astrid.packs.vibecomfy.asset_manifest import (
     build_asset_manifest,
 )
 
-from .request import H3Request, normalize_request
+from .request import H3Request, H3RequestError, normalize_request
+from .request_v2 import branch_for, read_prepared_request
 from .timing import ContinuationTimingError, plan_continuation
 
 
@@ -59,9 +60,16 @@ def _resolved_request(preparation: Mapping[str, Any]) -> H3Request:
     raw = preparation.get("request")
     if not isinstance(raw, Mapping):
         raise CompilationError("preparation is missing its normalized request")
-    request = normalize_request(raw)
-    if request.digest != preparation.get("request_digest"):
-        raise CompilationError("preparation request digest does not match its request")
+    expected_digest = preparation.get("request_digest")
+    if isinstance(raw, Mapping) and raw.get("version") == 2:
+        try:
+            request = read_prepared_request(raw, expected_digest, require_normalized_v2=True)
+        except H3RequestError as exc:
+            raise CompilationError(str(exc)) from exc
+    else:
+        request = normalize_request(raw)
+        if request.digest != expected_digest:
+            raise CompilationError("preparation request digest does not match its request")
     return request
 
 
@@ -310,6 +318,8 @@ def _compile_manifest(
     limitations: list[str],
     asset_lineage: Mapping[str, Any] | None = None,
     continuation_timing: Mapping[str, Any] | None = None,
+    profile_id: str = _PROFILE_ID,
+    extra_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     public_generation = capabilities.get("public_generation")
     if not isinstance(public_generation, Mapping):
@@ -330,7 +340,7 @@ def _compile_manifest(
         "schema_version": 1,
         "kind": "h3_av_compilation",
         "status": "compiled",
-        "profile": _PROFILE_ID,
+        "profile": profile_id,
         "request_digest": request.digest,
         "workflow": graph_identity,
         "workflow_inputs": workflow_inputs,
@@ -338,6 +348,8 @@ def _compile_manifest(
         "capabilities": dict(capabilities),
         "limitations": limitations,
     }
+    if extra_manifest:
+        manifest.update(dict(extra_manifest))
     if continuation_timing is not None:
         manifest["continuation_timing"] = dict(continuation_timing)
     digest_payload = {
@@ -439,12 +451,180 @@ def _compile_lanpaint(request: H3Request, assets: Mapping[str, Path], destinatio
     return result
 
 
+def _compile_native_v2(
+    request: H3Request, assets: Mapping[str, Path], destination: Path
+) -> dict[str, Any]:
+    """Bind native-v2 media semantics to existing declared Vibe inputs."""
+    branch = branch_for(request)
+    if not assets:
+        raise CompilationError("native-v2 requires resolved media assets")
+
+    if branch == "source_free":
+        references = [item for item in request.value["media"] if item["role"] == "reference"]
+        if not 1 <= len(references) <= 9:
+            raise CompilationError("native-v2 source-free generation requires one to nine references")
+        if any(item.get("modality") != "image" for item in references):
+            raise CompilationError("native-v2 source-free generation accepts image references only")
+        settings = request.value["settings"]
+        generation_value = {
+            "version": 1,
+            "operation": "generate",
+            "source": None,
+            "output": {"duration": request.value["duration"]},
+            "content": {"prompt": request.value["prompt"]},
+            "changes": {"video": [], "audio": []},
+            "references": [{"asset": item["asset"], "purpose": "appearance"} for item in references],
+            "overrides": {
+                "model": settings["model"],
+                "steps": settings["steps"],
+                "sampler": settings["sampler"],
+                "seed": settings["seed"],
+                "guidance": settings["guidance_scale"],
+            },
+        }
+        return _compile_generation(
+            H3Request(value=generation_value, digest=request.digest),
+            assets,
+            destination,
+            profile_id="h3_av.native.v2",
+            native_v2_branch=branch,
+        )
+
+    destination.mkdir(parents=True, exist_ok=True)
+    settings = request.value["settings"]
+    if settings["sampler"] != _DEFAULTS["sampler"]:
+        raise CompilationError("native-v2 continuation graph has no sampler input")
+    if settings["guidance_scale"] != _DEFAULTS["guidance"]:
+        raise CompilationError("native-v2 continuation graph has no guidance input")
+
+    timelines = [item for item in request.value["media"] if item["role"] == "timeline"]
+    references = [item for item in request.value["media"] if item["role"] == "reference"]
+    if len(references) > 2:
+        raise CompilationError("native-v2 continuation graph has two image-reference slots")
+    if any(item.get("modality") != "image" for item in references):
+        raise CompilationError("native-v2 continuation graph reference ports accept image references only")
+    if branch == "audio_only":
+        if len(timelines) != 1 or timelines[0].get("modality") != "audio":
+            raise CompilationError("native-v2 audio-only binding requires one timeline audio asset")
+        source = timelines[0]
+    else:
+        video_timelines = [item for item in timelines if item.get("modality") == "video"]
+        if len(video_timelines) != 1:
+            raise CompilationError("native-v2 continuation binding requires one timeline video asset")
+        if any(item.get("modality") == "audio" for item in timelines):
+            raise CompilationError("native-v2 continuation graph has no separate audio input port")
+        source = video_timelines[0]
+
+    source_id = str(source["asset"])
+    if source_id not in assets:
+        raise CompilationError(f"native-v2 asset {source_id!r} is missing from preparation")
+    bindings: dict[str, Path] = {"source_video": assets[source_id]}
+    reference_ids: list[str] = []
+    for item in references:
+        asset_id = str(item["asset"])
+        if asset_id not in assets:
+            raise CompilationError(f"native-v2 asset {asset_id!r} is missing from preparation")
+        reference_ids.append(asset_id)
+
+    for item in request.value["media"]:
+        for edit in item.get("edit", []):
+            if edit.get("stream") == "video":
+                mask = edit.get("mask", {})
+                if not isinstance(mask, Mapping) or mask.get("full_frame") is not True:
+                    raise CompilationError(
+                        "native-v2 continuation graph has no declared spatial-mask input; only full_frame masks are supported"
+                    )
+
+    source_range = source.get("resolved_range")
+    if isinstance(source_range, list) and len(source_range) == 2:
+        source_start = float(source["range"][0])
+        source_frames = int(source_range[1]) - int(source_range[0]) if source.get("modality") == "video" else 0
+        source_end = float(source["range"][1])
+    else:
+        source_start = float(source["at"].get("seconds", source["resolved_at"]["value"] / 24))
+        source_frames = 0
+        source_end = float(request.value["duration"])
+
+    continuation_timing: dict[str, Any] | None = None
+    workflow_duration = float(request.value["duration"])
+    if branch != "audio_only":
+        try:
+            timing = plan_continuation(source_end=source_end, output_duration=float(request.value["duration"]))
+        except ContinuationTimingError as exc:
+            raise CompilationError(str(exc)) from exc
+        continuation_timing = timing.to_dict()
+        workflow_duration = timing.workflow_duration
+
+    if reference_ids:
+        bindings["reference_0"] = assets[reference_ids[0]]
+        bindings["reference_1"] = assets[reference_ids[1] if len(reference_ids) == 2 else reference_ids[0]]
+    members = _member_by_binding(build_asset_manifest(bindings))
+    workflow_inputs: dict[str, Any] = {
+        "model": settings["model"],
+        "steps": settings["steps"],
+        "seed": settings["seed"],
+        "prompt": _native_v2_prompt(request),
+        "duration": workflow_duration,
+        "source_start": source_start,
+        "source_frames": source_frames,
+        "source_video": members["source_video"],
+    }
+    if reference_ids:
+        workflow_inputs.update({"reference_0": members["reference_0"], "reference_1": members["reference_1"]})
+    resource_root = _REFERENCE_WORKFLOW if reference_ids else Path("workflows/native_h3_continuation")
+    return _compile_manifest(
+        request=request,
+        destination=destination,
+        resource_root=_pack_root() / resource_root,
+        workflow_inputs=workflow_inputs,
+        asset_bindings=bindings,
+        capabilities={
+            "operation": "transform",
+            "native_v2_branch": branch,
+            "source_binding": "source_video",
+            "audio_binding": "source_video" if branch == "audio_only" else "source_audio_from_source_video",
+            "timing_binding": ["source_start", "source_frames", "duration"],
+            "edit_binding": "prompt schedule",
+            "mask_binding": "full_frame through graph context",
+            "references": len(reference_ids),
+            "reference_capacity": 2,
+            "output_contract": "muxed_av_full_timeline",
+            "public_generation": {"modality": "video", "selectors": [
+                {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
+                "internal_outputs": []},
+        },
+        limitations=[
+            "native-v2 branch binding is CPU-verifiable; model quality and GPU compatibility remain unqualified",
+            "the selected continuation graph exposes no separate audio or spatial-mask port; audio-only input uses its declared source_video port and non-full-frame masks fail closed",
+            "raw H3 output remains internal lineage and must pass composition before publication",
+        ],
+        continuation_timing=continuation_timing,
+        profile_id="h3_av.native.v2",
+        extra_manifest={"branch": branch},
+    )
+
+
+def _native_v2_prompt(request: H3Request) -> str:
+    """Carry normalized edit/audio/timing semantics through the graph prompt port."""
+
+    schedule = []
+    for item in request.value["media"]:
+        schedule.append({
+            key: item[key]
+            for key in ("occurrence_id", "role", "modality", "at", "range", "edit")
+            if key in item
+        })
+    return f"{request.value['prompt']}\n\nNative-v2 media schedule:\n{json.dumps(schedule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+
+
 def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) -> dict[str, Any]:
     """Compile one prepared request into immutable runtime bindings and assets."""
     request = _resolved_request(preparation)
     assets = _asset_paths(preparation)
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
+    if request.value.get("version") == 2:
+        return _compile_native_v2(request, assets, destination)
     if request.value["operation"] == "generate":
         return _compile_generation(request, assets, destination)
     if request.value["operation"] == "edit":
@@ -454,7 +634,14 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
     raise CompilationError(f"unsupported H3 operation: {request.value['operation']!r}")
 
 
-def _compile_generation(request: H3Request, assets: Mapping[str, Path], destination: Path) -> dict[str, Any]:
+def _compile_generation(
+    request: H3Request,
+    assets: Mapping[str, Path],
+    destination: Path,
+    *,
+    profile_id: str = _PROFILE_ID,
+    native_v2_branch: str | None = None,
+) -> dict[str, Any]:
     from PIL import Image
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
@@ -486,20 +673,30 @@ def _compile_generation(request: H3Request, assets: Mapping[str, Path], destinat
         "kind": "authored_h3_reference_adapter", "node": "MiniMaxH3ReferenceToVideo",
         "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
     }, sort_keys=True) + "\n")
+    capabilities = {
+        "operation": "generate",
+        "reference_capacity": IMAGE_REFERENCE_CAPACITY,
+        "references": len(references),
+        "reference_order": [item["asset"] for item in references],
+        "reference_binding": "ordered image conditioning; Picture 1..N",
+        "generation_timing": timing,
+        "output_contract": "muxed_av_full_timeline",
+        "public_generation": {"modality": "video", "selectors": [
+            {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
+            "internal_outputs": []},
+        "validation": "CPU structural; live GPU acceptance pending",
+    }
+    extra_manifest = None
+    if native_v2_branch is not None:
+        capabilities.update({"operation": "transform", "native_v2_branch": native_v2_branch})
+        extra_manifest = {"branch": native_v2_branch}
     return _compile_manifest(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs={**settings, "prompt": prompt, **members}, asset_bindings=bindings,
-        capabilities={
-            "operation": "generate", "reference_capacity": IMAGE_REFERENCE_CAPACITY,
-            "references": len(references), "reference_order": [item["asset"] for item in references],
-            "reference_binding": "ordered image conditioning; Picture 1..N",
-            "generation_timing": timing, "output_contract": "muxed_av_full_timeline",
-            "public_generation": {"modality": "video", "selectors": [
-                {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
-                "internal_outputs": []},
-            "validation": "CPU structural; live GPU acceptance pending",
-        },
+        capabilities=capabilities,
         limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 362 frames at 24 fps"],
+        profile_id=profile_id,
+        extra_manifest=extra_manifest,
     )
 
 

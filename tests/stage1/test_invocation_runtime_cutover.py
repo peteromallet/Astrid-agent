@@ -130,6 +130,33 @@ def test_kernel_idempotency_uses_completed_remote_admission(change):
     assert transport.calls[0]["idempotency_key"] != transport.calls[2]["idempotency_key"]
 
 
+def test_h3_submission_context_separates_fresh_runtime_admissions() -> None:
+    transport = _AdmissionTransport()
+    client = SimpleNamespace(tasks=RemoteTasks(transport))
+    capability = SimpleNamespace(
+        id="vibecomfy.validate", capability_type="executor",
+        inputs=[SimpleNamespace(name="python", type="file")],
+    )
+    inputs = {"python": {"object_id": "sha256:" + "a" * 64, "filename": "workflow.py"}}
+
+    def invoke(submission_id):
+        result = invocation._kernel_invoke(
+            capability, kind="executor", project="demo", inputs=inputs,
+            outputs={}, idempotency_context={"h3_submission_id": submission_id}, _client=client,
+        )
+        assert result[5] is True
+        return result[1]
+
+    first = invoke("submission-a")
+    replay = invoke("submission-a")
+    second = invoke("submission-b")
+
+    assert replay == first
+    assert second != first
+    assert transport.calls[0]["idempotency_key"] == transport.calls[1]["idempotency_key"]
+    assert transport.calls[1]["idempotency_key"] != transport.calls[2]["idempotency_key"]
+
+
 @pytest.mark.parametrize("value", [
     "/Users/caller/request.json", "relative.json", Path("/tmp/local.json"),
     {"path": "/Users/caller/request.json"}, {"digest": "invalid"},

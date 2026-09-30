@@ -358,7 +358,8 @@ class _RemoteFamily:
             elif operation == "get_project_shot_revision": value = self._client.get_project_shot_revision(*args, **kwargs)
             elif operation == "get_project_timeline_revision": value = self._client.get_project_timeline_revision(*args, **kwargs)
             elif operation == "get_project_parent_composition_revision": value = self._client.get_project_parent_composition_revision(*args, **kwargs)
-            elif operation == "get_source_frame_thumbnail": value = self._client.get_source_frame_thumbnail(*args, **kwargs)
+            elif operation == "get_source_frame_thumbnail":
+                value = self._client.get_source_frame_thumbnail(*args, **kwargs)
             elif operation == "get_project_shot_text_binding": value = self._client.get_project_shot_text_binding(*args, **kwargs)
             elif operation == "get_managed_output": value = self._client.get_managed_output(*args, **kwargs)
             elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
@@ -367,7 +368,8 @@ class _RemoteFamily:
             elif operation == "create_timeline_view": value = self._client.create_timeline_view(*args, **kwargs)
             elif operation == "fail_attempt": value = self._client.fail_attempt(*args, **kwargs)
             elif operation == "head_object": value = self._client.head_object(*args, **kwargs)
-            elif operation == "ensure_source_frame_thumbnail": value = self._client.ensure_source_frame_thumbnail(*args, **kwargs)
+            elif operation == "ensure_source_frame_thumbnail":
+                value = self._client.ensure_source_frame_thumbnail(*args, **kwargs)
             elif operation == "ingest_project_object": value = self._client.ingest_project_object(*args, **kwargs)
             elif operation == "link_references": value = self._client.link_references(*args, **kwargs)
             elif operation == "list_events": value = self._client.list_events(*args, **kwargs)
@@ -474,21 +476,29 @@ class RemoteTimelines(_RemoteFamily):
         data = selected.data
         row = data.get("project") if isinstance(data, Mapping) else None
         if not isinstance(row, Mapping):
-            return DomainResult.failure(
-                ErrorObject(
+            return DomainResult(
+                ok=False,
+                data=None,
+                error=ErrorObject(
                     "not_found",
                     "no current project is selected",
                     {"next_action": "astrid projects select <project>"},
-                )
+                ),
+                receipt=None,
+                idempotency_key="",
             )
         ref = row.get("project_id") or row.get("id") or row.get("slug")
         if not isinstance(ref, str) or not ref.strip():
-            return DomainResult.failure(
-                ErrorObject(
+            return DomainResult(
+                ok=False,
+                data=None,
+                error=ErrorObject(
                     "protocol_error",
                     "runtime current project returned no project identity",
                     {},
-                )
+                ),
+                receipt=None,
+                idempotency_key="",
             )
         return DomainResult.success(
             ref.strip(),
@@ -1308,6 +1318,7 @@ class RemoteMedia(_RemoteFamily):
         object_id = result.data.get("object_id")
         if not isinstance(object_id, str):
             return result
+        thumbnail_error: str | None
         try:
             from astrid.core.execution.thumbnail_backfill import (
                 ThumbnailBackfillError,

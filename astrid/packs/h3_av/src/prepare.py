@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from .masks import MaskScheduleError, build_mask_schedule
 from .request import H3Request
+from .request_v2 import branch_for
 
 
 class PreparationError(ValueError):
@@ -25,6 +26,14 @@ def _file_digest(path: Path) -> str:
 
 def _asset_ids(request: H3Request) -> list[str]:
     value = request.value
+    if value.get("version") == 2:
+        result = [str(item["asset"]) for item in value["media"]]
+        for item in value["media"]:
+            for edit in item.get("edit", []):
+                mask = edit.get("mask", {})
+                if isinstance(mask, Mapping) and "asset" in mask:
+                    result.append(str(mask["asset"]))
+        return list(dict.fromkeys(result))
     result: list[str] = []
     source = value.get("source")
     if isinstance(source, Mapping):
@@ -77,6 +86,35 @@ def prepare_request(
 
     if fps <= 0 or width <= 0 or height <= 0 or sample_rate <= 0:
         raise PreparationError("fps, width, height, and sample_rate must be positive")
+    if request.value.get("version") == 2:
+        assets = _resolve_assets(request, asset_map)
+        unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
+        branch = branch_for(request)
+        schedule = {
+            "schema_version": 2,
+            "profile": request.value.get("profile"),
+            "branch": branch,
+            "status": "ready" if not unresolved else "requires_resolution",
+            "digest": hashlib.sha256(
+                json.dumps(
+                    {"branch": branch, "request_digest": request.digest, "assets": assets},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        return {
+            "schema_version": 2,
+            "kind": "h3_av_preparation",
+            "request_digest": request.digest,
+            "request": request.value,
+            "media": {"fps": float(fps), "width": int(width), "height": int(height), "sample_rate": int(sample_rate)},
+            "assets": assets,
+            "unresolved_assets": unresolved,
+            "mask_schedule": schedule,
+            "status": "prepared" if not unresolved else "requires_resolution",
+            "runtime_submission": "eligible" if not unresolved else "blocked_until_resolution",
+        }
     try:
         schedule = build_mask_schedule(request)
     except MaskScheduleError as exc:

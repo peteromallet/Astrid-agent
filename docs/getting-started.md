@@ -38,6 +38,14 @@ pointed at the Astrid checkout.
 
 ### Optional provider credentials
 
+For VibeComfy-backed workflow import, editing, validation, and generation,
+install the supported dependency from the canonical published repository:
+
+```bash
+python3 -m pip install --no-index --no-deps \
+  artifacts/h3-candidate-wheels/vibecomfy-2.8.0-py3-none-any.whl
+```
+
 If you use provider-backed tools, set each API key once with the hidden prompt:
 
 ```bash

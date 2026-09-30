@@ -11,22 +11,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
-from astrid.sdk import AstridClient
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
     ensure_runpod_worker,
     load_worker_qualification,
     qualification_digest,
 )
+from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
+from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.receipt import (
+    attest_runtime_managed_composition,
     attest_runtime_managed_publication,
     build_final_receipt,
     write_final_receipt,
 )
-from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
-from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.request import load_request
+from astrid.sdk import AstridClient
 from astrid.sdk.results import InvocationResult
 
 
@@ -467,7 +468,16 @@ def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], pr
     return path
 
 
-def _invoke(client: Any, capability_id: str, *, inputs: Mapping[str, Any], out: Path, project: str | None, execution_request: Mapping[str, Any] | None = None) -> Any:
+def _invoke(
+    client: Any,
+    capability_id: str,
+    *,
+    inputs: Mapping[str, Any],
+    out: Path,
+    project: str | None,
+    execution_request: Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
+) -> Any:
     result = client.invoke_result(
         capability_id,
         kind="executor",
@@ -475,6 +485,7 @@ def _invoke(client: Any, capability_id: str, *, inputs: Mapping[str, Any], out: 
         out=out,
         project=project,
         execution_request=execution_request,
+        idempotency_context=idempotency_context,
         wait=True,
     )
     if not result.ok:
@@ -615,6 +626,8 @@ def _load_invocation_result(path: Path, *, expected_input_digest: str) -> Invoca
     required = ("capability_id", "capability_type", "native_kind", "ok")
     if any(key not in value for key in required):
         raise RuntimeError("saved canonical run result is incomplete")
+    raw_result = value.get("raw_result")
+    outputs = value.get("outputs")
     return InvocationResult(
         capability_id=str(value["capability_id"]),
         capability_type=str(value["capability_type"]),  # type: ignore[arg-type]
@@ -622,14 +635,110 @@ def _load_invocation_result(path: Path, *, expected_input_digest: str) -> Invoca
         ok=bool(value["ok"]),
         error=value.get("error") if isinstance(value.get("error"), Mapping) else None,
         manifest_path=value.get("manifest_path") if isinstance(value.get("manifest_path"), str) else None,
-        raw_result=value.get("raw_result") if isinstance(value.get("raw_result"), Mapping) else {},
+        raw_result=raw_result if isinstance(raw_result, Mapping) else {},
         run_id=value.get("run_id") if isinstance(value.get("run_id"), str) else None,
         run_root=value.get("run_root") if isinstance(value.get("run_root"), str) else None,
-        outputs=value.get("outputs") if isinstance(value.get("outputs"), Mapping) else {},
+        outputs=outputs if isinstance(outputs, Mapping) else {},
         executor_version=value.get("executor_version") if isinstance(value.get("executor_version"), str) else None,
         kernel_run_id=value.get("kernel_run_id") if isinstance(value.get("kernel_run_id"), str) else None,
         kernel_task_id=value.get("kernel_task_id") if isinstance(value.get("kernel_task_id"), str) else None,
         kernel_attempt_id=value.get("kernel_attempt_id") if isinstance(value.get("kernel_attempt_id"), str) else None,
+    )
+
+
+def _reobserve_saved_result(
+    client: Any,
+    saved: InvocationResult,
+    *,
+    phase: str,
+) -> InvocationResult:
+    """Re-read one saved child identity from Runtime before resuming.
+
+    The saved DTO is only a locator for the prior task.  Runtime remains the
+    authority for terminal state, settlement bytes, and managed lineage; a
+    missing or changed identity is explicit unknown and must not resample.
+    """
+
+    task_id = saved.kernel_task_id
+    run_id = saved.kernel_run_id
+    attempt_id = saved.kernel_attempt_id
+    if not all(isinstance(value, str) and value for value in (task_id, run_id, attempt_id)):
+        raise RuntimeError(
+            f"cannot resume {phase}: saved result is missing task/run/attempt identity"
+        )
+
+    tasks = getattr(client, "tasks", None)
+    show = getattr(tasks, "show", None)
+    read_outputs = getattr(tasks, "list_managed_outputs", None)
+    if not callable(show) or not callable(read_outputs):
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime identity and managed-output readback are unavailable"
+        )
+
+    observed = show(task_id)
+    observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
+    task = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
+    if not observed_ok or not isinstance(task, Mapping):
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime settlement for task {task_id!r} is unknown"
+        )
+    task = dict(task)
+    if task.get("task_id", task.get("id")) != task_id:
+        raise RuntimeError(f"cannot resume {phase}: Runtime returned a different task identity")
+    if task.get("run_id") != run_id or task.get("attempt_id") != attempt_id:
+        raise RuntimeError(f"cannot resume {phase}: Runtime task identity disagrees with saved identity")
+    state = str(task.get("state") or task.get("status") or "").lower()
+    if state not in {"succeeded", "completed"}:
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime task {task_id!r} is not settled ({state or 'unknown'}); refusing replay"
+        )
+    settled = task.get("result")
+    if not isinstance(settled, Mapping):
+        raise RuntimeError(f"cannot resume {phase}: Runtime settlement has no result")
+
+    managed_response = read_outputs(task_id)
+    managed_ok = bool(getattr(managed_response, "ok", isinstance(managed_response, Mapping)))
+    managed = getattr(
+        managed_response,
+        "data",
+        managed_response if isinstance(managed_response, (list, tuple)) else None,
+    )
+    if not managed_ok:
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime managed-output readback for task {task_id!r} is unknown"
+        )
+    if isinstance(managed, tuple) and len(managed) == 2 and isinstance(managed[0], list):
+        managed = managed[0]
+    if not isinstance(managed, list):
+        raise RuntimeError(f"cannot resume {phase}: Runtime managed-output readback is invalid")
+
+    output_rows = settled.get("outputs")
+    raw_result = {
+        "ok": True,
+        "state": "completed",
+        "kernel_run_id": run_id,
+        "kernel_task_id": task_id,
+        "kernel_attempt_id": attempt_id,
+        "task": task,
+        "result": dict(settled),
+        "outputs": {"artifacts": list(output_rows) if isinstance(output_rows, list) else []},
+        "managed_outputs": managed,
+    }
+    return InvocationResult(
+        capability_id=saved.capability_id,
+        capability_type=saved.capability_type,
+        native_kind=saved.native_kind,
+        ok=True,
+        error=None,
+        manifest_path=saved.manifest_path,
+        raw_result=raw_result,
+        run_id=saved.run_id,
+        run_root=saved.run_root,
+        outputs={"artifacts": raw_result["outputs"]["artifacts"], "managed_outputs": managed},
+        executor_version=saved.executor_version,
+        kernel_run_id=run_id,
+        kernel_task_id=task_id,
+        kernel_attempt_id=attempt_id,
     )
 
 
@@ -645,6 +754,7 @@ def _invoke_stage(
     journal: OperationJournal,
     phase: str,
     execution_request: Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Invoke one canonical stage once, or reuse its settled DTO on resume."""
 
@@ -654,15 +764,31 @@ def _invoke_stage(
         "project": project,
         "execution_request": execution_request,
     })
+    previous = journal.latest(phase)
     if resume and saved_result.is_file():
+        if previous is None:
+            raise RuntimeError(
+                f"cannot resume {phase}: saved result has no matching journal admission"
+            )
         result = _load_invocation_result(saved_result, expected_input_digest=input_digest)
         if not result.ok:
             raise RuntimeError(f"saved {phase} result is not successful")
         if result.capability_id != capability_id:
             raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
+        recorded_identity = tuple(
+            previous.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
+        result_identity = (
+            result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id
+        )
+        if all(isinstance(value, str) and value for value in recorded_identity):
+            if recorded_identity != result_identity:
+                raise RuntimeError(
+                    f"cannot resume {phase}: saved result identity disagrees with journal admission"
+                )
+        result = _reobserve_saved_result(client, result, phase=phase)
         journal.record(phase, "reused", capability_id=capability_id)
         return result
-    previous = journal.latest(phase)
     if resume and previous is not None and previous.get("status") in {"started", "uncertain", "completed"}:
         raise RuntimeError(f"cannot resume {phase}: invocation result is missing after {previous.get('status')}")
     journal.record(phase, "started", capability_id=capability_id, input_digest=input_digest)
@@ -674,6 +800,7 @@ def _invoke_stage(
             out=out,
             project=project,
             execution_request=execution_request,
+            idempotency_context=idempotency_context,
         )
     except Exception as exc:
         journal.record(
@@ -682,7 +809,14 @@ def _invoke_stage(
         )
         raise
     _save_invocation_result(saved_result, result, input_digest=input_digest)
-    journal.record(phase, "completed", capability_id=capability_id)
+    journal.record(
+        phase,
+        "completed",
+        capability_id=capability_id,
+        task_id=result.kernel_task_id,
+        run_id=result.kernel_run_id,
+        attempt_id=result.kernel_attempt_id,
+    )
     return result
 
 
@@ -701,6 +835,7 @@ def _invoke_canonical_run(
     saved_result: Path,
     journal: OperationJournal,
     resume: bool,
+    idempotency_context: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
@@ -723,6 +858,10 @@ def _invoke_canonical_run(
         raise RuntimeError(str(exc)) from exc
 
     if resume and saved_result.is_file():
+        if prior_run is None:
+            raise RuntimeError(
+                "cannot resume canonical run: saved result has no matching journal admission"
+            )
         result = _load_invocation_result(saved_result, expected_input_digest=run_input_digest)
         if not result.ok:
             raise RuntimeError("saved canonical run result is not successful")
@@ -731,6 +870,15 @@ def _invoke_canonical_run(
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
             raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
+        recorded_identity = tuple(
+            prior_run.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
+        if all(isinstance(value, str) and value for value in recorded_identity):
+            if recorded_identity != identity:
+                raise RuntimeError(
+                    "cannot resume canonical run: saved result identity disagrees with journal admission"
+                )
+        result = _reobserve_saved_result(client, result, phase="canonical run")
         journal.set_admission_phase("settled")
         journal.record(
             "run", "reused", task_id=identity[0], run_id=identity[1],
@@ -751,6 +899,7 @@ def _invoke_canonical_run(
         result = _invoke(
             client, "vibecomfy.run", inputs=inputs, out=out, project=project,
             execution_request=execution_request,
+            idempotency_context=idempotency_context,
         )
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
@@ -790,6 +939,66 @@ def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
         "partial_success_policy": "reject",
         "groups": [{"group_key": "main", "selectors": [dict(selector) for selector in selectors]}],
         "metadata": {"compiled_generation_contract": True},
+    }
+
+
+def _finalizer_generation_intent(
+    *,
+    generation_intent: Mapping[str, Any],
+    request_digest: str,
+    verification: Mapping[str, Any],
+    raw_managed_publication: Any,
+) -> dict[str, Any]:
+    """Declare one Runtime-owned final publication with sealed raw lineage."""
+
+    raw_evidence = getattr(raw_managed_publication, "evidence", None)
+    raw_publication = raw_evidence.get("publication") if isinstance(raw_evidence, Mapping) else None
+    if not isinstance(raw_publication, Mapping):
+        raise RuntimeError("cannot admit finalizer without verified raw Runtime lineage")
+    candidate_sha256 = verification.get("candidate_sha256")
+    if not isinstance(candidate_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", candidate_sha256):
+        raise RuntimeError("cannot admit finalizer without a verified candidate digest")
+    raw_object_id = _digest(raw_publication)
+    if raw_object_id is None or raw_object_id.removeprefix("sha256:") == candidate_sha256:
+        raise RuntimeError("finalizer requires distinct raw and composed hashes")
+    required = {
+        "generation_id": raw_publication.get("generation_id"),
+        "variant_id": raw_publication.get("variant_id"),
+        "association_id": raw_publication.get("association_id"),
+        "group_key": raw_publication.get("group_key"),
+        "variant_key": raw_publication.get("variant_key"),
+        "output_port": raw_publication.get("output_port"),
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        raise RuntimeError("raw Runtime lineage lacks finalizer identity")
+    return {
+        "version": 1,
+        "modality": generation_intent.get("modality", "video"),
+        "partial_success_policy": "reject",
+        "groups": [{
+            "group_key": "main",
+            "selectors": [{
+                "selector": "final-composition",
+                "ordinal": 0,
+                "variant_key": "final-composition",
+                "required": True,
+            }],
+        }],
+        "metadata": {
+            "compiled_generation_contract": True,
+            "h3_av": {
+                "request_digest": request_digest,
+                "publication_scope": "final_composition",
+                "candidate_sha256": candidate_sha256,
+                "raw_sha256": raw_object_id.removeprefix("sha256:"),
+                "raw_generation_id": required["generation_id"],
+                "raw_variant_id": required["variant_id"],
+                "raw_association_id": required["association_id"],
+                "raw_group_key": required["group_key"],
+                "raw_variant_key": required["variant_key"],
+                "raw_output_port": required["output_port"],
+            },
+        },
     }
 
 
@@ -847,6 +1056,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         if journal.has_history and not getattr(args, "resume", False):
             raise RuntimeError("operation journal already has history; use --resume to continue it")
         journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
+        idempotency_context = {"h3_submission_id": journal.submission_id}
         staging = root / "staged-inputs"
         staging.mkdir(parents=True, exist_ok=True)
         bundle_path = build_input_bundle(
@@ -877,6 +1087,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="prepare",
+            idempotency_context=idempotency_context,
         )
         preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
         preparation = _json_mapping(preparation_path)
@@ -890,6 +1101,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compile",
+            idempotency_context=idempotency_context,
         )
         compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
         managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
@@ -922,6 +1134,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="validate",
+            idempotency_context=idempotency_context,
         )
         generation_metadata = {"h3_av": provenance}
         generation_intent = _generation_intent(compilation)
@@ -943,6 +1156,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             saved_result=saved_run_path,
             journal=journal,
             resume=bool(getattr(args, "resume", False)),
+            idempotency_context=idempotency_context,
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None
@@ -1010,6 +1224,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compose",
+            idempotency_context=idempotency_context,
         )
         composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
         candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
@@ -1026,8 +1241,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="verify",
+            idempotency_context=idempotency_context,
         )
-        verification_path, _ = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
+        verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
         task_evidence = {
             key: value
@@ -1046,6 +1262,63 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         )
         if isinstance(admitted_target, Mapping):
             task_evidence["target"] = _receipt_target(admitted_target)
+        final_managed_publication = None
+        if getattr(raw_managed_publication, "status", None) == "passed":
+            try:
+                finalizer_intent = _finalizer_generation_intent(
+                    generation_intent=generation_intent,
+                    request_digest=str(preparation["request_digest"]),
+                    verification=verification,
+                    raw_managed_publication=raw_managed_publication,
+                )
+                finalizer = _invoke_stage(
+                    client,
+                    "h3_av.publication_finalizer",
+                    inputs={
+                        "candidate": _descriptor(candidate_row, filename="candidate.media"),
+                        "generation_intent": finalizer_intent,
+                    },
+                    out=root / "07-finalizer",
+                    project=args.project,
+                    saved_result=root / "07-finalizer" / "invocation-result.json",
+                    resume=bool(getattr(args, "resume", False)),
+                    journal=journal,
+                    phase="finalizer",
+                    idempotency_context=idempotency_context,
+                )
+                final_path, final_row = _materialize_output(
+                    client,
+                    finalizer,
+                    "verified_candidate",
+                    root / "07-finalizer",
+                    managed_only=True,
+                )
+                final_retrieved = {
+                    **final_row,
+                    "verified": True,
+                    "size": final_path.stat().st_size,
+                    "sha256": hashlib.sha256(final_path.read_bytes()).hexdigest(),
+                }
+                final_managed_publication = attest_runtime_managed_composition(
+                    runtime_result=finalizer,
+                    request_digest=str(preparation["request_digest"]),
+                    candidate_verified={
+                        "verification_path": str(verification_path),
+                        "verification": verification,
+                    },
+                    retrieved_outputs=[final_retrieved],
+                    raw_managed_publication=raw_managed_publication,
+                )
+            except (RuntimeError, OSError, ValueError) as exc:
+                # Raw lineage and local verification remain useful, but an
+                # unproven final association must never be upgraded to final.
+                journal.record(
+                    "finalizer",
+                    "unproven",
+                    capability_id="h3_av.publication_finalizer",
+                    error=type(exc).__name__,
+                    message=str(exc)[:1000],
+                )
         receipt = build_final_receipt(
             request_digest=str(preparation["request_digest"]),
             task_succeeded=task_evidence,
@@ -1060,8 +1333,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             ),
             cleanup=cleanup_receipt,
             raw_managed_publication=raw_managed_publication,
+            final_managed_publication=final_managed_publication,
         )
-        final_receipt_path = write_final_receipt(root / "07-final-receipt.json", receipt)
+        final_receipt_path = write_final_receipt(root / "08-final-receipt.json", receipt)
         journal.record(
             "operation",
             "completed",

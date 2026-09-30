@@ -16,12 +16,14 @@ from astrid.packs.h3_av.orchestrators.transform.run import (
     _execution_request_for_child,
     _generation_intent,
     _invoke,
+    _invoke_stage,
     _materialize_output,
     _qualified_execution_request,
     _retrieve_compiled_workflow,
     _import_runtime_file,
     _receipt_target,
 )
+from astrid.packs.h3_av.src.operation import OperationJournal
 from astrid.packs.h3_av.src.compile import compile_preparation
 from astrid.packs.h3_av.src.compose import compose_candidate
 from astrid.packs.h3_av.src.prepare import prepare_request
@@ -64,6 +66,92 @@ def test_transform_invokes_children_through_the_connected_client(tmp_path: Path)
     assert result.ok is True
     assert calls[0]["capability_id"] == "h3_av.prepare"
     assert calls[0]["wait"] is True
+
+
+def test_finalizer_resume_reobserves_same_identity_after_reply_loss(tmp_path: Path) -> None:
+    """A lost finalizer reply resumes by Runtime readback, never resubmission."""
+
+    request_digest = "sha256:" + "1" * 64
+    journal = OperationJournal(tmp_path / "operation-state.json", request_digest=request_digest)
+    calls: list[str] = []
+    settled = {"outputs": []}
+    task = {
+        "task_id": "final-task",
+        "run_id": "final-run",
+        "attempt_id": "final-attempt",
+        "state": "succeeded",
+        "result": settled,
+    }
+
+    class Tasks:
+        def show(self, task_id: str):
+            assert task_id == "final-task"
+            return SimpleNamespace(ok=True, data=task)
+
+        def list_managed_outputs(self, task_id: str):
+            assert task_id == "final-task"
+            return SimpleNamespace(ok=True, data=[])
+
+    class Client:
+        tasks = Tasks()
+
+        def invoke_result(self, capability_id: str, **kwargs: object):
+            calls.append(capability_id)
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                raw_result={
+                    "ok": True,
+                    "state": "completed",
+                    "kernel_run_id": "final-run",
+                    "kernel_task_id": "final-task",
+                    "kernel_attempt_id": "final-attempt",
+                },
+                kernel_run_id="final-run",
+                kernel_task_id="final-task",
+                kernel_attempt_id="final-attempt",
+            )
+
+    client = Client()
+    inputs = {
+        "candidate": {
+            "object_id": "sha256:" + "2" * 64,
+            "digest": "sha256:" + "2" * 64,
+            "filename": "candidate.media",
+            "required": True,
+        },
+        "generation_intent": {"sealed": True},
+    }
+    first = _invoke_stage(
+        client,
+        "h3_av.publication_finalizer",
+        inputs=inputs,
+        out=tmp_path / "finalizer",
+        project="project-1",
+        saved_result=tmp_path / "finalizer" / "invocation-result.json",
+        resume=False,
+        journal=journal,
+        phase="finalizer",
+    )
+    second = _invoke_stage(
+        client,
+        "h3_av.publication_finalizer",
+        inputs=inputs,
+        out=tmp_path / "finalizer",
+        project="project-1",
+        saved_result=tmp_path / "finalizer" / "invocation-result.json",
+        resume=True,
+        journal=journal,
+        phase="finalizer",
+    )
+
+    assert calls == ["h3_av.publication_finalizer"]
+    assert (second.kernel_run_id, second.kernel_task_id, second.kernel_attempt_id) == (
+        first.kernel_run_id, first.kernel_task_id, first.kernel_attempt_id,
+    )
+    assert second.raw_result["task"] == task
 
 
 def test_nested_execution_request_does_not_inherit_the_parent_input_set() -> None:
@@ -462,6 +550,39 @@ def _synthetic_av(path: Path, duration: float, *, color: str, muxed=True):
     ], check=True)
 
 
+@pytest.mark.parametrize("reference_count", [1, 9])
+def test_generation_prompt_socket_type_survives_canonical_reload(tmp_path: Path, reference_count: int):
+    from astrid.packs.h3_av.src.generation import build_generation_workflow
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import emit_bundle, load_bundle
+
+    workflow = build_generation_workflow(
+        references=[f"reference-{index}.png" for index in range(reference_count)],
+        prompt="Preserve the reference identity.", frames=124,
+        model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=7,
+    )
+    path = tmp_path / "workflow.py"
+    emit_bundle(workflow, path, provenance=Provenance.AGENT_AUTHORED)
+    reloaded = load_bundle(path, trust=Provenance.USER_CONFIRMED).workflow
+
+    expected_types = {
+        "clip": "CLIP", "vae": "VAE", "audio_vae": "VAE", "prompt": "STRING",
+        "width": "INT", "height": "INT", "length": "INT", "ref_image_size": "COMBO",
+        **{f"ref_images.ref_image_{index}": "IMAGE" for index in range(reference_count)},
+    }
+    for graph in (workflow, reloaded):
+        target = graph.nodes["target"]
+        assert dict(zip(target.native_input_names, target.native_input_types, strict=True)) == expected_types
+        assert target.native_output_names == ["positive", "LATENT"]
+        assert target.native_output_types == ["CONDITIONING", "LATENT"]
+        assert {edge.to_input for edge in graph.edges if edge.to_node == "target" and edge.to_input.startswith("ref_images.")} == {
+            f"ref_images.ref_image_{index}" for index in range(reference_count)
+        }
+        assert graph.inputs["prompt"].type == "STRING"
+        assert graph.inputs["prompt"].node_id == "target"
+        assert graph.inputs["prompt"].field == "prompt"
+
+
 @pytest.mark.parametrize("operation", ["continue", "edit", "generate"])
 def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
@@ -577,6 +698,103 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
             attempt.mkdir()
             out = attempt / "outputs"
             out.mkdir()
+            if capability_id == "h3_av.publication_finalizer":
+                assert set(inputs) == {"candidate", "generation_intent"}
+                intent = inputs["generation_intent"]
+                candidate = inputs["candidate"]
+                assert isinstance(intent, dict)
+                assert isinstance(candidate, dict)
+                candidate_id = candidate["object_id"]
+                candidate_bytes = objects[candidate_id]
+                final_row = {
+                    "name": "verified_candidate",
+                    "filename": "verified-candidate.mp4",
+                    "kind": "object",
+                    "role": "result",
+                    "media_type": "video/mp4",
+                    "size": len(candidate_bytes),
+                    "digest": candidate_id,
+                    "object_id": candidate_id,
+                    "output_port": "verified_candidate",
+                    "group_key": "main",
+                    "variant_key": "final-composition",
+                    "ordinal": 0,
+                }
+                selector = {
+                    **intent["groups"][0]["selectors"][0],
+                    "output_port": "verified_candidate",
+                }
+                effect = {
+                    "effect_type": "generation.publish_v1",
+                    "target_id": "cpu-test",
+                    "payload": {
+                        "version": 1,
+                        "modality": intent["modality"],
+                        "generation_type": "h3_av.publication_finalizer",
+                        "metadata": intent["metadata"],
+                        "partial_success_policy": intent["partial_success_policy"],
+                        "groups": [{"group_key": "main", "selectors": [selector]}],
+                    },
+                }
+                publication = {
+                    "effect_type": "generation.publish_v1",
+                    "publications": [{
+                        "group_key": "main",
+                        "generation_id": "generation-final",
+                        "missing_selectors": [],
+                        "variants": [{
+                            "generation_id": "generation-final",
+                            "variant_id": "variant-final",
+                            "object_id": candidate_id,
+                            "output_port": "verified_candidate",
+                            "ordinal": 0,
+                            "variant_key": "final-composition",
+                        }],
+                    }],
+                }
+                settled = {"outputs": [final_row], "generation_publish_v1": publication}
+                managed = {
+                    **final_row,
+                    "association_id": "association-final",
+                    "task_id": "task-final",
+                    "run_id": "run-final",
+                    "attempt_id": "attempt-final",
+                    "project_id": "cpu-test",
+                    "generation_id": "generation-final",
+                }
+                task = {
+                    "task_id": "task-final",
+                    "run_id": "run-final",
+                    "attempt_id": "attempt-final",
+                    "project_id": "cpu-test",
+                    "state": "succeeded",
+                    "generation_intent": intent,
+                    "expected_effect": effect,
+                    "result": settled,
+                }
+                raw_result = {
+                    "ok": True,
+                    "state": "completed",
+                    "kernel_run_id": "run-final",
+                    "kernel_task_id": "task-final",
+                    "kernel_attempt_id": "attempt-final",
+                    "task": task,
+                    "result": settled,
+                    "outputs": {"artifacts": [final_row]},
+                    "managed_outputs": [managed],
+                }
+                shutil.rmtree(attempt)
+                return InvocationResult(
+                    capability_id=capability_id,
+                    capability_type="executor",
+                    native_kind="executor",
+                    ok=True,
+                    outputs={"artifacts": [final_row], "managed_outputs": [managed]},
+                    raw_result=raw_result,
+                    kernel_task_id="task-final",
+                    kernel_run_id="run-final",
+                    kernel_attempt_id="attempt-final",
+                )
             if capability_id.startswith("h3_av."):
                 stage = capability_id.split(".")[1]
                 manifest = yaml.safe_load((pack / "executors" / stage / "executor.yaml").read_text())
@@ -792,10 +1010,13 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     final_receipt = json.loads(Path(result["final_receipt"]).read_text())
     assert final_receipt["overall_status"] == "candidate_verified"
     assert final_receipt["states"]["raw_managed_publication"]["status"] == "passed"
-    assert final_receipt["publication_contract"]["final_composition_publication"] == "deferred"
+    assert final_receipt["states"]["final_composition_publication"]["status"] == "passed"
+    assert final_receipt["publication_contract"]["published_scope"] == "final_composition"
+    assert final_receipt["publication_contract"]["final_composition_publication"] == "verified"
     assert not caller.exists() and all(not attempt.exists() for attempt in attempts)
     assert [name for name, _ in calls] == ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate",
-                                         "vibecomfy.run", "h3_av.compose", "h3_av.verify"]
+                                         "vibecomfy.run", "h3_av.compose", "h3_av.verify",
+                                         "h3_av.publication_finalizer"]
     call_inputs = {name: inputs for name, inputs in calls}
     # VibeComfy's source port is workflow provenance, not the source video.
     assert call_inputs["vibecomfy.run"]["source"]["filename"] == "source.json"

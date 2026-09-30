@@ -19,7 +19,7 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import pytest
 
@@ -74,8 +74,8 @@ FIXTURE_PACK = Path(__file__).parents[1] / "fixtures" / "c12_cpu_pack"
 # These are the post-T7 composition pins.  Keeping them explicit makes the
 # CPU journey fail closed when a dependency checkout drifts from the reviewed
 # composition instead of silently testing another tree.
-PINNED_RUNTIME_COMMIT = "53bcd6144f71d093d5b407b1cbe26ea10173137d"
-PINNED_WORKER_COMMIT = "9eeed609a9387dd329d6e12d1bb410bc37a5c7d2"
+PINNED_RUNTIME_COMMIT = "6de12bce5f403cc27006e26e299696357bb09cd1"
+PINNED_WORKER_COMMIT = "efc2276d30c22ac0cbe54f735a1129cef79583ef"
 
 
 def _assert_pinned_dependency_heads() -> None:
@@ -430,7 +430,7 @@ class _CpuAuthorityPreparer:
         self.calls.append("prepare")
         return {"launch": launch}
 
-    def acknowledge(self, _handle: object, grant: Mapping[str, Any]) -> Mapping[str, Any]:
+    def acknowledge(self, _handle: object, grant: Mapping[str, Any], *, accept: Callable) -> Mapping[str, Any]:
         self.calls.append("private_ack")
         token = Path(str(grant["credential_file"])).read_text(encoding="utf-8").strip()
         disabled = GeneratedWorkspaceClient(str(self.daemon.endpoint), token)
@@ -447,6 +447,7 @@ class _CpuAuthorityPreparer:
             self.disabled_claim_rejected = True
         else:
             raise AssertionError("disabled remote credential claimed before activation")
+        accept(grant, {"pid": 12345, "birth_id": "cpu-fixture-host-birth"})
         return {
             "activation_id": grant["activation_id"],
             "executor_incarnation": grant["executor_incarnation"],

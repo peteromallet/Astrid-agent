@@ -47,10 +47,22 @@ jobs:
     needs: m7-admission
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      BANODOCO_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
+      REIGH_WORKER_CHECKOUT: ${{ runner.temp }}/c12-worker
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Check out pinned C12 CPU dependencies
+        run: |
+          git init "$BANODOCO_RUNTIME_CHECKOUT"
+          git -C "$BANODOCO_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/banodoco-workspace-runtime.git a278cd460018976940ae21fc2cad563a29a29649
+          git -C "$BANODOCO_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
+          git init "$REIGH_WORKER_CHECKOUT"
+          git -C "$REIGH_WORKER_CHECKOUT" fetch --depth 1 https://github.com/banodoco/reigh-worker.git efc2276d30c22ac0cbe54f735a1129cef79583ef
+          git -C "$REIGH_WORKER_CHECKOUT" checkout --detach FETCH_HEAD
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -194,10 +206,22 @@ jobs:
     needs: m7-release-candidate
     runs-on: ubuntu-latest
     timeout-minutes: 55
+    env:
+      BANODOCO_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
+      REIGH_WORKER_CHECKOUT: ${{ runner.temp }}/c12-worker
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Check out pinned C12 CPU dependencies
+        run: |
+          git init "$BANODOCO_RUNTIME_CHECKOUT"
+          git -C "$BANODOCO_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/banodoco-workspace-runtime.git a278cd460018976940ae21fc2cad563a29a29649
+          git -C "$BANODOCO_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
+          git init "$REIGH_WORKER_CHECKOUT"
+          git -C "$REIGH_WORKER_CHECKOUT" fetch --depth 1 https://github.com/banodoco/reigh-worker.git efc2276d30c22ac0cbe54f735a1129cef79583ef
+          git -C "$REIGH_WORKER_CHECKOUT" checkout --detach FETCH_HEAD
 
       - name: Set up Python
         uses: actions/setup-python@v5

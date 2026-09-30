@@ -127,6 +127,9 @@ _SUFFIX_MEDIA_TYPES = {
 }
 _ACTIVATION_VERSION = "runtime.local-worker-activation/v1"
 _ACTIVATION_ACCEPTED_VERSION = "astrid.local-worker-activation-accepted/v1"
+_ACTIVATION_RECEIPT_MODE = "runtime-owner-receipt/v1"
+_ACTIVATION_REQUEST_VERSION = "astrid.local-worker-activation-request/v1"
+_ACTIVATION_RECEIPT_VERSION = "runtime.local-worker-activation-recorded/v1"
 _ACTIVATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTIVATION_FRAME_LIMIT = 64 * 1024
 
@@ -2023,6 +2026,24 @@ class RuntimeProtocolClient:
         if epoch is not None:
             self._runtime_epoch = int(epoch)
         return value
+
+    def _authenticate_worker(self, executor_id: str) -> None:
+        """Prove this enabled bearer can execute through the existing handshake."""
+        value = self.generated.handshake(
+            "astrid-generic-host", "1", ["worker:execute"]
+        )
+
+        def field(name: str):
+            return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
+
+        if (
+            field("actor_id") != executor_id
+            or tuple(field("scopes") or ()) != ("worker:execute",)
+            or not field("realm_id")
+            or field("schema_digest") != self.schema_digest
+            or field("protocol") != "workspace.v1"
+        ):
+            raise HostError("authenticated Runtime worker readiness is foreign or incomplete")
 
     def _current_runtime_epoch(self) -> int:
         """Read the live bootstrap epoch before every mutating operation."""
@@ -6321,6 +6342,34 @@ def _write_ready_marker(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _read_activation_frame(control: socket.socket) -> dict[str, Any]:
+    """Read one bounded private frame; never consume a second frame silently."""
+    frame = bytearray()
+    while b"\n" not in frame:
+        chunk = control.recv(min(4096, _ACTIVATION_FRAME_LIMIT + 1 - len(frame)))
+        if not chunk:
+            raise HostError("parked activation channel closed before a frame")
+        frame.extend(chunk)
+        if len(frame) > _ACTIVATION_FRAME_LIMIT:
+            raise HostError("parked activation frame is too large")
+    encoded, remainder = bytes(frame).split(b"\n", 1)
+    if remainder:
+        raise HostError("parked activation channel carried multiple frames")
+    try:
+        value = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HostError("parked activation frame is malformed") from exc
+    if not isinstance(value, dict):
+        raise HostError("parked activation frame must be an object")
+    return value
+
+
+def _send_activation_frame(control: socket.socket, value: Mapping[str, Any]) -> None:
+    control.sendall(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    )
+
+
 def _await_worker_activation(
     descriptor: int,
     *,
@@ -6328,12 +6377,16 @@ def _await_worker_activation(
     channel_id: str,
     credential_file: str,
     timeout_seconds: float,
+    require_receipt: bool = False,
 ) -> dict[str, Any]:
     """Accept one Runtime grant over the Worker's inherited private socket.
 
     This is intentionally the first active operation in parked CLI mode.  The
     credential path is only a reference until the message, channel, and actual
-    process birth identity have all been accepted.
+    process birth identity have all been accepted. Local owner grants relay
+    acceptance over this same socket: the owner invokes Runtime's bound callback
+    and confirms its committed receipt before this receiver sends the final ACK.
+    Legacy provider grants retain their one-grant/one-ACK exchange.
     """
 
     if descriptor < 3 or not operation_id or not channel_id:
@@ -6350,27 +6403,25 @@ def _await_worker_activation(
     control = socket.socket(fileno=descriptor)
     try:
         control.settimeout(timeout_seconds)
-        frame = bytearray()
-        while b"\n" not in frame:
-            chunk = control.recv(min(4096, _ACTIVATION_FRAME_LIMIT + 1 - len(frame)))
-            if not chunk:
-                raise HostError("parked activation channel closed before a grant")
-            frame.extend(chunk)
-            if len(frame) > _ACTIVATION_FRAME_LIMIT:
-                raise HostError("parked activation grant is too large")
-        encoded, remainder = bytes(frame).split(b"\n", 1)
-        if remainder:
-            raise HostError("parked activation channel carried multiple frames")
-        try:
-            grant = json.loads(encoded.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise HostError("parked activation grant is malformed") from exc
+        grant = _read_activation_frame(control)
+        local_receipt = "acceptance_mode" in grant
         expected_keys = {
             "version", "operation_id", "channel_id", "credential_file",
             "executor_incarnation", "evidence_digest", "host",
         }
-        if not isinstance(grant, dict) or set(grant) != expected_keys:
+        if local_receipt:
+            expected_keys |= {"acceptance_mode", "activation_id"}
+        if set(grant) != expected_keys:
             raise HostError("parked activation grant has an invalid shape")
+        if require_receipt and not local_receipt:
+            raise HostError("local parked activation requires a Runtime acceptance receipt")
+        if local_receipt and (
+            grant["acceptance_mode"] != _ACTIVATION_RECEIPT_MODE
+            or not isinstance(grant["activation_id"], str)
+            or not grant["activation_id"]
+            or len(grant["activation_id"]) > 256
+        ):
+            raise HostError("parked activation receipt identity is invalid")
         if grant["version"] != _ACTIVATION_VERSION:
             raise HostError("parked activation grant version is invalid")
         if grant["operation_id"] != operation_id or grant["channel_id"] != channel_id:
@@ -6391,6 +6442,25 @@ def _await_worker_activation(
             or host["birth_id"] != actual_birth
         ):
             raise HostError("parked activation host process identity is invalid")
+        if local_receipt:
+            request = {
+                "version": _ACTIVATION_REQUEST_VERSION,
+                "operation_id": operation_id,
+                "channel_id": channel_id,
+                "grant": {key: grant[key] for key in (
+                    "activation_id", "credential_file", "executor_incarnation", "evidence_digest",
+                )},
+                "host": {"pid": os.getpid(), "birth_id": actual_birth},
+            }
+            _send_activation_frame(control, request)
+            receipt = _read_activation_frame(control)
+            if receipt != {**request, "version": _ACTIVATION_RECEIPT_VERSION}:
+                raise HostError("parked activation Runtime acceptance receipt is mismatched")
+            # The owner half-closes only its send direction after the receipt.
+            # EOF fences duplicate or trailing confirmations, including frames
+            # delivered in separate reads, while leaving our ACK direction open.
+            if control.recv(1):
+                raise HostError("parked activation Runtime acceptance receipt was duplicated")
         accepted = {
             "version": _ACTIVATION_ACCEPTED_VERSION,
             "operation_id": operation_id,
@@ -6399,10 +6469,15 @@ def _await_worker_activation(
             "evidence_digest": digest,
             "host": host,
         }
-        control.sendall(
-            json.dumps(accepted, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            + b"\n"
-        )
+        if local_receipt:
+            accepted["activation_id"] = grant["activation_id"]
+        try:
+            _send_activation_frame(control, accepted)
+        except OSError:
+            if not local_receipt:
+                raise
+            # Runtime already committed acceptance. Stay in this incarnation
+            # for its independent reobservation and authenticated enablement.
         return grant
     except (OSError, socket.timeout) as exc:
         raise HostError("parked activation channel failed") from exc
@@ -6411,7 +6486,8 @@ def _await_worker_activation(
 
 
 def _await_enabled_runtime_credential(
-    client: "RuntimeProtocolClient", *, timeout_seconds: float
+    client: "RuntimeProtocolClient", *, timeout_seconds: float,
+    executor_id: str = "astrid-pack-host",
 ) -> None:
     """Hold activated startup until Runtime publishes the disabled bearer."""
 
@@ -6419,15 +6495,8 @@ def _await_enabled_runtime_credential(
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            health = client.health()
-            status = (
-                health.get("status")
-                if isinstance(health, Mapping)
-                else getattr(health, "status", None)
-            )
-            if status == "ok":
-                return
-            last_error = HostError("Runtime health did not report ok")
+            client._authenticate_worker(executor_id)
+            return
         except Exception as exc:  # Runtime owns the short publication race.
             last_error = exc
         time.sleep(0.02)
@@ -6503,14 +6572,19 @@ def _cli() -> int:
         if not args.credential_file:
             parser.error("parked activation requires --credential-file")
         try:
+            target_json = args.execution_target_json or os.environ.get("ASTRID_EXECUTION_TARGET_JSON")
+            target = json.loads(target_json) if target_json else {}
+            if not isinstance(target, Mapping):
+                raise HostError("parked activation target must be an object")
             activation = _await_worker_activation(
                 args.activation_fd,
                 operation_id=args.activation_operation_id,
                 channel_id=args.activation_channel_id,
                 credential_file=args.credential_file,
                 timeout_seconds=args.activation_timeout_seconds,
+                require_receipt=target.get("kind") == "machine",
             )
-        except HostError as exc:
+        except (HostError, json.JSONDecodeError) as exc:
             parser.error(str(exc))
     verified_model_root: ModelRootBinding | None = None
     if args.readiness_profile_path is not None:
@@ -6594,7 +6668,8 @@ def _cli() -> int:
             parser.error("parked activation requires --runtime-endpoint")
         try:
             _await_enabled_runtime_credential(
-                client, timeout_seconds=args.activation_timeout_seconds
+                client, timeout_seconds=args.activation_timeout_seconds,
+                executor_id=args.executor_id,
             )
         except HostError as exc:
             parser.error(str(exc))

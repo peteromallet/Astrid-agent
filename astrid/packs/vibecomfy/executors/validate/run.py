@@ -47,7 +47,7 @@ def _bundle_declares_models(bundle: Any) -> bool:
         from vibecomfy.model_assets import _referenced_model_values
 
         return bool(_referenced_model_values(workflow))
-    except Exception:
+    except Exception:  # noqa: BLE001 - malformed model declarations fail closed in the compiler
         # Let the authoritative bundle compiler report malformed model
         # declarations instead of silently taking the generic path.
         return True

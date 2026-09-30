@@ -961,6 +961,8 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
     if isinstance(allowed_cuda_versions, str):
         allowed_cuda_versions = [v.strip() for v in allowed_cuda_versions.split(",") if v.strip()]
     name_prefix = resolved.get("name_prefix")
+    if not isinstance(name_prefix, str):
+        raise AstridError("RunPod name_prefix must be a string")
     image = resolved.get("image")
     container_disk_gb = int(resolved["container_disk_gb"])
     volume_in_gb = int(resolved.get("volume_in_gb", 0))
@@ -1370,6 +1372,8 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
     if isinstance(allowed_cuda_versions, str):
         allowed_cuda_versions = [v.strip() for v in allowed_cuda_versions.split(",") if v.strip()]
     name_prefix = resolved.get("name_prefix")
+    if not isinstance(name_prefix, str):
+        raise AstridError("RunPod name_prefix must be a string")
     image = resolved.get("image")
     container_disk_gb = int(resolved["container_disk_gb"])
     volume_in_gb = int(resolved.get("volume_in_gb", 0))

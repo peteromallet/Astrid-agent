@@ -128,6 +128,9 @@ astrid = [
     "packs/**/README.md",
     "packs/**/*.yaml",
     "packs/**/*.json",
+    # Runtime mask resources used by the packaged LanPaint compiler.
+    "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png",
+    "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png",
     "packs/text_analysis/fixtures/*.txt",
     "packs/**/*.html",
     "packs/**/*.css",

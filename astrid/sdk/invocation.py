@@ -2525,6 +2525,7 @@ def invoke(
     project: str | None = None,
     inputs: Mapping[str, Any] | None = None,
     execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
     outputs: Mapping[str, Any] | None = None,
     brief: Path | str | None = None,
     dry_run: bool = False,
@@ -2659,6 +2660,10 @@ def invoke(
     invocation_authority_context: dict[str, Any] | None = None
     invocation_admission_metadata: dict[str, Any] | None = None
     invocation_storage_estimate: dict[str, int] | None = None
+    if idempotency_context is not None:
+        if not isinstance(idempotency_context, Mapping):
+            raise CapabilityValidationError("idempotency_context must be an object")
+        invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
     if capability.id == "generation.generate_image_codex":
         count = request_inputs.get("count", 1)
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:

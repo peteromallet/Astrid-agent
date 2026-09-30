@@ -90,7 +90,7 @@ class RuntimeRemoteActivationOwner:
                         self.control_remote_credential(task_id, {
                             "action": "revoke", "activation_id": activation_id,
                         })
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - cleanup must fail closed without retrying provision
                         pass
                 raise RemoteActivationUncertain(
                     "credential provision response lost; reconcile activation generation"

@@ -2069,6 +2069,9 @@ class CheckoutServerAdapter(VibeComfyBackend):
 
         try:
             self._revalidate_host_session()
+            host_session = self._host_session
+            if host_session is None:
+                raise ValueError("checkout_server has no verified host-session binding")
             from vibecomfy.workflow import VibeWorkflow
             from vibecomfy.workflow_bundle import WorkflowBundle, load_bundle
 
@@ -2111,7 +2114,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # default models directory and falsely reports a missing model.
             try:
                 bound_model_root = validate_model_root_binding(
-                    self._host_session.get("model_root_binding"),
+                    host_session.get("model_root_binding"),
                     verify_files=False,
                 )
             except ModelRootBindingError as exc:
@@ -2149,7 +2152,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # artifact verification can recognize a shared RunPod filesystem
             # and probe the actual file before delivery. A workflow may not
             # redirect a host-owned checkout session to an arbitrary directory.
-            host_output_directory = self._host_session.get("output_directory")
+            host_output_directory = host_session.get("output_directory")
             if not isinstance(host_output_directory, str) or not host_output_directory:
                 raise ValueError(
                     "checkout_server has no verified host-owned output directory"

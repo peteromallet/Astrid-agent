@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,16 @@ from astrid.core.execution.generic_host import (
     source_checkout_digest,
 )
 from astrid.core._shared.boot_manifest import load_boot_manifest_hash
+
+
+def _mock_host_launch(monkeypatch, fake_popen) -> None:
+    # Keep the fake launch local to bootstrap.  Patching the shared subprocess
+    # module would also intercept VibeComfy's real git identity probes.
+    monkeypatch.setattr(
+        host_bootstrap,
+        "subprocess",
+        SimpleNamespace(**{**vars(subprocess), "Popen": fake_popen}),
+    )
 
 
 def _materialize_source_closure(source: Path) -> None:
@@ -155,7 +166,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
 
     monkeypatch.setattr(host_bootstrap, "_read_object", fake_read)
     monkeypatch.setattr(host_bootstrap, "_write_object", fake_write)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", fake_popen)
+    _mock_host_launch(monkeypatch, fake_popen)
     monkeypatch.setattr(host_bootstrap, "_host_birth_identity", lambda _pid: "birth-1")
     monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda current: terminated.append(dict(current)))
 
@@ -265,7 +276,7 @@ def test_bootstrap_stops_on_correlated_terminal_registration_failure(
         return FakeProcess()
 
     monkeypatch.setattr(host_bootstrap, "_read_object", fake_read)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", fake_popen)
+    _mock_host_launch(monkeypatch, fake_popen)
     monkeypatch.setattr(
         host_bootstrap, "_host_birth_identity", lambda _pid: "birth-failed"
     )
@@ -323,9 +334,8 @@ def test_bootstrap_refuses_runtime_health_without_ok_status(
             }
 
     monkeypatch.setattr(generic_host, "RuntimeProtocolClient", UnhealthyRuntime)
-    monkeypatch.setattr(
-        host_bootstrap.subprocess,
-        "Popen",
+    _mock_host_launch(
+        monkeypatch,
         lambda *_args, **_kwargs: pytest.fail("unhealthy runtime launched pack host"),
     )
 

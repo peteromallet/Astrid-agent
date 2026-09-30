@@ -7,6 +7,7 @@ import pytest
 
 from astrid.packs.h3_av.src.receipt import (
     ReceiptError,
+    attest_runtime_managed_composition,
     attest_runtime_managed_publication,
     build_final_receipt,
 )
@@ -40,6 +41,7 @@ def _candidate_verified() -> dict[str, object]:
         "verification": {
             "request_digest": _REQUEST_DIGEST,
             "candidate_sha256": _CANDIDATE_SHA256,
+            "candidate_size": 456,
             "status": "verified",
         },
     }
@@ -212,7 +214,129 @@ def _publication(
     )
 
 
-def test_complete_means_raw_publication_verified_local_composition_and_cleanup() -> None:
+def _finalizer_result() -> tuple[InvocationResult, dict[str, object]]:
+    base_result, _ = _runtime_result()
+    raw = copy.deepcopy(base_result.raw_result)
+    task = raw["task"]
+    settled = raw["result"]
+    payload = task["expected_effect"]["payload"]
+    task.update({"run_id": "run-2", "task_id": "task-2", "attempt_id": "attempt-2"})
+    raw.update({"kernel_run_id": "run-2", "kernel_task_id": "task-2", "kernel_attempt_id": "attempt-2"})
+    task["expected_effect"]["target_id"] = "project-1"
+    payload["generation_type"] = "h3_av.publication_finalizer"
+    payload["metadata"]["h3_av"] = {
+        "request_digest": _REQUEST_DIGEST,
+        "publication_scope": "final_composition",
+        "candidate_sha256": _CANDIDATE_SHA256,
+        "raw_sha256": _RAW_SHA256,
+        "raw_generation_id": "generation-1",
+        "raw_variant_id": "variant-1",
+        "raw_association_id": "association-1",
+        "raw_group_key": "main",
+        "raw_variant_key": "original",
+        "raw_output_port": "vibecomfy_run",
+    }
+    selector = payload["groups"][0]["selectors"][0]
+    selector["selector"] = "final-composition"
+    selector["variant_key"] = "final-composition"
+    selector["output_port"] = "verified_candidate"
+    output = settled["outputs"][0]
+    output.update(
+        {
+            "name": "verified-candidate.mp4",
+            "filename": "verified-candidate.mp4",
+            "size": 456,
+            "digest": "sha256:" + _CANDIDATE_SHA256,
+            "object_id": "sha256:" + _CANDIDATE_SHA256,
+            "output_port": "verified_candidate",
+        }
+    )
+    variant = settled["generation_publish_v1"]["publications"][0]["variants"][0]
+    variant.update(
+        {
+            "object_id": "sha256:" + _CANDIDATE_SHA256,
+            "generation_id": "generation-2",
+            "variant_id": "variant-2",
+            "output_port": "verified_candidate",
+            "variant_key": "final-composition",
+        }
+    )
+    settled["generation_publish_v1"]["publications"][0].update({
+        "generation_id": "generation-2",
+        "group_key": "main",
+        "missing_selectors": [],
+    })
+    managed = raw["managed_outputs"][0]
+    managed.update(
+        {
+            "name": "verified-candidate.mp4",
+            "filename": "verified-candidate.mp4",
+            "size": 456,
+            "digest": "sha256:" + _CANDIDATE_SHA256,
+            "object_id": "sha256:" + _CANDIDATE_SHA256,
+            "output_port": "verified_candidate",
+            "task_id": "task-2",
+            "run_id": "run-2",
+            "attempt_id": "attempt-2",
+            "generation_id": "generation-2",
+            "variant_key": "final-composition",
+        }
+    )
+    task["result"] = settled
+    task["generation_intent"] = {
+        "version": 1,
+        "modality": "video",
+        "partial_success_policy": "reject",
+        "groups": [{
+            "group_key": "main",
+            "selectors": [{
+                "selector": "final-composition",
+                "ordinal": 0,
+                "variant_key": "final-composition",
+                "required": True,
+            }],
+        }],
+        "metadata": payload["metadata"],
+    }
+    raw["outputs"]["artifacts"] = [output]
+    result = InvocationResult(
+        **{
+            **base_result.__dict__,
+            "capability_id": "h3_av.publication_finalizer",
+            "raw_result": raw,
+            "outputs": {"managed_outputs": [managed]},
+            "kernel_run_id": "run-2",
+            "kernel_task_id": "task-2",
+            "kernel_attempt_id": "attempt-2",
+        }
+    )
+    retrieved = {
+        "object_id": "sha256:" + _CANDIDATE_SHA256,
+        "digest": "sha256:" + _CANDIDATE_SHA256,
+        "size": 456,
+        "verified": True,
+    }
+    return result, retrieved
+
+
+def _final_publication(
+    runtime_result: InvocationResult | None = None,
+    retrieved_output: dict[str, object] | None = None,
+    *,
+    raw_managed_publication=None,
+):
+    default_result, default_output = _finalizer_result()
+    raw_publication = raw_managed_publication or _publication()
+    return attest_runtime_managed_composition(
+        runtime_result=runtime_result or default_result,
+        request_digest=_REQUEST_DIGEST,
+        candidate_verified=_candidate_verified(),
+        retrieved_outputs=[default_output if retrieved_output is None else retrieved_output],
+        raw_managed_publication=raw_publication,
+    )
+
+
+def test_raw_publication_and_cleanup_do_not_complete_without_finalizer() -> None:
     receipt = build_final_receipt(
         request_digest=_REQUEST_DIGEST,
         task_succeeded=_task_evidence(),
@@ -221,20 +345,72 @@ def test_complete_means_raw_publication_verified_local_composition_and_cleanup()
         raw_managed_publication=_publication(),
     )
 
-    assert receipt["overall_status"] == "complete"
+    assert receipt["overall_status"] == "candidate_verified"
     assert {name: value["status"] for name, value in receipt["states"].items()} == {
         "task_succeeded": "passed",
         "raw_managed_publication": "passed",
         "candidate_verified": "passed",
+        "final_composition_publication": "not_claimed",
         "editorially_approved": "not_claimed",
         "cleanup_verified": "passed",
     }
     assert receipt["publication_contract"] == {
-        "published_scope": "raw_generation",
+        "published_scope": "raw_internal_lineage",
         "effect_type": "generation.publish_v1",
-        "final_composition_publication": "deferred",
+        "final_composition_publication": "required",
     }
     json.dumps(receipt)
+
+
+def test_verified_final_composition_is_required_for_complete_publication() -> None:
+    raw_publication = _publication()
+    final_publication = _final_publication(
+        raw_managed_publication=raw_publication,
+    )
+    receipt = build_final_receipt(
+        request_digest=_REQUEST_DIGEST,
+        task_succeeded=_task_evidence(),
+        candidate_verified=_candidate_verified(),
+        cleanup=_cleanup(),
+        raw_managed_publication=raw_publication,
+        final_managed_publication=final_publication,
+    )
+
+    assert receipt["overall_status"] == "complete"
+    assert receipt["states"]["final_composition_publication"]["status"] == "passed"
+    assert receipt["publication_contract"] == {
+        "published_scope": "final_composition",
+        "effect_type": "generation.publish_v1",
+        "final_composition_publication": "verified",
+    }
+    assert receipt["states"]["raw_managed_publication"]["evidence"]["publication"]["object_id"] != receipt["states"]["final_composition_publication"]["evidence"]["publication"]["object_id"]
+
+
+def test_finalizer_accepts_same_identity_readback_after_lost_reply() -> None:
+    result, _ = _finalizer_result()
+
+    first = _final_publication(result)
+    retry_readback = _final_publication(result)
+
+    assert first.status == retry_readback.status == "passed"
+    assert first.evidence["task"] == retry_readback.evidence["task"]
+    assert first.evidence["publication"] == retry_readback.evidence["publication"]
+
+
+def test_raw_attestation_cannot_fill_the_final_publication_slot() -> None:
+    raw_publication = _publication()
+    receipt = build_final_receipt(
+        request_digest=_REQUEST_DIGEST,
+        task_succeeded=_task_evidence(),
+        candidate_verified=_candidate_verified(),
+        cleanup=_cleanup(),
+        raw_managed_publication=raw_publication,
+        final_managed_publication=raw_publication,
+    )
+
+    assert receipt["overall_status"] == "candidate_verified"
+    assert receipt["states"]["final_composition_publication"]["status"] == "failed"
+    assert "wrong publication scope" in receipt["states"]["final_composition_publication"]["reason"]
 
 
 def test_raw_publication_does_not_claim_the_different_composed_candidate() -> None:
@@ -273,6 +449,52 @@ def test_publication_is_not_claimed_when_runtime_evidence_is_absent() -> None:
 
     assert receipt["overall_status"] == "candidate_verified"
     assert receipt["states"]["raw_managed_publication"]["status"] == "not_claimed"
+
+
+@pytest.mark.parametrize(
+    "mutation, expected_reason",
+    [
+        (
+            lambda raw: raw["managed_outputs"][0].update({"project_id": "foreign-project"}),
+            "uniquely associated",
+        ),
+        (
+            lambda raw: raw["managed_outputs"][0].update({"association_id": ""}),
+            "uniquely associated",
+        ),
+    ],
+    ids=["foreign-association", "tampered-association"],
+)
+def test_finalizer_rejects_foreign_or_tampered_association(mutation, expected_reason: str) -> None:
+    result, _ = _finalizer_result()
+    mutable = copy.deepcopy(result.raw_result)
+    mutation(mutable)
+    result = InvocationResult(**{**result.__dict__, "raw_result": mutable})
+    publication = _final_publication(result)
+
+    assert publication.status == "failed"
+    assert expected_reason in publication.evidence["validation_error"]
+
+
+def test_finalizer_rejects_partial_local_retrieval() -> None:
+    publication = _final_publication(retrieved_output={})
+
+    assert publication.status == "failed"
+    assert "uniquely associated and locally retrieved" in publication.evidence["validation_error"]
+
+
+def test_cleanup_only_recovery_remains_incomplete_until_finalizer_readback() -> None:
+    receipt = build_final_receipt(
+        request_digest=_REQUEST_DIGEST,
+        task_succeeded=_task_evidence(),
+        candidate_verified=_candidate_verified(),
+        cleanup=_cleanup(verified=False),
+        raw_managed_publication=_publication(),
+    )
+
+    assert receipt["overall_status"] == "candidate_verified"
+    assert receipt["states"]["final_composition_publication"]["status"] == "not_claimed"
+    assert receipt["cleanup"]["status"] == "cleanup_pending"
 
 
 @pytest.mark.parametrize(

@@ -1,2 +1,2 @@
-# Publish AstridAnon/VibeComfy at this SHA before installing this dependency.
-vibecomfy @ git+https://github.com/AstridAnon/VibeComfy.git@a6a0cdb493c2f8bea4115740b96ec4c118af7ad1
+# Selected hash-bound VibeComfy wheel; see candidate-dependencies.json.
+vibecomfy==2.8.0 --hash=sha256:e589917a94ef2c988d63556c39e3542eee89f9389c980493fea6eb605973b352

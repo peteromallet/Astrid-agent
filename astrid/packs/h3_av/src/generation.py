@@ -90,7 +90,16 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             loaded = LoadImage(image="", _id=ident)
             wf.register_input(ident, ident, "image", "", type="CHOICE", default="", required=True, media_semantics="image")
             refs[f"ref_images.ref_image_{index}"] = loaded.out("IMAGE")
+        # Retain the pinned define_schema contract: the offline schema predates
+        # this node. Autogrow image sockets keep their exact dotted names.
+        target_inputs = ["clip", "vae", "audio_vae", "prompt", "width", "height", "length", "ref_image_size", *refs]
         target = node("MiniMaxH3ReferenceToVideo", _id="target", _outputs=("positive", "LATENT"),
+                      _native_ports={
+                          "native_input_names": target_inputs,
+                          "native_input_types": ["CLIP", "VAE", "VAE", "STRING", "INT", "INT", "INT", "COMBO", *(["IMAGE"] * len(refs))],
+                          "native_output_names": ["positive", "LATENT"],
+                          "native_output_types": ["CONDITIONING", "LATENT"],
+                      },
                       clip=clip.out("CLIP"), vae=video_vae.out("VAE"), audio_vae=audio.out("audio_vae"),
                       prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
         schedule = BasicScheduler(model=shifted.out("MODEL"), scheduler="simple", steps=steps, denoise=1.0, _id="schedule")
