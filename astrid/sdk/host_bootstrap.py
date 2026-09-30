@@ -8,17 +8,22 @@ keeps a small support-directory marker so an Astrid relaunch reuses one host.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import secrets
+import shlex
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
 
-from astrid.core.execution.process_group import _process_snapshot
+from astrid.core.execution.process_group import _process_snapshot, popen_owned_group, terminate_group
 from astrid.core.generation.vibecomfy_dependency import (
     VibeComfyDependencyError,
     dependency_pythonpath,
@@ -356,6 +361,260 @@ def _terminate_old_host(state: Mapping[str, Any]) -> None:
     _terminate_descendants(members)
     if _host_pid_alive(pid):
         raise PackHostBootstrapError("prior generic Astrid host did not terminate")
+
+
+@dataclass
+class _ParkedPackHostHandle:
+    process: Any
+    control: socket.socket
+    reference: Any
+    state: dict[str, Any]
+    operation_id: str
+    channel_id: str
+    grant_sent: bool = False
+
+
+class _ParkedPackHostPreparer:
+    """Private local adapter for Runtime's existing launch projection/callback.
+
+    The projection is injected by the resident owner; this module imports no
+    Runtime store or authority implementation. Preparation returns while the
+    canonical host is parked, before registration or credential consumption.
+    """
+
+    def __init__(self, project_launch: Callable, *, timeout_seconds: float = 20) -> None:
+        if not 0 < timeout_seconds <= 900:
+            raise ValueError("parked host timeout is invalid")
+        self.project_launch = project_launch
+        self.timeout_seconds = timeout_seconds
+        self._handle: _ParkedPackHostHandle | None = None
+
+    def prepare(self, reference: Any) -> _ParkedPackHostHandle:
+        if self._handle is not None:
+            raise PackHostBootstrapError("parked host preparer already owns an incarnation")
+        if (reference.effective_target != {"kind": "machine", "id": socket.gethostname()}
+                or reference.source_checkout is None or not reference.pack_roots
+                or reference.ready_file is None or Path(reference.ready_file).exists()):
+            raise PackHostBootstrapError("explicit local source, placement and fresh ready path are required")
+        launch = self.project_launch(reference)
+        if launch.deployment_digest != reference.digest():
+            raise PackHostBootstrapError("parked host launch projection is foreign")
+        parent, child = socket.socketpair()
+        operation_id, channel_id = secrets.token_hex(16), secrets.token_hex(16)
+        argv = [*launch.argv,
+                "--source-closure-digest", reference.source_closure_digest.removeprefix("sha256:"),
+                "--activation-fd", str(child.fileno()),
+                "--activation-operation-id", operation_id,
+                "--activation-channel-id", channel_id,
+                "--activation-timeout-seconds", str(self.timeout_seconds)]
+        from astrid.core.subprocess_env import build_child_subprocess_env
+
+        projected_env = dict(launch.env())
+        projected_env.pop("ASTRID_CREDENTIAL_REF", None)  # Already bound by --credential-file.
+        projected_env.pop("ASTRID_IDEMPOTENCY_KEY", None)  # Admission remains with Runtime.
+        env = build_child_subprocess_env(parent={}, explicit_env=projected_env)
+        env.pop("ASTRID_PACKS_PATH", None)
+        env["PYTHONPATH"] = os.pathsep.join((
+            str(reference.source_checkout), *_dependency_pythonpath(),
+            *(str(item.path) for item in reference.dependency_closure if item.path.is_dir()),
+        ))
+        env["PYTHONUNBUFFERED"] = "1"
+        _provision_render_runtime_env(reference.source_checkout, env)
+        log_path = Path(reference.support_root) / f"generic-host-{operation_id}.log"
+        try:
+            with log_path.open("xb") as log:
+                os.fchmod(log.fileno(), 0o600)
+                process = popen_owned_group(
+                    argv, cwd=str(launch.cwd), env=env, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=log, close_fds=True, pass_fds=(child.fileno(),),
+                )
+        except Exception:
+            parent.close()
+            raise
+        finally:
+            child.close()
+        state = {
+            "pid": process.pid, "process_birth_id": _host_birth_identity(process.pid),
+            "ready_file": str(reference.ready_file), "source_checkout": str(reference.source_checkout),
+            "credential_file": reference.credential_ref.removeprefix("file:"),
+            "support_root": str(reference.support_root), "endpoint": reference.runtime_endpoint,
+            "source_closure_digest": reference.source_closure_digest.removeprefix("sha256:"),
+            "boot_manifest_path": str(reference.boot_manifest_path),
+            "boot_manifest_hash": reference.boot_manifest_hash.removeprefix("sha256:"),
+        }
+        handle = _ParkedPackHostHandle(process, parent, reference, state, operation_id, channel_id)
+        self._handle = handle
+        if not state["process_birth_id"]:
+            parent.close()
+            terminate_group(process)
+            raise PackHostBootstrapError("parked host birth identity could not be captured")
+        return handle
+
+    def _assert_owned(self, handle: object) -> _ParkedPackHostHandle:
+        if not isinstance(handle, _ParkedPackHostHandle) or handle is not self._handle:
+            raise PackHostBootstrapError("parked host handle is foreign")
+        return handle
+
+    def acknowledge(self, handle: object, grant: Mapping[str, Any], *, accept: Callable) -> Mapping[str, Any]:
+        from astrid.core.execution.generic_host import (
+            _ACTIVATION_VERSION, _ACTIVATION_RECEIPT_MODE, _ACTIVATION_REQUEST_VERSION,
+            _ACTIVATION_RECEIPT_VERSION, _ACTIVATION_ACCEPTED_VERSION,
+            _read_activation_frame, _send_activation_frame,
+        )
+        handle = self._assert_owned(handle)
+        if handle.grant_sent or handle.process.poll() is not None or not _host_identity_matches(handle.state):
+            raise PackHostBootstrapError("parked host grant is consumed or its incarnation changed")
+        if (set(grant) != {"activation_id", "credential_file", "executor_incarnation", "evidence_digest"}
+                or grant["credential_file"] != handle.state["credential_file"]):
+            raise PackHostBootstrapError("parked host grant is foreign")
+        credential_path = Path(grant["credential_file"])
+        if (credential_path.is_symlink() or not credential_path.is_file()
+                or credential_path.stat().st_mode & 0o777 != 0o600):
+            raise PackHostBootstrapError("parked host credential reference is unsafe")
+        process = {"pid": handle.process.pid, "birth_id": handle.state["process_birth_id"]}
+        # Freeze the exact grant before delivery; callback code cannot mutate
+        # the expected request/receipt by retaining an alias to this mapping.
+        frozen_grant = json.loads(json.dumps(dict(grant)))
+        request = {"version": _ACTIVATION_REQUEST_VERSION, "operation_id": handle.operation_id,
+                   "channel_id": handle.channel_id, "grant": frozen_grant, "host": process}
+        handle.grant_sent = True  # A transport exception never permits resend.
+        try:
+            handle.control.settimeout(self.timeout_seconds)
+            _send_activation_frame(handle.control, {
+                **frozen_grant, "version": _ACTIVATION_VERSION,
+                "acceptance_mode": _ACTIVATION_RECEIPT_MODE,
+                "operation_id": handle.operation_id, "channel_id": handle.channel_id, "host": process,
+            })
+            received = _read_activation_frame(handle.control)
+            if received != request or not _host_identity_matches(handle.state):
+                raise PackHostBootstrapError("parked host acceptance is foreign or stale")
+            # This is the sole owner-process callback invocation. Its return
+            # means Runtime committed acceptance; no owner capability crosses
+            # the process boundary, and no ACK substitutes for this receipt.
+            accept(received["grant"], received["host"])
+            _send_activation_frame(handle.control, {**request, "version": _ACTIVATION_RECEIPT_VERSION})
+            handle.control.shutdown(socket.SHUT_WR)
+            acknowledgement = _read_activation_frame(handle.control)
+            expected = {
+                "version": _ACTIVATION_ACCEPTED_VERSION, "operation_id": handle.operation_id,
+                "channel_id": handle.channel_id, "activation_id": frozen_grant["activation_id"],
+                "executor_incarnation": frozen_grant["executor_incarnation"],
+                "evidence_digest": frozen_grant["evidence_digest"], "host": process,
+            }
+            if acknowledgement != expected or handle.control.recv(1):
+                raise PackHostBootstrapError("parked host final acknowledgement is invalid")
+            return {key: frozen_grant[key] for key in (
+                "activation_id", "executor_incarnation", "evidence_digest",
+            )}
+        finally:
+            handle.control.close()
+
+    def await_ready(self, handle: object) -> None:
+        from astrid.core.execution.generic_host import RuntimeProtocolClient, _await_enabled_runtime_credential
+
+        handle = self._assert_owned(handle)
+        reference = handle.reference
+        client = RuntimeProtocolClient(reference.runtime_endpoint, Path(handle.state["credential_file"]).read_text().strip())
+        _await_enabled_runtime_credential(client, executor_id=reference.executor_id,
+                                          timeout_seconds=self.timeout_seconds)
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            ready = _read_object(Path(reference.ready_file))
+            if ready and ready.get("status") == "ready":
+                if (not _host_identity_matches(handle.state)
+                        or ready.get("pid") != handle.process.pid
+                        or ready.get("process_birth_id") != handle.state["process_birth_id"]
+                        or ready.get("executor_id") != reference.executor_id
+                        or any(ready.get(key) != value for key, value in handle.state.items()
+                               if key not in {"pid", "process_birth_id"})):
+                    raise PackHostBootstrapError("parked host readiness is foreign")
+                return
+            if handle.process.poll() is not None or (ready and ready.get("status") == "failed"):
+                break
+            time.sleep(0.02)
+        raise PackHostBootstrapError("parked host did not become ready")
+
+    def abort(self, handle: object) -> None:
+        handle = self._assert_owned(handle)
+        handle.control.close()
+        if handle.process.poll() is None:
+            _terminate_old_host(handle.state)
+        terminate_group(handle.process)
+        handle.process.wait(timeout=1)
+        ready_path = Path(handle.state["ready_file"])
+        ready = _read_object(ready_path)
+        if ready and (ready.get("pid"), ready.get("process_birth_id")) == (
+                handle.process.pid, handle.state["process_birth_id"]):
+            ready_path.unlink()
+
+
+def _host_artifact_digest(path: Path) -> str:
+    if (not path.exists() or path.is_symlink()
+            or (path.is_dir() and any(item.is_symlink() for item in path.rglob("*")))):
+        raise PackHostBootstrapError("parked host artifact path is aliased")
+    from astrid.core.execution.generic_host import _source_digest
+    return "sha256:" + _source_digest(path).removeprefix("sha256:")
+
+
+class _ParkedPackHostInspector:
+    """Independent local OS/artifact witness; never trusts the ready marker."""
+
+    def __init__(self, runtime_health: Callable, *, session_config_path: Path) -> None:
+        self.runtime_health = runtime_health
+        self.session_config_path = session_config_path
+
+    def observe(self, handle: object) -> Mapping[str, Any]:
+        from astrid.core.execution.generic_host import _canonical_digest, source_checkout_closure_digest
+        from astrid.core.generation.model_root import model_root_binding_from_profile
+
+        if not isinstance(handle, _ParkedPackHostHandle) or not _host_identity_matches(handle.state):
+            raise PackHostBootstrapError("parked host OS identity changed")
+        reference = handle.reference
+        info = _process_snapshot().get(handle.process.pid)
+        command = shlex.split(_host_command(handle.process.pid))
+        uid = subprocess.run(["ps", "-p", str(handle.process.pid), "-o", "uid="],
+                             capture_output=True, text=True, check=True, timeout=1).stdout.strip()
+        if (info is None or info.birth != handle.state["process_birth_id"]
+                or not command or command[0] != str(reference.executable.path)
+                or int(uid) != os.getuid()):
+            raise PackHostBootstrapError("parked host executable, uid or birth identity changed")
+        capacity = int(command[command.index("--max-concurrency") + 1])
+        if capacity != reference.capacity:
+            raise PackHostBootstrapError("parked host capacity changed")
+        profile_path = Path(reference.readiness_profile_path)
+        if ("sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest()) != reference.readiness_profile_hash:
+            raise PackHostBootstrapError("parked host readiness profile changed")
+        profile = _read_object(profile_path)
+        binding = model_root_binding_from_profile(profile, verify_files=True)
+        session = _read_object(self.session_config_path)
+        if binding.path != reference.model_root or not session or session.get("session_ref") != reference.session_ref:
+            raise PackHostBootstrapError("parked host model root or session changed")
+        dependencies = []
+        for item in reference.dependency_closure:
+            digest = _host_artifact_digest(item.path)
+            if digest != item.digest:
+                raise PackHostBootstrapError("parked host dependency changed")
+            dependencies.append({"name": item.name, "path": str(item.path), "digest": digest})
+        health = self.runtime_health()
+        def field(name):
+            return health.get(name) if isinstance(health, Mapping) else getattr(health, name, None)
+        return {
+            "target": {"kind": "machine", "id": socket.gethostname()},
+            "machine_identity": {"id": socket.gethostname(), "uid": int(uid)},
+            "process": {"pid": info.pid, "birth_id": info.birth, "pgid": info.pgid,
+                        "sid": os.getsid(info.pid), "uid": int(uid), "executable": command[0],
+                        "artifact_digest": _host_artifact_digest(Path(command[0]))},
+            "runtime_instance_id": field("runtime_instance_id"), "runtime_epoch": field("runtime_epoch"),
+            "runtime_session_id": field("runtime_session_id"),
+            "source_closure_digest": "sha256:" + source_checkout_closure_digest(reference.source_checkout),
+            "dependency_closure_digest": "sha256:" + _canonical_digest(dependencies),
+            "model_root": str(binding.path), "model_inventory_digest": binding.inventory_digest,
+            "session_ref": session["session_ref"],
+            "session_config_digest": "sha256:" + hashlib.sha256(self.session_config_path.read_bytes()).hexdigest(),
+            "data_root": str(Path(reference.data_root).resolve(strict=True)),
+            "support_root": str(Path(reference.support_root).resolve(strict=True)),
+            "capacity": capacity,
+        }
 
 
 def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Mapping[str, Any]:
