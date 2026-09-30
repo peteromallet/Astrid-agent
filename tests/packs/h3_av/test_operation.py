@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from astrid.packs.h3_av.orchestrators.transform.run import (
@@ -78,6 +80,24 @@ def test_settled_canonical_run_is_reused_with_original_identity(tmp_path) -> Non
     calls = []
 
     class Client:
+        class tasks:
+            @staticmethod
+            def show(task_id):
+                return SimpleNamespace(
+                    ok=True,
+                    data={
+                        "task_id": task_id,
+                        "run_id": "canonical-run",
+                        "attempt_id": "canonical-attempt",
+                        "state": "succeeded",
+                        "result": {"outputs": []},
+                    },
+                )
+
+            @staticmethod
+            def list_managed_outputs(task_id):
+                return SimpleNamespace(ok=True, data=[])
+
         def invoke_result(self, capability_id, **kwargs):
             calls.append(capability_id)
             return InvocationResult(
@@ -108,12 +128,86 @@ def test_settled_canonical_run_is_reused_with_original_identity(tmp_path) -> Non
     assert calls == ["vibecomfy.run"]
 
 
+def test_saved_canonical_dto_cannot_override_unsettled_runtime_task(tmp_path) -> None:
+    journal_path = tmp_path / "operation-state.json"
+    result_path = tmp_path / "run-result.json"
+    journal = OperationJournal(journal_path, request_digest="request-a")
+
+    class FirstClient:
+        def invoke_result(self, capability_id, **kwargs):
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id="historical-task",
+                kernel_run_id="historical-run",
+                kernel_attempt_id="historical-attempt",
+            )
+
+    kwargs = {
+        "inputs": {"workflow": {"digest": "sha256:workflow"}},
+        "execution_request": None,
+        "out": tmp_path / "run",
+        "project": "project-1",
+        "saved_result": result_path,
+    }
+    _invoke_canonical_run(FirstClient(), journal=journal, resume=False, **kwargs)
+
+    class ResumeClient:
+        class tasks:
+            @staticmethod
+            def show(task_id):
+                return SimpleNamespace(
+                    ok=True,
+                    data={
+                        "task_id": task_id,
+                        "run_id": "historical-run",
+                        "attempt_id": "historical-attempt",
+                        "state": "running",
+                    },
+                )
+
+            @staticmethod
+            def list_managed_outputs(task_id):
+                raise AssertionError("unsettled tasks must not read outputs")
+
+        def invoke_result(self, *args, **kwargs):
+            raise AssertionError("resume must not submit a replacement child")
+
+    with pytest.raises(RuntimeError, match="refusing replay"):
+        _invoke_canonical_run(
+            ResumeClient(),
+            journal=OperationJournal(journal_path, request_digest="request-a"),
+            resume=True,
+            **kwargs,
+        )
+
+
 def test_settled_stage_result_reuse_is_bound_to_inputs(tmp_path) -> None:
     journal_path = tmp_path / "operation-state.json"
     result_path = tmp_path / "prepare-result.json"
     calls = []
 
     class Client:
+        class tasks:
+            @staticmethod
+            def show(task_id):
+                return SimpleNamespace(
+                    ok=True,
+                    data={
+                        "task_id": task_id,
+                        "run_id": "canonical-run",
+                        "attempt_id": "canonical-attempt",
+                        "state": "succeeded",
+                        "result": {"outputs": []},
+                    },
+                )
+
+            @staticmethod
+            def list_managed_outputs(task_id):
+                return SimpleNamespace(ok=True, data=[])
+
         def invoke_result(self, capability_id, **kwargs):
             calls.append(capability_id)
             return InvocationResult(
@@ -121,6 +215,9 @@ def test_settled_stage_result_reuse_is_bound_to_inputs(tmp_path) -> None:
                 capability_type="executor",
                 native_kind="executor",
                 ok=True,
+                kernel_task_id="canonical-task",
+                kernel_run_id="canonical-run",
+                kernel_attempt_id="canonical-attempt",
             )
 
     journal = OperationJournal(journal_path, request_digest="request-a")

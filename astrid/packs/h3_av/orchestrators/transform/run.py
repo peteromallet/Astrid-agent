@@ -11,22 +11,22 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
-from astrid.sdk import AstridClient
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
     ensure_runpod_worker,
     load_worker_qualification,
     qualification_digest,
 )
+from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
+from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.receipt import (
     attest_runtime_managed_publication,
     build_final_receipt,
     write_final_receipt,
 )
-from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
-from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.request import load_request
+from astrid.sdk import AstridClient
 from astrid.sdk.results import InvocationResult
 
 
@@ -635,6 +635,102 @@ def _load_invocation_result(path: Path, *, expected_input_digest: str) -> Invoca
     )
 
 
+def _reobserve_saved_result(
+    client: Any,
+    saved: InvocationResult,
+    *,
+    phase: str,
+) -> InvocationResult:
+    """Re-read one saved child identity from Runtime before resuming.
+
+    The saved DTO is only a locator for the prior task.  Runtime remains the
+    authority for terminal state, settlement bytes, and managed lineage; a
+    missing or changed identity is explicit unknown and must not resample.
+    """
+
+    task_id = saved.kernel_task_id
+    run_id = saved.kernel_run_id
+    attempt_id = saved.kernel_attempt_id
+    if not all(isinstance(value, str) and value for value in (task_id, run_id, attempt_id)):
+        raise RuntimeError(
+            f"cannot resume {phase}: saved result is missing task/run/attempt identity"
+        )
+
+    tasks = getattr(client, "tasks", None)
+    show = getattr(tasks, "show", None)
+    read_outputs = getattr(tasks, "list_managed_outputs", None)
+    if not callable(show) or not callable(read_outputs):
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime identity and managed-output readback are unavailable"
+        )
+
+    observed = show(task_id)
+    observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
+    task = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
+    if not observed_ok or not isinstance(task, Mapping):
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime settlement for task {task_id!r} is unknown"
+        )
+    task = dict(task)
+    if task.get("task_id", task.get("id")) != task_id:
+        raise RuntimeError(f"cannot resume {phase}: Runtime returned a different task identity")
+    if task.get("run_id") != run_id or task.get("attempt_id") != attempt_id:
+        raise RuntimeError(f"cannot resume {phase}: Runtime task identity disagrees with saved identity")
+    state = str(task.get("state") or task.get("status") or "").lower()
+    if state not in {"succeeded", "completed"}:
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime task {task_id!r} is not settled ({state or 'unknown'}); refusing replay"
+        )
+    settled = task.get("result")
+    if not isinstance(settled, Mapping):
+        raise RuntimeError(f"cannot resume {phase}: Runtime settlement has no result")
+
+    managed_response = read_outputs(task_id)
+    managed_ok = bool(getattr(managed_response, "ok", isinstance(managed_response, Mapping)))
+    managed = getattr(
+        managed_response,
+        "data",
+        managed_response if isinstance(managed_response, (list, tuple)) else None,
+    )
+    if not managed_ok:
+        raise RuntimeError(
+            f"cannot resume {phase}: Runtime managed-output readback for task {task_id!r} is unknown"
+        )
+    if isinstance(managed, tuple) and len(managed) == 2 and isinstance(managed[0], list):
+        managed = managed[0]
+    if not isinstance(managed, list):
+        raise RuntimeError(f"cannot resume {phase}: Runtime managed-output readback is invalid")
+
+    output_rows = settled.get("outputs")
+    raw_result = {
+        "ok": True,
+        "state": "completed",
+        "kernel_run_id": run_id,
+        "kernel_task_id": task_id,
+        "kernel_attempt_id": attempt_id,
+        "task": task,
+        "result": dict(settled),
+        "outputs": {"artifacts": list(output_rows) if isinstance(output_rows, list) else []},
+        "managed_outputs": managed,
+    }
+    return InvocationResult(
+        capability_id=saved.capability_id,
+        capability_type=saved.capability_type,
+        native_kind=saved.native_kind,
+        ok=True,
+        error=None,
+        manifest_path=saved.manifest_path,
+        raw_result=raw_result,
+        run_id=saved.run_id,
+        run_root=saved.run_root,
+        outputs={"artifacts": raw_result["outputs"]["artifacts"], "managed_outputs": managed},
+        executor_version=saved.executor_version,
+        kernel_run_id=run_id,
+        kernel_task_id=task_id,
+        kernel_attempt_id=attempt_id,
+    )
+
+
 def _invoke_stage(
     client: Any,
     capability_id: str,
@@ -662,6 +758,7 @@ def _invoke_stage(
             raise RuntimeError(f"saved {phase} result is not successful")
         if result.capability_id != capability_id:
             raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
+        result = _reobserve_saved_result(client, result, phase=phase)
         journal.record(phase, "reused", capability_id=capability_id)
         return result
     previous = journal.latest(phase)
@@ -733,6 +830,7 @@ def _invoke_canonical_run(
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
             raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
+        result = _reobserve_saved_result(client, result, phase="canonical run")
         journal.set_admission_phase("settled")
         journal.record(
             "run", "reused", task_id=identity[0], run_id=identity[1],
