@@ -27,6 +27,7 @@ from astrid.packs.h3_av.src.receipt import (
     write_final_receipt,
 )
 from astrid.packs.h3_av.src.request import load_request
+from astrid.packs.h3_av.src.request_v2 import branch_for
 from astrid.sdk import AstridClient
 from astrid.sdk.results import InvocationResult
 
@@ -458,6 +459,24 @@ def _provenance(preparation: Mapping[str, Any], compilation: Mapping[str, Any]) 
             "managed_assets": dict(managed_assets),
         },
     }
+
+
+def _authoritative_source_asset_id(request: Any) -> str | None:
+    """Return the source baseline asset without projecting v1 keys onto v2."""
+
+    value = request.value
+    if value.get("version") != 2:
+        source = value["source"]
+        return None if source is None else str(source["asset"])
+    branch = branch_for(request)
+    if branch in {"source_free", "audio_only"}:
+        return None
+    videos = [
+        item
+        for item in value["media"]
+        if item["role"] == "timeline" and item.get("modality") == "video"
+    ]
+    return str(videos[0]["asset"]) if len(videos) == 1 else None
 
 
 def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], provenance: Mapping[str, Any]) -> Path:
@@ -1074,8 +1093,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         # child inputs. Never open a prepare worker's absolute source path.
         frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
         source_inputs = {}
-        if request.value["source"] is not None:
-            source_path = Path(frozen_assets[request.value["source"]["asset"]])
+        source_asset_id = _authoritative_source_asset_id(request)
+        if source_asset_id is not None:
+            source_path = Path(frozen_assets[source_asset_id])
             source_inputs["source"] = _import_runtime_file(
                 client, project=args.project, path=source_path, filename=source_path.name
             )

@@ -6,8 +6,15 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
-from .compose import CompositionError, _audio_witness, _probe, _sample_digest, _validate_candidate_coverage
-from .timing import ContinuationTimingError, plan_from_preparation
+from .compose import (
+    CompositionError,
+    _audio_witness,
+    _continuation_timing,
+    _is_source_free_generation,
+    _probe,
+    _sample_digest,
+    _validate_candidate_coverage,
+)
 
 
 class VerificationError(ValueError):
@@ -28,6 +35,16 @@ def _source_offset(preparation: Mapping[str, Any]) -> float:
     value = source.get("range") if isinstance(source, Mapping) else None
     if isinstance(value, (list, tuple)) and len(value) == 2:
         return float(value[0])
+    if isinstance(request, Mapping) and request.get("version") == 2:
+        for item in request.get("media", []):
+            if (
+                isinstance(item, Mapping)
+                and item.get("role") == "timeline"
+                and item.get("modality") == "video"
+            ):
+                value = item.get("range")
+                if isinstance(value, (list, tuple)) and len(value) == 2:
+                    return float(value[0])
     return 0.0
 
 
@@ -215,10 +232,10 @@ def verify_candidate(
             raise VerificationError("candidate coverage does not match composition evidence")
     else:
         try:
-            continuation = plan_from_preparation(preparation)
-        except ContinuationTimingError as exc:
+            continuation = _continuation_timing(preparation)
+        except CompositionError as exc:
             raise VerificationError(str(exc)) from exc
-        if continuation is not None or preparation.get("request", {}).get("operation") == "generate":
+        if continuation is not None or _is_source_free_generation(preparation):
             raise VerificationError("H3 candidate is not decodable audiovisual media")
 
     schedule = preparation["mask_schedule"]
