@@ -6,8 +6,15 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
-from .compose import CompositionError, _audio_witness, _probe, _sample_digest, _validate_candidate_coverage
-from .timing import ContinuationTimingError, plan_from_preparation
+from .compose import (
+    CompositionError,
+    _audio_witness,
+    _continuation_timing,
+    _is_source_free_generation,
+    _probe,
+    _sample_digest,
+    _validate_candidate_coverage,
+)
 
 
 class VerificationError(ValueError):
@@ -28,6 +35,16 @@ def _source_offset(preparation: Mapping[str, Any]) -> float:
     value = source.get("range") if isinstance(source, Mapping) else None
     if isinstance(value, (list, tuple)) and len(value) == 2:
         return float(value[0])
+    if isinstance(request, Mapping) and request.get("version") == 2:
+        for item in request.get("media", []):
+            if (
+                isinstance(item, Mapping)
+                and item.get("role") == "timeline"
+                and item.get("modality") == "video"
+            ):
+                value = item.get("range")
+                if isinstance(value, (list, tuple)) and len(value) == 2:
+                    return float(value[0])
     return 0.0
 
 
@@ -45,7 +62,9 @@ def _covers_whole(intervals: Any, duration: Any) -> bool:
         return False
     try:
         target = float(duration)
-        ordered = sorted((_interval_key(item) for item in intervals), key=lambda item: item[0] if item else 0.0)
+        ordered = sorted(
+            (_interval_key(item) for item in intervals), key=lambda item: item[0] if item else 0.0
+        )
     except (TypeError, ValueError):
         return False
     cursor = 0.0
@@ -76,13 +95,17 @@ def _verify_sample_evidence(
                 raise VerificationError(f"protected {stream_type} sample evidence is malformed")
             key = _interval_key(entry.get("interval"))
             if key is None or key in by_interval:
-                raise VerificationError(f"protected {stream_type} sample evidence has an invalid interval")
+                raise VerificationError(
+                    f"protected {stream_type} sample evidence has an invalid interval"
+                )
             by_interval[key] = entry
         for key in expected:
             assert key is not None
             entry = by_interval.get(key)
             if entry is None:
-                raise VerificationError(f"protected {stream_type} sample evidence does not cover {list(key)}")
+                raise VerificationError(
+                    f"protected {stream_type} sample evidence does not cover {list(key)}"
+                )
             source_hash = entry.get("source_sha256")
             candidate_hash = entry.get("candidate_sha256")
             method = entry.get("method")
@@ -96,10 +119,14 @@ def _verify_sample_evidence(
                 or not isinstance(sample_count, int)
                 or sample_count <= 0
             ):
-                raise VerificationError(f"protected {stream_type} evidence is not a positive matching sample witness")
+                raise VerificationError(
+                    f"protected {stream_type} evidence is not a positive matching sample witness"
+                )
             if method == "ffmpeg-decoded-samples-v1":
                 if source_hash != candidate_hash:
-                    raise VerificationError(f"protected {stream_type} evidence is not a positive matching sample witness")
+                    raise VerificationError(
+                        f"protected {stream_type} evidence is not a positive matching sample witness"
+                    )
                 try:
                     source_actual, source_count = _sample_digest(
                         source, stream_type, _source_offset(preparation) + key[0], key[1] - key[0]
@@ -108,14 +135,18 @@ def _verify_sample_evidence(
                         candidate, stream_type, key[0], key[1] - key[0]
                     )
                 except Exception as exc:  # noqa: BLE001 - verification boundary
-                    raise VerificationError(f"protected {stream_type} samples could not be decoded") from exc
+                    raise VerificationError(
+                        f"protected {stream_type} samples could not be decoded"
+                    ) from exc
                 if (
                     source_actual != source_hash
                     or candidate_actual != candidate_hash
                     or source_count <= 0
                     or candidate_count <= 0
                 ):
-                    raise VerificationError(f"protected {stream_type} sample digest does not match candidate")
+                    raise VerificationError(
+                        f"protected {stream_type} sample digest does not match candidate"
+                    )
             elif method == "ffmpeg-decoded-audio-similarity-v1":
                 if stream_type != "audio":
                     raise VerificationError("audio similarity evidence is only valid for audio")
@@ -125,7 +156,9 @@ def _verify_sample_evidence(
                     or not isinstance(declared_similarity, (int, float))
                     or not 0.0 <= float(declared_similarity) <= 1.0
                 ):
-                    raise VerificationError("protected audio evidence is not a positive matching sample witness")
+                    raise VerificationError(
+                        "protected audio evidence is not a positive matching sample witness"
+                    )
                 try:
                     witness = _audio_witness(
                         source=source,
@@ -137,21 +170,29 @@ def _verify_sample_evidence(
                 except Exception as exc:  # noqa: BLE001 - verification boundary
                     raise VerificationError("protected audio samples could not be decoded") from exc
                 if float(witness["similarity"]) < 0.985 or witness["sample_count"] <= 0:
-                    raise VerificationError("protected audio evidence is not a positive matching sample witness")
+                    raise VerificationError(
+                        "protected audio evidence is not a positive matching sample witness"
+                    )
             elif not isinstance(entry.get("witness_digest"), str) or not entry["witness_digest"]:
-                raise VerificationError(f"protected {stream_type} non-ffmpeg evidence lacks a witness digest")
+                raise VerificationError(
+                    f"protected {stream_type} non-ffmpeg evidence lacks a witness digest"
+                )
 
 
 def _verify_provenance(preparation: Mapping[str, Any], composition: Mapping[str, Any]) -> None:
     if composition.get("request_digest") != preparation.get("request_digest"):
         raise VerificationError("composition request provenance does not match preparation")
     schedule = preparation.get("mask_schedule")
-    if not isinstance(schedule, Mapping) or composition.get("schedule_digest") != schedule.get("digest"):
+    if not isinstance(schedule, Mapping) or composition.get("schedule_digest") != schedule.get(
+        "digest"
+    ):
         raise VerificationError("composition schedule provenance does not match preparation")
     provenance = composition.get("provenance")
     if provenance in (None, {}):
         return
-    if not isinstance(provenance, Mapping) or provenance.get("request_digest") != preparation.get("request_digest"):
+    if not isinstance(provenance, Mapping) or provenance.get("request_digest") != preparation.get(
+        "request_digest"
+    ):
         raise VerificationError("composition provenance is missing the request identity")
     assets = provenance.get("assets")
     prepared_assets = preparation.get("assets")
@@ -177,7 +218,11 @@ def verify_candidate(
     candidate_info = composition.get("candidate")
     if not isinstance(candidate_info, Mapping):
         raise VerificationError("composition is missing candidate evidence")
-    candidate_path = Path(candidate if candidate is not None else str(candidate_info.get("path", ""))).expanduser().resolve()
+    candidate_path = (
+        Path(candidate if candidate is not None else str(candidate_info.get("path", "")))
+        .expanduser()
+        .resolve()
+    )
     if not candidate_path.is_file():
         raise VerificationError(f"candidate is missing: {candidate_path}")
     actual_digest = _sha256(candidate_path)
@@ -196,10 +241,9 @@ def verify_candidate(
             raise VerificationError(str(exc)) from exc
         declared_coverage = composition.get("coverage")
         declared_candidate = (
-            declared_coverage.get("candidate")
-            if isinstance(declared_coverage, Mapping)
-            else None
+            declared_coverage.get("candidate") if isinstance(declared_coverage, Mapping) else None
         )
+
         # Paths are observational attempt-local details, never identity. All
         # measured coverage fields still have to match the settled evidence.
         def portable_coverage(value):
@@ -207,7 +251,8 @@ def verify_candidate(
                 return value
             return {
                 key: {field: item for field, item in entry.items() if field != "path"}
-                if key in {"video", "audio"} and isinstance(entry, Mapping) else entry
+                if key in {"video", "audio"} and isinstance(entry, Mapping)
+                else entry
                 for key, entry in value.items()
             }
 
@@ -215,10 +260,10 @@ def verify_candidate(
             raise VerificationError("candidate coverage does not match composition evidence")
     else:
         try:
-            continuation = plan_from_preparation(preparation)
-        except ContinuationTimingError as exc:
+            continuation = _continuation_timing(preparation)
+        except CompositionError as exc:
             raise VerificationError(str(exc)) from exc
-        if continuation is not None or preparation.get("request", {}).get("operation") == "generate":
+        if continuation is not None or _is_source_free_generation(preparation):
             raise VerificationError("H3 candidate is not decodable audiovisual media")
 
     schedule = preparation["mask_schedule"]
@@ -241,9 +286,8 @@ def verify_candidate(
         if source_info.get("sha256") != _sha256(source_path):
             raise VerificationError("authoritative source does not match composition evidence")
 
-    wholly_protected = (
-        _covers_whole(protected_video, schedule.get("duration"))
-        and _covers_whole(protected_audio, schedule.get("duration"))
+    wholly_protected = _covers_whole(protected_video, schedule.get("duration")) and _covers_whole(
+        protected_audio, schedule.get("duration")
     )
     if schedule.get("source_protected") or wholly_protected:
         if source_path is None:
@@ -257,7 +301,9 @@ def verify_candidate(
         if source_path is None:
             raise VerificationError("partial preservation requires an authoritative source")
         if _probe(source_path) is None or _probe(candidate_path) is None:
-            raise VerificationError("partial preservation requires decodable media, not a copied/non-media candidate")
+            raise VerificationError(
+                "partial preservation requires decodable media, not a copied/non-media candidate"
+            )
         samples = evidence.get("protected_samples")
         if not isinstance(samples, Mapping):
             raise VerificationError("partial preservation requires protected_samples evidence")
@@ -277,7 +323,11 @@ def verify_candidate(
         "kind": "h3_av_verification",
         "request_digest": preparation.get("request_digest"),
         "candidate_sha256": actual_digest,
-        "preservation": {"status": preservation_status, "video": protected_video, "audio": protected_audio},
+        "preservation": {
+            "status": preservation_status,
+            "video": protected_video,
+            "audio": protected_audio,
+        },
         "provenance": composition.get("provenance", {}),
         "coverage": composition.get("coverage", {}).get("candidate", {}),
         "lifecycle": {"prepared": True, "composed": True, "verified": True},

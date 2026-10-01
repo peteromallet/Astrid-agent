@@ -13,11 +13,15 @@ import zipfile
 from array import array
 from contextlib import contextmanager
 from fractions import Fraction
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from .timing import ContinuationTiming, ContinuationTimingError, plan_from_preparation
+from .timing import (
+    ContinuationTiming,
+    ContinuationTimingError,
+    plan_continuation,
+    plan_from_preparation,
+)
 
 
 class CompositionError(ValueError):
@@ -156,16 +160,70 @@ def _audio_coverage(path: Path) -> dict[str, Any]:
     return {
         "path": str(path),
         "duration": observed_duration,
-        "sample_rate": int(audio[0]["sample_rate"]) if str(audio[0].get("sample_rate", "")).isdigit() else None,
+        "sample_rate": int(audio[0]["sample_rate"])
+        if str(audio[0].get("sample_rate", "")).isdigit()
+        else None,
         "stream_count": 1,
     }
 
 
 def _continuation_timing(preparation: Mapping[str, Any]) -> ContinuationTiming | None:
     try:
-        return plan_from_preparation(preparation)
+        timing = plan_from_preparation(preparation)
+        if timing is not None:
+            return timing
+        request = preparation.get("request")
+        schedule = preparation.get("mask_schedule")
+        if (
+            not isinstance(request, Mapping)
+            or request.get("version") != 2
+            or not isinstance(schedule, Mapping)
+            or schedule.get("branch") not in {"extension_context", "source_backed_v2v"}
+        ):
+            return None
+        videos = [
+            item
+            for item in request.get("media", [])
+            if isinstance(item, Mapping)
+            and item.get("role") == "timeline"
+            and item.get("modality") == "video"
+        ]
+        if len(videos) != 1:
+            raise ContinuationTimingError(
+                "native-v2 continuation preparation requires one timeline video"
+            )
+        source_range = videos[0].get("range")
+        if not isinstance(source_range, list) or len(source_range) != 2:
+            raise ContinuationTimingError(
+                "native-v2 continuation preparation requires a bounded timeline video range"
+            )
+        return plan_continuation(
+            source_end=float(source_range[1]) - float(source_range[0]),
+            output_duration=float(request["duration"]),
+        )
     except ContinuationTimingError as exc:
         raise CompositionError(str(exc)) from exc
+
+
+def _is_source_free_generation(preparation: Mapping[str, Any]) -> bool:
+    request = preparation.get("request")
+    if not isinstance(request, Mapping):
+        return False
+    if request.get("operation") == "generate":
+        return True
+    schedule = preparation.get("mask_schedule")
+    return (
+        request.get("version") == 2
+        and isinstance(schedule, Mapping)
+        and schedule.get("branch") == "source_free"
+    )
+
+
+def _generation_duration(preparation: Mapping[str, Any]) -> float:
+    request = preparation["request"]
+    if request.get("version") == 2:
+        return float(request["duration"])
+    return float(request["output"]["duration"])
 
 
 def _validate_generated_coverage(
@@ -176,9 +234,10 @@ def _validate_generated_coverage(
 ) -> dict[str, Any]:
     """Reject a no-op/short H3 result before attempting final composition."""
 
-    if preparation.get("request", {}).get("operation") == "generate":
+    if _is_source_free_generation(preparation):
         from .generation import generation_timing
-        plan = generation_timing(preparation["request"]["output"]["duration"])
+
+        plan = generation_timing(_generation_duration(preparation))
         video = _video_coverage(generated_video)
         audio = _audio_coverage(generated_audio or generated_video)
         if video["fps"] != plan["fps"] or video["frames"] != plan["raw_frames"]:
@@ -220,11 +279,14 @@ def _validate_candidate_coverage(
     video = _video_coverage(candidate)
     audio = _audio_coverage(candidate)
     timing = _continuation_timing(preparation)
-    if preparation.get("request", {}).get("operation") == "generate":
+    if _is_source_free_generation(preparation):
         from .generation import generation_timing
-        plan = generation_timing(preparation["request"]["output"]["duration"])
+
+        plan = generation_timing(_generation_duration(preparation))
         if video["fps"] != plan["fps"] or video["frames"] != plan["requested_frames"]:
-            raise CompositionError("H3 generation candidate does not match requested frame coverage")
+            raise CompositionError(
+                "H3 generation candidate does not match requested frame coverage"
+            )
         requested_duration = plan["duration"]
     elif timing is not None:
         if abs(video["fps"] - timing.fps) > 1e-6:
@@ -265,6 +327,16 @@ def _source_offset(preparation: Mapping[str, Any]) -> float:
     value = source.get("range") if isinstance(source, Mapping) else None
     if isinstance(value, (list, tuple)) and len(value) == 2:
         return float(value[0])
+    if isinstance(request, Mapping) and request.get("version") == 2:
+        for item in request.get("media", []):
+            if (
+                isinstance(item, Mapping)
+                and item.get("role") == "timeline"
+                and item.get("modality") == "video"
+            ):
+                value = item.get("range")
+                if isinstance(value, (list, tuple)) and len(value) == 2:
+                    return float(value[0])
     return 0.0
 
 
@@ -305,11 +377,22 @@ def _generated_inputs(path: Path):
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CompositionError("generated audiovisual bundle manifest is unreadable") from exc
-        if not isinstance(manifest, Mapping) or manifest.get("schema_version") != 1 or manifest.get("kind") != "h3_av_generated_av":
+        if (
+            not isinstance(manifest, Mapping)
+            or manifest.get("schema_version") != 1
+            or manifest.get("kind") != "h3_av_generated_av"
+        ):
             raise CompositionError("generated audiovisual bundle has an unsupported contract")
         records = manifest.get("outputs")
-        if not isinstance(records, list) or {item.get("role") for item in records if isinstance(item, Mapping)} != {"video", "audio"} or len(records) != 2:
-            raise CompositionError("generated audiovisual bundle must declare one video and one audio output")
+        if (
+            not isinstance(records, list)
+            or {item.get("role") for item in records if isinstance(item, Mapping)}
+            != {"video", "audio"}
+            or len(records) != 2
+        ):
+            raise CompositionError(
+                "generated audiovisual bundle must declare one video and one audio output"
+            )
         parsed: dict[str, Mapping[str, Any]] = {}
         for record in records:
             if not isinstance(record, Mapping):
@@ -337,7 +420,9 @@ def _generated_inputs(path: Path):
                 raise CompositionError(f"generated audiovisual member {member!r} is missing")
             data = archive.read(member)
             if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
-                raise CompositionError(f"generated audiovisual member {member!r} failed integrity validation")
+                raise CompositionError(
+                    f"generated audiovisual member {member!r} failed integrity validation"
+                )
             parsed[str(role)] = record
         declared_members = {"manifest.json", *(str(record["member"]) for record in records)}
         if set(names) != declared_members:
@@ -370,9 +455,18 @@ def _compose_media(
     ffmpeg = shutil.which("ffmpeg")
     source_probe = _probe(source)
     generated_probe = _probe(generated)
-    generated_audio_probe = _probe(generated_audio_path) if generated_audio_path is not None else generated_probe
-    if ffmpeg is None or source_probe is None or generated_probe is None or generated_audio_probe is None:
-        raise CompositionError("media composition requires ffmpeg and decodable source/video/audio files")
+    generated_audio_probe = (
+        _probe(generated_audio_path) if generated_audio_path is not None else generated_probe
+    )
+    if (
+        ffmpeg is None
+        or source_probe is None
+        or generated_probe is None
+        or generated_audio_probe is None
+    ):
+        raise CompositionError(
+            "media composition requires ffmpeg and decodable source/video/audio files"
+        )
     source_types = _stream_types(source_probe)
     generated_types = _stream_types(generated_probe)
     generated_audio_types = _stream_types(generated_audio_probe)
@@ -396,7 +490,10 @@ def _compose_media(
     input_paths = [source, generated]
     if generated_audio_path is not None:
         input_paths.append(generated_audio_path)
-    for stream_type, segments, label in (("video", video_segments, "v"), ("audio", audio_segments, "a")):
+    for stream_type, segments, label in (
+        ("video", video_segments, "v"),
+        ("audio", audio_segments, "a"),
+    ):
         pieces: list[str] = []
         for index, (start, end, use_generated) in enumerate(segments):
             input_index = (
@@ -434,12 +531,31 @@ def _compose_media(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
         *sum((["-i", str(path)] for path in input_paths), []),
-        "-filter_complex", ";".join(filters),
-        "-map", maps[0], "-map", maps[1], "-map_metadata", "-1",
-        "-c:v", "libx264", "-qp", "0", "-preset", "medium",
-        "-c:a", "pcm_s16le", "-t", str(duration), str(destination),
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        maps[0],
+        "-map",
+        maps[1],
+        "-map_metadata",
+        "-1",
+        "-c:v",
+        "libx264",
+        "-qp",
+        "0",
+        "-preset",
+        "medium",
+        "-c:a",
+        "pcm_s16le",
+        "-t",
+        str(duration),
+        str(destination),
     ]
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
@@ -465,13 +581,34 @@ def _mux_generated(video: Path, audio: Path, destination: Path) -> None:
 
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None or _probe(video) is None or _probe(audio) is None:
-        raise CompositionError("paired audiovisual composition requires ffmpeg and decodable video/audio files")
+        raise CompositionError(
+            "paired audiovisual composition requires ffmpeg and decodable video/audio files"
+        )
     command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0", "-map", "1:a:0", "-map_metadata", "-1",
-        "-c:v", "libx264", "-qp", "0", "-preset", "medium",
-        "-c:a", "pcm_s16le", str(destination),
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(video),
+        "-i",
+        str(audio),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-map_metadata",
+        "-1",
+        "-c:v",
+        "libx264",
+        "-qp",
+        "0",
+        "-preset",
+        "medium",
+        "-c:a",
+        "pcm_s16le",
+        str(destination),
     ]
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
@@ -489,15 +626,34 @@ def _decode_audio_samples(path: Path, start: float, duration: float) -> tuple[li
     if duration <= 0:
         raise CompositionError("protected audio interval must be positive")
     command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path),
-        "-ss", str(start), "-t", str(duration), "-map", "0:a:0", "-vn",
-        "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(path),
+        "-ss",
+        str(start),
+        "-t",
+        str(duration),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-f",
+        "s16le",
+        "-",
     ]
     try:
         completed = subprocess.run(command, check=True, capture_output=True)
     except (OSError, subprocess.SubprocessError) as exc:
         detail = getattr(exc, "stderr", b"") or str(exc).encode()
-        raise CompositionError(f"could not decode protected audio samples: {detail[-500:]!r}") from exc
+        raise CompositionError(
+            f"could not decode protected audio samples: {detail[-500:]!r}"
+        ) from exc
     if not completed.stdout or len(completed.stdout) % 2:
         raise CompositionError("protected audio interval produced no complete PCM samples")
     values = array("h")
@@ -536,7 +692,12 @@ def _audio_witness(
     source_energy = sum((value - source_mean) ** 2 for value in source_mono)
     candidate_energy = sum((value - candidate_mean) ** 2 for value in candidate_mono)
     if source_energy <= 1.0 or candidate_energy <= 1.0:
-        similarity = 1.0 if max(abs(value) for value in source_mono) < 8 and max(abs(value) for value in candidate_mono) < 8 else 0.0
+        similarity = (
+            1.0
+            if max(abs(value) for value in source_mono) < 8
+            and max(abs(value) for value in candidate_mono) < 8
+            else 0.0
+        )
     else:
         covariance = sum(
             (source_mono[index] - source_mean) * (candidate_mono[index] - candidate_mean)
@@ -561,8 +722,22 @@ def _sample_digest(path: Path, stream_type: str, start: float, duration: float) 
         raise CompositionError("protected sample interval must be positive")
     if stream_type == "video":
         command = [
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path),
-            "-ss", str(start), "-t", str(duration), "-map", "0:v:0", "-an", "-f", "framemd5", "-",
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-ss",
+            str(start),
+            "-t",
+            str(duration),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-f",
+            "framemd5",
+            "-",
         ]
     elif stream_type == "audio":
         values, sample_count = _decode_audio_samples(path, start, duration)
@@ -579,7 +754,9 @@ def _sample_digest(path: Path, stream_type: str, start: float, duration: float) 
         completed = subprocess.run(command, check=True, capture_output=True)
     except (OSError, subprocess.SubprocessError) as exc:
         detail = getattr(exc, "stderr", b"") or str(exc).encode()
-        raise CompositionError(f"could not decode protected {stream_type} samples: {detail[-500:]!r}") from exc
+        raise CompositionError(
+            f"could not decode protected {stream_type} samples: {detail[-500:]!r}"
+        ) from exc
     if stream_type == "video":
         hashes = [
             line.rsplit(b",", 1)[-1].strip()
@@ -599,8 +776,12 @@ def _auto_sample_evidence(
     for stream_type in ("video", "audio"):
         for interval in schedule[stream_type]["protected_intervals"]:
             start, end = float(interval[0]), float(interval[1])
-            source_hash, sample_count = _sample_digest(source, stream_type, source_offset + start, end - start)
-            candidate_hash, candidate_count = _sample_digest(candidate, stream_type, start, end - start)
+            source_hash, sample_count = _sample_digest(
+                source, stream_type, source_offset + start, end - start
+            )
+            candidate_hash, candidate_count = _sample_digest(
+                candidate, stream_type, start, end - start
+            )
             entry: dict[str, Any] = {
                 "interval": [start, end],
                 "source_sha256": source_hash,
@@ -657,7 +838,11 @@ def compose_candidate(
 
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    with _generated_inputs(generated_path) as (generated_video, generated_audio, generated_manifest):
+    with _generated_inputs(generated_path) as (
+        generated_video,
+        generated_audio,
+        generated_manifest,
+    ):
         generated_coverage = _validate_generated_coverage(
             preparation=preparation,
             generated_video=generated_video,
@@ -665,20 +850,44 @@ def compose_candidate(
         )
         composition_method: dict[str, Any] = {"method": "candidate-custody-v1"}
         candidate = destination / generated_video.name
-        if preparation.get("request", {}).get("operation") == "generate":
+        if _is_source_free_generation(preparation):
             plan = generated_coverage["timing"]
             candidate = destination / "candidate.mp4"
-            command = ["ffmpeg", "-v", "error", "-y", "-i", str(generated_video),
-                       "-map", "0:v:0", "-map", "0:a:0",
-                       "-vf", f"trim=end_frame={plan['requested_frames']},setpts=N/(24*TB)",
-                       "-af", f"atrim=end={plan['duration']},asetpts=PTS-STARTPTS",
-                       "-r", "24", "-fps_mode", "cfr",
-                       "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", str(candidate)]
+            command = [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(generated_video),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                "-vf",
+                f"trim=end_frame={plan['requested_frames']},setpts=N/(24*TB)",
+                "-af",
+                f"atrim=end={plan['duration']},asetpts=PTS-STARTPTS",
+                "-r",
+                "24",
+                "-fps_mode",
+                "cfr",
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                str(candidate),
+            ]
             subprocess.run(command, check=True, capture_output=True)
             composition_method = {"method": "h3-generation-tail-trim-v1", **plan}
-        elif source_path is not None and protected and any(
-            schedule[domain]["generated_intervals"] for domain in ("video", "audio")
+        elif (
+            source_path is not None
+            and protected
+            and any(schedule[domain]["generated_intervals"] for domain in ("video", "audio"))
         ):
             if _probe(source_path) is not None and _probe(generated_video) is not None:
                 candidate = destination / f"{generated_video.stem}.composed.mkv"
@@ -714,7 +923,12 @@ def compose_candidate(
             raise CompositionError("H3 continuation result is not decodable audiovisual media")
 
         evidence = dict(preservation_evidence or {})
-        if source_path is not None and protected and _probe(source_path) is not None and _probe(candidate) is not None:
+        if (
+            source_path is not None
+            and protected
+            and _probe(source_path) is not None
+            and _probe(candidate) is not None
+        ):
             try:
                 auto = _auto_sample_evidence(
                     source=source_path,
@@ -739,11 +953,27 @@ def compose_candidate(
             "kind": "h3_av_composition",
             "request_digest": preparation.get("request_digest"),
             "schedule_digest": schedule.get("digest"),
-            "candidate": {"path": str(candidate), "sha256": _sha256(candidate), "size": candidate.stat().st_size},
-            "source": None if source_path is None else {"path": str(source_path), "sha256": _sha256(source_path), "size": source_path.stat().st_size},
+            "candidate": {
+                "path": str(candidate),
+                "sha256": _sha256(candidate),
+                "size": candidate.stat().st_size,
+            },
+            "source": None
+            if source_path is None
+            else {
+                "path": str(source_path),
+                "sha256": _sha256(source_path),
+                "size": source_path.stat().st_size,
+            },
             "generated_outputs": generated_manifest.get("outputs", []),
-            "changed_permissions": {"video": schedule["video"]["generated_intervals"], "audio": schedule["audio"]["generated_intervals"]},
-            "protected_permissions": {"video": schedule["video"]["protected_intervals"], "audio": schedule["audio"]["protected_intervals"]},
+            "changed_permissions": {
+                "video": schedule["video"]["generated_intervals"],
+                "audio": schedule["audio"]["generated_intervals"],
+            },
+            "protected_permissions": {
+                "video": schedule["video"]["protected_intervals"],
+                "audio": schedule["audio"]["protected_intervals"],
+            },
             "preservation_evidence": evidence,
             "composition": {**composition_method, "output_roles": output_roles},
             "coverage": {
@@ -754,7 +984,10 @@ def compose_candidate(
             "status": "composed",
         }
         manifest_path = destination / "composition-manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         manifest["manifest_path"] = str(manifest_path)
         return manifest
 
