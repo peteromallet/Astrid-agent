@@ -10,6 +10,7 @@ import jsonschema
 import pytest
 import yaml
 from PIL import Image
+from vibecomfy.cli_loader import load_workflow_any
 
 from astrid.packs.h3_av.orchestrators.transform.run import (
     _authoritative_source_asset_id,
@@ -22,8 +23,6 @@ from astrid.packs.h3_av.src.prepare import prepare_request
 from astrid.packs.h3_av.src.request import normalize_request
 from astrid.packs.h3_av.src.request_v2 import branch_for
 from astrid.packs.h3_av.src.verify import verify_candidate
-from vibecomfy.cli_loader import load_workflow_any
-
 
 PACK = Path(__file__).resolve().parents[3] / "astrid/packs/h3_av"
 
@@ -212,6 +211,77 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
 
     assert composition["coverage"]["candidate"]["video"]["frames"] == 48
     assert verification["preservation"]["status"] == "protected_sample_evidence"
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg and ffprobe are required",
+)
+def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    generated = tmp_path / "generated.mkv"
+    _av(source, frames=24, color="blue", frequency=440)
+    request = normalize_request(
+        {
+            "version": 2,
+            "prompt": "Regenerate the soundtrack while extending the picture.",
+            "duration": 2,
+            "continuation": True,
+            "media": [
+                {
+                    "id": "source",
+                    "asset": "source.mkv",
+                    "role": "timeline",
+                    "modality": "video",
+                    "at": {"frame": 0},
+                    "range": [0, 1],
+                    "edit": [
+                        {"stream": "audio", "during": [0, 2], "text": "New soundtrack."}
+                    ],
+                }
+            ],
+            "settings": {},
+        }
+    )
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    schedule = preparation["mask_schedule"]
+    assert schedule["video"]["protected_intervals"] == [[0.0, 1.0]]
+    assert schedule["video"]["generated_intervals"] == [[1.0, 2.0]]
+    assert schedule["audio"]["protected_intervals"] == []
+    assert schedule["audio"]["generated_intervals"] == [[0.0, 2.0]]
+
+    compilation = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    _av(
+        generated,
+        frames=compilation["continuation_timing"]["expected_graph_output_frames"],
+        color="red",
+        frequency=880,
+    )
+    composition = compose_candidate(
+        preparation=preparation,
+        generated=generated,
+        source=source,
+        out_dir=tmp_path / "composition",
+    )
+    verification = verify_candidate(
+        preparation=preparation,
+        composition=composition,
+        source=source,
+    )
+
+    assert composition["coverage"]["candidate"]["video"]["frames"] == 48
+    assert composition["changed_permissions"] == {
+        "video": [[1.0, 2.0]],
+        "audio": [[0.0, 2.0]],
+    }
+    assert verification["preservation"]["status"] == "protected_sample_evidence"
+    candidate = Path(composition["candidate"]["path"])
+    source_prefix, prefix_frames = _sample_digest(source, "video", 0, 1)
+    candidate_prefix, candidate_frames = _sample_digest(candidate, "video", 0, 1)
+    assert prefix_frames == candidate_frames == 24
+    assert candidate_prefix == source_prefix
 
 
 @pytest.mark.skipif(

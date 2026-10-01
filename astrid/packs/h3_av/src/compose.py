@@ -13,8 +13,7 @@ import zipfile
 from array import array
 from contextlib import contextmanager
 from fractions import Fraction
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .timing import (
@@ -492,7 +491,8 @@ def _compose_media(
             pieces.append(f"[{piece}]")
         output_label = f"{label}out"
         if len(pieces) == 1:
-            filters.append(f"{pieces[0]}null[{output_label}]")
+            passthrough_filter = "null" if stream_type == "video" else "anull"
+            filters.append(f"{pieces[0]}{passthrough_filter}[{output_label}]")
         else:
             filters.append(
                 "".join(pieces)
