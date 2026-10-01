@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import re
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -269,7 +270,14 @@ def _call_with_remaining(method: Callable[..., Any], *args: Any, timeout: float,
     return method(*args, **kwargs)
 
 
-def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", command: str = "status") -> tuple[dict[str, Any], Any | None, Any | None]:
+def collect_diagnostic(
+    runtime: Any,
+    *,
+    support_root: str,
+    mode: str = "local",
+    command: str = "status",
+    timing_trace: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], Any | None, Any | None]:
     """Observe through the existing Runtime client and return C2 plus raw local results."""
     started = time.monotonic()
     facts = {name: _fact() for name in FACT_NAMES}
@@ -278,16 +286,84 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
     workspace_result = None
     runtime_result = None
     observed_at = _timestamp()
+    deadline = started + (C2_DEADLINE_MS / 1000)
 
     def remaining_seconds() -> float:
-        remaining = C2_DEADLINE_MS / 1000 - (time.monotonic() - started)
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("C2 diagnostic observation deadline exceeded")
         return remaining
 
+    def observe_helper(
+        helper: str,
+        method: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        helper_started = time.monotonic()
+        timeout = remaining_seconds()
+        outcome = "error"
+        result: Any = None
+        caught: BaseException | None = None
+        try:
+            result = _call_with_remaining(method, *args, timeout=timeout, **kwargs)
+            outcome = "success"
+            return result
+        except BaseException as exc:
+            caught = exc
+            raise
+        finally:
+            helper_completed = time.monotonic()
+            if timing_trace is not None:
+                result_argv = getattr(result, "argv", ()) or getattr(caught, "argv", ())
+                timing_trace.append({
+                    "helper": helper,
+                    "requestedTimeoutMs": timeout * 1000,
+                    "startedElapsedMs": (helper_started - started) * 1000,
+                    "completedElapsedMs": (helper_completed - started) * 1000,
+                    "durationMs": (helper_completed - helper_started) * 1000,
+                    "completedBeforeDeadline": helper_completed < deadline,
+                    "outcome": outcome,
+                    "argv": [str(value) for value in result_argv],
+                    "exceptionType": type(caught).__name__ if caught is not None else None,
+                    "causeType": type(caught.__cause__).__name__
+                    if caught is not None and caught.__cause__ is not None else None,
+                })
+
     try:
         if command == "status":
-            workspace_result = _call_with_remaining(runtime.inspect, support_root=support_root, timeout=remaining_seconds())
+            # These are independent read-only Runtime observations.  Launching
+            # them together prevents their individual latency from being
+            # added while retaining one absolute five-second boundary.
+            executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="astrid-diagnostic")
+            futures: dict[str, Future[Any]] = {
+                "workspace.inspect": executor.submit(
+                    observe_helper,
+                    "workspace.inspect",
+                    runtime.inspect,
+                    support_root=support_root,
+                ),
+                "runtime.observe": executor.submit(
+                    observe_helper,
+                    "runtime.observe",
+                    runtime.observe,
+                    command,
+                    support_root=support_root,
+                ),
+            }
+            try:
+                _done, not_done = wait(tuple(futures.values()), timeout=remaining_seconds())
+                if not_done:
+                    for pending in not_done:
+                        pending.cancel()
+                    raise TimeoutError("C2 diagnostic observation deadline exceeded")
+                workspace_result = futures["workspace.inspect"].result()
+                runtime_result = futures["runtime.observe"].result()
+            finally:
+                # Each Runtime subprocess receives the same absolute remaining
+                # bound.  Wait for bounded teardown so no helper escapes the
+                # diagnostic even when the aggregate deadline has expired.
+                executor.shutdown(wait=True, cancel_futures=True)
             if getattr(workspace_result, "ok", False):
                 facts["workspace"] = _fact(observed=True, value="healthy", observed_at=observed_at)
             else:
@@ -298,7 +374,13 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
                     else "stopped" if problem_code == "workspace_missing" else "failed"
                 )
                 facts["workspace"] = _fact(observed=True, value=workspace_state, observed_at=observed_at)
-        runtime_result = _call_with_remaining(runtime.observe, command, support_root=support_root, timeout=remaining_seconds())
+        else:
+            runtime_result = observe_helper(
+                "runtime.observe",
+                runtime.observe,
+                command,
+                support_root=support_root,
+            )
         runtime_state = _public_runtime_state(
             getattr(runtime_result, "data", None),
             ok=bool(getattr(runtime_result, "ok", False)),
@@ -329,6 +411,13 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
             facts["contact"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
     elapsed = int((time.monotonic() - started) * 1000)
     timed_out = elapsed >= C2_DEADLINE_MS
+    if timing_trace is not None:
+        timing_trace.append({
+            "helper": "diagnostic.total",
+            "deadlineMs": C2_DEADLINE_MS,
+            "uncappedElapsedMs": (time.monotonic() - started) * 1000,
+            "timedOut": timed_out,
+        })
     if timed_out and problem_code is None:
         problem_code, failure_boundary = "observation_timeout", "diagnostic-observation"
     next_actions: list[dict[str, Any]] = []

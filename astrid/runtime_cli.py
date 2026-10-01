@@ -37,11 +37,15 @@ class RuntimeCLIError(RuntimeError):
         code: str = "runtime_unavailable",
         result: Mapping[str, Any] | None = None,
         returncode: int = 1,
+        argv: Sequence[str] = (),
+        timeout: float | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.result = dict(result or {})
         self.returncode = returncode
+        self.argv = tuple(map(str, argv))
+        self.timeout = timeout
 
 
 @dataclass(frozen=True)
@@ -132,9 +136,15 @@ class RuntimeCLI:
                 code=code,
                 result={"ok": False, "problem_code": code},
                 returncode=124,
+                argv=argv,
+                timeout=timeout,
             ) from exc
         except (OSError, subprocess.SubprocessError) as exc:
-            raise RuntimeCLIError(f"could not run the Astrid Runtime CLI: {exc}") from exc
+            raise RuntimeCLIError(
+                f"could not run the Astrid Runtime CLI: {exc}",
+                argv=argv,
+                timeout=timeout,
+            ) from exc
         data = _json_payload(completed.stdout, completed.stderr)
         return RuntimeResult(argv, int(completed.returncode), data, completed.stderr.strip())
 

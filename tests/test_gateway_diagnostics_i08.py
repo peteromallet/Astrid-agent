@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -138,15 +140,25 @@ def test_runtime_cli_timeout_maps_to_c2_timeout() -> None:
     def runner(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
+    trace: list[dict[str, object]] = []
     report, _, _ = collect_diagnostic(
         RuntimeCLI(command=("banodoco-local",), runner=runner),
         support_root="/Users/private/support",
         command="doctor",
+        timing_trace=trace,
     )
 
     assert validate_diagnostic(report) == []
     assert report["problemCode"] == "observation_timeout"
     assert report["failureBoundary"] == "diagnostic-observation"
+    helper = trace[0]
+    assert helper["helper"] == "runtime.observe"
+    assert helper["argv"] == [
+        "banodoco-local", "doctor", "--data-root", "/Users/private/support", "--json",
+    ]
+    assert helper["exceptionType"] == "RuntimeCLIError"
+    assert helper["causeType"] == "TimeoutExpired"
+    assert 0 < helper["requestedTimeoutMs"] <= C2_DEADLINE_MS
 
 
 @pytest.mark.parametrize(
@@ -184,18 +196,110 @@ def test_absent_observer_evidence_remains_unknown() -> None:
     assert runtime_fact["unavailableReason"] == "unknown"
 
 
-def test_total_deadline_stops_after_first_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_observers_run_concurrently_with_uncapped_timing_evidence() -> None:
+    rendezvous = threading.Barrier(2)
+
+    class DelayedObserver(_Observer):
+        def inspect(self, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+            assert 0 < timeout <= C2_DEADLINE_MS / 1000
+            rendezvous.wait(timeout=1)
+            time.sleep(0.04)
+            return super().inspect(support_root=support_root, timeout=timeout)
+
+        def observe(self, command: str, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+            assert 0 < timeout <= C2_DEADLINE_MS / 1000
+            rendezvous.wait(timeout=1)
+            time.sleep(0.04)
+            return super().observe(command, support_root=support_root, timeout=timeout)
+
+    trace: list[dict[str, object]] = []
+    report, _, _ = collect_diagnostic(
+        DelayedObserver(),
+        support_root="/Users/private/support",
+        timing_trace=trace,
+    )
+
+    assert report["problemCode"] is None
+    assert report["timing"]["timedOut"] is False
+    helpers = {row["helper"]: row for row in trace}
+    assert set(helpers) == {"workspace.inspect", "runtime.observe", "diagnostic.total"}
+    assert helpers["workspace.inspect"]["argv"] == ["runtime", "workspace", "inspect"]
+    assert helpers["runtime.observe"]["argv"] == ["runtime", "status"]
+    assert 0 < helpers["workspace.inspect"]["requestedTimeoutMs"] <= C2_DEADLINE_MS
+    assert 0 < helpers["runtime.observe"]["requestedTimeoutMs"] <= C2_DEADLINE_MS
+    assert max(
+        helpers["workspace.inspect"]["startedElapsedMs"],
+        helpers["runtime.observe"]["startedElapsedMs"],
+    ) < min(
+        helpers["workspace.inspect"]["completedElapsedMs"],
+        helpers["runtime.observe"]["completedElapsedMs"],
+    )
+    assert helpers["diagnostic.total"]["uncappedElapsedMs"] < C2_DEADLINE_MS
+
+
+def test_successful_observers_finishing_after_total_deadline_still_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from astrid.core.gateway import diagnostics
 
-    ticks = iter((0.0, 0.0, 5.001, 5.001))
-    monkeypatch.setattr(diagnostics.time, "monotonic", lambda: next(ticks))
-    runtime = _Observer()
-    report, _, _ = collect_diagnostic(runtime, support_root="/Users/private/support")
+    monkeypatch.setattr(diagnostics, "C2_DEADLINE_MS", 30)
 
-    assert runtime.inspect_calls == 1
-    assert runtime.observe_calls == 0
+    class LateSuccessObserver(_Observer):
+        def inspect(self, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+            time.sleep(0.04)
+            return super().inspect(support_root=support_root, timeout=timeout)
+
+        def observe(self, command: str, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+            time.sleep(0.04)
+            return super().observe(command, support_root=support_root, timeout=timeout)
+
+    trace: list[dict[str, object]] = []
+    report, _, _ = collect_diagnostic(
+        LateSuccessObserver(),
+        support_root="/Users/private/support",
+        timing_trace=trace,
+    )
+
     assert report["problemCode"] == "observation_timeout"
     assert report["failureBoundary"] == "diagnostic-observation"
+    assert report["timing"] == {
+        "deadlineScope": "total-including-all-helpers",
+        "deadlineMs": 30,
+        "elapsedMs": 30,
+        "timedOut": True,
+    }
+    helpers = {row["helper"]: row for row in trace}
+    assert helpers["workspace.inspect"]["completedBeforeDeadline"] is False
+    assert helpers["runtime.observe"]["completedBeforeDeadline"] is False
+    assert helpers["diagnostic.total"]["uncappedElapsedMs"] >= 30
+
+
+def test_genuinely_stalled_helper_is_bounded_and_reports_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrid.core.gateway import diagnostics
+
+    monkeypatch.setattr(diagnostics, "C2_DEADLINE_MS", 40)
+
+    class StalledObserver(_Observer):
+        def inspect(self, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+            time.sleep(timeout + 0.005)
+            raise TimeoutError("fixture helper remained stalled")
+
+    trace: list[dict[str, object]] = []
+    report, _, _ = collect_diagnostic(
+        StalledObserver(),
+        support_root="/Users/private/support",
+        timing_trace=trace,
+    )
+
+    assert report["problemCode"] == "observation_timeout"
+    assert report["failureBoundary"] == "diagnostic-observation"
+    helpers = {row["helper"]: row for row in trace}
+    assert helpers["workspace.inspect"]["outcome"] == "error"
+    assert helpers["workspace.inspect"]["exceptionType"] == "TimeoutError"
+    assert 0 < helpers["workspace.inspect"]["requestedTimeoutMs"] <= 40
+    assert helpers["diagnostic.total"]["timedOut"] is True
 
 
 def test_public_help_auth_and_status_diagnostic_routes(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys) -> None:
