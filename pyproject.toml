@@ -131,6 +131,13 @@ astrid = [
     # Runtime mask resources used by the packaged LanPaint compiler.
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png",
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png",
+    "packs/local/elements/effects/frame-overlay/assets/frame.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-0.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-1.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-2.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-3.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-4.png",
+    "packs/local/elements/effects/end-spanning-layer/assets/card-5.png",
     "packs/text_analysis/fixtures/*.txt",
     "packs/**/*.html",
     "packs/**/*.css",
