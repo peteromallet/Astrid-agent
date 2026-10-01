@@ -405,14 +405,15 @@ def _pause_frame(
     handoff_id: str = "handoff-1",
     nonce_digest: str = "sha256:" + "6" * 64,
     old_owner: dict[str, object] | None = None,
+    deadline_seconds: float = 30,
 ) -> dict[str, object]:
     return {
         "version": generic_host.HOST_CONTROL_VERSION,
         "command": "pause_prepare",
         "handoff_id": handoff_id,
         "nonce_digest": nonce_digest,
-        "deadline_monotonic": time.monotonic() + 30,
-        "deadline_unix_ms": int(time.time() * 1000) + 30_000,
+        "deadline_monotonic": time.monotonic() + deadline_seconds,
+        "deadline_unix_ms": int(time.time() * 1000) + int(deadline_seconds * 1000),
         "old_runtime": dict(old_runtime),
         "old_owner": dict(old_owner or _owner_identity()),
     }
@@ -471,7 +472,7 @@ def _write_credential_generation(root: Path) -> tuple[Path, dict[str, str]]:
     return token, generic_host.credential_generation_snapshot(token)
 
 
-def test_host_control_live_claim_refuses_pause_without_mutation(tmp_path: Path) -> None:
+def test_host_control_persistent_claim_refuses_pause_without_mutation(tmp_path: Path) -> None:
     old_runtime = _runtime_identity(suffix="a", epoch=1)
     state = _registered_state(old_runtime)
     credential, _generation = _write_credential_generation(tmp_path)
@@ -490,7 +491,12 @@ def test_host_control_live_claim_refuses_pause_without_mutation(tmp_path: Path) 
     assert entered.wait(2)
 
     before = json.loads(json.dumps(state))
-    acknowledgement = control.handle_frame(_pause_frame(old_runtime))
+    try:
+        acknowledgement = control.handle_frame(
+            _pause_frame(old_runtime, deadline_seconds=0.2)
+        )
+    finally:
+        release.set()
 
     assert acknowledgement["status"] == "active_work"
     assert acknowledgement["phase"] == "ACTIVE"
@@ -504,7 +510,40 @@ def test_host_control_live_claim_refuses_pause_without_mutation(tmp_path: Path) 
     }
     assert host.claim_gate_state == {"paused": False, "in_flight": 1}
     assert state == before
-    release.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_host_control_transient_claim_drains_before_pause(tmp_path: Path) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    state = _registered_state(old_runtime)
+    credential, _generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def claim() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    host._claim_once_unlocked = claim  # type: ignore[method-assign]
+    thread = threading.Thread(target=host.claim_once)
+    thread.start()
+    assert entered.wait(2)
+    timer = threading.Timer(0.02, release.set)
+    timer.start()
+    try:
+        acknowledgement = control.handle_frame(
+            _pause_frame(old_runtime, deadline_seconds=1)
+        )
+    finally:
+        timer.cancel()
+
+    assert acknowledgement["status"] == "paused"
+    assert acknowledgement["phase"] == "PAUSED"
+    assert "inflight_claim_iterations" not in acknowledgement
+    assert host.claim_gate_state == {"paused": True, "in_flight": 0}
     thread.join(timeout=2)
     assert not thread.is_alive()
 

@@ -2772,14 +2772,23 @@ class GenericPackHost:
                 self._claim_iterations_in_flight -= 1
                 self._claim_condition.notify_all()
 
-    def _pause_claims_if_idle(self) -> tuple[bool, int]:
-        """Atomically gate the next iteration, refusing current work."""
+    def _pause_claims_until_idle(
+        self, *, deadline_monotonic: float, deadline_unix_ms: int
+    ) -> tuple[bool, int]:
+        """Gate new claims and wait only for the current iteration to drain."""
 
         with self._claim_condition:
             if self._claim_pause_requested:
                 raise HostError("generic host claim gate is already paused")
             self._claim_pause_requested = True
-            if self._claim_iterations_in_flight:
+            while self._claim_iterations_in_flight:
+                remaining = min(
+                    deadline_monotonic - time.monotonic(),
+                    (deadline_unix_ms - int(time.time() * 1000)) / 1000,
+                )
+                if remaining > 0:
+                    self._claim_condition.wait(timeout=remaining)
+                    continue
                 in_flight = self._claim_iterations_in_flight
                 self._claim_pause_requested = False
                 self._claim_condition.notify_all()
@@ -7064,7 +7073,10 @@ class LocalWorkerHostControl:
             raise HostControlRejected(
                 "host-control old runtime is not the current runtime"
             )
-        paused, in_flight = self.host._pause_claims_if_idle()
+        paused, in_flight = self.host._pause_claims_until_idle(
+            deadline_monotonic=deadline_monotonic,
+            deadline_unix_ms=deadline_unix_ms,
+        )
         if not paused:
             return self._ack(
                 frame,
