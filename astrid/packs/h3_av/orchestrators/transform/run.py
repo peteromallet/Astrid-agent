@@ -27,7 +27,6 @@ from astrid.packs.h3_av.src.receipt import (
     write_final_receipt,
 )
 from astrid.packs.h3_av.src.request import load_request
-from astrid.packs.h3_av.src.request_v2 import branch_for
 from astrid.sdk import AstridClient
 from astrid.sdk.results import InvocationResult
 
@@ -135,17 +134,15 @@ def _managed_rows(result: Any, name: str) -> list[Mapping[str, Any]]:
         row_name = value.get("name") or value.get("output_port")
         producer = value.get("producer")
         producer_port = producer.get("output_port") if isinstance(producer, Mapping) else None
-        if (
-            row_name == name
-            or (
-                name == "vibecomfy_run"
-                and row_name in {"vibecomfy_run", "generated_videos", "video", "audio"}
-            )
-            or (
-                name == "vibecomfy_run"
-                and producer_port in {"video", "audio", "generated_video", "generated_audio"}
-            )
-            or (name == "vibecomfy_run" and _output_role(value) in {"video", "audio"})
+        if row_name == name or (
+            name == "vibecomfy_run"
+            and row_name in {"vibecomfy_run", "generated_videos", "video", "audio"}
+        ) or (
+            name == "vibecomfy_run"
+            and producer_port in {"video", "audio", "generated_video", "generated_audio"}
+        ) or (
+            name == "vibecomfy_run"
+            and _output_role(value) in {"video", "audio"}
         ):
             rows.append(value)
     unique: list[Mapping[str, Any]] = []
@@ -157,13 +154,8 @@ def _managed_rows(result: Any, name: str) -> list[Mapping[str, Any]]:
             if isinstance(producer, Mapping)
             else row.get("producer_output_id")
         )
-        identity = (
-            producer_id or row.get("object_id") or row.get("digest") or row.get("content_hash")
-        )
-        key = (
-            str(identity),
-            str(_output_role(row) or row.get("name") or row.get("output_port") or ""),
-        )
+        identity = producer_id or row.get("object_id") or row.get("digest") or row.get("content_hash")
+        key = (str(identity), str(_output_role(row) or row.get("name") or row.get("output_port") or ""))
         if key not in seen:
             seen.add(key)
             unique.append(row)
@@ -214,9 +206,7 @@ def _descriptor(row: Mapping[str, Any], *, filename: str) -> dict[str, Any]:
     }
 
 
-def _import_runtime_file(
-    client: Any, *, project: str | None, path: Path, filename: str
-) -> dict[str, Any]:
+def _import_runtime_file(client: Any, *, project: str | None, path: Path, filename: str) -> dict[str, Any]:
     """Upload an immutable local input through the connected Runtime client."""
 
     importer = getattr(getattr(client, "media", None), "import_file", None)
@@ -237,9 +227,7 @@ def _import_runtime_file(
         idempotency_key=f"h3-av-input-{digest}",
     )
     if not getattr(result, "ok", False):
-        raise RuntimeError(
-            f"could not import managed H3 input {filename!r}: {getattr(result, 'error', result)}"
-        )
+        raise RuntimeError(f"could not import managed H3 input {filename!r}: {getattr(result, 'error', result)}")
     data = getattr(result, "data", None)
     if not isinstance(data, Mapping):
         raise RuntimeError(f"managed H3 input {filename!r} returned no object descriptor")
@@ -261,20 +249,13 @@ def _materialize_output(
     if not managed_only:
         local = _direct_output(result, name)
         if local is not None:
-            return local, {
-                "path": str(local),
-                "sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
-            }
+            return local, {"path": str(local), "sha256": hashlib.sha256(local.read_bytes()).hexdigest()}
     rows = _managed_rows(result, name)
     if not rows:
-        raise RuntimeError(
-            f"child {getattr(result, 'capability_id', '?')} did not return settled output {name!r}"
-        )
+        raise RuntimeError(f"child {getattr(result, 'capability_id', '?')} did not return settled output {name!r}")
     # A primary result is authoritative; do not accidentally retrieve a JSON
     # receipt or an auxiliary output with the same task.
-    row = next(
-        (item for item in rows if item.get("is_primary") or item.get("role") == "result"), rows[0]
-    )
+    row = next((item for item in rows if item.get("is_primary") or item.get("role") == "result"), rows[0])
     object_id = _digest(row)
     if object_id is None:
         raise RuntimeError(f"managed output {name!r} has no canonical object digest")
@@ -298,13 +279,7 @@ def _materialize_output(
     destination = out_dir / "retrieved" / filename
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
-    return destination, {
-        **dict(row),
-        "object_id": object_id,
-        "digest": object_id,
-        "path": str(destination),
-        "sha256": object_id.removeprefix("sha256:"),
-    }
+    return destination, {**dict(row), "object_id": object_id, "digest": object_id, "path": str(destination), "sha256": object_id.removeprefix("sha256:")}
 
 
 def _retrieve_generation_outputs(
@@ -323,12 +298,14 @@ def _retrieve_generation_outputs(
     missing = [role for role in ("video", "audio") if not by_role[role]]
     if missing:
         raise RuntimeError(
-            "managed LanPaint generation is missing required output role(s): " + ", ".join(missing)
+            "managed LanPaint generation is missing required output role(s): "
+            + ", ".join(missing)
         )
     duplicate = [role for role in ("video", "audio") if len(by_role[role]) != 1]
     if duplicate:
         raise RuntimeError(
-            "managed LanPaint generation has ambiguous output role(s): " + ", ".join(duplicate)
+            "managed LanPaint generation has ambiguous output role(s): "
+            + ", ".join(duplicate)
         )
     return {
         role: (
@@ -414,13 +391,7 @@ def _write_generated_bundle(
     manifest = {"schema_version": 1, "kind": "h3_av_generated_av", "outputs": records}
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w") as archive:
-        for member, data in [
-            (
-                "manifest.json",
-                json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-            ),
-            *payloads,
-        ]:
+        for member, data in [("manifest.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")), *payloads]:
             info = zipfile.ZipInfo(member, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o100600 << 16
@@ -448,9 +419,7 @@ def _retrieve_compiled_workflow(
         identity = workflow.get(filename)
         expected = identity.get("sha256") if isinstance(identity, Mapping) else None
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
-            raise RuntimeError(
-                f"compilation.json has no valid hash for workflow member {filename!r}"
-            )
+            raise RuntimeError(f"compilation.json has no valid hash for workflow member {filename!r}")
         path, row = _materialize_output(
             client,
             compiled,
@@ -491,33 +460,11 @@ def _provenance(preparation: Mapping[str, Any], compilation: Mapping[str, Any]) 
     }
 
 
-def _authoritative_source_asset_id(request: Any) -> str | None:
-    """Return the source baseline asset without projecting v1 keys onto v2."""
-
-    value = request.value
-    if value.get("version") != 2:
-        source = value["source"]
-        return None if source is None else str(source["asset"])
-    branch = branch_for(request)
-    if branch in {"source_free", "audio_only"}:
-        return None
-    videos = [
-        item
-        for item in value["media"]
-        if item["role"] == "timeline" and item.get("modality") == "video"
-    ]
-    return str(videos[0]["asset"]) if len(videos) == 1 else None
-
-
-def _write_provenance_preparation(
-    root: Path, preparation: Mapping[str, Any], provenance: Mapping[str, Any]
-) -> Path:
+def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], provenance: Mapping[str, Any]) -> Path:
     enriched = dict(preparation)
     enriched["provenance"] = dict(provenance)
     path = root / "provenance-preparation.json"
-    path.write_text(
-        json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
 
 
@@ -567,9 +514,13 @@ def _qualified_execution_request(
     execution_request: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     expected_target = (
-        execution_request.get("target") if isinstance(execution_request, Mapping) else None
+        execution_request.get("target")
+        if isinstance(execution_request, Mapping)
+        else None
     )
-    qualified_target = ensure_runpod_worker(qualification, expected_target=expected_target)
+    qualified_target = ensure_runpod_worker(
+        qualification, expected_target=expected_target
+    )
     target = {
         key: qualified_target[key]
         for key in (
@@ -653,9 +604,7 @@ def _save_invocation_result(path: Path, result: InvocationResult, *, input_diges
         "result": result_payload,
     }
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(envelope, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(envelope, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -685,25 +634,15 @@ def _load_invocation_result(path: Path, *, expected_input_digest: str) -> Invoca
         native_kind=str(value["native_kind"]),
         ok=bool(value["ok"]),
         error=value.get("error") if isinstance(value.get("error"), Mapping) else None,
-        manifest_path=value.get("manifest_path")
-        if isinstance(value.get("manifest_path"), str)
-        else None,
+        manifest_path=value.get("manifest_path") if isinstance(value.get("manifest_path"), str) else None,
         raw_result=raw_result if isinstance(raw_result, Mapping) else {},
         run_id=value.get("run_id") if isinstance(value.get("run_id"), str) else None,
         run_root=value.get("run_root") if isinstance(value.get("run_root"), str) else None,
         outputs=outputs if isinstance(outputs, Mapping) else {},
-        executor_version=value.get("executor_version")
-        if isinstance(value.get("executor_version"), str)
-        else None,
-        kernel_run_id=value.get("kernel_run_id")
-        if isinstance(value.get("kernel_run_id"), str)
-        else None,
-        kernel_task_id=value.get("kernel_task_id")
-        if isinstance(value.get("kernel_task_id"), str)
-        else None,
-        kernel_attempt_id=value.get("kernel_attempt_id")
-        if isinstance(value.get("kernel_attempt_id"), str)
-        else None,
+        executor_version=value.get("executor_version") if isinstance(value.get("executor_version"), str) else None,
+        kernel_run_id=value.get("kernel_run_id") if isinstance(value.get("kernel_run_id"), str) else None,
+        kernel_task_id=value.get("kernel_task_id") if isinstance(value.get("kernel_task_id"), str) else None,
+        kernel_attempt_id=value.get("kernel_attempt_id") if isinstance(value.get("kernel_attempt_id"), str) else None,
     )
 
 
@@ -747,9 +686,7 @@ def _reobserve_saved_result(
     if task.get("task_id", task.get("id")) != task_id:
         raise RuntimeError(f"cannot resume {phase}: Runtime returned a different task identity")
     if task.get("run_id") != run_id or task.get("attempt_id") != attempt_id:
-        raise RuntimeError(
-            f"cannot resume {phase}: Runtime task identity disagrees with saved identity"
-        )
+        raise RuntimeError(f"cannot resume {phase}: Runtime task identity disagrees with saved identity")
     state = str(task.get("state") or task.get("status") or "").lower()
     if state not in {"succeeded", "completed"}:
         raise RuntimeError(
@@ -821,14 +758,12 @@ def _invoke_stage(
 ) -> InvocationResult:
     """Invoke one canonical stage once, or reuse its settled DTO on resume."""
 
-    input_digest = _stable_digest(
-        {
-            "capability_id": capability_id,
-            "inputs": inputs,
-            "project": project,
-            "execution_request": execution_request,
-        }
-    )
+    input_digest = _stable_digest({
+        "capability_id": capability_id,
+        "inputs": inputs,
+        "project": project,
+        "execution_request": execution_request,
+    })
     previous = journal.latest(phase)
     if resume and saved_result.is_file():
         if previous is None:
@@ -840,8 +775,12 @@ def _invoke_stage(
             raise RuntimeError(f"saved {phase} result is not successful")
         if result.capability_id != capability_id:
             raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
-        recorded_identity = tuple(previous.get(key) for key in ("task_id", "run_id", "attempt_id"))
-        result_identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
+        recorded_identity = tuple(
+            previous.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
+        result_identity = (
+            result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id
+        )
         if all(isinstance(value, str) and value for value in recorded_identity):
             if recorded_identity != result_identity:
                 raise RuntimeError(
@@ -850,14 +789,8 @@ def _invoke_stage(
         result = _reobserve_saved_result(client, result, phase=phase)
         journal.record(phase, "reused", capability_id=capability_id)
         return result
-    if (
-        resume
-        and previous is not None
-        and previous.get("status") in {"started", "uncertain", "completed"}
-    ):
-        raise RuntimeError(
-            f"cannot resume {phase}: invocation result is missing after {previous.get('status')}"
-        )
+    if resume and previous is not None and previous.get("status") in {"started", "uncertain", "completed"}:
+        raise RuntimeError(f"cannot resume {phase}: invocation result is missing after {previous.get('status')}")
     journal.record(phase, "started", capability_id=capability_id, input_digest=input_digest)
     try:
         result = _invoke(
@@ -871,12 +804,8 @@ def _invoke_stage(
         )
     except Exception as exc:
         journal.record(
-            phase,
-            "uncertain",
-            capability_id=capability_id,
-            input_digest=input_digest,
-            error=type(exc).__name__,
-            message=str(exc)[:1000],
+            phase, "uncertain", capability_id=capability_id,
+            input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
         )
         raise
     _save_invocation_result(saved_result, result, input_digest=input_digest)
@@ -916,12 +845,10 @@ def _invoke_canonical_run(
         "execution_request": execution_request,
     }
     admission_digest = _stable_digest(admission_payload)
-    run_input_digest = _stable_digest(
-        {
-            **admission_payload,
-            "project": project,
-        }
-    )
+    run_input_digest = _stable_digest({
+        **admission_payload,
+        "project": project,
+    })
     prior_run = journal.latest("run")
     if resume and prior_run is not None and journal.admission_digest is None:
         raise RuntimeError("cannot resume canonical run: journal has no frozen admission identity")
@@ -943,7 +870,9 @@ def _invoke_canonical_run(
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
             raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
-        recorded_identity = tuple(prior_run.get(key) for key in ("task_id", "run_id", "attempt_id"))
+        recorded_identity = tuple(
+            prior_run.get(key) for key in ("task_id", "run_id", "attempt_id")
+        )
         if all(isinstance(value, str) and value for value in recorded_identity):
             if recorded_identity != identity:
                 raise RuntimeError(
@@ -952,12 +881,8 @@ def _invoke_canonical_run(
         result = _reobserve_saved_result(client, result, phase="canonical run")
         journal.set_admission_phase("settled")
         journal.record(
-            "run",
-            "reused",
-            task_id=identity[0],
-            run_id=identity[1],
-            attempt_id=identity[2],
-            admission_digest=admission_digest,
+            "run", "reused", task_id=identity[0], run_id=identity[1],
+            attempt_id=identity[2], admission_digest=admission_digest,
         )
         return result
 
@@ -972,11 +897,7 @@ def _invoke_canonical_run(
     journal.record("run", "admission_started", admission_digest=admission_digest)
     try:
         result = _invoke(
-            client,
-            "vibecomfy.run",
-            inputs=inputs,
-            out=out,
-            project=project,
+            client, "vibecomfy.run", inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
         )
@@ -987,21 +908,14 @@ def _invoke_canonical_run(
     except Exception as exc:
         journal.set_admission_phase("uncertain")
         journal.record(
-            "run",
-            "uncertain",
-            admission_digest=admission_digest,
-            error=type(exc).__name__,
-            message=str(exc)[:1000],
+            "run", "uncertain", admission_digest=admission_digest,
+            error=type(exc).__name__, message=str(exc)[:1000],
         )
         raise
     journal.set_admission_phase("settled")
     journal.record(
-        "run",
-        "completed",
-        task_id=identity[0],
-        run_id=identity[1],
-        attempt_id=identity[2],
-        admission_digest=admission_digest,
+        "run", "completed", task_id=identity[0], run_id=identity[1],
+        attempt_id=identity[2], admission_digest=admission_digest,
     )
     return result
 
@@ -1061,19 +975,15 @@ def _finalizer_generation_intent(
         "version": 1,
         "modality": generation_intent.get("modality", "video"),
         "partial_success_policy": "reject",
-        "groups": [
-            {
-                "group_key": "main",
-                "selectors": [
-                    {
-                        "selector": "final-composition",
-                        "ordinal": 0,
-                        "variant_key": "final-composition",
-                        "required": True,
-                    }
-                ],
-            }
-        ],
+        "groups": [{
+            "group_key": "main",
+            "selectors": [{
+                "selector": "final-composition",
+                "ordinal": 0,
+                "variant_key": "final-composition",
+                "required": True,
+            }],
+        }],
         "metadata": {
             "compiled_generation_contract": True,
             "h3_av": {
@@ -1100,14 +1010,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "status": "planned",
             "request": str(args.request.resolve()),
             "asset_map": str(args.asset_map.resolve()),
-            "stages": [
-                "h3_av.prepare",
-                "h3_av.compile",
-                "vibecomfy.validate",
-                "vibecomfy.run",
-                "h3_av.compose",
-                "h3_av.verify",
-            ],
+            "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify"],
         }
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
     qualification: dict[str, Any] | None = None
@@ -1135,7 +1038,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             encoding="utf-8",
         )
     elif args.require_worker_qualification:
-        raise RuntimeError("worker qualification is required before targeted H3 admission")
+        raise RuntimeError(
+            "worker qualification is required before targeted H3 admission"
+        )
     cleanup_receipt = _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
@@ -1143,7 +1048,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     with AstridClient.open_from_launcher(start_pack_host=False) as client:
         request = load_request(args.request)
         try:
-            journal = OperationJournal(root / "operation-state.json", request_digest=request.digest)
+            journal = OperationJournal(
+                root / "operation-state.json", request_digest=request.digest
+            )
         except OperationJournalError as exc:
             raise RuntimeError(f"cannot open H3 operation journal: {exc}") from exc
         if journal.has_history and not getattr(args, "resume", False):
@@ -1167,49 +1074,37 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         # child inputs. Never open a prepare worker's absolute source path.
         frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
         source_inputs = {}
-        source_asset_id = _authoritative_source_asset_id(request)
-        if source_asset_id is not None:
-            source_path = Path(frozen_assets[source_asset_id])
+        if request.value["source"] is not None:
+            source_path = Path(frozen_assets[request.value["source"]["asset"]])
             source_inputs["source"] = _import_runtime_file(
                 client, project=args.project, path=source_path, filename=source_path.name
             )
         prepared = _invoke_stage(
-            client,
-            "h3_av.prepare",
+            client, "h3_av.prepare",
             inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
-            out=root / "01-prepare",
-            project=args.project,
+            out=root / "01-prepare", project=args.project,
             saved_result=root / "01-prepare" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="prepare",
             idempotency_context=idempotency_context,
         )
-        preparation_path, preparation_row = _materialize_output(
-            client, prepared, "preparation", root / "01-prepare", managed_only=True
-        )
+        preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
         preparation = _json_mapping(preparation_path)
         compiled = _invoke_stage(
-            client,
-            "h3_av.compile",
-            inputs={
+            client, "h3_av.compile", inputs={
                 "preparation": _descriptor(preparation_row, filename="preparation.json"),
                 "input_bundle": bundle_descriptor,
             },
-            out=root / "02-compile",
-            project=args.project,
+            out=root / "02-compile", project=args.project,
             saved_result=root / "02-compile" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compile",
             idempotency_context=idempotency_context,
         )
-        compilation_path, compilation_row = _materialize_output(
-            client, compiled, "compilation", root / "02-compile", managed_only=True
-        )
-        managed_assets_path, managed_assets_row = _materialize_output(
-            client, compiled, "managed_assets", root / "02-compile", managed_only=True
-        )
+        compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
+        managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
         compilation = _json_mapping(compilation_path)
         expected_assets_digest = compilation.get("managed_assets", {}).get("sha256")
         actual_assets_digest = hashlib.sha256(managed_assets_path.read_bytes()).hexdigest()
@@ -1217,9 +1112,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError("managed H3 assets failed compilation hash/provenance verification")
         provenance = _provenance(preparation, compilation)
         provenance_path = _write_provenance_preparation(root, preparation, provenance)
-        bundle_inputs = _retrieve_compiled_workflow(
-            client, compiled, compilation, root / "02-compile"
-        )
+        bundle_inputs = _retrieve_compiled_workflow(client, compiled, compilation, root / "02-compile")
         # Canonical workflow Python is executable input.  Carry the explicit
         # consent scalar required by VibeComfy's audited validation gate;
         # execution-request targeting is not itself Python consent.
@@ -1249,9 +1142,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         run_inputs = {
             **bundle_inputs,
             "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
-            "workflow_inputs": json.dumps(
-                compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")
-            ),
+            "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
             "generation_intent": generation_intent,
         }
         saved_run_path = root / "04-run" / "run-result.json"
@@ -1271,7 +1162,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         generated_audio_path: Path | None = None
         generated_bundle_path: Path | None = None
         if output_contract == "muxed_av_full_timeline":
-            generated_path, muxed_row = _retrieve_muxed_generation(client, run, root / "04-run")
+            generated_path, muxed_row = _retrieve_muxed_generation(
+                client, run, root / "04-run"
+            )
             generated_outputs: dict[str, tuple[Path, Mapping[str, Any]]] = {
                 "muxed_av": (generated_path, muxed_row)
             }
@@ -1296,7 +1189,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "run_id": getattr(run, "kernel_run_id", None),
             "task_id": getattr(run, "kernel_task_id", None),
             "attempt_id": getattr(run, "kernel_attempt_id", None),
-            "generated_outputs": {role: row for role, (_path, row) in generated_outputs.items()},
+            "generated_outputs": {
+                role: row for role, (_path, row) in generated_outputs.items()
+            },
             "output_contract": output_contract,
         }
         if generated_bundle_path is not None:
@@ -1306,15 +1201,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             }
         enriched = dict(preparation)
         enriched["provenance"] = {**provenance, "runtime": runtime_provenance}
-        provenance_path.write_text(
-            json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        provenance_path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
         preparation_descriptor = _import_runtime_file(
-            client,
-            project=args.project,
-            path=provenance_path,
-            filename="provenance-preparation.json",
+            client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
         )
         generated_input_path = generated_bundle_path or generated_path
         generated_descriptor = _import_runtime_file(
@@ -1324,47 +1213,37 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             filename=generated_input_path.name,
         )
         composed = _invoke_stage(
-            client,
-            "h3_av.compose",
+            client, "h3_av.compose",
             inputs={
                 "preparation": preparation_descriptor,
                 "generated": generated_descriptor,
                 **source_inputs,
             },
-            out=root / "05-compose",
-            project=args.project,
+            out=root / "05-compose", project=args.project,
             saved_result=root / "05-compose" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compose",
             idempotency_context=idempotency_context,
         )
-        composition_path, composition_row = _materialize_output(
-            client, composed, "composition", root / "05-compose", managed_only=True
-        )
-        candidate_path, candidate_row = _materialize_output(
-            client, composed, "candidate", root / "05-compose", managed_only=True
-        )
+        composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
+        candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
         verified = _invoke_stage(
-            client,
-            "h3_av.verify",
+            client, "h3_av.verify",
             inputs={
                 "preparation": preparation_descriptor,
                 "composition": _descriptor(composition_row, filename="composition-manifest.json"),
                 "candidate": _descriptor(candidate_row, filename="candidate.media"),
                 **source_inputs,
             },
-            out=root / "06-verify",
-            project=args.project,
+            out=root / "06-verify", project=args.project,
             saved_result=root / "06-verify" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="verify",
             idempotency_context=idempotency_context,
         )
-        verification_path, verification_row = _materialize_output(
-            client, verified, "verification", root / "06-verify", managed_only=True
-        )
+        verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
         task_evidence = {
             key: value
@@ -1377,7 +1256,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             if value is not None
         }
         admitted_target = (
-            execution_request.get("target") if isinstance(execution_request, Mapping) else None
+            execution_request.get("target")
+            if isinstance(execution_request, Mapping)
+            else None
         )
         if isinstance(admitted_target, Mapping):
             task_evidence["target"] = _receipt_target(admitted_target)
@@ -1446,7 +1327,9 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                 "verification": verification,
             },
             editorially_approved=(
-                {"source": "--editorial-approved"} if args.editorial_approved else None
+                {"source": "--editorial-approved"}
+                if args.editorial_approved
+                else None
             ),
             cleanup=cleanup_receipt,
             raw_managed_publication=raw_managed_publication,
