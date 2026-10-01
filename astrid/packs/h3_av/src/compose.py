@@ -177,7 +177,7 @@ def _continuation_timing(preparation: Mapping[str, Any]) -> ContinuationTiming |
             not isinstance(request, Mapping)
             or request.get("version") != 2
             or not isinstance(schedule, Mapping)
-            or schedule.get("branch") not in {"extension_context", "source_backed_v2v"}
+            or schedule.get("branch") != "extension_context"
         ):
             return None
         videos = [
@@ -431,6 +431,7 @@ def _compose_media(
     generated_video: list[list[float]],
     generated_audio: list[list[float]],
     source_offset: float,
+    video_fps: float | None = None,
 ) -> dict[str, Any]:
     """Compose source and generated streams into a lossless MKV candidate."""
 
@@ -497,6 +498,12 @@ def _compose_media(
                 "".join(pieces)
                 + f"concat=n={len(pieces)}:v={'1' if stream_type == 'video' else '0'}:a={'1' if stream_type == 'audio' else '0'}[{output_label}]"
             )
+        if stream_type == "video" and video_fps is not None:
+            # Interior native-v2 edit cuts must stay on the native frame grid.
+            # Concatenated container timestamps can drift by a millisecond and
+            # put a protected boundary frame before its declared interval.
+            filters.append(f"[{output_label}]setpts=N/({video_fps}*TB)[vclock]")
+            output_label = "vclock"
         maps.append(f"[{output_label}]")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -758,6 +765,7 @@ def compose_candidate(
                     generated_video=list(schedule["video"]["generated_intervals"]),
                     generated_audio=list(schedule["audio"]["generated_intervals"]),
                     source_offset=_source_offset(preparation),
+                    video_fps=24.0 if schedule.get("branch") == "source_backed_v2v" else None,
                 )
             else:
                 # Non-media fixtures remain composable for legacy unit coverage,

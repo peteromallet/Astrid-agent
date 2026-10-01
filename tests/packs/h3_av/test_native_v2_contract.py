@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -12,9 +13,10 @@ from PIL import Image
 
 from astrid.packs.h3_av.orchestrators.transform.run import (
     _authoritative_source_asset_id,
+    _write_generated_bundle,
 )
 from astrid.packs.h3_av.src.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.src.compose import compose_candidate
+from astrid.packs.h3_av.src.compose import _sample_digest, compose_candidate
 from astrid.packs.h3_av.src.generation import generation_timing
 from astrid.packs.h3_av.src.prepare import prepare_request
 from astrid.packs.h3_av.src.request import normalize_request
@@ -35,8 +37,7 @@ def _case(branch: str) -> dict[str, object]:
         media = [{"id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 2]}]
     else:
         media = [
-            {"id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 4], "edit": [{"stream": "video", "during": [1, 2], "mask": {"full_frame": True}, "guides": ["look"]}]},
-            {"id": "look", "asset": "look.png", "role": "reference", "modality": "image"},
+            {"id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5], "edit": [{"stream": "video", "during": [1, 2], "mask": {"full_frame": True}}]},
         ]
     return {"version": 2, "prompt": f"Exercise {branch}.", "duration": 5, "continuation": branch == "extension_context", "media": media, "settings": {}}
 
@@ -88,7 +89,10 @@ def test_native_v2_schema_profile_and_supported_branch_bindings(tmp_path: Path) 
         compiled = compile_preparation(prepared, out_dir=tmp_path / branch)
         assert compiled["profile"] == "h3_av.native.v2"
         assert compiled["branch"] == branch
-        assert compiled["capabilities"]["output_contract"] == "muxed_av_full_timeline"
+        assert compiled["capabilities"]["output_contract"] == (
+            "separate_av_full_timeline" if branch == "source_backed_v2v"
+            else "muxed_av_full_timeline"
+        )
         workflow_path = Path(compiled["workflow"]["workflow.py"]["path"])
         workflow = load_workflow_any(str(workflow_path))
         assert set(compiled["workflow_inputs"]).issubset(workflow.inputs)
@@ -208,6 +212,93 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
 
     assert composition["coverage"]["candidate"]["video"]["frames"] == 48
     assert verification["preservation"]["status"] == "protected_sample_evidence"
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg and ffprobe are required",
+)
+def test_v2_same_length_edit_binds_intervals_and_reaches_compose_verify(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    video = tmp_path / "generated.mkv"
+    audio = tmp_path / "generated.flac"
+    _av(source, frames=24, color="blue", frequency=440)
+    # The video container deliberately has the source tone; edited audio must
+    # come from the separate LanPaint output, not that container's soundtrack.
+    _av(video, frames=24, color="red", frequency=440)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=880:sample_rate=48000", "-t", "1", str(audio)],
+        check=True, capture_output=True,
+    )
+    request = normalize_request({
+        "version": 2,
+        "prompt": "Edit independent portions of the source picture and soundtrack.",
+        "duration": 1,
+        "continuation": False,
+        "media": [{
+            "id": "source", "asset": "source.mkv", "role": "timeline",
+            "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+            "edit": [
+                {"stream": "video", "during": [0.25, 0.5], "mask": {"full_frame": True}},
+                {"stream": "audio", "during": [0.5, 0.75], "text": "Hello."},
+            ],
+        }],
+        "settings": {},
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    schedule = preparation["mask_schedule"]
+    assert schedule["branch"] == "source_backed_v2v"
+    assert schedule["video"]["generated_intervals"] == [[0.25, 0.5]]
+    assert schedule["audio"]["generated_intervals"] == [[0.5, 0.75]]
+    assert schedule["video"]["protected_intervals"] == [[0.0, 0.25], [0.5, 1.0]]
+    assert schedule["audio"]["protected_intervals"] == [[0.0, 0.5], [0.75, 1.0]]
+    compilation = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert compilation["profile"] == "h3_av.native.v2"
+    assert compilation["branch"] == "source_backed_v2v"
+    assert compilation["request_digest"] == request.digest
+    assert "continuation_timing" not in compilation
+    assert compilation["capabilities"]["output_contract"] == "separate_av_full_timeline"
+    workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
+    assert workflow.validate().ok
+    api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
+    editor = api["164"]
+    assert editor["class_type"] == "LanPaint_VideoMaskEditor"
+    keyframes = json.loads(editor["inputs"]["keyframes"])
+    assert set(keyframes) == {"0", "6", "12"}
+    assert keyframes["0"].endswith("mask_preserve.png")
+    assert keyframes["6"].endswith("mask_full_frame.png")
+    assert keyframes["12"] == keyframes["0"]
+    assert json.loads(editor["inputs"]["audio_mask"]) == [{"start": 0.5, "end": 0.75}]
+    assert editor["inputs"]["video"] == compilation["workflow_inputs"]["source_video"]
+    for node_id in ("105::166", "105::168"):
+        assert api[node_id]["inputs"]["mask"] == ["164", 1]
+        assert api[node_id]["inputs"]["audio_mask"] == ["164", 2]
+
+    bundle = _write_generated_bundle(
+        {role: (path, {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+         for role, path in (("video", video), ("audio", audio))},
+        tmp_path / "generated.zip",
+    )
+    composition = compose_candidate(
+        preparation=preparation, generated=bundle, source=source,
+        out_dir=tmp_path / "composition",
+    )
+    verification = verify_candidate(
+        preparation=preparation, composition=composition, source=source,
+    )
+    assert composition["coverage"]["candidate"]["video"]["frames"] == 24
+    assert composition["composition"]["output_roles"] == ["video", "audio"]
+    assert composition["changed_permissions"] == {"video": [[0.25, 0.5]], "audio": [[0.5, 0.75]]}
+    assert verification["preservation"]["status"] == "protected_sample_evidence"
+    candidate = Path(composition["candidate"]["path"])
+    for stream, generated_path, start in (("video", video, 0.25), ("audio", audio, 0.5)):
+        candidate_digest, count = _sample_digest(candidate, stream, start, 0.25)
+        assert count > 0
+        assert candidate_digest == _sample_digest(generated_path, stream, start, 0.25)[0]
+        assert candidate_digest != _sample_digest(source, stream, start, 0.25)[0]
 
 
 def test_v2_audio_only_fails_before_graph_composition_on_actual_video_port(

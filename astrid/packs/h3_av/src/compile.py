@@ -414,7 +414,14 @@ def _compile_native(request: H3Request, assets: Mapping[str, Path], destination:
     )
 
 
-def _compile_lanpaint(request: H3Request, assets: Mapping[str, Path], destination: Path) -> dict[str, Any]:
+def _compile_lanpaint(
+    request: H3Request,
+    assets: Mapping[str, Path],
+    destination: Path,
+    *,
+    profile_id: str = _PROFILE_ID,
+    native_v2_branch: str | None = None,
+) -> dict[str, Any]:
     _require_lanpaint(request)
     bindings, asset_binding = _asset_bindings(request, assets, include_masks=True)
     resource_root = _pack_root() / _LANPAINT_WORKFLOW
@@ -438,17 +445,80 @@ def _compile_lanpaint(request: H3Request, assets: Mapping[str, Path], destinatio
         "mask_keyframes": json.dumps({str(k): members.get(v, v) for k, v in json.loads(keyframes).items()}, separators=(",", ":")),
         "audio_intervals": audio_intervals,
     }
+    capabilities = {"operation": "edit", "prompt": "bound", "source_range": request.value["source"]["range"], "output_duration": float(request.value["output"]["duration"]), "video_mask": "LanPaint frame keyframes", "audio_mask": "independent sample intervals", "references": 0, "output_contract": "separate_av_full_timeline", "public_generation": {"modality": "video", "selectors": [{"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}], "internal_outputs": ["audio"]}, "overrides": ["model", "seed", "steps"]}
+    extra_manifest = None
+    if native_v2_branch is not None:
+        capabilities.update({
+            "native_v2_branch": native_v2_branch,
+            "source_binding": "source_video",
+            "edit_binding": ["mask_keyframes", "audio_intervals"],
+        })
+        extra_manifest = {"branch": native_v2_branch}
     result = _compile_manifest(
         request=request,
         destination=destination,
         resource_root=resource_root,
         workflow_inputs=workflow_inputs,
         asset_bindings=bindings,
-        capabilities={"operation": "edit", "prompt": "bound", "source_range": request.value["source"]["range"], "output_duration": float(request.value["output"]["duration"]), "video_mask": "LanPaint frame keyframes", "audio_mask": "independent sample intervals", "references": 0, "output_contract": "separate_av_full_timeline", "public_generation": {"modality": "video", "selectors": [{"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}], "internal_outputs": ["audio"]}, "overrides": ["model", "seed", "steps"]},
+        capabilities=capabilities,
         limitations=["regional masks must be supplied image masks; rectangle, polygon, and semantic regions are not rasterized", "source-backed edits use source.range=[0, output.duration] because LanPaint has no arbitrary source-window input", "audio stems and audio mask assets require a separator graph"],
+        profile_id=profile_id,
+        extra_manifest=extra_manifest,
     )
     result["mask_schedule"] = schedule
     return result
+
+
+def _compile_source_backed_v2(
+    request: H3Request, assets: Mapping[str, Path], destination: Path
+) -> dict[str, Any]:
+    """Adapt non-continuation permissions to the graph's actual AV masks.
+
+    The continuation graph only samples a suffix. LanPaint instead edits the
+    source timeline with independent frame keyframes and audio intervals.
+    Keep the native request identity while reusing the established edit binder.
+    """
+    value = request.value
+    timelines = [item for item in value["media"] if item["role"] == "timeline"]
+    if len(timelines) != 1 or timelines[0].get("modality") != "video":
+        raise CompilationError("native-v2 source-backed edits require one timeline video; no separate audio input is bound")
+    source = timelines[0]
+    if source["resolved_at"]["value"] != 0:
+        raise CompilationError("native-v2 source-backed edits require their timeline video at frame 0")
+    if not isinstance(source.get("range"), list) or len(source["range"]) != 2:
+        raise CompilationError("native-v2 source-backed edits require a bounded timeline video range")
+    changes: dict[str, list[dict[str, Any]]] = {"video": [], "audio": []}
+    for edit in source.get("edit", []):
+        stream = edit["stream"]
+        change = {"during": edit["during"], "action": edit["action"]}
+        if stream == "video":
+            if edit["mask"].get("full_frame") is not True:
+                raise CompilationError("native-v2 source-backed composition supports only full_frame masks")
+            change["area"] = {"full_frame": True}
+        else:
+            if edit.get("channels", "all") != "all":
+                raise CompilationError("native-v2 source-backed edits have no channel-specific audio mask binding")
+            if "text" in edit:
+                change["dialogue"] = edit["text"]
+        changes[stream].append(change)
+    settings = value["settings"]
+    edit_value = {
+        "version": 1,
+        "operation": "edit",
+        "source": {"asset": source["asset"], "range": source.get("range")},
+        "output": {"duration": value["duration"]},
+        "content": {"prompt": _native_v2_prompt(request)},
+        "changes": changes,
+        "references": [{"asset": item["asset"], "purpose": "appearance"}
+                       for item in value["media"] if item["role"] == "reference"],
+        "overrides": {"model": settings["model"], "steps": settings["steps"],
+                      "seed": settings["seed"], "sampler": settings["sampler"],
+                      "guidance": settings["guidance_scale"]},
+    }
+    return _compile_lanpaint(
+        H3Request(value=edit_value, digest=request.digest), assets, destination,
+        profile_id="h3_av.native.v2", native_v2_branch="source_backed_v2v",
+    )
 
 
 def _compile_native_v2(
@@ -496,6 +566,9 @@ def _compile_native_v2(
             "workflow: its source_video port is video-semantic and feeds "
             "VHS_LoadVideoFFmpeg; no timeline-audio input is bound"
         )
+
+    if branch == "source_backed_v2v":
+        return _compile_source_backed_v2(request, assets, destination)
 
     destination.mkdir(parents=True, exist_ok=True)
     settings = request.value["settings"]
