@@ -497,9 +497,17 @@ def _rebind_frame(
 
 
 class _HostControlSocket:
-    def __init__(self, frame: dict[str, object], *, send_error: OSError | None = None):
+    def __init__(
+        self,
+        frame: dict[str, object],
+        *,
+        send_error: OSError | None = None,
+        after_send=None,
+    ):
         self.encoded = json.dumps(frame).encode("utf-8") + b"\n"
         self.send_error = send_error
+        self.after_send = after_send
+        self.sent: list[bytes] = []
         self.closed = False
 
     def settimeout(self, _timeout: float) -> None:
@@ -509,9 +517,12 @@ class _HostControlSocket:
         encoded, self.encoded = self.encoded, b""
         return encoded
 
-    def sendall(self, _payload: bytes) -> None:
+    def sendall(self, payload: bytes) -> None:
         if self.send_error is not None:
             raise self.send_error
+        self.sent.append(payload)
+        if self.after_send is not None:
+            self.after_send()
 
     def close(self) -> None:
         self.closed = True
@@ -1046,8 +1057,19 @@ def test_host_control_commit_deliberately_registers_then_two_stage_resumes(
     assert host.client is created[0]
     assert commit["status"] == "rebind_committed"
     assert commit["registered_state"]["runtime"] == new_runtime
+    registration_payload = {"state": "registered"}
+    registration_bytes = json.dumps(
+        registration_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
     assert commit["registration"] == {
-        "runtime_registration": {"state": "registered"},
+        "runtime_registration": {
+            "canonical_bytes": len(registration_bytes),
+            "sha256": "sha256:" + hashlib.sha256(registration_bytes).hexdigest(),
+        },
         "withdrawn_capabilities": [],
     }
     assert set(commit) == {
@@ -1224,6 +1246,180 @@ def test_host_control_commit_deliberately_registers_then_two_stage_resumes(
     assert control.state == "ACTIVE"
     assert control.current_runtime == new_runtime
     assert control.current_owner == owner_b
+
+
+def test_host_control_serve_serializes_observed_scale_rebind_commit_below_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_a = {"pid": 42_001, "birth_id": "owner-a-birth"}
+    owner_b = {"pid": 42_002, "birth_id": "owner-b-birth"}
+    owner_births = {
+        owner_a["pid"]: owner_a["birth_id"],
+        owner_b["pid"]: owner_b["birth_id"],
+    }
+
+    def observed_birth(pid=None):
+        if pid is None:
+            return "host-process-birth"
+        return owner_births.get(pid, "")
+
+    monkeypatch.setattr(generic_host, "process_birth_identity", observed_birth)
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    current_state = _registered_state(old_runtime)
+    capabilities = []
+    definitions = []
+    for index in range(77):
+        capability_id = f"test.observed-scale.{index:02d}"
+        capabilities.append(
+            {
+                "capability_id": capability_id,
+                "capability_digest": "sha256:" + f"{index % 16:x}" * 64,
+                "source_digest": "sha256:" + f"{(index + 1) % 16:x}" * 64,
+                "dependency_digest": "sha256:" + f"{(index + 2) % 16:x}" * 64,
+                "ready": True,
+                "preflight_digest": "sha256:" + f"{(index + 3) % 16:x}" * 64,
+            }
+        )
+        definitions.append(
+            {
+                "capability_id": capability_id,
+                "definition_digest": "sha256:" + f"{(index + 4) % 16:x}" * 64,
+                "status": "ready",
+                "required_resource_keys": ["cpu"],
+                "estimated_scratch_bytes": 1,
+                "estimated_output_bytes": 0,
+                "unavailable_reason": None,
+            }
+        )
+    current_state["capabilities"] = capabilities
+    current_state["registration_bodies"]["/v1/executors"][0][
+        "capabilities"
+    ] = definitions
+    current_state = _state_for_runtime(current_state, old_runtime)
+    registered_state_bytes = json.dumps(
+        current_state,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    assert 50_000 <= len(registered_state_bytes) < generic_host.HOST_CONTROL_FRAME_LIMIT
+
+    runtime_registration = {
+        "registrations": [
+            {
+                "capability_id": capability["capability_id"],
+                "receipt": "r" * 220,
+            }
+            for capability in capabilities
+        ]
+    }
+    runtime_registration_bytes = json.dumps(
+        runtime_registration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    assert len(runtime_registration_bytes) > 20_000
+
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+
+    def state_snapshot(*, revalidate=False, runtime_override=None):
+        return _state_for_runtime(
+            current_state,
+            dict(runtime_override or current_state["runtime"]),
+        )
+
+    host.registered_state_snapshot = state_snapshot  # type: ignore[method-assign]
+    control = generic_host.LocalWorkerHostControl(
+        host,
+        control_fd=-1,
+        activation=_grant(),
+        credential_file=credential,
+    )
+    pause = _pause_frame(old_runtime, old_owner=owner_a)
+    control.handle_frame(pause)
+    prepare = _rebind_frame(
+        pause,
+        new_runtime=new_runtime,
+        credential=credential,
+        generation=generation,
+        registered_state=json.loads(json.dumps(current_state)),
+    )
+    prepare["new_owner"] = owner_b
+    assert control.handle_frame(prepare)["status"] == "rebind_prepared"
+
+    class FreshRuntime:
+        def __init__(self, endpoint, token):
+            self.endpoint = endpoint
+            self.token = token
+
+        def renew_registration_session(self):
+            return None
+
+    monkeypatch.setattr(generic_host, "RuntimeProtocolClient", FreshRuntime)
+    host._runtime_compatibility = lambda: {  # type: ignore[method-assign]
+        key: value for key, value in new_runtime.items() if key != "endpoint"
+    }
+
+    def register(*, deliberate=False):
+        assert deliberate is True
+        current_state["runtime"] = dict(new_runtime)
+        current_state["registration_bodies"]["/v1/executors"][0][
+            "runtime_epoch"
+        ] = new_runtime["runtime_epoch"]
+        return {
+            "registration": runtime_registration,
+            "withdrawn_capabilities": [],
+        }
+
+    host.register = register  # type: ignore[method-assign]
+    commit_frame = {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "rebind_commit",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "new_owner": owner_b,
+    }
+    fake_socket = _HostControlSocket(
+        commit_frame,
+        after_send=host._shutdown.set,
+    )
+    monkeypatch.setattr(generic_host.socket, "socket", lambda **_kwargs: fake_socket)
+
+    control.serve()
+
+    assert fake_socket.closed is True
+    assert len(fake_socket.sent) == 1
+    assert len(fake_socket.sent[0]) <= generic_host.HOST_CONTROL_FRAME_LIMIT
+    acknowledgement = json.loads(fake_socket.sent[0].decode("utf-8"))
+    assert acknowledgement["status"] == "rebind_committed"
+    assert acknowledgement["registered_state"] == _state_for_runtime(
+        current_state, new_runtime
+    )
+    assert acknowledgement["registration"] == {
+        "runtime_registration": {
+            "canonical_bytes": len(runtime_registration_bytes),
+            "sha256": "sha256:"
+            + hashlib.sha256(runtime_registration_bytes).hexdigest(),
+        },
+        "withdrawn_capabilities": [],
+    }
+    claimed_digest = acknowledgement.pop("ack_sha256")
+    assert claimed_digest == generic_host._host_control_ack_digest(acknowledgement)
+    hypothetical = json.loads(json.dumps(acknowledgement))
+    hypothetical["registration"]["runtime_registration"] = runtime_registration
+    hypothetical_bytes = json.dumps(
+        hypothetical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+    assert len(hypothetical_bytes) > generic_host.HOST_CONTROL_FRAME_LIMIT
 
 
 def test_host_control_abort_closes_engine_custody(tmp_path: Path) -> None:

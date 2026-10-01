@@ -7007,6 +7007,22 @@ class LocalWorkerHostControl:
         value["ack_sha256"] = _host_control_ack_digest(value)
         return value
 
+    @staticmethod
+    def _runtime_registration_receipt(value: Any) -> dict[str, Any]:
+        """Bind the full Runtime response without echoing it on the 64 KiB channel."""
+
+        encoded = json.dumps(
+            _json_safe(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        return {
+            "canonical_bytes": len(encoded),
+            "sha256": _sha256_digest(encoded),
+        }
+
     def _cached(self, command: str, frame: dict[str, Any]) -> dict[str, Any] | None:
         cache_key = (str(frame["handoff_id"]), command)
         request_digest = _sha256_digest(
@@ -7304,7 +7320,9 @@ class LocalWorkerHostControl:
             )
         self.state = "REBIND_COMMITTED"
         registration = {
-            "runtime_registration": _json_safe(registration_result.get("registration")),
+            "runtime_registration": self._runtime_registration_receipt(
+                registration_result.get("registration")
+            ),
             "withdrawn_capabilities": sorted(
                 str(value) for value in registration_result.get("withdrawn_capabilities", ())
             ),
