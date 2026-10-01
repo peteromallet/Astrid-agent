@@ -46,10 +46,12 @@ def _runtime_birth_identity(pid: int) -> str:
     return f"ps-lstart:{result.stdout.strip()}" if result.returncode == 0 else ""
 
 
-def test_process_birth_identity_matches_runtime_worker_contract() -> None:
+def test_process_birth_identity_matches_runtime_worker_contract_at_comparison_boundary() -> None:
     expected = _runtime_birth_identity(os.getpid())
     assert expected
-    assert generic_host.process_birth_identity() == expected
+    assert generic_host._same_process_birth_identity(
+        generic_host.process_birth_identity(), expected
+    )
 
 
 def test_parked_host_accepts_one_same_process_grant_before_continuing(monkeypatch) -> None:
@@ -83,6 +85,89 @@ def test_parked_host_accepts_one_same_process_grant_before_continuing(monkeypatc
     assert acknowledgement["version"] == "astrid.local-worker-activation-accepted/v1"
     assert acknowledgement["host"] == {"pid": os.getpid(), "birth_id": "birth-1"}
     worker.close()
+
+
+@pytest.mark.parametrize(
+    ("observed", "wire"),
+    [
+        (
+            "ps-lstart:Thu Oct 1 03:08:41 2026",
+            "ps-lstart:Thu Oct  1 03:08:41 2026",
+        ),
+        (
+            "ps-lstart:Mon Oct 12 13:18:41 2026",
+            "ps-lstart:Mon Oct 12 13:18:41 2026",
+        ),
+    ],
+)
+def test_parked_host_accepts_equivalent_ps_birth_tokens_without_rewriting_evidence(
+    monkeypatch, observed, wire
+) -> None:
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda pid=None: observed)
+    worker, host = socket.socketpair()
+    grant = _grant(birth=wire)
+    worker.sendall(json.dumps(grant).encode() + b"\n")
+
+    accepted = generic_host._await_worker_activation(
+        host.detach(),
+        operation_id="operation-1",
+        channel_id="channel-1",
+        credential_file="/private/worker.token",
+        timeout_seconds=2,
+    )
+    acknowledgement = json.loads(worker.makefile("rb").readline())
+
+    assert accepted["host"]["birth_id"] == wire
+    assert acknowledgement["host"]["birth_id"] == wire
+    worker.close()
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "matches"),
+    [
+        ("proc-start-ticks:42", "proc-start-ticks:42", True),
+        ("proc-start-ticks:42", "proc-start-ticks:43", False),
+        ("opaque-birth", "opaque-birth", True),
+        ("ps-lstart:Thu Oct  1 03:08:41 2026", "ps-lstart:Thu Oct 1 03:08:41 2026", True),
+        ("ps-lstart:Thu Oct 1 03:08:41 2026", "ps-lstart:Thu Oct 1 03:08:42 2026", False),
+        ("ps-lstart:Thu Oct 1 03:08:41 2026", "ps-lstart:Fri Oct 1 03:08:41 2026", False),
+        ("ps-lstart:", "ps-lstart:", False),
+        ("ps-lstart:not-a-date", "ps-lstart:not-a-date", False),
+        ("ps-lstart:Thu Oct 32 03:08:41 2026", "ps-lstart:Thu Oct 32 03:08:41 2026", False),
+        ("ps-lstart:Thu Oct 1 25:08:41 2026", "ps-lstart:Thu Oct 1 25:08:41 2026", False),
+        ("ps-lstart:Thu Oct 1 03:08:41 2026", "proc-start-ticks:42", False),
+    ],
+)
+def test_process_birth_identity_comparison_is_narrow_and_fail_closed(
+    left, right, matches
+) -> None:
+    assert generic_host._same_process_birth_identity(left, right) is matches
+
+
+def test_host_control_owner_observation_accepts_only_equivalent_ps_birth_tokens(
+    monkeypatch,
+) -> None:
+    observed = "ps-lstart:Thu Oct 1 03:08:41 2026"
+    monkeypatch.setattr(
+        generic_host,
+        "process_birth_identity",
+        lambda pid=None: observed if pid == 41_001 else None,
+    )
+
+    generic_host.LocalWorkerHostControl._observe_owner(
+        {"pid": 41_001, "birth_id": "ps-lstart:Thu Oct  1 03:08:41 2026"},
+        label="old owner",
+    )
+    with pytest.raises(generic_host.HostControlRejected, match="old owner"):
+        generic_host.LocalWorkerHostControl._observe_owner(
+            {"pid": 41_001, "birth_id": "ps-lstart:Thu Oct  1 03:08:42 2026"},
+            label="old owner",
+        )
+    with pytest.raises(generic_host.HostControlRejected, match="old owner"):
+        generic_host.LocalWorkerHostControl._observe_owner(
+            {"pid": 41_002, "birth_id": observed},
+            label="old owner",
+        )
 
 
 @pytest.mark.parametrize(

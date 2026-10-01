@@ -6634,6 +6634,38 @@ def _write_ready_marker(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
+_PS_LSTART_PAYLOAD = re.compile(
+    r"^\S+ \S+ (?:[1-9]|[12]\d|3[01]) "
+    r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d \d{4}$"
+)
+
+
+def _same_process_birth_identity(left: object, right: object) -> bool:
+    """Compare valid ``ps lstart`` identities without changing wire evidence.
+
+    Darwin pads single-digit month days with an extra space.  Different
+    process observers may preserve or tokenize that padding, so compare the
+    five semantic ``lstart`` tokens at this trust boundary.  All non-``ps``
+    identities retain their exact comparison contract, and malformed ``ps``
+    identities fail closed even when their bytes happen to match.
+    """
+
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    prefix = "ps-lstart:"
+    if left.startswith(prefix) or right.startswith(prefix):
+        if not left.startswith(prefix) or not right.startswith(prefix):
+            return False
+        left_payload = " ".join(left[len(prefix):].split())
+        right_payload = " ".join(right[len(prefix):].split())
+        return bool(
+            _PS_LSTART_PAYLOAD.fullmatch(left_payload)
+            and _PS_LSTART_PAYLOAD.fullmatch(right_payload)
+            and left_payload == right_payload
+        )
+    return left == right
+
+
 def _await_worker_activation(
     descriptor: int,
     *,
@@ -6701,7 +6733,7 @@ def _await_worker_activation(
             not isinstance(host, dict)
             or set(host) != {"pid", "birth_id"}
             or host["pid"] != os.getpid()
-            or host["birth_id"] != actual_birth
+            or not _same_process_birth_identity(host["birth_id"], actual_birth)
         ):
             raise HostError("parked activation host process identity is invalid")
         accepted = {
@@ -6857,7 +6889,7 @@ class LocalWorkerHostControl:
     @staticmethod
     def _observe_owner(owner: Mapping[str, Any], *, label: str) -> None:
         observed_birth = process_birth_identity(int(owner["pid"]))
-        if observed_birth != owner["birth_id"]:
+        if not _same_process_birth_identity(owner["birth_id"], observed_birth):
             raise HostControlRejected(f"host-control {label} identity does not match")
 
     def _validate_frame_owners(self, command: str, frame: Mapping[str, Any]) -> None:
