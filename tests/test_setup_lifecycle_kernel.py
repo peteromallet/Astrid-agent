@@ -386,8 +386,16 @@ def test_runtime_worker_start_binds_selected_workspace_identity(tmp_path):
 
     def runner(argv, **kwargs):
         seen.append(argv)
-        if argv[1:3] == ["workspace", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, json.dumps(_selected(request)), "")
+        if argv[1] == "status":
+            return subprocess.CompletedProcess(
+                argv, 0,
+                json.dumps({
+                    "state": "healthy",
+                    "support": {"healthy": True, "realm_id": request.workspace_id},
+                    "discovery": {**_selected(request), "active_realm": request.workspace_id},
+                    "health": {"status": "ok"},
+                }), "",
+            )
         return subprocess.CompletedProcess(argv, 0, '{"state":"active"}', "")
 
     result = RuntimeCLI(command=("banodoco-local",), runner=runner).start_worker(
@@ -395,12 +403,87 @@ def test_runtime_worker_start_binds_selected_workspace_identity(tmp_path):
     )
 
     assert result.ok
-    assert seen[0][1:3] == ["workspace", "inspect"]
+    assert seen[0][1:3] == ["status", "--data-root"]
     assert seen[1][1:] == [
         "start-worker", "--profile", "astrid",
         "--expected-workspace-uuid", request.workspace_id,
         "--data-root", str(request.support_root), "--json",
     ]
+
+
+def test_runtime_worker_reconnect_uses_live_identity_without_offline_realm_snapshot(tmp_path):
+    request = _request(tmp_path)
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        if argv[1] == "status":
+            return subprocess.CompletedProcess(
+                argv, 0,
+                json.dumps({
+                    "state": "healthy",
+                    "support": {"healthy": True, "realm_id": request.workspace_id},
+                    "discovery": {**_selected(request), "active_realm": request.workspace_id},
+                    "health": {"status": "ok"},
+                }), "",
+            )
+        if argv[1:3] == ["workspace", "inspect"]:
+            raise AssertionError("active Worker reconnect must not race the live realm snapshot")
+        return subprocess.CompletedProcess(
+            argv, 0,
+            json.dumps({"state": "reconnected", "executor_incarnation": "executor-a"}), "",
+        )
+
+    result = RuntimeCLI(command=("banodoco-local",), runner=runner).start_worker(
+        support_root=request.support_root
+    )
+
+    assert result.data == {"state": "reconnected", "executor_incarnation": "executor-a"}
+    assert [argv[1] for argv in seen] == ["status", "start-worker"]
+
+
+def test_runtime_worker_start_rejects_unhealthy_live_runtime_before_start(tmp_path):
+    request = _request(tmp_path)
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 1,
+            json.dumps({"state": "failed", "problem_code": "runtime_unavailable"}), "",
+        )
+
+    with pytest.raises(RuntimeError, match="selected live Runtime is unavailable"):
+        RuntimeCLI(command=("banodoco-local",), runner=runner).start_worker(
+            support_root=request.support_root
+        )
+    assert [argv[1] for argv in seen] == ["status"]
+
+
+def test_runtime_worker_start_rejects_support_discovery_realm_mismatch(tmp_path):
+    request = _request(tmp_path)
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0,
+            json.dumps({
+                "state": "healthy",
+                "support": {"healthy": True, "realm_id": request.workspace_id},
+                "health": {"status": "ok"},
+                "discovery": {
+                    **_selected(request),
+                    "active_realm": "00000000-0000-0000-0000-000000000000",
+                },
+            }), "",
+        )
+
+    with pytest.raises(RuntimeError, match="does not match the selected support realm"):
+        RuntimeCLI(command=("banodoco-local",), runner=runner).start_worker(
+            support_root=request.support_root
+        )
+    assert [argv[1] for argv in seen] == ["status"]
 
 
 def test_input_file_and_explicit_flags_normalize_to_same_request(tmp_path):

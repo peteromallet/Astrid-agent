@@ -227,31 +227,55 @@ class RuntimeCLI:
     def start_worker(self, *, support_root: str | Path) -> RuntimeResult:
         """Start the Worker only for the exact Runtime-selected workspace."""
         support = _absolute_root(support_root, label="support root")
-        selected = self.inspect(support_root=support)
-        if not selected.ok:
+        observed = self.observe("status", support_root=support)
+        discovery = observed.data.get("discovery") if isinstance(observed.data, Mapping) else None
+        support_status = observed.data.get("support") if isinstance(observed.data, Mapping) else None
+        health = observed.data.get("health") if isinstance(observed.data, Mapping) else None
+        if (
+            not observed.ok
+            or not isinstance(discovery, Mapping)
+            or not isinstance(support_status, Mapping)
+            or support_status.get("healthy") is not True
+            or not isinstance(health, Mapping)
+            or health.get("status") != "ok"
+            or observed.data.get("health_error") is not None
+        ):
             raise RuntimeCLIError(
-                str(selected.data.get("error") or "selected workspace is unavailable"),
-                code=str(selected.data.get("problem_code") or selected.data.get("state") or "workspace_missing"),
-                result=selected.data,
-                returncode=selected.returncode,
+                str(observed.data.get("error") or "selected live Runtime is unavailable"),
+                code=str(observed.data.get("problem_code") or observed.data.get("state") or "runtime_unavailable"),
+                result=observed.data,
+                returncode=observed.returncode,
             )
-        realm_id = str(_field(selected.data, "realm_id", "workspace_id", "selected_realm_id") or "")
-        realm_root = _field(selected.data, "realm_root", "data_root")
-        if not realm_id or realm_root is None:
+        selected = dict(discovery)
+        discovered_realm_id = str(
+            _field(selected, "active_realm", "realm_id", "workspace_id", "selected_realm_id") or ""
+        )
+        supported_realm_id = str(
+            _field(support_status, "realm_id", "workspace_id", "selected_realm_id") or ""
+        )
+        realm_root = _field(selected, "realm_root", "data_root")
+        if not discovered_realm_id or not supported_realm_id or realm_root is None:
             raise RuntimeCLIError(
-                "Runtime workspace inspection omitted its identity",
+                "live Runtime discovery omitted its workspace identity",
                 code="workspace_identity_mismatch",
-                result=selected.data,
+                result=observed.data,
             )
+        if discovered_realm_id != supported_realm_id:
+            raise RuntimeCLIError(
+                "live Runtime discovery does not match the selected support realm",
+                code="workspace_identity_mismatch",
+                result=observed.data,
+            )
+        selected["realm_id"] = discovered_realm_id
         validate_selected_workspace(
-            selected.data,
-            expected_realm_id=realm_id,
+            selected,
+            expected_realm_id=supported_realm_id,
             expected_realm_root=str(realm_root),
             expected_support_root=support,
         )
         return self.invoke((
             "start-worker", "--profile", PROFILE,
-            "--expected-workspace-uuid", realm_id,
+            "--expected-workspace-uuid", supported_realm_id,
             "--data-root", str(support), "--json",
         ))
 
