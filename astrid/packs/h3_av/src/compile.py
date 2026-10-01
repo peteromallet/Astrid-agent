@@ -490,6 +490,13 @@ def _compile_native_v2(
             native_v2_branch=branch,
         )
 
+    if branch == "audio_only":
+        raise CompilationError(
+            "native-v2 audio-only is unsupported by the selected continuation "
+            "workflow: its source_video port is video-semantic and feeds "
+            "VHS_LoadVideoFFmpeg; no timeline-audio input is bound"
+        )
+
     destination.mkdir(parents=True, exist_ok=True)
     settings = request.value["settings"]
     if settings["sampler"] != _DEFAULTS["sampler"]:
@@ -503,17 +510,16 @@ def _compile_native_v2(
         raise CompilationError("native-v2 continuation graph has two image-reference slots")
     if any(item.get("modality") != "image" for item in references):
         raise CompilationError("native-v2 continuation graph reference ports accept image references only")
-    if branch == "audio_only":
-        if len(timelines) != 1 or timelines[0].get("modality") != "audio":
-            raise CompilationError("native-v2 audio-only binding requires one timeline audio asset")
-        source = timelines[0]
-    else:
-        video_timelines = [item for item in timelines if item.get("modality") == "video"]
-        if len(video_timelines) != 1:
-            raise CompilationError("native-v2 continuation binding requires one timeline video asset")
-        if any(item.get("modality") == "audio" for item in timelines):
-            raise CompilationError("native-v2 continuation graph has no separate audio input port")
-        source = video_timelines[0]
+    video_timelines = [item for item in timelines if item.get("modality") == "video"]
+    if len(video_timelines) != 1:
+        raise CompilationError("native-v2 continuation binding requires one timeline video asset")
+    if any(item.get("modality") == "audio" for item in timelines):
+        raise CompilationError("native-v2 continuation graph has no separate audio input port")
+    source = video_timelines[0]
+    if source["resolved_at"]["value"] != 0:
+        raise CompilationError(
+            "native-v2 continuation requires its timeline video at frame 0"
+        )
 
     source_id = str(source["asset"])
     if source_id not in assets:
@@ -536,24 +542,23 @@ def _compile_native_v2(
                     )
 
     source_range = source.get("resolved_range")
-    if isinstance(source_range, list) and len(source_range) == 2:
-        source_start = float(source["range"][0])
-        source_frames = int(source_range[1]) - int(source_range[0]) if source.get("modality") == "video" else 0
-        source_end = float(source["range"][1])
-    else:
-        source_start = float(source["at"].get("seconds", source["resolved_at"]["value"] / 24))
-        source_frames = 0
-        source_end = float(request.value["duration"])
+    if not isinstance(source_range, list) or len(source_range) != 2:
+        raise CompilationError(
+            "native-v2 continuation requires a bounded timeline video range"
+        )
+    source_start = float(source["range"][0])
+    source_frames = int(source_range[1]) - int(source_range[0])
+    source_end = source_frames / 24.0
 
-    continuation_timing: dict[str, Any] | None = None
-    workflow_duration = float(request.value["duration"])
-    if branch != "audio_only":
-        try:
-            timing = plan_continuation(source_end=source_end, output_duration=float(request.value["duration"]))
-        except ContinuationTimingError as exc:
-            raise CompilationError(str(exc)) from exc
-        continuation_timing = timing.to_dict()
-        workflow_duration = timing.workflow_duration
+    try:
+        timing = plan_continuation(
+            source_end=source_end,
+            output_duration=float(request.value["duration"]),
+        )
+    except ContinuationTimingError as exc:
+        raise CompilationError(str(exc)) from exc
+    continuation_timing: dict[str, Any] | None = timing.to_dict()
+    workflow_duration = timing.workflow_duration
 
     if reference_ids:
         bindings["reference_0"] = assets[reference_ids[0]]
@@ -582,7 +587,7 @@ def _compile_native_v2(
             "operation": "transform",
             "native_v2_branch": branch,
             "source_binding": "source_video",
-            "audio_binding": "source_video" if branch == "audio_only" else "source_audio_from_source_video",
+            "audio_binding": "source_audio_from_source_video",
             "timing_binding": ["source_start", "source_frames", "duration"],
             "edit_binding": "prompt schedule",
             "mask_binding": "full_frame through graph context",
@@ -595,7 +600,7 @@ def _compile_native_v2(
         },
         limitations=[
             "native-v2 branch binding is CPU-verifiable; model quality and GPU compatibility remain unqualified",
-            "the selected continuation graph exposes no separate audio or spatial-mask port; audio-only input uses its declared source_video port and non-full-frame masks fail closed",
+            "the selected continuation graph exposes no separate audio or spatial-mask port; audio-only and non-full-frame inputs fail closed",
             "raw H3 output remains internal lineage and must pass composition before publication",
         ],
         continuation_timing=continuation_timing,

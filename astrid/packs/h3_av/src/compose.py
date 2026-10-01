@@ -17,7 +17,12 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Mapping
 
-from .timing import ContinuationTiming, ContinuationTimingError, plan_from_preparation
+from .timing import (
+    ContinuationTiming,
+    ContinuationTimingError,
+    plan_continuation,
+    plan_from_preparation,
+)
 
 
 class CompositionError(ValueError):
@@ -163,9 +168,61 @@ def _audio_coverage(path: Path) -> dict[str, Any]:
 
 def _continuation_timing(preparation: Mapping[str, Any]) -> ContinuationTiming | None:
     try:
-        return plan_from_preparation(preparation)
+        timing = plan_from_preparation(preparation)
+        if timing is not None:
+            return timing
+        request = preparation.get("request")
+        schedule = preparation.get("mask_schedule")
+        if (
+            not isinstance(request, Mapping)
+            or request.get("version") != 2
+            or not isinstance(schedule, Mapping)
+            or schedule.get("branch") not in {"extension_context", "source_backed_v2v"}
+        ):
+            return None
+        videos = [
+            item
+            for item in request.get("media", [])
+            if isinstance(item, Mapping)
+            and item.get("role") == "timeline"
+            and item.get("modality") == "video"
+        ]
+        if len(videos) != 1:
+            raise ContinuationTimingError(
+                "native-v2 continuation preparation requires one timeline video"
+            )
+        source_range = videos[0].get("range")
+        if not isinstance(source_range, list) or len(source_range) != 2:
+            raise ContinuationTimingError(
+                "native-v2 continuation preparation requires a bounded timeline video range"
+            )
+        return plan_continuation(
+            source_end=float(source_range[1]) - float(source_range[0]),
+            output_duration=float(request["duration"]),
+        )
     except ContinuationTimingError as exc:
         raise CompositionError(str(exc)) from exc
+
+
+def _is_source_free_generation(preparation: Mapping[str, Any]) -> bool:
+    request = preparation.get("request")
+    if not isinstance(request, Mapping):
+        return False
+    if request.get("operation") == "generate":
+        return True
+    schedule = preparation.get("mask_schedule")
+    return (
+        request.get("version") == 2
+        and isinstance(schedule, Mapping)
+        and schedule.get("branch") == "source_free"
+    )
+
+
+def _generation_duration(preparation: Mapping[str, Any]) -> float:
+    request = preparation["request"]
+    if request.get("version") == 2:
+        return float(request["duration"])
+    return float(request["output"]["duration"])
 
 
 def _validate_generated_coverage(
@@ -176,9 +233,9 @@ def _validate_generated_coverage(
 ) -> dict[str, Any]:
     """Reject a no-op/short H3 result before attempting final composition."""
 
-    if preparation.get("request", {}).get("operation") == "generate":
+    if _is_source_free_generation(preparation):
         from .generation import generation_timing
-        plan = generation_timing(preparation["request"]["output"]["duration"])
+        plan = generation_timing(_generation_duration(preparation))
         video = _video_coverage(generated_video)
         audio = _audio_coverage(generated_audio or generated_video)
         if video["fps"] != plan["fps"] or video["frames"] != plan["raw_frames"]:
@@ -220,9 +277,9 @@ def _validate_candidate_coverage(
     video = _video_coverage(candidate)
     audio = _audio_coverage(candidate)
     timing = _continuation_timing(preparation)
-    if preparation.get("request", {}).get("operation") == "generate":
+    if _is_source_free_generation(preparation):
         from .generation import generation_timing
-        plan = generation_timing(preparation["request"]["output"]["duration"])
+        plan = generation_timing(_generation_duration(preparation))
         if video["fps"] != plan["fps"] or video["frames"] != plan["requested_frames"]:
             raise CompositionError("H3 generation candidate does not match requested frame coverage")
         requested_duration = plan["duration"]
@@ -265,6 +322,16 @@ def _source_offset(preparation: Mapping[str, Any]) -> float:
     value = source.get("range") if isinstance(source, Mapping) else None
     if isinstance(value, (list, tuple)) and len(value) == 2:
         return float(value[0])
+    if isinstance(request, Mapping) and request.get("version") == 2:
+        for item in request.get("media", []):
+            if (
+                isinstance(item, Mapping)
+                and item.get("role") == "timeline"
+                and item.get("modality") == "video"
+            ):
+                value = item.get("range")
+                if isinstance(value, (list, tuple)) and len(value) == 2:
+                    return float(value[0])
     return 0.0
 
 
@@ -665,7 +732,7 @@ def compose_candidate(
         )
         composition_method: dict[str, Any] = {"method": "candidate-custody-v1"}
         candidate = destination / generated_video.name
-        if preparation.get("request", {}).get("operation") == "generate":
+        if _is_source_free_generation(preparation):
             plan = generated_coverage["timing"]
             candidate = destination / "candidate.mp4"
             command = ["ffmpeg", "-v", "error", "-y", "-i", str(generated_video),
