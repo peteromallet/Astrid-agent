@@ -472,6 +472,51 @@ def _write_credential_generation(root: Path) -> tuple[Path, dict[str, str]]:
     return token, generic_host.credential_generation_snapshot(token)
 
 
+def _rebind_frame(
+    pause: dict[str, object],
+    *,
+    new_runtime: dict[str, object],
+    credential: Path,
+    generation: dict[str, str],
+    registered_state: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "version": generic_host.HOST_CONTROL_VERSION,
+        "command": "rebind_prepare",
+        "handoff_id": pause["handoff_id"],
+        "nonce_digest": pause["nonce_digest"],
+        "deadline_monotonic": pause["deadline_monotonic"],
+        "deadline_unix_ms": pause["deadline_unix_ms"],
+        "new_runtime": new_runtime,
+        "credential_file": str(credential),
+        "credential_generation": generation,
+        "registered_state": registered_state,
+        "old_owner": pause["old_owner"],
+        "new_owner": _owner_identity(),
+    }
+
+
+class _HostControlSocket:
+    def __init__(self, frame: dict[str, object], *, send_error: OSError | None = None):
+        self.encoded = json.dumps(frame).encode("utf-8") + b"\n"
+        self.send_error = send_error
+        self.closed = False
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+    def recv(self, _size: int) -> bytes:
+        encoded, self.encoded = self.encoded, b""
+        return encoded
+
+    def sendall(self, _payload: bytes) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_host_control_persistent_claim_refuses_pause_without_mutation(tmp_path: Path) -> None:
     old_runtime = _runtime_identity(suffix="a", epoch=1)
     state = _registered_state(old_runtime)
@@ -790,6 +835,102 @@ def test_host_control_rebind_prepare_rejects_altered_registration_admission(
         )
     assert control.state == "PAUSED"
     assert host.claim_gate_state["paused"] is True
+
+
+def test_host_control_rebind_revalidation_diagnostic_preserves_category_and_sanitizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(
+        old_runtime,
+        handoff_id="handoff/unsafe\ncredential-marker",
+    )
+    control.handle_frame(pause)
+
+    def fail_revalidation(*, revalidate=False, runtime_override=None):
+        assert revalidate is True
+        assert runtime_override is None
+        raise OSError("credential-marker raw-frame-marker")
+
+    host.registered_state_snapshot = fail_revalidation  # type: ignore[method-assign]
+    frame = _rebind_frame(
+        pause,
+        new_runtime=new_runtime,
+        credential=credential,
+        generation=generation,
+        registered_state=state,
+    )
+    fake_socket = _HostControlSocket(frame)
+    monkeypatch.setattr(generic_host.socket, "socket", lambda **_kwargs: fake_socket)
+
+    control.serve()
+
+    diagnostic_text = capsys.readouterr().err.strip()
+    diagnostic = json.loads(diagnostic_text)
+    assert diagnostic["stage"] == "registered_state_revalidation"
+    assert diagnostic["category"] == "os_error"
+    assert diagnostic["command"] == "rebind_prepare"
+    assert diagnostic["host"]["pid"] == os.getpid()
+    assert diagnostic["handoff_id_sha256"] == "sha256:" + hashlib.sha256(
+        str(pause["handoff_id"]).encode("utf-8")
+    ).hexdigest()
+    assert "handoff_id" not in diagnostic
+    assert "credential-marker" not in diagnostic_text
+    assert "raw-frame-marker" not in diagnostic_text
+    assert pause["nonce_digest"] not in diagnostic_text
+    assert str(credential) not in diagnostic_text
+    assert len(diagnostic_text.encode("utf-8")) <= 2048
+    assert fake_socket.closed is True
+    assert host._shutdown.is_set()
+
+
+def test_host_control_rebind_ack_send_diagnostic_preserves_category_without_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old_runtime = _runtime_identity(suffix="a", epoch=1)
+    new_runtime = _runtime_identity(suffix="b", epoch=2)
+    state = _registered_state(old_runtime)
+    credential, generation = _write_credential_generation(tmp_path)
+    host = generic_host.GenericPackHost(pack_roots=[])
+    control = _host_control(host, state=state, credential_file=credential)
+    pause = _pause_frame(old_runtime, handoff_id="handoff-ack-1")
+    control.handle_frame(pause)
+    frame = _rebind_frame(
+        pause,
+        new_runtime=new_runtime,
+        credential=credential,
+        generation=generation,
+        registered_state=state,
+    )
+    fake_socket = _HostControlSocket(
+        frame,
+        send_error=BrokenPipeError("credential-marker raw-ack-marker"),
+    )
+    monkeypatch.setattr(generic_host.socket, "socket", lambda **_kwargs: fake_socket)
+
+    control.serve()
+
+    diagnostic_text = capsys.readouterr().err.strip()
+    diagnostic = json.loads(diagnostic_text)
+    assert diagnostic["stage"] == "ack_send"
+    assert diagnostic["category"] == "broken_pipe"
+    assert diagnostic["command"] == "rebind_prepare"
+    assert diagnostic["handoff_id"] == "handoff-ack-1"
+    assert "credential-marker" not in diagnostic_text
+    assert "raw-ack-marker" not in diagnostic_text
+    assert pause["nonce_digest"] not in diagnostic_text
+    assert str(credential) not in diagnostic_text
+    assert fake_socket.closed is True
+    assert host._shutdown.is_set()
 
 
 def test_host_control_commit_deliberately_registers_then_two_stage_resumes(

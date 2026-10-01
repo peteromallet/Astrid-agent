@@ -157,6 +157,11 @@ _HOST_CONTROL_CREDENTIAL_GENERATION_KEYS = frozenset(
     {"generation", "token_sha256", "metadata_sha256", "commit_sha256"}
 )
 _HOST_CONTROL_OWNER_KEYS = frozenset({"pid", "birth_id"})
+_HOST_CONTROL_DIAGNOSTIC_VERSION = "astrid.local-worker-host-control-diagnostic/v1"
+_HOST_CONTROL_DIAGNOSTIC_STAGES = frozenset(
+    {"rebind_prepare", "registered_state_revalidation", "ack_send"}
+)
+_HOST_CONTROL_DIAGNOSTIC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _SETTLEMENT_OUTPUT_METADATA_FIELDS = (
     "role",
@@ -7063,6 +7068,79 @@ class LocalWorkerHostControl:
             runtime_override=runtime_override,
         )
 
+    @staticmethod
+    def _mark_failure_stage(error: BaseException, stage: str) -> None:
+        """Retain a bounded stage without copying exception text or request data."""
+
+        if stage in _HOST_CONTROL_DIAGNOSTIC_STAGES:
+            setattr(error, "_astrid_host_control_stage", stage)
+
+    @staticmethod
+    def _failure_category(error: BaseException) -> str:
+        """Classify only stable exception families; messages may contain secrets."""
+
+        if isinstance(error, socket.timeout):
+            return "socket_timeout"
+        if isinstance(error, BrokenPipeError):
+            return "broken_pipe"
+        if isinstance(error, ConnectionResetError):
+            return "connection_reset"
+        if isinstance(error, OSError):
+            return "os_error"
+        return "host_error"
+
+    def _emit_failure_diagnostic(
+        self,
+        error: BaseException,
+        *,
+        stage: str | None,
+        frame: Mapping[str, Any] | None,
+    ) -> None:
+        """Write one credential-safe record without changing control protocol flow."""
+
+        if stage not in _HOST_CONTROL_DIAGNOSTIC_STAGES:
+            return
+        diagnostic: dict[str, Any] = {
+            "version": _HOST_CONTROL_DIAGNOSTIC_VERSION,
+            "event": "host_control_failed",
+            "stage": stage,
+            "category": self._failure_category(error),
+            "host": {"pid": os.getpid()},
+        }
+        if isinstance(frame, Mapping):
+            command = frame.get("command")
+            if command in HOST_CONTROL_COMMANDS:
+                diagnostic["command"] = command
+            handoff_id = frame.get("handoff_id")
+            if isinstance(handoff_id, str) and handoff_id:
+                if _HOST_CONTROL_DIAGNOSTIC_ID.fullmatch(handoff_id):
+                    diagnostic["handoff_id"] = handoff_id
+                else:
+                    diagnostic["handoff_id_sha256"] = _sha256_digest(
+                        handoff_id.encode("utf-8", errors="replace")
+                    )
+        try:
+            birth_id = process_birth_identity()
+        except Exception:
+            birth_id = None
+        if isinstance(birth_id, str) and birth_id:
+            diagnostic["host"]["birth_id_sha256"] = _sha256_digest(
+                birth_id.encode("utf-8", errors="replace")
+            )
+        try:
+            encoded = json.dumps(
+                diagnostic,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            if len(encoded.encode("utf-8")) <= 2048:
+                print(encoded, file=sys.stderr, flush=True)
+        except (OSError, TypeError, ValueError):
+            # Diagnostics are advisory; custody still fails closed below.
+            pass
+
     def _pause_prepare(self, frame: dict[str, Any]) -> dict[str, Any]:
         if self.state != "ACTIVE":
             raise HostError("pause_prepare requires an active host")
@@ -7153,7 +7231,11 @@ class LocalWorkerHostControl:
         observed_generation = credential_generation_snapshot(credential_file)
         if generation != observed_generation:
             raise HostError("rebind_prepare credential generation does not match local files")
-        registered_state = self._complete_state(revalidate=True)
+        try:
+            registered_state = self._complete_state(revalidate=True)
+        except (HostError, OSError, socket.timeout) as exc:
+            self._mark_failure_stage(exc, "registered_state_revalidation")
+            raise
         if frame["registered_state"] != registered_state:
             raise HostError("rebind_prepare registered state does not match")
         pending_registered_state = self._complete_state(
@@ -7333,6 +7415,8 @@ class LocalWorkerHostControl:
         control = socket.socket(fileno=self.control_fd)
         control.settimeout(0.25)
         buffer = bytearray()
+        diagnostic_stage: str | None = None
+        diagnostic_frame: Mapping[str, Any] | None = None
         try:
             while not self.host._shutdown.is_set():
                 try:
@@ -7355,6 +7439,13 @@ class LocalWorkerHostControl:
                         frame = json.loads(encoded.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                         raise HostError("host-control frame is malformed") from exc
+                    diagnostic_frame = frame if isinstance(frame, Mapping) else None
+                    diagnostic_stage = (
+                        "rebind_prepare"
+                        if isinstance(frame, Mapping)
+                        and frame.get("command") == "rebind_prepare"
+                        else None
+                    )
                     try:
                         acknowledgement = self.handle_frame(frame)
                     except HostControlRejected:
@@ -7363,6 +7454,8 @@ class LocalWorkerHostControl:
                         # already authenticated the private descriptor, so
                         # return a bound rejection and keep custody unchanged.
                         acknowledgement = self._ack(frame, "rejected")
+                    if diagnostic_stage == "rebind_prepare":
+                        diagnostic_stage = "ack_send"
                     payload = json.dumps(
                         acknowledgement,
                         sort_keys=True,
@@ -7373,7 +7466,15 @@ class LocalWorkerHostControl:
                     if len(payload) > HOST_CONTROL_FRAME_LIMIT:
                         raise HostError("host-control acknowledgement is too large")
                     control.sendall(payload)
-        except (HostError, OSError, socket.timeout):
+                    diagnostic_stage = None
+                    diagnostic_frame = None
+        except (HostError, OSError, socket.timeout) as exc:
+            retained_stage = getattr(exc, "_astrid_host_control_stage", diagnostic_stage)
+            self._emit_failure_diagnostic(
+                exc,
+                stage=retained_stage,
+                frame=diagnostic_frame,
+            )
             self.host.shutdown()
         finally:
             control.close()
