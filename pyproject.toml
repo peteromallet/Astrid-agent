@@ -8,17 +8,13 @@ version = "0.1.0"
 description = "A harness toolkit for agents and humans to make art"
 requires-python = ">=3.11"
 dependencies = [
-    "openai>=1.55,<3",
     "scenedetect[opencv-headless]==0.6.4",
-    "anthropic>=0.40.0",
-    "google-genai>=1.15.0",
     "filelock>=3.13",
     "PyYAML>=6.0",
     "jsonschema>=4.0",
     "referencing>=0.30",
     "pillow>=12.2,<13",
     "python-dotenv>=1.0",
-    "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
     # pyannote.audio is intentionally excluded from core metadata.
@@ -42,6 +38,15 @@ astrid-with-credential = "astrid.core.util.credential_exec:main"
 astrid-upgrade = "astrid.sdk.upgrade:main"
 
 [project.optional-dependencies]
+# Provider SDKs are opt-in.  Core setup, local no-GPU qualification, and
+# provider-free pack discovery must remain importable without these packages.
+# Provider executors import their SDK only when that provider path is invoked.
+providers = [
+    "openai>=1.55,<3",
+    "anthropic>=0.40.0",
+    "google-genai>=1.15.0",
+    "fal-client>=0.7.0",
+]
 dev = [
     "mypy==1.17.0",
     "pytest==9.0.2",
