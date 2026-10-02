@@ -12,10 +12,23 @@ from astrid.core.execution.managed_tool_session import (
 )
 
 
+_UNSET = object()
+
+
 class _Adapter:
-    def __init__(self, *, fail_release: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_release: bool = False,
+        cancel_result: object = None,
+        cancel_error: Exception | None = None,
+        release_result: object = _UNSET,
+    ) -> None:
         self.events: list[tuple[str, str]] = []
         self.fail_release = fail_release
+        self.cancel_result = cancel_result
+        self.cancel_error = cancel_error
+        self.release_result = release_result
 
     def fence(self, *, reason: str) -> None:
         self.events.append(("fence", reason))
@@ -24,7 +37,15 @@ class _Adapter:
         self.events.append(("release", reason))
         if self.fail_release:
             raise RuntimeError("release not observed")
+        if self.release_result is not _UNSET:
+            return self.release_result  # type: ignore[return-value]
         return {"ok": True, "released": True}
+
+    def cancel(self, *, reason: str) -> object:
+        self.events.append(("cancel", reason))
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        return self.cancel_result
 
 
 def _binding(suffix: str) -> SessionBinding:
@@ -141,6 +162,131 @@ def test_execution_identity_change_replaces_same_process_session() -> None:
         ("fence", "capacity_replacement"),
         ("release", "capacity_replacement"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("cancel_result", "cancel_error"),
+    [
+        ("cancelled", None),
+        (None, None),
+        ({}, None),
+        ({"released": True}, None),
+        ({"ok": False}, None),
+        (None, RuntimeError("cancel adapter failed")),
+    ],
+    ids=["non-mapping", "none", "empty-mapping", "missing-ok", "false", "exception"],
+)
+def test_confirmed_cancellation_requires_explicit_adapter_success(
+    cancel_result: object, cancel_error: Exception | None
+) -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter(cancel_result=cancel_result, cancel_error=cancel_error)
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+    token = manager.admit(capability_id="checkout_server", invocation_id="task-a")
+
+    with pytest.raises(UncertainCancellation, match="not verified"):
+        manager.cancel(token, outcome="confirmed")
+
+    assert manager.generation == 2
+    assert manager.active is False
+    assert manager.occupied is True
+    with pytest.raises(StaleAdmissionError):
+        manager.settle(
+            token,
+            result_evidence={
+                "cas": "sha256:late",
+                "generation": token.generation,
+                "binding_identity": list(token.binding_identity),
+            },
+        )
+
+
+def test_confirmed_cancellation_accepts_only_explicit_adapter_success() -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter(cancel_result={"ok": True, "cancelled": True})
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+    token = manager.admit(capability_id="checkout_server", invocation_id="task-a")
+
+    cancelled = manager.cancel(token, outcome="confirmed")
+
+    assert cancelled.state == "cancelled"
+    assert manager.active is True
+    assert manager.occupied is True
+    with pytest.raises(StaleAdmissionError):
+        manager.settle(
+            token,
+            result_evidence={
+                "cas": "sha256:late",
+                "generation": token.generation,
+                "binding_identity": list(token.binding_identity),
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "release_result",
+    ["released", None, {}, {"released": True}, {"ok": False}],
+    ids=["non-mapping", "none", "empty-mapping", "missing-ok", "false"],
+)
+def test_release_requires_explicit_adapter_success(release_result: object) -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter(release_result=release_result)
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+
+    with pytest.raises(SessionCapacityError, match="release was not verified"):
+        manager.release(reason="test-release")
+
+    assert manager.active is False
+    assert manager.occupied is True
+    with pytest.raises(SessionCapacityError, match="release was not verified"):
+        manager.open(
+            capability=CapabilityDescriptor("successor"),
+            binding=_binding("b"),
+            adapter=_Adapter(),
+        )
+
+
+def test_release_adapter_exception_keeps_the_slot_poisoned() -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter(fail_release=True)
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+
+    with pytest.raises(SessionCapacityError, match="release was not verified"):
+        manager.release(reason="test-release")
+
+    assert manager.active is False
+    assert manager.occupied is True
+
+
+def test_release_accepts_only_explicit_adapter_success() -> None:
+    manager = ManagedToolSession()
+    adapter = _Adapter(release_result={"ok": True, "released": True})
+    manager.open(
+        capability=CapabilityDescriptor("checkout_server"),
+        binding=_binding("a"),
+        adapter=adapter,
+    )
+
+    manager.release(reason="test-release")
+
+    assert manager.active is False
+    assert manager.occupied is False
 
 
 def test_uncertain_cancellation_fences_the_session() -> None:

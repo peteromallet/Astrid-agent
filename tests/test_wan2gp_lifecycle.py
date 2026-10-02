@@ -190,46 +190,11 @@ def test_fake_output_containment_rejects_escape_without_writing_outside(
     assert runner.state.snapshot.failed_runs == 1
 
 
-def test_one_shot_cancellation_is_structured_before_engine_lookup(
-    tmp_path: Path, settings: dict[str, object]
-) -> None:
-    from astrid.packs.wan2gp.src.driver import one_shot_run
-
-    result = one_shot_run(
-        settings=settings,
-        attempt_root=tmp_path / "attempt",
-        wan2gp_root=tmp_path / "missing-engine",
-        cancelled=lambda: True,
-    )
-    assert result.success is False
-    assert result.errors == ["cancelled: cancelled"]
-    assert result.spool == (tmp_path / "attempt").resolve()
-
-
-def test_generate_core_fail_closes_success_without_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_direct_generation_is_disabled_without_the_host_session() -> None:
     from argparse import Namespace
 
     from astrid.packs.wan2gp.executors.generate_video.run import generate_core
-    from astrid.packs.wan2gp.src.driver import DriverResult
 
-    def fake_one_shot_run(**_kwargs):
-        spool = tmp_path / "spool"
-        spool.mkdir(parents=True, exist_ok=True)
-        return DriverResult(
-            success=True,
-            generated_files=[],
-            errors=[],
-            total_tasks=1,
-            successful_tasks=1,
-            failed_tasks=0,
-            disclosed_engine={"engine": "wan2gp", "route": "owned"},
-            spool=spool,
-        )
-
-    monkeypatch.setattr(
-        "astrid.packs.wan2gp.executors.generate_video.run.one_shot_run",
-        fake_one_shot_run,
-    )
     code, payload = generate_core(
         Namespace(
             prompt="a kite",
@@ -242,72 +207,11 @@ def test_generate_core_fail_closes_success_without_files(tmp_path: Path, monkeyp
             guidance_scale=5.0,
             num_inference_steps=4,
             loras=None,
-            out=tmp_path / "spool",
-            wan2gp_path=None,
         )
     )
-    assert code == 1
+    assert code == 2
     assert payload["ok"] is False
-    assert "no files" in str(payload["error"])
-
-
-def test_generate_core_receipt_identifies_video_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from argparse import Namespace
-
-    from astrid.packs.wan2gp.executors.generate_video.run import generate_core
-    from astrid.packs.wan2gp.src.driver import DriverResult
-
-    spool = tmp_path / "spool"
-
-    def fake_one_shot_run(**_kwargs):
-        spool.mkdir(parents=True, exist_ok=True)
-        clips = [spool / "first.mp4", spool / "second.mp4"]
-        source = Path(__file__).parent / "fixtures" / "reshape" / "hype_regression" / "main.mp4"
-        for clip in clips:
-            shutil.copyfile(source, clip)
-        return DriverResult(
-            success=True,
-            generated_files=[str(clip) for clip in clips],
-            errors=[],
-            total_tasks=2,
-            successful_tasks=2,
-            failed_tasks=0,
-            disclosed_engine={"engine": "wan2gp", "route": "owned"},
-            spool=spool,
-        )
-
-    monkeypatch.setattr(
-        "astrid.packs.wan2gp.executors.generate_video.run.one_shot_run",
-        fake_one_shot_run,
-    )
-    code, payload = generate_core(
-        Namespace(
-            prompt="a kite",
-            model="wan-2.2",
-            negative_prompt=None,
-            resolution="512x512",
-            video_length=9,
-            fps="8",
-            seed=7,
-            guidance_scale=5.0,
-            num_inference_steps=4,
-            loras=None,
-            out=spool,
-            wan2gp_path=None,
-        )
-    )
-
-    assert code == 0
-    outputs = payload["manifest"]["outputs"]
-    assert [entry["name"] for entry in outputs] == [
-        "generated_videos",
-        "generated_videos",
-    ]
-    assert [entry["ordinal"] for entry in outputs] == [0, 1]
-    assert [entry["role"] for entry in outputs] == ["result", "result"]
-    assert [entry["is_primary"] for entry in outputs] == [True, False]
-    assert all(entry["content_hash"].startswith("sha256:") for entry in outputs)
-    assert all(entry["bytes"] > 0 for entry in outputs)
+    assert payload["code"] == "host_session_required"
 
 
 def test_generated_mp4_wall_clock_comments_canonicalize_to_equal_digest(

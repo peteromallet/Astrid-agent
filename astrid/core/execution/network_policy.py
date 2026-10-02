@@ -300,6 +300,8 @@ def _local_identity_tool(command: Any) -> bool:
 
 def _local_process_probe(command: Any) -> bool:
     """Allow the narrow local listener probe used by managed sessions."""
+    if _trusted_ps_probe(command) is not None:
+        return True
     if not isinstance(command, (list, tuple)):
         return False
     tokens = [str(value) for value in command]
@@ -310,6 +312,42 @@ def _local_process_probe(command: Any) -> bool:
     return tokens[4].startswith("-iTCP:") and tokens[4][7:].isdigit()
 
 
+def _trusted_ps_probe(command: Any) -> tuple[str, ...] | None:
+    """Resolve only VibeComfy's read-only process probes to a system binary."""
+    if not isinstance(command, (list, tuple)) or len(command) != 5:
+        return None
+    if not all(type(value) is str for value in command):
+        return None
+    executable, pid_flag, pid, output_flag, field = command
+    if (pid_flag, output_flag) != ("-p", "-o") or field not in {"lstart=", "ppid="}:
+        return None
+    if not pid or not pid.isascii() or not pid.isdecimal() or not pid.strip("0"):
+        return None
+
+    system_paths = (Path("/bin/ps"), Path("/usr/bin/ps"))
+    trusted_paths = []
+    for path in system_paths:
+        try:
+            trusted = (
+                path.is_file()
+                and os.access(path, os.X_OK)
+                and path.resolve(strict=True) in system_paths
+            )
+            if trusted:
+                trusted_paths.append(path)
+        except OSError:
+            continue
+    if not trusted_paths:
+        return None
+    if executable == "ps":
+        trusted = trusted_paths[0]
+    elif Path(executable).is_absolute() and Path(executable) in trusted_paths:
+        trusted = Path(executable)
+    else:
+        return None
+    return (str(trusted), pid_flag, pid, output_flag, field)
+
+
 def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
     """Fail closed when a Python provider tries to escape via a native child."""
     original_popen = subprocess.Popen
@@ -318,8 +356,9 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
         command = args[0] if args else kwargs.get("args", "")
         local_media = _local_media_tool(command)
         local_identity = _local_identity_tool(command)
-        local_process = _local_process_probe(command)
-        safe_invocation = not bool(kwargs.get("shell")) and not kwargs.get("executable")
+        trusted_ps = _trusted_ps_probe(command)
+        local_process = trusted_ps is not None or _local_process_probe(command)
+        safe_invocation = not bool(kwargs.get("shell")) and kwargs.get("executable") is None
         allowed = safe_invocation and (
             _validated_descendant_owner() or local_media or local_identity or local_process
         )
@@ -336,6 +375,11 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
             raise NetworkPolicyError(
                 "network policy denied native descendant; use a validated observable proxy or OS broker"
             )
+        if trusted_ps is not None:
+            if args:
+                args = (trusted_ps, *args[1:])
+            else:
+                kwargs = {**kwargs, "args": trusted_ps}
         return original_popen(*args, **kwargs)
 
     originals[(subprocess, "Popen")] = original_popen

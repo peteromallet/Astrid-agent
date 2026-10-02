@@ -3,19 +3,6 @@
   "cache": {
     "mode": "none"
   },
-  "command": {
-    "argv": [
-      "{python_exec}",
-      "-m",
-      "astrid.packs.wan2gp.executors.generate_video.run",
-      "--prompt",
-      "{prompt}",
-      "--model",
-      "{model}",
-      "--out",
-      "{out}"
-    ]
-  },
   "conditions": [
     {
       "input": "prompt",
@@ -26,7 +13,7 @@
       "kind": "requires_input"
     }
   ],
-  "description": "Generate a short video via the native Wan2GP engine (one-shot, private spool, typed capability).",
+  "description": "Generate a short video through the GenericPackHost-owned persistent native Wan2GP session.",
   "graph": {
     "consumes": [
       "prompt"
@@ -123,6 +110,7 @@
   ],
   "kind": "built_in",
   "metadata": {
+    "host_session": "wan2gp",
     "output_result_manifest": true,
     "pack_id": "wan2gp",
     "runtime_file": "run.py",
@@ -145,6 +133,6 @@
       "type": "file"
     }
   ],
-  "short_description": "One-shot native Wan2GP video generation with private spool.",
+  "short_description": "Host-mediated native Wan2GP video generation.",
   "version": "0.1.0"
 }

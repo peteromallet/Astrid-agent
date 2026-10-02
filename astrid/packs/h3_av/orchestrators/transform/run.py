@@ -280,7 +280,19 @@ def _materialize_output(
     destination = out_dir / "retrieved" / filename
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
-    return destination, {**dict(row), "object_id": object_id, "digest": object_id, "path": str(destination), "sha256": object_id.removeprefix("sha256:")}
+    from astrid.packs.h3_av.src.receipt import write_retrieval_receipt
+
+    receipt_path = write_retrieval_receipt(
+        output_path=destination,
+        data=data,
+        managed_row={**dict(row), "object_id": object_id},
+        task_result=result,
+    )
+    return destination, {
+        **dict(row), "object_id": object_id, "digest": object_id,
+        "path": str(destination), "sha256": object_id.removeprefix("sha256:"),
+        "receipt_path": str(receipt_path),
+    }
 
 
 def _retrieve_generation_outputs(

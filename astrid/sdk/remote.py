@@ -1743,7 +1743,7 @@ class RemoteTasks(_RemoteFamily):
         """Read one Runtime-owned managed-output association."""
         return self._typed("get_managed_output", association_id)
     def cancel(self, task_id, *, idempotency_key=None): return self._typed("cancel_task", task_id, key=idempotency_key, idempotency_key=idempotency_key or uuid.uuid4().hex)
-    def retry(self, task_id, *, idempotency_key=None): return self._typed("retry_task", task_id, key=idempotency_key, idempotency_key=idempotency_key or uuid.uuid4().hex)
+    def retry(self, task_id, *, idempotency_key=None, expected_version=None): return self._typed("retry_task", task_id, key=idempotency_key, idempotency_key=idempotency_key or uuid.uuid4().hex, expected_version=expected_version)
     def events(self, task_id, *, cursor=None, limit=50):
         return self._typed(
             "list_events", cursor=cursor, limit=limit, aggregate_id=task_id

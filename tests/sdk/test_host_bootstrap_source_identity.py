@@ -43,7 +43,9 @@ def _materialize_source_closure(source: Path) -> None:
         "__version__ = 'fixture'\n", encoding="utf-8"
     )
     (source / "astrid" / "__main__.py").write_text("# main fixture\n", encoding="utf-8")
-    (source / "astrid" / "runtime_cli.py").write_text("# runtime cli fixture\n", encoding="utf-8")
+    gateway = source / "astrid" / "core" / "gateway"
+    gateway.mkdir()
+    (gateway / "__init__.py").write_text("# gateway fixture\n", encoding="utf-8")
     (source / "astrid" / "sdk" / "workspace_client.py").write_text(
         "# workspace client fixture\n", encoding="utf-8"
     )

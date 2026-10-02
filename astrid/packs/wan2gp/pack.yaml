@@ -14,7 +14,7 @@ permissions:
     reason: Reads input images/videos and writes generated outputs to private spool.
   - id: accelerator
     reason: May use GPU for Wan2GP model inference when available.
-description: Native Wan2GP video generation via the in-process shared.api seam (Wan2GP 181bb71a, reigh-sprint-3). One-shot execution with private output spool.
+description: Native Wan2GP video generation through the GenericPackHost-owned shared.api session (official upstream API candidate f3f204e5). The host retains the native interpreter; Runtime owns task authority and attempt publication.
 keywords:
 - wan2gp
 - wan
@@ -26,7 +26,7 @@ capabilities:
 - generate_video
 - validate_settings
 agent:
-  purpose: Choose this pack to generate video via the native Wan2GP engine (Wan2GP, not fal/cloud). Uses shared.api.init() / WanGPSession.submit_task() behind a private per-runner spool and one-shot runner.
+  purpose: Choose this pack to generate video via the native Wan2GP engine (Wan2GP, not fal/cloud). GenericPackHost initializes the explicitly admitted upstream session once and maps native jobs through ManagedToolSession.
   do_not_use_for: Do not use for VibeComfy/ComfyUI workflows (use vibecomfy) or fal/cloud video (use generation); this is the native Wan2GP engine seam only.
   normal_entrypoints:
   - wan2gp.generate_video

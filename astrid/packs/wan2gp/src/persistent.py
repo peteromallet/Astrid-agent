@@ -1,4 +1,9 @@
-"""Fail-closed persistent-session protocol for the Wan2GP pack.
+"""Fixture-only persistent-session protocol for the Wan2GP pack.
+
+This CPU substitute is retained for focused protocol tests only.  The
+production ``wan2gp.generate_video`` route is host-mediated and must use the
+W2.1 child-owned native ``shared.api`` session; no production executor imports
+this module.
 
 This module is a CPU-testable ownership seam, not a claim that the pinned
 Wan2GP checkout supports persistence.  A native adapter must explicitly expose

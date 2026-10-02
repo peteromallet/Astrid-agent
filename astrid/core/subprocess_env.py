@@ -76,6 +76,10 @@ _ASTRID_PROPAGATED_ENV = frozenset(
         ASTRID_ENV_FILE,
         TIMELINE_SCHEMA_PYTHONPATH_ENV,
         ASTRID_VIBECOMFY_CHECKOUT,
+        # Nested SDK attachment re-measures the host's source inventory.
+        # Keep the explicit discovery fence across supervised child processes.
+        "ASTRID_SOURCE_STATE",
+        "ASTRID_SOURCE_DATA",
         PROJECTS_ROOT_ENV,
         PROJECT_RUN_ENV,
         PROJECT_SLUG_ENV,

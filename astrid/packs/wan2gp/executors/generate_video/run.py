@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot native Wan2GP video generation (C-M1).
+"""Host-mediated Wan2GP capability guard.
 
-Typed capability ``wan2gp.generate_video`` — compiles inputs deterministically,
-runs the native ``shared.api.init / WanGPSession.submit_task`` seam in a
-private per-attempt spool, verifies output containment, and emits structured
-terminal evidence with disclosure.
+The production executor is dispatched by GenericPackHost, which owns the
+retained native child.  Direct execution is deliberately disabled so a pack
+runner cannot reintroduce per-attempt ``init()``/``close()`` ownership.
 """
 
 from __future__ import annotations
@@ -14,18 +13,12 @@ from astrid.core.pack.entrypoint import guard_canonical_entrypoint
 guard_canonical_entrypoint("wan2gp.generate_video")
 
 import argparse
-import json
 import sys
-import time
-from pathlib import Path
-
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.packs.wan2gp.src.compiler import compile_from_inputs, portable_digest
-from astrid.packs.wan2gp.src.driver import one_shot_run, validate_settings as driver_validate
+from astrid.packs.wan2gp.src.driver import compile_host_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Wan2GP one-shot native video generation (C-M1).")
+    p = argparse.ArgumentParser(description="Wan2GP host-mediated native video generation.")
     p.add_argument("--prompt", required=True, help="Text prompt.")
     p.add_argument("--model", default="wan-2.2", help="Model id (default wan-2.2).")
     p.add_argument("--negative-prompt", dest="negative_prompt", default=None, help="Negative prompt.")
@@ -36,13 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--guidance-scale", dest="guidance_scale", type=float, default=None)
     p.add_argument("--steps", type=int, default=None, dest="num_inference_steps", help="Sampling steps.")
     p.add_argument("--loras", default=None, help="LoRAs JSON/path (pass-through).")
-    p.add_argument("--out", type=Path, default=Path.cwd() / "wan2gp_output", help="Private spool directory (host {out}).")
-    p.add_argument("--wan2gp-path", dest="wan2gp_path", type=Path, default=None, help="Explicit Wan2GP checkout root.")
     return p
 
 
 def generate_core(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
-    t0 = time.time()
     inputs: dict[str, object] = {
         "prompt": args.prompt,
         "model": args.model,
@@ -55,92 +45,16 @@ def generate_core(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
         "steps": args.num_inference_steps,
         "loras": args.loras,
     }
-    # Drop Nones for compiler
     clean: dict[str, object] = {k: v for k, v in inputs.items() if v is not None}
     try:
-        settings = compile_from_inputs({**clean, "wan2gp_path": str(args.wan2gp_path) if args.wan2gp_path else None})
-        driver_validate(settings)
+        settings = compile_host_settings(clean)
     except ValueError as exc:
         return 2, {"ok": False, "error": str(exc), "code": "invalid_inputs"}
-
-    attempt_root = (args.out or Path.cwd() / "wan2gp_output").expanduser().resolve()
-    attempt_root.mkdir(parents=True, exist_ok=True)
-    digest = portable_digest(settings)
-
-    result = one_shot_run(
-        settings=settings,
-        attempt_root=attempt_root,
-        wan2gp_root=str(args.wan2gp_path) if args.wan2gp_path else None,
-    )
-    from astrid.packs.wan2gp.src.driver import _canonicalize_generated_files
-
-    spool_videos = [str(path) for path in attempt_root.rglob("*") if path.suffix.lower() in {".mp4", ".m4v", ".mov"}]
-    _canonicalize_generated_files(list(dict.fromkeys([*result.generated_files, *spool_videos])))
-
-    # Receipt paths are relative to {out} so any host can harvest them.
-    outputs: list[dict[str, object]] = []
-    for ordinal, raw in enumerate(result.generated_files):
-        candidate = Path(raw)
-        resolved = candidate.resolve() if candidate.exists() else candidate
-        try:
-            relative = resolved.relative_to(attempt_root).as_posix()
-        except ValueError as exc:
-            raise ValueError(
-                f"Wan2GP output is outside the assigned spool: {resolved}"
-            ) from exc
-        entry: dict[str, object] = {
-            "path": relative,
-            "name": "generated_videos",
-            "ordinal": ordinal,
-            "role": "result",
-            "is_primary": ordinal == 0,
-        }
-        outputs.append(entry)
-
-    empty_success = bool(result.success) and not outputs
-    if empty_success:
-        result_success = False
-        errors = list(result.errors) + ["generation produced no files"]
-    else:
-        result_success = bool(result.success)
-        errors = list(result.errors)
-
-    manifest = build_manifest(
-        kind="video",
-        inputs={"prompt": args.prompt, "model": args.model},
-        outputs=outputs,
-        created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        schema_version=2,
-        warnings=[],
-        model=args.model,
-        portable_digest=digest,
-        disclosed_engine=result.disclosed_engine,
-        spool=str(result.spool),
-    )
-
-    manifest_path = attempt_root / "manifest.json"
-    if outputs:
-        manifest = write_manifest(manifest_path, manifest)
-    else:
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-
-    if not result_success:
-        return 1, {
-            "ok": False,
-            "error": "; ".join(errors) if errors else "generation failed",
-            "manifest": manifest,
-            "disclosed_engine": result.disclosed_engine,
-            "spool": str(result.spool),
-            "duration_ms": int((time.time() - t0) * 1000),
-        }
-
-    return 0, {
-        "ok": True,
-        "manifest": manifest,
-        "files": result.generated_files,
-        "disclosed_engine": result.disclosed_engine,
-        "spool": str(result.spool),
-        "duration_ms": int((time.time() - t0) * 1000),
+    del settings
+    return 2, {
+        "ok": False,
+        "error": "wan2gp.generate_video requires the GenericPackHost-owned Wan session",
+        "code": "host_session_required",
     }
 
 
@@ -148,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     code, payload = generate_core(args)
     # Emit JSON on stdout for host capture; errors also go to stderr.
+    import json
+
     json.dump(payload, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     if code != 0 and payload.get("error"):
