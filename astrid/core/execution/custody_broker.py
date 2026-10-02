@@ -35,6 +35,7 @@ LOCAL_PEERTOKEN = 0x006
 TOKEN_BYTES = 32
 FRAME_LIMIT = 16 * 1024
 PROTOCOL_VERSION = 1
+POST_EXEC_STABILITY_SECONDS = 0.05
 
 
 class CustodyError(RuntimeError):
@@ -313,15 +314,57 @@ class RoleBoundCustodyBroker:
             _send_frame(connection, self.ack)
             deadline = time.monotonic() + self.timeout
             post: dict[str, object] | None = None
+            post_stable_since: float | None = None
+            terminal_before_seal = False
             while time.monotonic() < deadline:
-                candidate = _token_details(connection)
-                if candidate["pidversion"] != pre["pidversion"]:
-                    post = candidate
+                try:
+                    candidate = _token_details(connection)
+                except OSError as exc:
+                    # A very short command may exit and close its inherited
+                    # registration socket before the stability window ends.
+                    # Accept that only when the exact incarnation is already
+                    # absent; a live peer that closes custody remains a hard
+                    # admission failure.
+                    if (
+                        post is None
+                        or self.identity_provider(int(frame["pid"])) is not None
+                    ):
+                        raise CustodyError(
+                            "custody peer closed before post-exec identity stabilized"
+                        ) from exc
+                    terminal_before_seal = True
                     break
+                if candidate["pidversion"] != pre["pidversion"]:
+                    if (
+                        post is None
+                        or candidate["pidversion"] != post["pidversion"]
+                        or candidate["sha256"] != post["sha256"]
+                    ):
+                        post = candidate
+                        post_stable_since = time.monotonic()
+                    elif (
+                        post_stable_since is not None
+                        and time.monotonic() - post_stable_since
+                        >= POST_EXEC_STABILITY_SECONDS
+                    ):
+                        break
                 time.sleep(0.005)
-            if post is None or post["pid"] != frame["pid"] or post["uid"] != os.getuid():
+            if (
+                post is None
+                or post_stable_since is None
+                or (
+                    not terminal_before_seal
+                    and time.monotonic() - post_stable_since
+                    < POST_EXEC_STABILITY_SECONDS
+                )
+                or post["pid"] != frame["pid"]
+                or post["uid"] != os.getuid()
+            ):
                 raise CustodyError("post-exec audit token did not bind the registered process")
-            after = self.identity_provider(int(frame["pid"]))
+            after = None if terminal_before_seal else self.identity_provider(int(frame["pid"]))
+            if after is None:
+                terminal_before_seal = True
+                after = before
             if after is None or any(after.get(name) != before.get(name) for name in ("pid", "birth_id", "uid")):
                 raise CustodyError("pre/post-exec process incarnation differs")
             self.registration.update({
@@ -329,6 +372,7 @@ class RoleBoundCustodyBroker:
                 "audit_token_words": post["words"],
                 "audit_token_sha256": post["sha256"],
                 "audit_token_pidversion": post["pidversion"],
+                "terminal_before_seal": terminal_before_seal,
             })
             self.sequence += 1
             self._persist("registration_post_exec")

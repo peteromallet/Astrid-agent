@@ -17,14 +17,17 @@ from astrid.core.execution import process_group
 def _exercise_registration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pid = 43123
     identity = {"pid": pid, "birth_id": "birth-43123", "uid": os.getuid()}
-    tokens = iter(
-        (
-            {"pid": pid, "uid": os.getuid(), "pidversion": 7, "words": [1] * 8, "sha256": "sha256:" + "1" * 64},
-            {"pid": pid, "uid": os.getuid(), "pidversion": 8, "words": [2] * 8, "sha256": "sha256:" + "2" * 64},
-        )
-    )
+    pre = {"pid": pid, "uid": os.getuid(), "pidversion": 7, "words": [1] * 8, "sha256": "sha256:" + "1" * 64}
+    post = {"pid": pid, "uid": os.getuid(), "pidversion": 8, "words": [2] * 8, "sha256": "sha256:" + "2" * 64}
+    token_calls = 0
+
+    def token_details(_connection):
+        nonlocal token_calls
+        token_calls += 1
+        return pre if token_calls == 1 else post
+
     monkeypatch.setattr(custody_broker.sys, "platform", "darwin")
-    monkeypatch.setattr(custody_broker, "_token_details", lambda _connection: next(tokens))
+    monkeypatch.setattr(custody_broker, "_token_details", token_details)
     broker = custody_broker.RoleBoundCustodyBroker(
         role="generic_pack_host",
         identity_provider=lambda observed_pid: identity if observed_pid == pid else None,
@@ -69,6 +72,53 @@ def test_registration_is_kernel_authenticated_durable_before_ack_and_sealed(
     ledger = json.loads(broker.ledger_path.read_text())
     assert ledger["state"] == "sealed"
     assert ledger["registration"]["audit_token_pidversion"] == 8
+
+
+def test_registration_waits_for_chained_exec_token_to_stabilize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = 43124
+    identity = {"pid": pid, "birth_id": "birth-43124", "uid": os.getuid()}
+    pre = {"pid": pid, "uid": os.getuid(), "pidversion": 10, "words": [1] * 8, "sha256": "sha256:" + "1" * 64}
+    launcher = {"pid": pid, "uid": os.getuid(), "pidversion": 11, "words": [2] * 8, "sha256": "sha256:" + "2" * 64}
+    final = {"pid": pid, "uid": os.getuid(), "pidversion": 12, "words": [3] * 8, "sha256": "sha256:" + "3" * 64}
+    calls = 0
+
+    def token_details(_connection):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return pre
+        if calls == 2:
+            return launcher
+        return final
+
+    monkeypatch.setattr(custody_broker.sys, "platform", "darwin")
+    monkeypatch.setattr(custody_broker, "_token_details", token_details)
+    monkeypatch.setattr(custody_broker, "POST_EXEC_STABILITY_SECONDS", 0.01)
+    broker = custody_broker.RoleBoundCustodyBroker(
+        role="generic_pack_host",
+        identity_provider=lambda observed_pid: identity if observed_pid == pid else None,
+        ledger_root=tmp_path / "ledger",
+    )
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.connect(str(broker.socket_path))
+    frame = {
+        "version": custody_broker.PROTOCOL_VERSION,
+        "command": "register_pre_exec",
+        "run_id": broker.run_id,
+        "role": broker.role,
+        "pid": pid,
+        "ppid": os.getpid(),
+        "argv_digest": "sha256:" + "a" * 64,
+    }
+    custody_broker._send_frame(connection, frame)
+    custody_broker._read_frame(connection)
+    broker.wait_until_sealed()
+    connection.close()
+    assert calls >= 4
+    assert broker.registration["audit_token_pidversion"] == 12
+    assert broker.registration["audit_token_words"] == final["words"]
 
 
 def test_cleanup_routes_only_through_registered_audit_token(
@@ -155,3 +205,29 @@ def test_real_launch_registers_seals_and_signals_with_kernel_audit_token() -> No
     assert broker.registration["audit_token_pidversion"] != broker.registration["pre_exec_pidversion"]
     process_group.terminate_group(process, grace_seconds=0.1)
     assert process.returncode == -signal.SIGTERM
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin audit-token API")
+def test_real_python_launch_seals_after_framework_launcher_and_signals() -> None:
+    process = process_group.popen_owned_group(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    broker = process._astrid_custody_broker
+    assert broker.state == "sealed"
+    process_group.terminate_group(process, grace_seconds=0.1)
+    assert process.returncode == -signal.SIGTERM
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin audit-token API")
+def test_real_fast_python_launch_can_finish_during_seal() -> None:
+    process = process_group.popen_owned_group(
+        [sys.executable, "-c", "pass"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process_group.release_group(process)
+    assert process.returncode == 0

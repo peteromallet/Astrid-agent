@@ -363,7 +363,7 @@ def popen_owned_group(
 
     def identity_provider(pid: int) -> Mapping[str, object] | None:
         observed = _process_snapshot(full_pids={pid}).get(pid)
-        if observed is None or not observed.birth or not isinstance(observed.uid, int):
+        if observed is None or not _identity_complete(observed):
             return None
         return {
             "pid": observed.pid,
