@@ -1262,8 +1262,56 @@ class RemoteRuns(_RemoteFamily):
         return self._typed("list_project_runs", project_id, cursor=cursor, limit=limit)
     def show(self, run_id, *, evidence=False):
         run = self._typed("get_run", run_id)
-        if not run.ok or not evidence:
+        if not run.ok:
             return run
+        if not isinstance(run.data, Mapping):
+            return DomainResult.failure(ErrorObject(
+                "transport_error", "Runtime returned an invalid run read model", {"run_id": str(run_id)}
+            ))
+        run_data = dict(run.data)
+        task_ids = run_data.get("task_ids")
+        if (
+            run_data.get("id") != str(run_id)
+            or not isinstance(task_ids, list)
+            or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+            or len(task_ids) != len(set(task_ids))
+        ):
+            return DomainResult.failure(ErrorObject(
+                "transport_error", "Runtime returned an invalid run child projection", {"run_id": str(run_id)}
+            ))
+        project_id = run_data.get("project_id")
+        supported_states = {
+            "queued", "ready", "running", "succeeded", "failed",
+            "cancel_requested", "cancelled", "retrying",
+        }
+        ordered = []
+        for task_id in task_ids:
+            task = self._typed("get_task", task_id)
+            if not task.ok:
+                return task
+            child = task.data
+            if (
+                not isinstance(child, Mapping)
+                or child.get("task_id") != task_id
+                or child.get("run_id") != str(run_id)
+                or child.get("project_id") != project_id
+                or child.get("state") not in supported_states
+            ):
+                return DomainResult.failure(ErrorObject(
+                    "transport_error",
+                    "Runtime returned an invalid run child read model",
+                    {"run_id": str(run_id), "task_id": task_id},
+                ))
+            ordered.append({"task_id": task_id, "status": child["state"]})
+        run_data["progress"] = {
+            "total": len(ordered),
+            "succeeded": sum(child["status"] == "succeeded" for child in ordered),
+            "failed": sum(child["status"] == "failed" for child in ordered),
+            "cancelled": sum(child["status"] == "cancelled" for child in ordered),
+            "ordered": ordered,
+        }
+        if not evidence:
+            return DomainResult.success(run_data)
         page = self._typed("list_run_events", run_id, cursor=None, limit=200)
         if not page.ok:
             return page
@@ -1284,11 +1332,7 @@ class RemoteRuns(_RemoteFamily):
                 "Run evidence exceeds the bounded 200-item read",
                 {"run_id": str(run_id), "next_cursor": str(next_cursor)},
             ))
-        if not isinstance(run.data, Mapping):
-            return DomainResult.failure(ErrorObject(
-                "transport_error", "Runtime returned an invalid run read model", {"run_id": str(run_id)}
-            ))
-        return DomainResult.success({**dict(run.data), "evidence": list(items)})
+        return DomainResult.success({**run_data, "evidence": list(items)})
     def cancel(self, run_id, *, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("cancel_run", run_id, key=key, idempotency_key=key)
