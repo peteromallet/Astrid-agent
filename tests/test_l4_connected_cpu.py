@@ -164,7 +164,7 @@ def test_measured_capsule_actual_runtime_host_l1_inputs_and_readback(
                 assert _field(row, "spec")["delegated_parent"]["parent_attempt_id"] == first.kernel_attempt_id
         vibe = next(row for row in tasks if _field(row, "capability_id") == "vibecomfy.run")
         managed = _field(vibe, "result")["managed_tool_session"]
-        assert managed["manager"] == "astrid-pack-host:executor"
+        assert managed["manager"] == "astrid-pack-host"
         assert managed["capability"]["ownership_mode"] == "manager_owned"
         assert managed["capability"]["terminate_authority"] == "generic_pack_host"
         assert managed["state"] == "settled"
