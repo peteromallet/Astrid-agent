@@ -13,8 +13,8 @@ Runtime checkout:
 ```bash
 astrid-local --provenance
 astrid-local workspace inspect --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
-astrid-local status --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
-astrid-local doctor --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+astrid status --json
+astrid doctor --diagnostic --json
 ```
 
 Use one absolute `ASTRID_LOCAL_DATA_ROOT` for every command. If the launcher
@@ -25,12 +25,30 @@ repaired by adding `PYTHONPATH` or pointing at a sibling checkout. For an
 editable development profile, set `ASTRID_LOCAL_SOURCE_MANIFEST` explicitly
 and keep that profile separate from installed qualification.
 
+`status` reports workspace, Runtime, readiness, and optional contribution auth.
+`doctor --diagnostic` emits the bounded C2 document. A diagnostic keeps these
+states distinct:
+
+| State | Meaning | Next action |
+|---|---|---|
+| `unknown` | The fact was not observed | collect the missing observation |
+| `stopped` | Runtime or Worker is not running | use explicit setup or Worker start |
+| `stale` | The observation exceeded its freshness bound | collect a fresh read |
+| `mismatched` | Identity, root, epoch, or digest differs | stop and reconcile the selected composition |
+| `failed` | An observed operation failed | fix the typed failure before retrying |
+| `healthy` | The bounded observation passed | continue with the requested operation |
+
+`astrid doctor --diagnostic --shared` redacts paths, credentials, command
+arguments, and executable next actions for shared output. Read commands never
+start or repair a service. `astrid worker start --json` is the separate,
+explicit lifecycle action.
+
 ## 2. Project health and recovery
 
 Use the read-only doctor first through the explicit runtime launcher:
 
 ```bash
-python3 -m astrid doctor --json
+astrid doctor --diagnostic --json
 ```
 
 On a pristine root, `state: "uninitialized"` with `ok: true` is expected and
@@ -62,7 +80,29 @@ python3 -m astrid media verify M_01ABC --project demo \
 python3 -m astrid backup restore ./backup --destination ./restore-target --json
 ```
 
-## 3. Local renderer debugging
+## 3. Worker and migration recovery
+
+Worker startup is Runtime-owned. Use the product command and retain its typed
+handoff or failure:
+
+```bash
+astrid worker start --json
+```
+
+Do not run `run_worker.py`, `worker.py`, or a direct database/task loop to
+repair a missing Worker. Those paths cannot establish the selected workspace,
+lease, fence, or credential identity. For a migration, use the Runtime-owned
+upgrade path and keep the archive until success:
+
+```bash
+astrid-upgrade
+astrid-local upgrade --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+```
+
+Never open SQLite/CAS files from Astrid, copy a previous root into place, or
+add `PYTHONPATH` to hide an installed provenance problem.
+
+## 4. Local renderer debugging
 
 Keep renderer work local and deterministic. Validate the request and output
 shape before investigating backend behavior, retain redacted logs, and never
@@ -83,7 +123,7 @@ The structured renderer failure kinds are:
 | `invalid_artifact` | Output is missing, empty, escaping, or hash-mismatched | Fix the output path and digest. |
 | `internal` | Unexpected backend failure | Preserve the redacted log and fix the backend. |
 
-## 4. SDK-level diagnostics
+## 5. SDK-level diagnostics
 
 A backend written against the rendering SDK can use `astrid.support(...)` for
 a request-sensitive support report. Product renders must be admitted through

@@ -12,20 +12,26 @@ separate local service that owns durable workspace state; Astrid is a client and
 pack source, not the state store. The closeout app/runtime pair is qualified with
 Node 20.19.4 and npm 10.8.2 when the app is included.
 
-Install both pinned distributions into the same virtual environment. This is the
-installed path: it resolves package code from the pinned Git revisions and does
-not import either repository from a checkout or set `PYTHONPATH`:
+Install both distributions from the immutable Astrid and Runtime commits named
+by the release provenance. This is the installed path: it does not import
+either repository from a checkout or set `PYTHONPATH`:
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install 'Astrid @ git+https://github.com/peteromallet/Astrid.git@astrid-plan-a-final-state-closeout-20260925'
-python -m pip install 'banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@astrid-plan-a-final-state-closeout-20260925'
+export ASTRID_COMMIT='<40-character Astrid commit from release provenance>'
+export RUNTIME_COMMIT='<40-character Runtime commit from release provenance>'
+[[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+python -m pip install "Astrid @ git+https://github.com/peteromallet/Astrid.git@${ASTRID_COMMIT}"
+python -m pip install "banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@${RUNTIME_COMMIT}"
 export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
 astrid-local --provenance
-astrid-local up --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
-python -m astrid --help
-python -m astrid projects list --json
+astrid setup --create --check --json
+astrid setup --create --apply --json
+astrid status --json
+astrid doctor --diagnostic --json
+astrid worker start --json
+astrid projects list --json
 ```
 
 The support root contains the launcher catalog, credentials, and runtime realm
@@ -56,12 +62,10 @@ Astrid setup provisions the canonical Hivemind repository at an immutable
 revision, validates its strict v2 pack manifest, and composes its skill view.
 The same managed source inventory is used by discovery and the generic host:
 
-```bash
-python3 -m astrid.setup
-python3 -m astrid.setup --check --offline
-python3 -m astrid.setup --disable-pack hivemind
-python3 -m astrid.setup --restore-pack hivemind
-```
+`astrid setup --create --apply` composes the default Hivemind source as part of
+the selected workspace. Use `astrid setup --disable-pack hivemind` or
+`astrid setup --restore-pack hivemind` only as an explicit setup change; keep
+the same setup input and review it with `--check` before `--apply`.
 
 ### Optional Hivemind contributor login
 
@@ -124,15 +128,25 @@ migration compatibility.
 From any shell with the runtime configured, check health:
 
 ```bash
-python3 -m astrid doctor --json
+astrid status --json
+astrid doctor --diagnostic --json
 ```
 
 Other useful zero-secret commands:
 
 ```bash
-python3 -m astrid projects list --json
-python3 -m astrid projects show demo --json
+astrid projects list --json
+astrid projects show demo --json
 ```
+
+Start the Runtime-owned local Worker only when work is ready to execute:
+
+```bash
+astrid worker start --json
+```
+
+The product command requests one verified Worker handoff through Runtime and
+one `GenericPackHost`. It does not authorize GPU, RunPod, or provider work.
 
 After a project has a successful timeline render, verify and open the newest
 runtime render on macOS with:
@@ -151,9 +165,10 @@ If using the SDK directly, pass the loopback runtime endpoint and credential to
 Never point Astrid at a local SQLite/CAS directory; the runtime owns those
 details.
 
-`astrid doctor` remains a read-only diagnostic and does not create support
-state. Product commands perform the bounded neutral launch/reconnect handoff
-through `AstridClient.open_from_launcher()`. Ordinary SDK
+`astrid status` and `astrid doctor` remain read-only diagnostics and do not
+create support state, start services, repair state, retry work, or migrate a
+workspace. Product commands perform the bounded neutral launch/reconnect
+handoff through `AstridClient.open_from_launcher()`. Ordinary SDK
 `AstridClient.open()` calls remain explicit and never launch a process.
 
 The seven top-level gateway families are `projects`, `timelines`, `media`,
@@ -169,18 +184,17 @@ read a file location that the runtime has authenticated and verified.
 
 ### Upgrading an existing workspace
 
-After installing updated Astrid and runtime packages, run:
+After installing a newer immutable Astrid and Runtime pair, run:
 
 ```bash
 astrid-upgrade
 ```
 
-The command locates the existing workspace, stops its idle runtime and pack
-host, applies the required migrations, moves an older store into the configured
-Astrid data folder when needed, then restarts and verifies both services.
-It preserves project identities and media, refuses to interrupt active work,
-and can be rerun safely. Migration archives are retained for recovery; only the
-current store is used during normal operation.
+The command locates the selected workspace, refuses to interrupt active work,
+applies the Runtime-owned migrations, and restarts only the services it owns.
+It preserves project identities and media, retains migration archives for
+recovery, and can be rerun safely. Do not open SQLite/CAS files, copy an old
+root into place, or use a checkout as an implicit workspace.
 
 For direct Runtime lifecycle work, use the canonical launcher and the same
 support root:
@@ -189,8 +203,7 @@ support root:
 astrid-local upgrade --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
 ```
 
-Runtime owns migration and realm state. Do not open SQLite/CAS files from Astrid
-or restore an old root by hand. The deprecated `banodoco-local` and
+Runtime owns migration and realm state. The deprecated `banodoco-local` and
 `astrid-runtime` names remain readable during migration and emit a warning.
 
 For the complete project, timeline, media, recovery, and failure journeys,

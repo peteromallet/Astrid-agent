@@ -7,18 +7,23 @@ Astrid/Runtime, Python 3.10.21 for the Worker profile, and Node 20.19.4/npm
 10.8.2 for app checks. Linux and Windows setup have not yet been validated; this
 guide does not claim support for them.
 
-## 1. Install
+## 1. Install the pinned composition
 
 You need Python 3.11.16 for the Astrid/Runtime install. Git is only needed when
-installing directly from the pinned public revisions. Check them in Terminal:
+installing from the published source revisions. The release provenance supplies
+one immutable 40-character commit for each repository; keep those values in the
+shell that performs the install:
 
 ```bash
 git --version
 python3.11 --version
+export ASTRID_COMMIT='<40-character Astrid commit from release provenance>'
+export RUNTIME_COMMIT='<40-character Runtime commit from release provenance>'
+[[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 ```
 
 Use a new folder for this installation. If you already have Astrid, keep that
-installation and begin with [checking it](#3-check-your-workspace). The commands
+installation and begin with [checking it](#3-check-workspace-diagnostics-and-worker). The commands
 below install pinned distributions; they do not make an Astrid or Runtime
 checkout part of the live import path.
 
@@ -27,61 +32,70 @@ mkdir astrid-local
 cd astrid-local
 python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install 'Astrid @ git+https://github.com/peteromallet/Astrid.git@astrid-plan-a-final-state-closeout-20260925'
-python -m pip install 'banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@astrid-plan-a-final-state-closeout-20260925'
+python -m pip install "Astrid @ git+https://github.com/peteromallet/Astrid.git@${ASTRID_COMMIT}"
+python -m pip install "banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@${RUNTIME_COMMIT}"
 export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
 astrid-local --provenance
 ```
 
-These commands use the named closeout branch for each pinned public repository;
-the final implementation commit SHAs are recorded in the release provenance
-once the branches are published. Do not mix an existing installation with
-unrelated development revisions. The installed profile must not depend on a
-source checkout or `PYTHONPATH`.
+The shell guard rejects moving branch names and malformed refs. Do not mix an
+existing installation with unrelated development revisions. The installed
+profile must not depend on a source checkout or `PYTHONPATH`.
 
-## 2. Start Runtime once
+## 2. Preview and apply one workspace
 
-From the same `astrid-local` folder, start or reconnect the selected Runtime.
-The installed profile derives its bounded provenance from the installed module;
-no source manifest is required:
+Use the product gateway for setup. Preview and check are nonstarting; apply
+creates or attaches one explicit workspace and starts its selected Runtime:
 
 ```bash
-astrid-local up --profile astrid --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
+astrid setup --create --check --json
+astrid setup --create --apply --json
 ```
 
-This is a one-time configuration for this installation. Runtime creates or
-reconnects the local realm and credentials under the support root. `astrid-local`
-is the canonical launcher; `banodoco-local` and `astrid-runtime` remain
-deprecated aliases and print a warning. If both a canonical and a legacy
-environment variable are set to different values, setup fails closed. A
-legacy-only value is accepted with a warning; use `ASTRID_LOCAL_*` names in new
-configuration.
+The guided form asks for the workspace UUID, absolute support root, and
+absolute realm root. `--attach` requires an existing UUID and root; it never
+copies or silently adopts a checkout. Runtime owns the selected workspace,
+credentials, database, task ledger, and outputs.
+
+`astrid-local` is the lower-level operator surface for an already selected
+workspace (`up`, `status`, `doctor`, `restart`, `down`, and `start-worker`).
+`banodoco-local` and `astrid-runtime` remain deprecated aliases and print a
+warning. If canonical and legacy environment values differ, setup fails
+closed; a legacy-only value is accepted with a warning. Use `ASTRID_LOCAL_*`
+names in new configuration.
 
 For editable repository development, create an explicit source profile and set
 `ASTRID_LOCAL_SOURCE_MANIFEST`. Keep that workflow separate from this installed
 closeout path; it requires absolute, symlink-free checkout paths and may use
 `PYTHONPATH` only inside the development environment.
 
-## 3. Check your workspace
+## 3. Check workspace, diagnostics, and Worker
 
 ```bash
-python -m astrid doctor --json
-python -m astrid projects list --json
+astrid status --json
+astrid doctor --diagnostic --json
+astrid worker start --json
+astrid projects list --json
 ```
 
-Both commands should succeed. A new workspace may have no projects yet. If either fails, follow [Troubleshooting](troubleshooting.md).
+`status` and `doctor` are observation only: they do not start, repair, retry,
+or migrate services. `worker start` is the explicit lifecycle action and
+returns a typed Runtime-owned handoff; it launches the verified local Worker
+and one `GenericPackHost`. The Worker profile uses Python 3.10.21. A new
+workspace may have no projects yet. If a command fails, follow
+[Troubleshooting](troubleshooting.md).
 
 ## 4. Add the default knowledge pack
 
-From the Astrid checkout, using the same environment:
+The apply composition provisions the default Hivemind source. Searching its
+community knowledge requires an internet connection. To preview the same pack
+selection without acquisition, use the setup plan with `--offline`; keep the
+same explicit input document when moving from check to apply:
 
 ```bash
-cd Astrid
-python -m astrid.setup
-python -m astrid.setup --check --offline
+astrid setup --input ./setup.json --check --offline --json
+astrid setup --input ./setup.json --apply --json
 ```
-
-Setup provisions the default Hivemind source. Searching its community knowledge requires an internet connection.
 
 ## 5. Sync your agent’s skills
 
@@ -97,8 +111,10 @@ Check the install report for the agent you use. If it was not detected, use the 
 
 ## 6. Check the complete setup
 
-- `python -m astrid --help` opens the command help.
-- `python -m astrid doctor --json` and `projects list --json` succeed.
+- `astrid --help` and `astrid --version` work from the installed environment.
+- `astrid status --json`, `astrid doctor --diagnostic --json`, and
+  `astrid projects list --json` return structured results.
+- `astrid worker start --json` reports the Runtime-owned Worker handoff.
 - Skill sync reports no drift, and the skills doctor succeeds.
 - Your agent can find the core skill and a linked pack skill.
 
@@ -128,7 +144,7 @@ You do not need to recreate credentials. From your `astrid-local` folder:
 source .venv/bin/activate
 export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
 astrid-local status --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
-python -m astrid projects list
+astrid projects list --json
 ```
 
 [Credentials](credentials.md) · [Troubleshooting](troubleshooting.md) · [Back to Astrid](../../README.md)
