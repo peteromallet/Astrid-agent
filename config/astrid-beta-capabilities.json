@@ -361,6 +361,22 @@
    "required_packages": []
   },
   {
+   "id": "generation.generate_speech",
+   "disposition": "required",
+   "evidence_reason": "Draft speech synthesis via declared Edge TTS egress and ffmpeg.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "edge-tts",
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": []
+  },
+  {
    "id": "generation.generate_video",
    "disposition": "required",
    "evidence_reason": "Required video-generation facade; provider readiness is credential-gated.",

@@ -31,6 +31,7 @@ def test_snapshot_state_writes_stable_multi_root_tarball(tmp_path: Path) -> None
         repo_root=repo_root,
         out_dir=out_dir,
         timestamp="20260524-010203",
+        retain_backup=True,
     )
 
     assert tarball == out_dir / "astrid-state-20260524-010203.tar.gz"
@@ -71,6 +72,7 @@ def test_snapshot_state_excludes_nested_retired_thread_state_but_keeps_json(tmp_
         repo_root=repo_root,
         out_dir=out_dir,
         timestamp="20260524-010204",
+        retain_backup=True,
     )
 
     with tarfile.open(tarball, "r:gz") as tar:
@@ -85,19 +87,52 @@ def test_snapshot_state_excludes_nested_retired_thread_state_but_keeps_json(tmp_
     assert "repo/retired/threads/.astrid.variants.json" not in names
 
 
-def test_snapshot_state_rejects_out_dir_inside_repo(tmp_path: Path) -> None:
+def test_snapshot_state_requires_explicit_persistent_opt_in_before_writing(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects-root"
+    repo_root = tmp_path / "repo-root"
+    out_dir = tmp_path / "outside-snapshots"
+    projects_root.mkdir()
+    repo_root.mkdir()
+
+    with pytest.raises(SystemExit, match="explicit retain_backup"):
+        create_snapshot(projects_root=projects_root, repo_root=repo_root, out_dir=out_dir)
+    assert not out_dir.exists()
+
+
+def test_snapshot_state_rejects_out_dir_inside_repo_before_writing(tmp_path: Path) -> None:
     projects_root = tmp_path / "projects-root"
     repo_root = tmp_path / "repo-root"
     projects_root.mkdir()
     repo_root.mkdir()
+    out_dir = repo_root / "snapshots"
 
     with pytest.raises(SystemExit, match="outside the repo"):
         create_snapshot(
             projects_root=projects_root,
             repo_root=repo_root,
-            out_dir=repo_root / "snapshots",
+            out_dir=out_dir,
             timestamp="20260524-010203",
+            retain_backup=True,
         )
+    assert not out_dir.exists()
+
+
+def test_snapshot_state_rejects_out_dir_inside_projects_root_before_writing(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects-root"
+    repo_root = tmp_path / "repo-root"
+    projects_root.mkdir()
+    repo_root.mkdir()
+    out_dir = projects_root / "snapshots"
+
+    with pytest.raises(SystemExit, match="outside the projects root"):
+        create_snapshot(
+            projects_root=projects_root,
+            repo_root=repo_root,
+            out_dir=out_dir,
+            timestamp="20260524-010203",
+            retain_backup=True,
+        )
+    assert not out_dir.exists()
 
 
 def test_snapshot_state_cli_accepts_explicit_roots(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -115,6 +150,7 @@ def test_snapshot_state_cli_accepts_explicit_roots(tmp_path: Path, capsys: pytes
             str(repo_root),
             "--out-dir",
             str(out_dir),
+            "--retain-backup",
             "--timestamp",
             "20260524-010203",
         ]
@@ -124,3 +160,21 @@ def test_snapshot_state_cli_accepts_explicit_roots(tmp_path: Path, capsys: pytes
     printed = Path(capsys.readouterr().out.strip())
     assert printed == out_dir / "astrid-state-20260524-010203.tar.gz"
     assert printed.is_file()
+
+
+def test_snapshot_state_cli_requires_opt_in_before_resolving_roots(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects-root"
+    repo_root = tmp_path / "repo-root"
+    out_dir = tmp_path / "outside-snapshots"
+
+    with pytest.raises(SystemExit):
+        main(["--projects-root", str(projects_root), "--repo-root", str(repo_root), "--out-dir", str(out_dir)])
+
+    assert not projects_root.exists()
+    assert not repo_root.exists()
+    assert not out_dir.exists()
+
+
+def test_snapshot_state_cli_requires_explicit_output_dir(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(["--projects-root", str(tmp_path / "projects-root"), "--retain-backup"])

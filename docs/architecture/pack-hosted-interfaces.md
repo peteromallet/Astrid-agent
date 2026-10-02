@@ -2,6 +2,8 @@
 
 **Status:** Architecture proposal, 2026-09-22. This document records a product direction; it does not amend the canonical pack schema, SDK, discovery behavior, or trust policy.
 
+**Later authoring direction (2026-10-01):** [Actions, UI and rendering](pack-authoring-direction.md) records the subsequent folder convention, callable action model, UI contribution examples and illustrative manifest. Use it for the latest authoring proposal; the existing implementation is still governed by the canonical pack contract.
+
 The end-user and agent-facing outcome is described in the workspace's [Astrid pack extension end state](../../../docs/architecture/astrid-packs-and-extensions/end-state.md).
 
 The companion [gap analysis](../../../docs/architecture/astrid-packs-and-extensions/gap-to-end-state.md) checks the 2026-09-22 source, distinguishes reusable Video Editor infrastructure from missing shared platform work, and proposes phased acceptance criteria. It does not change this proposal's non-normative status or the canonical pack contract.

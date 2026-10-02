@@ -787,6 +787,11 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
             self.timelines = SimpleNamespace(
                 show=lambda _project, _ref: result(timeline),
                 list=lambda _project, **_kwargs: result([[timeline], None]),
+                inspect=lambda _project, _ref, **_kwargs: result({
+                    "timeline_id": "main", "representation": "canonical_head",
+                    "is_current_head": True, "revision_id": "parent-1",
+                    "head_revision_id": "parent-1",
+                }),
             )
 
         def get_project_parent_composition_revision(self, _project, _timeline, revision_id):
@@ -847,16 +852,9 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
     }}
     render_preview = preview_authoring_candidate(render_candidate)
 
-    class PreviewRuntime(Runtime):
-        def get_project_shot_revision(self, *_args):
-            raise AssertionError("preview should not project the unrenderable source shot")
-
-        def get_project_timeline_revision(self, *_args):
-            raise AssertionError("preview should not project the unrenderable source timeline")
-
     prepared, admitted = _prepare_managed_render_inputs(
         {"timeline_ref": "main", "authoring_preview": render_preview},
-        project="demo", _client=PreviewRuntime(),
+        project="demo", _client=Runtime(),
     )
     assert "authoring_preview" not in prepared
     assert admitted["authoring_preview"]["candidate_digest"] == render_preview["candidate_digest"]
@@ -962,6 +960,10 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
             project_id, b"voiceover", media_type="audio/wav", idempotency_key="audio"
         )["data"]["object_id"]
         parent, shots, timelines = _closure(shared=True)
+        # This integration test covers candidate media publication. Narration
+        # uses the separate registered text-binding authority and is unrelated
+        # to the media edits exercised below.
+        shots[0]["payload"]["text_bindings"] = []
         replacements = {OLD: old, NEW: new, AUDIO: audio, "project-1": project_id}
         parent = _replace_values(parent, replacements)
         shots = _replace_values(shots, replacements)

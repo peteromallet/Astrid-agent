@@ -4,7 +4,7 @@ description: >
   Generate images and videos from text prompts using the elegant
   `astrid.generate` facade.  Image, audio, and video generation route through
   the same runtime-owned executor code path. Covers generate_image, generate_video, and
-  generate_audio, and generate_image_openai (executor-only).
+  generate_audio, generate_speech, and generate_image_openai (executor-only).
 ---
 
 # Generation
@@ -109,6 +109,30 @@ sound = sdk.invoke(
     wait=True,
 )
 sound.ok
+```
+
+### Speech
+
+`generation.generate_speech` creates one WAV file from exact text using Edge
+TTS. Invoke it through the SDK so the WAV and provenance manifest are stored as
+runtime-managed artifacts (pass your connected `AstridClient` as `client`):
+
+```python
+speech = sdk.invoke(
+    "generation.generate_speech",
+    kind="executor",
+    project="demo",
+    inputs={
+        "text": "The train will arrive in five minutes.",
+        "provider": "edge-tts",
+        "voice": "en-US-ChristopherNeural",
+        "rate": "+0%",
+        "volume": "+0%",
+        "pitch": "+0Hz",
+    },
+    client=client, wait=True,
+)
+speech.outputs["artifacts"]  # managed WAV and speech_manifest provenance references
 ```
 
 All three typed facades run the same read-only preflight before dry-run or
@@ -292,6 +316,7 @@ The pack's three executors remain available for direct use through the SDK
 | Executor | What it does |
 |---|---|
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends; the current mode is `music`. |
+| `generation.generate_speech` | Synthesize exact text as WAV with configurable Edge TTS voice settings. |
 | `generation.generate_image` | Generate images from text prompts via local (vibecomfy), cloud (fal), or Codex backends. v2: model→mode→backend taxonomy with a required `mode` input. Supports t2i, i2i, and edit modes. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v, i2v, and flf (first-last-frame) modes. |
 | `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. Requires `OPENAI_API_KEY`. |

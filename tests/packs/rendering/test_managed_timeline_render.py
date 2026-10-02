@@ -693,6 +693,78 @@ def test_legacy_shot_review_context_is_rejected_before_projection() -> None:
         )
 
 
+@pytest.mark.parametrize("use_public_client", [False, True])
+def test_canonical_review_reads_pinned_script_and_separates_shot_revisions(use_public_client) -> None:
+    import hashlib
+
+    runtime = _Runtime()
+    runtime.timeline["head_revision_id"] = "parent-scripts"
+    scripts = {"shot-r1": b"Original words.", "shot-r2": b"Revised words."}
+    occurrences = []
+    for index, (revision_id, content) in enumerate(scripts.items()):
+        internal_id = f"internal-{revision_id}"
+        digest = hashlib.sha256(content).hexdigest()
+        pin = {
+            "binding_id": f"binding-{revision_id}", "project_id": "project-demo",
+            "shot_id": "reused-shot", "kind": "voiceover_script", "slot": None,
+            "head": 1, "media_id": f"sha256:{digest}", "content_hash": f"sha256:{digest}",
+            "mime_type": "text/plain", "byte_size": len(content),
+            "event_stream_id": f"binding-{revision_id}:shot.text_binding",
+        }
+        runtime.exact_shot_revisions[("reused-shot", revision_id)] = {
+            "project_id": "project-demo", "shot_id": "reused-shot", "revision_id": revision_id,
+            "internal_timeline_revision_id": internal_id, "content_digest": "sha256:" + "e" * 64,
+            "payload": {"metadata": {"name": "Same shot"}, "text_bindings": [pin]},
+        }
+        runtime.internal_revisions[internal_id] = {
+            "project_id": "project-demo", "timeline_id": "timeline-1", "revision_id": internal_id,
+            "content_digest": "sha256:" + "f" * 64,
+            "payload": {"tracks": [], "clips": [], "effects": [], "audio": [], "layout": {}, "registry": {"assets": {}}},
+        }
+        occurrences.append({
+            "occurrence_id": f"occ-{index}", "shot_id": "reused-shot", "shot_revision_id": revision_id,
+            "placement": {"start_ms": index * 2000, "track": "voice"}, "duration_ms": 1000,
+            "source_offset": 0, "speed": 1, "gain": 1, "mute": False, "track": "voice",
+            "transform": {}, "provenance": {},
+        })
+    runtime.parent_revisions["parent-scripts"] = {
+        "project_id": "project-demo", "timeline_id": "timeline-1", "revision_id": "parent-scripts",
+        "content_digest": "sha256:" + "d" * 64,
+        "payload": {"config": {"tracks": [], "clips": []}, "registry": {"assets": {}}, "clips": [], "occurrences": occurrences},
+    }
+    runtime.get_object = lambda object_id: {"data": next(
+        content for content in scripts.values()
+        if "sha256:" + hashlib.sha256(content).hexdigest() == object_id
+    )}
+
+    if use_public_client:
+        from astrid.sdk.remote import RemoteShots
+
+        class PublicClient:
+            shots = RemoteShots(runtime)
+
+            def __getattr__(self, name):
+                if name == "get_object":
+                    raise AttributeError(name)
+                return getattr(runtime, name)
+
+        client = PublicClient()
+    else:
+        client = runtime
+    prepared, _authority = _prepare_managed_render_inputs(
+        {"timeline_ref": "main", "review": True}, project="demo", _client=client,
+    )
+
+    phrases = prepared["review_context"]["speech"]["phrases"]
+    assert [(phrase["shot_occurrence_id"], phrase["text"], phrase["head"]) for phrase in phrases] == [
+        ("occ-0", "Original words.", 1), ("occ-1", "Revised words.", 1),
+    ]
+    shot_rows = prepared["timeline_authority"]["expansion"]["shots"]
+    assert {(row["shot_id"], row["revision_id"]) for row in shot_rows} == {
+        ("reused-shot", "shot-r1"), ("reused-shot", "shot-r2"),
+    }
+
+
 def test_unknown_effect_structured_schema_and_opaque_params_contracts() -> None:
     runtime = _Runtime()
     runtime.timeline["config"] = {"tracks": [{"id": "v", "kind": "visual", "label": "Visual"}], "clips": [{

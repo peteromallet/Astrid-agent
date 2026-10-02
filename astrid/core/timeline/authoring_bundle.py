@@ -75,6 +75,14 @@ def authoring_contract() -> dict[str, Any]:
             "occurrence shot_revision_id pins",
             "dependency manifest",
         ],
+        "shot_contract": {
+            "shot_id": "reusable registered project shot",
+            "occurrence_id": "placed occurrence identity for selection and navigation",
+            "placement": "declared occurrence track and half-open timing; overlaps do not imply child ownership",
+            "pins": "parent occurrence pins shot revision, which pins internal timeline and registered text binding revisions",
+            "narration": "registered shot text binding authority; new revision pins require current-head concurrency validation",
+            "script_reader": "timelines.script reads verified pinned text in placed timeline order; missing differs from empty",
+        },
         "selected_media_authority": (
             "internal timeline clip asset/media selector resolved through that timeline's registry; "
             "when a mirrored shot item changes, its media_id must resolve to the same immutable object"
@@ -1169,9 +1177,11 @@ def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     root = _mapping(candidate, "candidate")
     base = {
         "parent": root.get("base_parent_payload"),
-        "placements": _mapping(root.get("source_mapping"), "candidate.source_mapping").get(
-            "placements", {}
-        ),
+        "placements": list(_mapping(
+            _mapping(root.get("source_mapping"), "candidate.source_mapping").get(
+                "placements", {}
+            ), "candidate.source_mapping.placements"
+        ).values()),
         "shots": {
             key: {
                 "payload": value.get("base_payload"),

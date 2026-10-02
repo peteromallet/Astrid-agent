@@ -17,3 +17,10 @@ All pack authoring and reference docs live in this directory:
   populate, and validate packs.
 - **[pack-taxonomy.md](pack-taxonomy.md)** — Machine-readable pack
   classification fields (maturity, domain, origin, stability).
+
+## Proposed Authoring Direction
+
+- **[Actions, UI and rendering](../architecture/pack-authoring-direction.md)** —
+  Proposed folder convention, public manifest, supporting-code ownership,
+  UI-only and mixed packs, and illustrative examples. This is design direction,
+  not the currently implemented pack schema.
