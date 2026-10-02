@@ -51,6 +51,32 @@ _HANDSHAKE_KEYS = frozenset(
 _TARGETED_EXECUTION_BINDING_CAPABILITY = "execution_binding.targeted.v1"
 
 
+def _validate_child_handshake(
+    value: Any,
+    *,
+    expected_actor: str,
+) -> None:
+    handshake = _require_mapping(value, field="handshake")
+    if frozenset(handshake) != _HANDSHAKE_KEYS:
+        raise _protocol_error("handshake", "runtime handshake response has an unexpected schema")
+    if handshake.get("protocol") != PROTOCOL:
+        raise _protocol_error("handshake.protocol", "runtime handshake protocol does not match workspace.v1")
+    if handshake.get("schema_digest") != SCHEMA_DIGEST:
+        raise _protocol_error("handshake.schema_digest", "runtime handshake schema digest does not match the client")
+    if handshake.get("actor_id") != expected_actor:
+        raise _identity_error("handshake.actor_id", "delegated worker actor does not match the host handoff")
+    scopes = handshake.get("scopes")
+    from astrid.sdk.workspace_client import DelegatedWorkspaceClient
+
+    if not isinstance(scopes, (list, tuple)) or frozenset(scopes) != frozenset(DelegatedWorkspaceClient.CHILD_SCOPES):
+        raise _protocol_error("handshake.scopes", "delegated worker did not grant the narrow child scope set")
+    if len(set(scopes)) != len(scopes):
+        raise _protocol_error("handshake.scopes", "delegated worker returned duplicate scopes")
+    session_id = handshake.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise _protocol_error("handshake.session_id", "runtime handshake session_id is missing")
+
+
 def _protocol_error(field: str, message: str) -> Any:
     from astrid.sdk.workspace_client import WorkspaceClientError
 
@@ -266,7 +292,9 @@ class AstridClient:
         eval_credential = os.environ.get("ASTRID_TIMELINE_EVAL_CREDENTIAL", "").strip()
         eval_realm = os.environ.get("ASTRID_TIMELINE_EVAL_REALM_ID", "").strip()
         eval_actor = os.environ.get("ASTRID_TIMELINE_EVAL_ACTOR_ID", "").strip()
-        if any((eval_endpoint, eval_credential, eval_realm, eval_actor)):
+        if not (os.environ.get("ASTRID_NESTED_RUNTIME_HANDOFF_PATH")
+                or os.environ.get("ASTRID_NESTED_RUNTIME_HANDOFF_HASH")
+                or os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1") and any((eval_endpoint, eval_credential, eval_realm, eval_actor)):
             if not all((eval_endpoint, eval_credential, eval_realm, eval_actor)):
                 raise ServiceUnavailableError(
                     "case-local Runtime connection is incomplete",
@@ -295,6 +323,59 @@ class AstridClient:
             raise ServiceUnavailableError(
                 str(exc), details=lifecycle_details
             ) from exc
+        nested = bool(
+            os.environ.get("ASTRID_NESTED_RUNTIME_HANDOFF_PATH")
+            or os.environ.get("ASTRID_NESTED_RUNTIME_HANDOFF_HASH")
+        )
+        if nested:
+            from astrid.sdk.remote import RemoteAstridClient
+            from astrid.sdk.workspace_client import (
+                DelegatedWorkspaceClient,
+                resolve_runtime_connection,
+            )
+
+            try:
+                worker_file = result.get("worker_credential_file")
+                authority = result.get("child_authority")
+                policy = result.get("child_delegation")
+                worker_actor = result.get("worker_actor")
+                if not all(isinstance(item, str) and item.strip() for item in (worker_file, authority, worker_actor)):
+                    raise ValueError("nested handoff did not contain delegated worker identity")
+                if not isinstance(policy, Mapping):
+                    raise ValueError("nested handoff did not contain child policy")
+                endpoint_value, token = resolve_runtime_connection(
+                    str(result.get("endpoint", "")), Path(worker_file)
+                )
+                workspace = DelegatedWorkspaceClient(
+                    endpoint_value,
+                    token,
+                    authority=authority,
+                    capability_rows=list(policy.get("capabilities", ())),
+                    parent_context={
+                        "attempt_id": result.get("parent_attempt_id"),
+                        "lease_id": result.get("parent_lease_id"),
+                        "fence": result.get("parent_fence"),
+                        "runtime_epoch": result.get("parent_runtime_epoch"),
+                    },
+                )
+                _validate_health(
+                    workspace.health(),
+                    expected_protocol=PROTOCOL,
+                    expected_digest=SCHEMA_DIGEST,
+                )
+                handshake = workspace.handshake(
+                    client_name,
+                    client_version,
+                    list(DelegatedWorkspaceClient.CHILD_SCOPES),
+                )
+                _validate_child_handshake(handshake, expected_actor=worker_actor)
+                workspace.actor_id = worker_actor
+                return cls(remote=RemoteAstridClient(workspace))
+            except Exception as exc:
+                raise ServiceUnavailableError(
+                    "nested Runtime child admission context was rejected",
+                    details={"reason": str(exc), "lifecycle_code": "nested_delegation_invalid"},
+                ) from exc
         if credential is not None:
             credential_value: str | Path = credential
         else:

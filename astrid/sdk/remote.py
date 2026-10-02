@@ -320,6 +320,111 @@ def _prepare_execution_admission(
     return normalized_request, submitted_spec, admitted_manifest
 
 
+def _materialize_child_delegation(
+    declaration: Mapping[str, Any] | None,
+    capabilities: list[Mapping[str, Any]],
+    *,
+    input_object_ids: list[str],
+    execution_request: Mapping[str, Any] | None,
+    project_id: str | None,
+) -> dict[str, Any] | None:
+    """Compile a local orchestrator declaration into the Runtime policy.
+
+    The pack manifest names children; the live Runtime catalog supplies the
+    immutable definition digests. Keeping that join here means every public
+    task route (SDK invoke and ``tasks.create``) emits the same admission
+    packet, while nested workers never need to discover the wider catalog.
+    """
+    if declaration is None:
+        return None
+    if not isinstance(declaration, Mapping):
+        raise ValueError("orchestrator child declaration must be an object")
+    if "capability_ids" not in declaration and "capabilities" in declaration:
+        # Retain the existing first-class Runtime-policy argument. Runtime
+        # validates its signed catalog/lineage; only local declarations need
+        # the SDK catalog join below.
+        return dict(declaration)
+    raw_ids = declaration.get("capability_ids")
+    if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
+        raise ValueError("orchestrator child declaration must name at least one capability")
+    rows: list[dict[str, Any]] = []
+    for raw_id in raw_ids:
+        capability_id = str(raw_id)
+        match = select_capability_row(capabilities, capability_id)
+        if match is None or not isinstance(match.get("definition_digest"), str):
+            raise ValueError(f"orchestrator child capability is not live: {capability_id}")
+        rows.append({
+            "capability_id": capability_id,
+            "capability_digest": str(match["definition_digest"]),
+        })
+    targets: list[Mapping[str, Any]] = [{"kind": "default"}]
+    if isinstance(execution_request, Mapping) and isinstance(execution_request.get("target"), Mapping):
+        target = dict(execution_request["target"])
+        if target not in targets:
+            targets.append(target)
+    policy: dict[str, Any] = {
+        "capabilities": rows,
+        "targets": targets,
+        "input_object_ids": list(input_object_ids),
+    }
+    stages = declaration.get("stages")
+    if stages is not None:
+        if not isinstance(stages, list) or not stages:
+            raise ValueError("orchestrator child stages must be a non-empty list")
+        normalized_stages: list[dict[str, Any]] = []
+        for stage in stages:
+            if not isinstance(stage, Mapping):
+                raise ValueError("orchestrator child stage must be an object")
+            capability_id = str(stage.get("capability_id") or "")
+            match = next((row for row in rows if row["capability_id"] == capability_id), None)
+            if match is None:
+                raise ValueError(f"child stage capability is outside the orchestrator declaration: {capability_id}")
+            target = dict(stage.get("target") or {"kind": "default"})
+            raw_inputs = stage.get("inputs")
+            if not isinstance(raw_inputs, list):
+                raise ValueError("orchestrator child stage inputs must be a list")
+            resolved_inputs: list[dict[str, Any]] = []
+            for ref in raw_inputs:
+                if not isinstance(ref, Mapping) or not isinstance(ref.get("name"), str):
+                    raise ValueError("orchestrator child stage input references must be named objects")
+                if isinstance(ref.get("root_input"), str):
+                    descriptor = declaration.get("root_inputs", {}).get(ref["root_input"]) if isinstance(declaration.get("root_inputs"), Mapping) else None
+                    object_id = descriptor if isinstance(descriptor, str) else None
+                    if object_id is None:
+                        raise ValueError(f"child stage root input is unavailable: {ref['root_input']}")
+                    resolved_inputs.append({"name": ref["name"], "root_object_id": object_id})
+                else:
+                    producer = ref.get("producer_stage")
+                    output_port = ref.get("output_port")
+                    if not isinstance(producer, str) or not isinstance(output_port, str):
+                        raise ValueError("child stage input must name a root input or prior producer stage")
+                    resolved_inputs.append({"name": ref["name"], "producer_stage": producer, "output_port": output_port})
+            normalized_stages.append({
+                "name": str(stage.get("name") or ""),
+                "capability_id": match["capability_id"],
+                "capability_digest": match["capability_digest"],
+                "target": target,
+                "inputs": resolved_inputs,
+            })
+        policy["stages"] = normalized_stages
+        final = declaration.get("final_publication")
+        if final is not None:
+            if not isinstance(final, Mapping):
+                raise ValueError("orchestrator final publication must be an object")
+            normalized_final = dict(final)
+            effect = normalized_final.get("effect")
+            if not isinstance(effect, Mapping):
+                raise ValueError("orchestrator final publication must declare an effect")
+            effect = dict(effect)
+            if effect.get("target_id") == "__PROJECT_ID__":
+                if not isinstance(project_id, str) or not project_id:
+                    raise ValueError("orchestrator final publication requires a project")
+                effect["target_id"] = project_id
+            normalized_final["effect"] = effect
+            policy["final_publication"] = normalized_final
+    return policy
+
+
 class _RemoteFamily:
     def __init__(self, client: WorkspaceClient):
         self._client = client
@@ -1531,13 +1636,15 @@ class RemoteTasks(_RemoteFamily):
         execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
         child_delegation: Mapping[str, Any] | None = None,
         deterministic_idempotency: bool = False,
+        stage: str | None = None,
+        input_refs: list[Mapping[str, Any]] | None = None,
     ):
         """Admit a task, optionally deriving its key from the final payload.
 
         Explicit caller keys take precedence and retain Runtime's conflict
         semantics. Without either option, each call still gets a fresh key.
         """
-        key = idempotency_key or (None if deterministic_idempotency else uuid.uuid4().hex)
+        key = idempotency_key or (None if deterministic_idempotency or stage is not None else uuid.uuid4().hex)
         try:
             normalized_request, submitted_spec, admitted_manifest = _prepare_execution_admission(
                 self._client,
@@ -1574,8 +1681,69 @@ class RemoteTasks(_RemoteFamily):
                 ),
                 idempotency_key=key or "",
             )
+        declaration = child_delegation
+        if declaration is None:
+            raw_declaration = submitted_spec.pop("child_delegation", None)
+            declaration = raw_declaration if isinstance(raw_declaration, Mapping) else None
+        try:
+            child_policy = _materialize_child_delegation(
+                declaration,
+                capabilities,
+                input_object_ids=admitted_manifest,
+                execution_request=normalized_request,
+                project_id=project_id,
+            )
+        except (ValueError, TypeError) as exc:
+            return DomainResult.failure(ErrorObject("validation_error", str(exc), {"field": "child_delegation"}), idempotency_key=key or "")
+        final = child_policy.get("final_publication") if isinstance(child_policy, Mapping) else None
+        effect = final.get("effect") if isinstance(final, Mapping) else None
+        if (project_id and isinstance(effect, Mapping)
+                and effect.get("effect_type") == "generation.publish_v1"
+                and effect.get("target_id") == project_id):
+            resolved = self._typed("get_project", project_id)
+            if not resolved.ok:
+                return resolved
+            row = _full_mapping(resolved.data)
+            canonical_id = (row or {}).get("project_id") or (row or {}).get("id")
+            if not isinstance(canonical_id, str) or not canonical_id:
+                return DomainResult.failure(ErrorObject("protocol_error", "project lookup returned no canonical id", {}))
+            project_id = canonical_id
+            child_policy = {**child_policy, "final_publication": {
+                **final, "effect": {**effect, "target_id": canonical_id},
+            }}
+        # An orchestrator with declared children cannot be admitted as a
+        # policy-less task.  The Runtime-owned child authority is issued only
+        # after claim, but the immutable delegation policy must already be in
+        # the admission packet.  Without this guard a raw caller can create a
+        # task that reaches GenericHost and fails only when its nested child
+        # tries to attach.  Keep the check tolerant of both the generated
+        # capability-row spelling and the older nested definition spelling.
+        definition = match.get("definition")
+        definition = definition if isinstance(definition, Mapping) else {}
+        capability_kind = match.get("capability_kind") or match.get("kind") or definition.get("kind")
+        declared_children = (
+            match.get("child_executors")
+            or match.get("child_orchestrators")
+            or definition.get("child_executors")
+            or definition.get("child_orchestrators")
+        )
         if (
-            project_id
+            child_policy is None
+            and capability_kind == "orchestrator"
+            and (isinstance(declared_children, (list, tuple)) and declared_children
+                 or capability == "h3_av.transform")
+        ):
+            return DomainResult.failure(
+                ErrorObject(
+                    "validation_error",
+                    "orchestrator admission requires an explicit child_delegation policy",
+                    {"capability_id": capability},
+                ),
+                idempotency_key=key or "",
+            )
+        if (
+            stage is None
+            and project_id
             and isinstance(settlement_effect, Mapping)
             and settlement_effect.get("effect_type") == "generation.publish_v1"
             and settlement_effect.get("target_id") == project_id
@@ -1625,8 +1793,12 @@ class RemoteTasks(_RemoteFamily):
             admission["generation_intent"] = generation_intent
         if normalized_request is not None:
             admission["execution_request"] = normalized_request
-        if child_delegation is not None:
-            admission["child_delegation"] = dict(child_delegation)
+        if child_policy is not None:
+            admission["child_delegation"] = child_policy
+        if stage is not None:
+            admission["stage"] = stage
+        if input_refs is not None:
+            admission["input_refs"] = [dict(ref) for ref in input_refs]
         if key is None:
             # Hash the completed wire payload, after selection, normalization,
             # project resolution, and preflight. Sort mapping keys only: input
@@ -1640,6 +1812,10 @@ class RemoteTasks(_RemoteFamily):
                     ensure_ascii=False,
                 ).encode("utf-8")
             ).hexdigest()
+            parent_context = getattr(self._client, "_parent_context", None)
+            parent_attempt_id = parent_context.get("attempt_id") if stage is not None and isinstance(parent_context, Mapping) else None
+            if isinstance(parent_attempt_id, str) and parent_attempt_id:
+                key = hashlib.sha256(f"{key}:delegated-parent-attempt:{parent_attempt_id}".encode("utf-8")).hexdigest()
         return self._typed("admit_task", key=key, idempotency_key=key, **admission)
     def claim(
         self,

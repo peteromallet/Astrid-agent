@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
@@ -26,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    result_manifest = args.out.parent / "manifest.json"
+    if result_manifest.is_symlink():
+        raise ValueError("prepare result manifest is a symlink")
+    result_manifest.unlink(missing_ok=True)
     request = load_request(args.request)
     asset_map, identities = materialize_input_bundle(
         request, args.input_bundle, args.out.parent / "request-assets"
@@ -41,6 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     manifest["assets"] = identities
     manifest["input_bundle_sha256"] = bundle_digest(args.input_bundle)
     write_preparation(args.out, manifest)
+    write_manifest(result_manifest, build_manifest(
+        kind="h3_av_prepare_result", inputs={"input_bundle_sha256": manifest["input_bundle_sha256"]},
+        outputs=[{"name": "preparation", "path": args.out.name, "output_port": "preparation",
+                  "ordinal": 0, "role": "result", "is_primary": True}],
+        created="h3_av.prepare.v1",
+    ))
     print(f"h3_av.prepare: wrote {args.out}")
     return 0
 

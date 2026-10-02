@@ -8,6 +8,8 @@ keeps a small support-directory marker so an Astrid relaunch reuses one host.
 from __future__ import annotations
 
 import json
+import hmac
+import stat
 import hashlib
 import os
 import secrets
@@ -39,6 +41,9 @@ PACK_HOST_SCOPES = (
     "objects:write",
 )
 PACK_HOST_PYTHON_ENV = "ASTRID_PACK_HOST_PYTHON"
+NESTED_HANDOFF_PATH_ENV = "ASTRID_NESTED_RUNTIME_HANDOFF_PATH"
+NESTED_HANDOFF_HASH_ENV = "ASTRID_NESTED_RUNTIME_HANDOFF_HASH"
+
 
 
 class PackHostBootstrapError(RuntimeError):
@@ -191,6 +196,245 @@ def _read_object(path: Path) -> Mapping[str, Any] | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, Mapping) else None
+
+
+def _canonical_capacity_matches(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    from astrid.core.execution.host_lane_policy import canonical_pack_host_capacity
+
+    expected = canonical_pack_host_capacity()
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        return False
+    resource_keys = value.get("registered_resource_keys")
+    return (
+        isinstance(resource_keys, (list, tuple))
+        and all(isinstance(key, str) for key in resource_keys)
+        and {"astrid-orchestration", "cpu"}.issubset(resource_keys)
+    )
+
+
+def _capacity_readiness_matches(value: Mapping[str, Any] | None) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    capacity = value.get("effective_capacity")
+    registration = value.get("registration")
+    return (
+        _canonical_capacity_matches(capacity)
+        and isinstance(registration, Mapping)
+        and registration.get("effective_capacity") == capacity
+    )
+
+
+def _readiness_profile_ack_matches(
+    value: Mapping[str, Any] | None,
+    *,
+    profile_path: str | None,
+    profile_hash: str | None,
+    attestation: Mapping[str, Any] | None,
+) -> bool:
+    """Require the child marker to acknowledge the selected semantic binding."""
+    if not isinstance(value, Mapping):
+        return False
+    if (
+        value.get("readiness_profile_path") != profile_path
+        or value.get("readiness_profile_hash") != profile_hash
+        or value.get("vibecomfy_execution_attestation") != attestation
+    ):
+        return False
+    if profile_path is None:
+        return True
+    ready_capabilities = value.get("ready_capabilities")
+    return isinstance(ready_capabilities, (list, tuple)) and "vibecomfy.run" in ready_capabilities
+
+
+def _readiness_profile_binding(
+    value: Mapping[str, Any],
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Validate the selected readiness profile before host reuse/retirement."""
+    raw_path = value.get("readiness_profile_path")
+    expected_hash = value.get("readiness_profile_hash")
+    if (raw_path is None) != (expected_hash is None):
+        raise PackHostBootstrapError(
+            "readiness profile path and hash must be supplied together"
+        )
+    if raw_path is None:
+        return None, None, None
+    if not isinstance(raw_path, str) or not raw_path:
+        raise PackHostBootstrapError("readiness profile path is invalid")
+    path = Path(raw_path).expanduser()
+    try:
+        metadata = path.lstat()
+        if not path.is_absolute() or not stat.S_ISREG(metadata.st_mode):
+            raise OSError("readiness profile must be an absolute regular file")
+        contents = path.read_bytes()
+        actual_hash = "sha256:" + hashlib.sha256(contents).hexdigest()
+        if not isinstance(expected_hash, str) or expected_hash != actual_hash:
+            raise OSError("readiness profile hash does not match its bytes")
+        profile = json.loads(contents.decode("utf-8"))
+        if not isinstance(profile, Mapping):
+            raise OSError("readiness profile must contain an object")
+        from astrid.core.execution.generic_host import (
+            _vibecomfy_execution_attestation,
+        )
+
+        attestation = _vibecomfy_execution_attestation(profile)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise PackHostBootstrapError(f"readiness profile is invalid: {exc}") from exc
+    except Exception as exc:
+        raise PackHostBootstrapError(
+            f"readiness profile attestation is invalid: {exc}"
+        ) from exc
+    return str(path), actual_hash, attestation
+
+
+def attach_pack_host(handoff: Mapping[str, Any], runtime: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read-only validation of the exact host incarnation issuing a nested attach."""
+    required = (
+        "support_root", "endpoint", "executor_id", "runtime_instance_id", "runtime_epoch",
+        "schema_digest", "issuer_pid", "issuer_birth_id", "ready_file",
+        "source_checkout", "source_checkout_digest", "source_closure_digest", "source_inventory_identity",
+        "boot_manifest_path", "boot_manifest_hash", "readiness_profile_path",
+        "readiness_profile_hash", "vibecomfy_execution_attestation", "effective_capacity",
+        "python_executable",
+    )
+    if handoff.get("schema_version") != 1 or any(key not in handoff for key in required):
+        raise PackHostBootstrapError("nested runtime handoff is incomplete", code="nested_handoff_invalid", terminal=True)
+    expected_instance = handoff.get("runtime_instance_id")
+    expected_epoch = handoff.get("runtime_epoch")
+    expected_schema = handoff.get("schema_digest")
+    if (
+        not isinstance(handoff.get("endpoint"), str)
+        or not handoff["endpoint"].strip()
+        or not isinstance(expected_instance, str)
+        or not expected_instance.strip()
+        or isinstance(expected_epoch, bool)
+        or not isinstance(expected_epoch, int)
+        or expected_epoch < 1
+        or not isinstance(expected_schema, str)
+        or not expected_schema.strip()
+    ):
+        raise PackHostBootstrapError(
+            "nested runtime handoff identity is incomplete",
+            code="nested_handoff_invalid",
+            terminal=True,
+        )
+    support = Path(str(handoff["support_root"]))
+    ready_path = Path(str(handoff["ready_file"]))
+    state_path = support / "generic-host.json"
+    try:
+        if (not support.is_absolute() or support.is_symlink() or not support.is_dir()
+                or ready_path.is_symlink() or state_path.is_symlink()
+                or not stat.S_ISREG(ready_path.lstat().st_mode)
+                or not stat.S_ISREG(state_path.lstat().st_mode)):
+            raise OSError("host acknowledgement paths are unsafe")
+    except OSError as exc:
+        raise PackHostBootstrapError("nested runtime host acknowledgement is unsafe", code="nested_handoff_invalid", terminal=True) from exc
+    state, ready = _read_object(state_path), _read_object(ready_path)
+    if state is None or ready is None:
+        raise PackHostBootstrapError("nested runtime handoff host acknowledgement is missing", code="nested_handoff_stale", terminal=True)
+    issuer_pid = handoff.get("issuer_pid")
+    issuer_birth = str(handoff.get("issuer_birth_id") or "")
+    if (str(state.get("pid")) != str(issuer_pid)
+            or str(state.get("process_birth_id") or "") != issuer_birth
+            or not _host_identity_matches(state)
+            or str(ready.get("pid")) != str(issuer_pid)
+            or str(ready.get("process_birth_id") or "") != issuer_birth):
+        raise PackHostBootstrapError("nested runtime handoff belongs to a different or dead host", code="nested_handoff_foreign", terminal=True)
+    for key in required:
+        if key in {"issuer_pid", "issuer_birth_id", "effective_capacity"}:
+            continue
+        state_key = "readiness_profile_path" if key == "readiness_profile_path" else key
+        if state.get(state_key) != handoff.get(key) or ready.get(state_key) != handoff.get(key):
+            raise PackHostBootstrapError(f"nested runtime handoff binding changed: {key}", code="nested_handoff_mismatch", terminal=True)
+    if (ready.get("status") != "ready"
+            or ready.get("effective_capacity") != handoff.get("effective_capacity")
+            or state.get("effective_capacity") != handoff.get("effective_capacity")
+            or not _capacity_readiness_matches(ready)
+            or not _readiness_profile_ack_matches(
+                ready,
+                profile_path=handoff.get("readiness_profile_path"),
+                profile_hash=handoff.get("readiness_profile_hash"),
+                attestation=handoff.get("vibecomfy_execution_attestation"),
+            )):
+        raise PackHostBootstrapError("nested runtime handoff readiness or capacity acknowledgement changed", code="nested_handoff_mismatch", terminal=True)
+    if handoff.get("readiness_profile_path") is None:
+        ready_capabilities = ready.get("ready_capabilities")
+        if not isinstance(ready_capabilities, (list, tuple)) or "vibecomfy.run" in ready_capabilities:
+            raise PackHostBootstrapError("profile-free nested host advertises VibeComfy without readiness", code="nested_handoff_mismatch", terminal=True)
+    for key in ("endpoint", "runtime_instance_id", "runtime_epoch", "schema_digest"):
+        observed = runtime.get(key)
+        if key == "runtime_epoch":
+            valid = not isinstance(observed, bool) and isinstance(observed, int) and observed >= 1
+        else:
+            valid = isinstance(observed, str) and bool(observed.strip())
+        if not valid:
+            raise PackHostBootstrapError(
+                f"nested runtime attachment identity is missing: {key}",
+                code="nested_runtime_mismatch",
+                terminal=True,
+            )
+        if observed != handoff.get(key):
+            raise PackHostBootstrapError(f"nested runtime attachment identity changed: {key}", code="nested_runtime_mismatch", terminal=True)
+    profile_path = handoff.get("readiness_profile_path")
+    profile_hash = handoff.get("readiness_profile_hash")
+    if (profile_path is None) != (profile_hash is None):
+        raise PackHostBootstrapError("nested runtime handoff has a partial readiness selection", code="nested_handoff_invalid", terminal=True)
+    if profile_path is not None:
+        checked_path, checked_hash, attestation = _readiness_profile_binding({
+            "readiness_profile_path": profile_path,
+            "readiness_profile_hash": profile_hash,
+        })
+        if checked_path != profile_path or not hmac.compare_digest(str(checked_hash), str(profile_hash)) or attestation != handoff.get("vibecomfy_execution_attestation"):
+            raise PackHostBootstrapError("nested runtime readiness attestation changed", code="nested_handoff_mismatch", terminal=True)
+    elif handoff.get("vibecomfy_execution_attestation") is not None:
+        raise PackHostBootstrapError("profile-free nested host has an unexpected attestation", code="nested_handoff_mismatch", terminal=True)
+    try:
+        from astrid.core.execution.generic_host import (
+            source_checkout_closure_digest,
+            source_checkout_digest,
+        )
+        from astrid.core.pack.source_setup import active_source_inventory
+        if os.path.abspath(sys.executable) != handoff["python_executable"]:
+            raise ValueError("nested SDK interpreter does not match the host interpreter")
+        source_path = Path(str(handoff["source_checkout"]))
+        if (not source_path.is_absolute() or source_path.is_symlink() or not source_path.is_dir()
+                or source_checkout_digest(source_path) != handoff["source_checkout_digest"]
+                or source_checkout_closure_digest(source_path) != handoff["source_closure_digest"]):
+            raise ValueError("source checkout identity changed")
+        inventory = active_source_inventory()
+        observed_inventory = inventory.identity if inventory.sources else ""
+        if observed_inventory != handoff["source_inventory_identity"]:
+            raise ValueError("source inventory identity changed")
+        boot_path = Path(str(handoff["boot_manifest_path"]))
+        boot_meta = boot_path.lstat()
+        if not boot_path.is_absolute() or not stat.S_ISREG(boot_meta.st_mode):
+            raise ValueError("boot manifest is not a regular file")
+        from astrid.core._shared.boot_manifest import (
+            load_boot_manifest_hash,
+            normalize_sha256_digest,
+        )
+
+        boot_hash = load_boot_manifest_hash(boot_path, support_root=support)
+        if not hmac.compare_digest(
+            normalize_sha256_digest(boot_hash, label="loaded boot manifest hash"),
+            normalize_sha256_digest(
+                handoff["boot_manifest_hash"], label="nested boot manifest hash"
+            ),
+        ):
+            raise ValueError("boot manifest identity changed")
+    except Exception as exc:
+        raise PackHostBootstrapError("nested runtime source or boot identity changed", code="nested_handoff_mismatch", terminal=True) from exc
+    return {
+        "host_status": "ready",
+        "host_pid": int(issuer_pid),
+        "host_executor_id": PACK_HOST_ACTOR,
+        "host_ready_file": str(ready_path),
+        "host_ready_capabilities": list(ready.get("ready_capabilities", [])),
+        "host_runtime_instance_id": handoff["runtime_instance_id"],
+        "host_runtime_epoch": handoff["runtime_epoch"],
+        "effective_capacity": dict(handoff["effective_capacity"]),
+    }
 
 
 def _write_object(path: Path, value: Mapping[str, Any]) -> None:
@@ -661,6 +905,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
         source_checkout_closure_digest,
         source_checkout_digest,
     )
+    from astrid.sdk.execution_request import normalize_execution_request
 
     try:
         source_digest = source_checkout_digest(source_path)
@@ -669,6 +914,16 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
         raise PackHostBootstrapError(
             f"generic Astrid pack source tree is not a safe checkout; {reconfigure_action}"
         ) from exc
+    for field, observed in (
+        ("source_checkout_digest", source_digest),
+        ("source_closure_digest", source_closure_digest),
+        ("source_inventory_identity", inventory_identity),
+    ):
+        handed = value.get(field)
+        if handed is not None and str(handed) != str(observed):
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host {field} disagrees with the selected source; {reconfigure_action}"
+            )
     try:
         worker_token = worker_path.read_text(encoding="utf-8").strip()
         if not worker_token:
@@ -686,6 +941,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
         "runtime_epoch": getattr(health, "runtime_epoch", None),
         "schema_digest": getattr(health, "schema_digest", None),
         "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+        "runtime_session_id": getattr(health, "runtime_session_id", None),
         "coordinator_epoch": getattr(health, "coordinator_epoch", None),
     }
     if str(health_value.get("status", "")) != "ok":
@@ -703,10 +959,42 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
         or (f"epoch:{runtime_epoch}" if runtime_epoch is not None else None)
     )
     schema_digest = health_value.get("schema_digest") or value.get("schema_digest")
+    runtime_session_id = health_value.get("runtime_session_id") or value.get("runtime_session_id")
+    for field, handed, observed in (
+        ("runtime_instance_id", value.get("runtime_instance_id"), health_value.get("runtime_instance_id")),
+        ("runtime_session_id", value.get("runtime_session_id"), health_value.get("runtime_session_id")),
+        ("runtime_epoch", value.get("runtime_epoch"), health_value.get("runtime_epoch")),
+        ("schema_digest", value.get("schema_digest"), health_value.get("schema_digest")),
+    ):
+        if handed is not None and observed is not None and handed != observed:
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host {field} disagrees with live Runtime identity; {reconfigure_action}"
+            )
     if runtime_epoch is None or runtime_instance_id is None:
         raise PackHostBootstrapError(
             f"generic Astrid pack host runtime identity is incomplete; {reconfigure_action}"
         )
+
+    execution_target = value.get("execution_target")
+    if execution_target is not None:
+        if not isinstance(execution_target, Mapping):
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host execution target is invalid; {reconfigure_action}"
+            )
+        try:
+            normalized_request = normalize_execution_request(
+                {"target": dict(execution_target)}
+            )
+            execution_target = dict(normalized_request["target"])
+            execution_target_json = json.dumps(
+                execution_target, sort_keys=True, separators=(",", ":")
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host execution target is invalid; {reconfigure_action}"
+            ) from exc
+    else:
+        execution_target_json = None
 
     runtime_support = worker_path.parent.parent
     host_root = runtime_support / "astrid-host"
@@ -721,6 +1009,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             f"generic Astrid pack boot manifest could not be composed; {reconfigure_action}"
         ) from exc
     boot_manifest_hash = str(boot_handoff["sha256"])
+    profile_path, profile_hash, attestation = _readiness_profile_binding(value)
     state_path = runtime_support / "generic-host.json"
     ready_path = runtime_support / "generic-host.ready.json"
     lock_path = runtime_support / "generic-host.lock"
@@ -756,12 +1045,22 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "schema_digest": schema_digest,
             "boot_manifest_path": str(boot_manifest_path),
             "boot_manifest_hash": boot_manifest_hash,
+            "readiness_profile_path": profile_path,
+            "readiness_profile_hash": profile_hash,
+            "vibecomfy_execution_attestation": attestation,
         }
         if (current and ready
                 and all(current.get(key) == expected_value for key, expected_value in expected.items())
                 and _host_identity_matches(current)
                 and str(ready.get("status")) == "ready"
                 and all(ready.get(key) == expected_value for key, expected_value in expected.items())
+                and (
+                    execution_target is None
+                    or (
+                        isinstance(ready.get("identity_attestation"), Mapping)
+                        and ready["identity_attestation"].get("target") == execution_target
+                    )
+                )
                 and str(ready.get("pid")) == str(current.get("pid"))
                 and str(ready.get("process_birth_id")) == str(current.get("process_birth_id"))):
             return {
@@ -770,6 +1069,8 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
                 "host_executor_id": PACK_HOST_ACTOR,
                 "host_ready_file": str(ready_path),
                 "host_ready_capabilities": list(ready.get("ready_capabilities", [])),
+                "effective_capacity": dict(ready["effective_capacity"])
+                if isinstance(ready.get("effective_capacity"), Mapping) else None,
                 "host_runtime_instance_id": str(runtime_instance_id),
                 "host_runtime_epoch": runtime_epoch,
                 "host_source_checkout_digest": source_digest,
@@ -809,11 +1110,22 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "--boot-manifest-path", str(boot_manifest_path),
             "--boot-manifest-hash", boot_manifest_hash,
         ]
+        from astrid.core.execution.host_lane_policy import CANONICAL_PACK_HOST_MAX_CONCURRENCY
+
+        argv.extend(("--max-concurrency", str(CANONICAL_PACK_HOST_MAX_CONCURRENCY)))
+        if profile_path is not None:
+            argv.extend(("--readiness-profile-path", profile_path, "--readiness-profile-hash", str(profile_hash)))
+        if execution_target_json is not None:
+            argv.extend(("--runtime-issued-target-json", execution_target_json))
         for managed_root in managed_inventory.roots:
             argv.extend(("--pack-root", str(managed_root)))
         if matrix.is_file():
             argv.extend(("--capability-matrix", str(matrix)))
         child_env = dict(os.environ)
+        if execution_target_json is not None:
+            # The Runtime handoff is authoritative. Do not let an ambient
+            # targeted-launch selector override the issued worker target.
+            child_env.pop("ASTRID_EXECUTION_TARGET_JSON", None)
         # The selected source profile is the complete pack-discovery fence;
         # ambient pack roots/PYTHONPATH entries must not silently add another
         # checkout to this host.
@@ -890,9 +1202,18 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
                 or str(ready.get("pid")) != str(process.pid)
                 or str(ready.get("process_birth_id")) != str(process_state["process_birth_id"])
                 or not all(ready.get(key) == expected_value for key, expected_value in expected.items())
+                or (
+                    execution_target is not None
+                    and (
+                        not isinstance(ready.get("identity_attestation"), Mapping)
+                        or ready["identity_attestation"].get("target") != execution_target
+                    )
+                )
                 or process.poll() is not None):
             _terminate_old_host(process_state)
             raise PackHostBootstrapError(f"generic Astrid pack host did not become ready; inspect {log_path}")
+        if isinstance(ready.get("effective_capacity"), Mapping):
+            process_state["effective_capacity"] = dict(ready["effective_capacity"])
         _write_object(state_path, process_state)
         return {
             "host_status": "ready",
@@ -900,6 +1221,8 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             "host_executor_id": PACK_HOST_ACTOR,
             "host_ready_file": str(ready_path),
             "host_ready_capabilities": list(ready.get("ready_capabilities", [])),
+            "effective_capacity": dict(ready["effective_capacity"])
+            if isinstance(ready.get("effective_capacity"), Mapping) else None,
             "host_runtime_instance_id": str(runtime_instance_id),
             "host_runtime_epoch": runtime_epoch,
             "host_source_checkout_digest": source_digest,

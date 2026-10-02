@@ -321,7 +321,7 @@ def _validate_orchestrator(orchestrator: OrchestratorDefinition) -> None:
     input_names = _validate_unique_named(orchestrator.inputs, "input")
     output_names = _validate_unique_named(orchestrator.outputs, "output")
     placeholders = set(input_names) | set(output_names)
-    placeholders.update({"out", "brief", "python_exec", "orchestrator_args", "verbose"})
+    placeholders.update({"out", "brief", "project", "python_exec", "orchestrator_args", "verbose"})
 
     for port in orchestrator.inputs:
         _validate_port(port)

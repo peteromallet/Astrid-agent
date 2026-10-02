@@ -1263,21 +1263,21 @@ def test_runtime_protocol_client_rejects_non_loopback_or_malformed_endpoint(endp
         RuntimeProtocolClient(endpoint, "worker-token")
 
 
-def test_runtime_protocol_client_uses_worker_token_contract_without_user_handshake(
+def test_runtime_protocol_client_authenticates_worker_without_user_scope_request(
     monkeypatch,
 ):
     class WorkerGenerated:
-        handshake_called = False
 
         def __init__(self, endpoint, token, *, timeout=30.0):
             self.endpoint = endpoint
             self.token = token
             self.timeout = timeout
             self.registration_payloads = []
+            self.handshakes = []
 
-        def handshake(self, *_args, **_kwargs):
-            self.handshake_called = True
-            raise AssertionError("worker adapter must not fabricate a user handshake")
+        def handshake(self, client_name, version, scopes):
+            self.handshakes.append((client_name, version, scopes))
+            return SimpleNamespace(actor_id="worker-1")
 
         def register_executor(self, executor, *, idempotency_key):
             self.registration_payloads.append(executor)
@@ -1306,7 +1306,8 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
         "objects:write",
     )
     assert response["executor_id"] == "worker-1"
-    assert client.generated.handshake_called is False
+    assert client.generated.handshakes == [("astrid-generic-host", "stage1", ["handshake"])]
+    assert client.worker_actor == "worker-1"
     assert client.generated.timeout == 4.25
     wire = client.generated.registration_payloads[0]
     assert wire["source_digest"] == "sha256:" + "a" * 64
@@ -1325,6 +1326,10 @@ def test_runtime_protocol_client_registration_retries_are_session_idempotent(
         def register_executor(self, executor, *, idempotency_key):
             self.keys.append(idempotency_key)
             return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
+
+        def handshake(self, client_name, version, scopes):
+            assert (client_name, version, scopes) == ("astrid-generic-host", "stage1", ["handshake"])
+            return SimpleNamespace(actor_id="worker-1")
 
     monkeypatch.setattr("banodoco_workspace_client.WorkspaceClient", WorkerGenerated)
     kwargs = {

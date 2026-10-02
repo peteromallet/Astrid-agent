@@ -48,6 +48,12 @@ def assembled(tmp_path, monkeypatch):
         '        self.session._trace("native_cancel", native_job_id=self.job_id)\n'
         '        self.cancel_requested.set()',
     )
+    # This case requests cooperative cancellation while native work is active.
+    # Wait for its signal instead of racing the fixture's ordinary short job.
+    api = api.replace(
+        'self.cancel_requested.wait(0.3)',
+        'self.cancel_requested.wait(5.0 if self.settings.get("prompt") == "WAIT_FOR_CANCEL" else 0.3)',
+    )
     (upstream / 'shared' / 'api.py').write_text(api)
     runtime = FakeRuntime()
     runtime.get_object = lambda requested: data
@@ -285,7 +291,7 @@ def test_failed_attempt_cannot_publish_or_contaminate_returned_vibe(assembled, m
             return value
         monkeypatch.setattr(runtime, 'task', cancelled_after_submit)
     if mode == 'native_cancel':
-        assert run('wan-B', wan=True)['status'] == 'cancelled'
+        assert run('wan-B', wan=True, prompt='WAIT_FOR_CANCEL')['status'] == 'cancelled'
     else:
         with pytest.raises(gh.HostError, match='native Wan2GP job failed|stale or unexpected|owned cleanup incomplete'):
             run('wan-B', wan=True, prompt='FAIL' if mode == 'native_failure' else 'a kite')

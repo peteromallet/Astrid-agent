@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -10,13 +11,32 @@ from pathlib import Path
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
 from astrid.packs.h3_av.src.compose import compose_candidate
+from astrid.packs.h3_av.src.input_bundle import primary_baseline_asset, resolve_preparation_assets, bundle_generated_pair
+from astrid.packs.h3_av.src.provenance import compilation_provenance
+
+
+def _portable_evidence(value: object) -> object:
+    """Remove attempt-local locators from durable composition evidence."""
+
+    if isinstance(value, dict):
+        return {
+            key: _portable_evidence(item)
+            for key, item in value.items()
+            if key not in {"path", "local_path", "manifest_path", "relative_path"}
+        }
+    if isinstance(value, list):
+        return [_portable_evidence(item) for item in value]
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compose an H3 audiovisual candidate.")
     parser.add_argument("--preparation", type=Path, required=True)
     parser.add_argument("--generated", type=Path, required=True)
+    parser.add_argument("--generated-audio", type=Path)
+    parser.add_argument("--compilation", type=Path)
     parser.add_argument("--source", type=Path)
+    parser.add_argument("--input-bundle", type=Path)
     parser.add_argument("--preservation-evidence", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     return parser
@@ -24,28 +44,98 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    args.out = args.out.expanduser().resolve()
+    stale_manifest = args.out / "manifest.json"
+    if stale_manifest.exists():
+        if stale_manifest.is_symlink():
+            raise ValueError("compose result manifest is a symlink")
+        stale_manifest.unlink()
     preparation = json.loads(args.preparation.read_text(encoding="utf-8"))
+    if args.compilation:
+        compilation = json.loads(args.compilation.read_text(encoding="utf-8"))
+        preparation["provenance"] = compilation_provenance(preparation, compilation)
+    if args.input_bundle:
+        preparation = resolve_preparation_assets(
+            preparation,
+            args.input_bundle,
+            args.out / ".input-assets",
+        )
+        if args.source is None:
+            source_asset = primary_baseline_asset(preparation)
+            for asset in preparation.get("assets", []):
+                if isinstance(asset, dict) and asset.get("asset") == source_asset:
+                    args.source = Path(str(asset["path"]))
+                    break
     evidence = None
     if args.preservation_evidence:
         evidence = json.loads(args.preservation_evidence.read_text(encoding="utf-8"))
-    composition = compose_candidate(
+    if args.generated_audio:
+        args.generated = bundle_generated_pair(args.generated, args.generated_audio, args.out / '.generated-av.zip')
+    report = compose_candidate(
         preparation=preparation,
         generated=args.generated,
         source=args.source,
         out_dir=args.out,
         preservation_evidence=evidence,
     )
-    # Fixed declared output name, without pretending every container is MKV.
-    # Decoders detect the container from bytes; preserve the original bytes.
-    candidate = args.out / "candidate.media"
-    original = Path(composition["candidate"]["path"])
-    if original.resolve() != candidate.resolve():
-        shutil.copyfile(original, candidate)
-    composition["candidate"]["path"] = str(candidate.resolve())
-    (args.out / "composition-manifest.json").write_text(
-        json.dumps(composition, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    candidate_info = report.get("candidate")
+    if not isinstance(candidate_info, dict):
+        raise ValueError("composition did not emit candidate identity")
+    candidate_path = Path(str(candidate_info.get("path", ""))).expanduser().resolve()
+    original = candidate_path
+    candidate_path = args.out / "candidate.media"
+    if original != candidate_path:
+        shutil.copyfile(original, candidate_path)
+    candidate_info["path"] = str(candidate_path)
+    composition_path = args.out / "composition-manifest.json"
+    if not candidate_path.is_file() or not composition_path.is_file():
+        raise ValueError("composition did not emit its declared candidate and evidence")
+    # Keep local compatibility in the function return, but make the managed
+    # composition object path-free. Verify receives the candidate explicitly.
+    durable_report = _portable_evidence(report)
+    composition_path.write_text(
+        json.dumps(durable_report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
-    print(f"h3_av.compose: wrote {args.out / 'composition-manifest.json'}")
+    candidate_bytes = candidate_path.read_bytes()
+    composition_bytes = composition_path.read_bytes()
+    candidate_digest = "sha256:" + hashlib.sha256(candidate_bytes).hexdigest()
+    if candidate_info.get("sha256") != candidate_digest.removeprefix("sha256:"):
+        raise ValueError("composition candidate identity changed before harvest")
+    manifest = {
+        "schema_version": 1,
+        "kind": "h3_av_compose_result",
+        "created": "h3_av.compose.v2",
+        "inputs": {"composition_sha256": "sha256:" + hashlib.sha256(composition_bytes).hexdigest()},
+        "warnings": [],
+        "outputs": [
+            {
+                "name": "candidate",
+                "path": candidate_path.name,
+                "ordinal": 0,
+                "content_hash": candidate_digest,
+                "bytes": len(candidate_bytes),
+                "media_type": "video/x-matroska",
+                "output_port": "candidate",
+                "role": "result",
+                "is_primary": True,
+            },
+            {
+                "name": "composition",
+                "path": composition_path.name,
+                "ordinal": 1,
+                "content_hash": "sha256:" + hashlib.sha256(composition_bytes).hexdigest(),
+                "bytes": len(composition_bytes),
+                "media_type": "application/json",
+                "role": "auxiliary",
+                "is_primary": False,
+            },
+        ],
+    }
+    temporary = args.out / ".manifest.json.tmp"
+    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(args.out / "manifest.json")
+    print(f"h3_av.compose: wrote {args.out / 'manifest.json'}")
     return 0
 
 

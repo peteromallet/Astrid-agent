@@ -68,6 +68,7 @@ class OrchestratorRunRequest:
     run_id: str | None = None
     project_run_metadata: Mapping[str, Any] = field(default_factory=dict)
     orchestrator_args: tuple[str, ...] = ()
+    execution_request: Path | str | None = None
 
 
 @dataclass(frozen=True)
@@ -596,6 +597,13 @@ def _placeholder_values(orchestrator: OrchestratorDefinition, request: Orchestra
             placeholders[key] = str(bool(value)).lower()
         else:
             placeholders[key] = _stringify_value(value)
+    # Runtime owns the project and normalized execution context. Typed inputs
+    # cannot replace these fields in a delegated command invocation.
+    placeholders["project"] = str(request.project or "")
+    if request.execution_request not in (None, ""):
+        placeholders["execution_request"] = str(
+            Path(request.execution_request).expanduser().resolve()
+        )
     for output in orchestrator.outputs:
         output_path = _output_value(output, request, placeholders, error_cls=OrchestratorRunnerError)
         placeholders[output.name] = output_path

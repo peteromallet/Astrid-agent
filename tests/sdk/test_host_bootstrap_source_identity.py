@@ -100,6 +100,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
         "runtime_epoch": "epoch-1",
         "runtime_instance_id": "instance-1",
         "schema_digest": "schema-1",
+        "execution_target": {"kind": "machine", "id": "h3-cpu-1"},
     }
     inventory = SimpleNamespace(identity="inventory-1", roots=(managed,), sources=(managed,))
     inventory_calls: list[object] = []
@@ -162,6 +163,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
             "runtime_instance_id": "instance-1",
             "runtime_epoch": "epoch-1",
             "schema_digest": "schema-1",
+            "identity_attestation": {"target": dict(value["execution_target"])},
             "ready_capabilities": [],
         })
         return FakeProcess()
@@ -178,15 +180,24 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     assert len(inventory_calls) == 1
     assert "--source-inventory-identity" in launches[0]
     assert launches[0][launches[0].index("--source-inventory-identity") + 1] == "inventory-1"
+    assert "--runtime-issued-target-json" in launches[0]
+    assert json.loads(
+        launches[0][launches[0].index("--runtime-issued-target-json") + 1]
+    ) == value["execution_target"]
     assert launches[0].count("--pack-root") == 2
+
+    value["execution_target"] = {"kind": "machine", "id": "h3-cpu-2"}
+    result_target = host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
+    assert result_target["host_status"] == "ready"
+    assert len(launches) == 2
+    assert terminated, "changed execution target must not reuse the old ready host"
 
     inventory.identity = "inventory-2"
     ready.clear()
     result2 = host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
     assert result2["host_status"] == "ready"
-    assert len(launches) == 2
-    assert len(inventory_calls) == 2
-    assert terminated, "changed source inventory must not reuse the old ready host"
+    assert len(launches) == 3
+    assert len(inventory_calls) == 3
 
     # Disabling the last managed source must not reuse a host that still
     # advertises the previously selected nonempty inventory.
@@ -195,8 +206,8 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     inventory.roots = ()
     result3 = host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
     assert result3["host_status"] == "ready"
-    assert len(launches) == 3
-    assert len(inventory_calls) == 3
+    assert len(launches) == 4
+    assert len(inventory_calls) == 4
 
 
 def test_bootstrap_stops_on_correlated_terminal_registration_failure(

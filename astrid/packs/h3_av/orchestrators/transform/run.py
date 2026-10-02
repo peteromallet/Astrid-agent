@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from astrid.core.execution.worker_qualification import (
     qualification_digest,
 )
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.packs.h3_av.src.execution_contract import build_child_execution_contract
 from astrid.packs.h3_av.src.input_bundle import build_input_bundle, materialize_input_bundle
 from astrid.packs.h3_av.src.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.src.receipt import (
@@ -35,7 +37,9 @@ from astrid.sdk.results import InvocationResult
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a bounded H3 audiovisual transform.")
     parser.add_argument("--request", type=Path, required=True)
-    parser.add_argument("--asset-map", type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--asset-map", type=Path)
+    inputs.add_argument("--input-bundle", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--project")
     parser.add_argument("--execution-request", type=Path)
@@ -147,7 +151,7 @@ def _managed_rows(result: Any, name: str) -> list[Mapping[str, Any]]:
         ):
             rows.append(value)
     unique: list[Mapping[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: dict[tuple[str, str], int] = {}
     for row in rows:
         producer = row.get("producer")
         producer_id = (
@@ -157,9 +161,27 @@ def _managed_rows(result: Any, name: str) -> list[Mapping[str, Any]]:
         )
         identity = producer_id or row.get("object_id") or row.get("digest") or row.get("content_hash")
         key = (str(identity), str(_output_role(row) or row.get("name") or row.get("output_port") or ""))
-        if key not in seen:
-            seen.add(key)
-            unique.append(row)
+        if key in seen:
+            index = seen[key]
+            existing = unique[index]
+            # Runtime's managed-output association is the authoritative
+            # lineage witness. Invocation results may also contain a legacy
+            # artifact row for the same bytes; never let that weaker row win
+            # merely because it appeared first in the response.
+            existing_association = existing.get("association_id")
+            row_association = row.get("association_id")
+            if not existing_association and row_association:
+                unique[index] = row
+            elif existing_association and row_association and existing_association != row_association:
+                # Same bytes do not imply the same Runtime lineage. Keep
+                # distinct associations available so a caller can reject an
+                # ambiguous producer rather than silently selecting one.
+                distinct_key = (f"{key[0]}:{row_association}", key[1])
+                seen[distinct_key] = len(unique)
+                unique.append(row)
+            continue
+        seen[key] = len(unique)
+        unique.append(row)
     return unique
 
 
@@ -205,6 +227,104 @@ def _descriptor(row: Mapping[str, Any], *, filename: str) -> dict[str, Any]:
         "filename": Path(filename).name,
         "required": True,
     }
+
+
+def _existing_input_descriptor(path: Path, *, filename: str) -> dict[str, Any]:
+    """Describe bytes already admitted and materialized by the parent task.
+
+    The transform worker receives these files from Runtime after the parent
+    admission has authorized their object ids.  Re-importing them here would
+    turn a read-only child handoff into a project write and is both redundant
+    and forbidden to the delegated worker credential.
+    """
+
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"managed H3 input {filename!r} was not materialized")
+    object_id = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "object_id": object_id,
+        "digest": object_id,
+        "filename": Path(filename).name,
+        "required": True,
+    }
+
+
+
+def _root_ref(name: str, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    return {"name": name, "root_object_id": descriptor["object_id"]}
+
+
+def _producer_ref(name: str, stage: str, port: str) -> dict[str, str]:
+    return {"name": name, "producer_stage": stage, "output_port": port}
+
+
+def _bound_producer_ref(name: str, port: str, row: Mapping[str, Any]) -> dict[str, str]:
+    """Bind a child input to the settled Runtime output it consumes.
+
+    The parent policy intentionally names producer stages symbolically. A
+    live delegated admission must additionally identify the exact completed
+    producer task and managed-output association; otherwise Runtime cannot
+    prove that the bytes came from the declared stage and port.
+    """
+
+    task_id = row.get("task_id")
+    association_id = row.get("association_id")
+    output_port = row.get("output_port")
+    if not isinstance(task_id, str) or not task_id:
+        provenance = row.get("provenance")
+        if isinstance(provenance, Mapping):
+            task_id = provenance.get("task_id")
+    if not isinstance(association_id, str) or not association_id:
+        raise RuntimeError(f"managed producer output {port!r} has no Runtime association")
+    if not isinstance(task_id, str) or not task_id:
+        raise RuntimeError(f"managed producer output {port!r} has no producer task identity")
+    if isinstance(output_port, str) and output_port != port:
+        raise RuntimeError(
+            f"managed producer output {port!r} resolved to unexpected port {output_port!r}"
+        )
+    return {
+        "name": name,
+        "producer_task_id": task_id,
+        "association_id": association_id,
+        "output_port": port,
+    }
+
+
+def _managed_row(result: Any, port: str) -> Mapping[str, Any]:
+    rows = _managed_rows(result, port)
+    if not rows:
+        raise RuntimeError(f"child {getattr(result, 'capability_id', '?')} has no managed output {port!r}")
+    return next((row for row in rows if row.get("is_primary") or row.get("role") == "result"), rows[0])
+
+
+def _publication_intent() -> dict[str, Any]:
+    """Fixed public selector; compilation details remain private evidence."""
+    return {
+        "version": 1,
+        "modality": "video",
+        "partial_success_policy": "reject",
+        "groups": [{"group_key": "main", "selectors": [{
+            "selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True,
+        }]}],
+        "metadata": {"source_capability": "h3_av.transform"},
+    }
+
+
+def staged_child_delegation(
+    *, project_id: str, request_schema: int, request_object_id: str,
+    input_bundle_object_id: str, operation: str | None = None,
+    run_target: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the Runtime parent policy from the normalized H3 request schema."""
+    return build_child_execution_contract(
+        project_id=project_id,
+        request_schema=request_schema,
+        request_object_id=request_object_id,
+        input_bundle_object_id=input_bundle_object_id,
+        operation=operation,
+        run_target=run_target,
+    )
+
 
 
 def _import_runtime_file(client: Any, *, project: str | None, path: Path, filename: str) -> dict[str, Any]:
@@ -508,6 +628,8 @@ def _invoke(
     project: str | None,
     execution_request: Mapping[str, Any] | None = None,
     idempotency_context: Mapping[str, Any] | None = None,
+    delegated_stage: str | None = None,
+    delegated_input_refs: list[Mapping[str, Any]] | None = None,
 ) -> Any:
     result = client.invoke_result(
         capability_id,
@@ -518,6 +640,8 @@ def _invoke(
         execution_request=execution_request,
         idempotency_context=idempotency_context,
         wait=True,
+        **({"delegated_stage": delegated_stage, "delegated_input_refs": delegated_input_refs or []}
+           if delegated_stage else {}),
     )
     if not result.ok:
         raise RuntimeError(f"{capability_id} failed: {result.error}")
@@ -786,6 +910,8 @@ def _invoke_stage(
     phase: str,
     execution_request: Mapping[str, Any] | None = None,
     idempotency_context: Mapping[str, Any] | None = None,
+    delegated_stage: str | None = None,
+    delegated_input_refs: list[Mapping[str, Any]] | None = None,
 ) -> InvocationResult:
     """Invoke one canonical stage once, or reuse its settled DTO on resume."""
 
@@ -794,6 +920,8 @@ def _invoke_stage(
         "inputs": inputs,
         "project": project,
         "execution_request": execution_request,
+        **({"delegated_stage": delegated_stage, "delegated_input_refs": delegated_input_refs or []}
+           if delegated_stage else {}),
     })
     previous = journal.latest(phase)
     if resume and saved_result.is_file():
@@ -832,6 +960,7 @@ def _invoke_stage(
             project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
+            delegated_stage=delegated_stage, delegated_input_refs=delegated_input_refs,
         )
     except Exception as exc:
         journal.record(
@@ -867,6 +996,8 @@ def _invoke_canonical_run(
     journal: OperationJournal,
     resume: bool,
     idempotency_context: Mapping[str, Any] | None = None,
+    delegated_stage: str | None = None,
+    delegated_input_refs: list[Mapping[str, Any]] | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
@@ -874,6 +1005,8 @@ def _invoke_canonical_run(
         "capability_id": "vibecomfy.run",
         "inputs": inputs,
         "execution_request": execution_request,
+        **({"delegated_stage": delegated_stage, "delegated_input_refs": delegated_input_refs or []}
+           if delegated_stage else {}),
     }
     admission_digest = _stable_digest(admission_payload)
     run_input_digest = _stable_digest({
@@ -931,6 +1064,7 @@ def _invoke_canonical_run(
             client, "vibecomfy.run", inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
+            delegated_stage=delegated_stage, delegated_input_refs=delegated_input_refs,
         )
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
@@ -1036,14 +1170,16 @@ def _finalizer_generation_intent(
 def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
+    admitted_bundle = getattr(args, "input_bundle", None)
+    delegated = admitted_bundle is not None
     if args.dry_run:
         return {
             "status": "planned",
             "request": str(args.request.resolve()),
-            "asset_map": str(args.asset_map.resolve()),
+            "input_bundle" if delegated else "asset_map": str((admitted_bundle or args.asset_map).resolve()),
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify"],
         }
-    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    execution_request = _json_mapping(args.execution_request) if args.execution_request and str(args.execution_request) != "." else None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
         try:
@@ -1090,27 +1226,37 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         idempotency_context = {"h3_submission_id": journal.submission_id}
         staging = root / "staged-inputs"
         staging.mkdir(parents=True, exist_ok=True)
-        bundle_path = build_input_bundle(
-            request, _json_mapping(args.asset_map), staging / "h3-inputs.zip"
-        )
-        request_path = staging / "request.json"
-        request_path.write_text(json.dumps(request.value, sort_keys=True), encoding="utf-8")
-        request_descriptor = _import_runtime_file(
-            client, project=args.project, path=request_path, filename=request_path.name
-        )
-        bundle_descriptor = _import_runtime_file(
-            client, project=args.project, path=bundle_path, filename=bundle_path.name
-        )
-        # Freeze the authoritative source from the same verified bytes as the
-        # child inputs. Never open a prepare worker's absolute source path.
-        frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
         source_inputs = {}
-        source_asset_id = _authoritative_source_asset_id(request)
-        if source_asset_id is not None:
-            source_path = Path(frozen_assets[source_asset_id])
-            source_inputs["source"] = _import_runtime_file(
-                client, project=args.project, path=source_path, filename=source_path.name
+        if delegated:
+            if not zipfile.is_zipfile(admitted_bundle):
+                raise RuntimeError("admitted input_bundle must be a verified asset archive")
+            bundle_path = staging / "h3-inputs.zip"
+            original_bundle = _existing_input_descriptor(admitted_bundle, filename="h3-inputs.zip")
+            shutil.copyfile(admitted_bundle, bundle_path)
+            bundle_descriptor = _existing_input_descriptor(bundle_path, filename="h3-inputs.zip")
+            if original_bundle != bundle_descriptor:
+                raise RuntimeError("admitted input bundle changed during staging")
+            request_descriptor = _existing_input_descriptor(args.request, filename="request.json")
+            materialize_input_bundle(request, bundle_path, staging / "assets")
+        else:
+            bundle_path = build_input_bundle(
+                request, _json_mapping(args.asset_map), staging / "h3-inputs.zip"
             )
+            request_path = staging / "request.json"
+            request_path.write_text(json.dumps(request.value, sort_keys=True), encoding="utf-8")
+            request_descriptor = _import_runtime_file(
+                client, project=args.project, path=request_path, filename=request_path.name
+            )
+            bundle_descriptor = _import_runtime_file(
+                client, project=args.project, path=bundle_path, filename=bundle_path.name
+            )
+            frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
+            source_asset_id = _authoritative_source_asset_id(request)
+            if source_asset_id is not None:
+                source_path = Path(frozen_assets[source_asset_id])
+                source_inputs["source"] = _import_runtime_file(
+                    client, project=args.project, path=source_path, filename=source_path.name
+                )
         prepared = _invoke_stage(
             client, "h3_av.prepare",
             inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
@@ -1119,6 +1265,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="prepare",
+            **({"delegated_stage": "prepare", "delegated_input_refs": [_root_ref("request", request_descriptor), _root_ref("input_bundle", bundle_descriptor)]} if delegated else {}),
             idempotency_context=idempotency_context,
         )
         preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
@@ -1133,6 +1280,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compile",
+            **({"delegated_stage": "compile", "delegated_input_refs": [_bound_producer_ref("preparation", "preparation", preparation_row), _root_ref("input_bundle", bundle_descriptor)]} if delegated else {}),
             idempotency_context=idempotency_context,
         )
         compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
@@ -1145,6 +1293,10 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         provenance = _provenance(preparation, compilation)
         provenance_path = _write_provenance_preparation(root, preparation, provenance)
         bundle_inputs = _retrieve_compiled_workflow(client, compiled, compilation, root / "02-compile")
+        workflow_refs = ([_bound_producer_ref(name, name, _managed_row(compiled, name))
+                          for name in ("python", "companion", "source")] if delegated else [])
+        asset_ref = (_bound_producer_ref("managed_assets", "managed_assets", managed_assets_row)
+                     if delegated else None)
         # Canonical workflow Python is executable input.  Carry the explicit
         # consent scalar required by VibeComfy's audited validation gate;
         # execution-request targeting is not itself Python consent.
@@ -1153,6 +1305,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "vibecomfy.validate",
             inputs={
                 **bundle_inputs,
+                **({"managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip")} if delegated else {}),
                 "python_execution_consent": "confirmed",
                 "workflow_inputs": json.dumps(
                     compilation["workflow_inputs"],
@@ -1166,6 +1319,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="validate",
+            **({"delegated_stage": "validate", "delegated_input_refs": [*workflow_refs, asset_ref]} if delegated else {}),
             idempotency_context=idempotency_context,
         )
         generation_metadata = {"h3_av": provenance}
@@ -1175,7 +1329,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             **bundle_inputs,
             "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
             "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
-            "generation_intent": generation_intent,
+            **({} if delegated else {"generation_intent": generation_intent}),
         }
         saved_run_path = root / "04-run" / "run-result.json"
         child_execution_request = _execution_request_for_child(execution_request)
@@ -1186,6 +1340,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             out=root / "04-run",
             project=args.project,
             saved_result=saved_run_path,
+            **({"delegated_stage": "run", "delegated_input_refs": [*workflow_refs, asset_ref]} if delegated else {}),
             journal=journal,
             resume=bool(getattr(args, "resume", False)),
             idempotency_context=idempotency_context,
@@ -1234,28 +1389,44 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         enriched = dict(preparation)
         enriched["provenance"] = {**provenance, "runtime": runtime_provenance}
         provenance_path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-        preparation_descriptor = _import_runtime_file(
-            client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
-        )
-        generated_input_path = generated_bundle_path or generated_path
-        generated_descriptor = _import_runtime_file(
-            client,
-            project=args.project,
-            path=generated_input_path,
-            filename=generated_input_path.name,
-        )
+        if delegated:
+            preparation_descriptor = _descriptor(preparation_row, filename="preparation.json")
+            compilation_descriptor = _descriptor(compilation_row, filename="compilation.json")
+            video_role = "muxed_av" if output_contract == "muxed_av_full_timeline" else "video"
+            video_port = "vibecomfy_run"
+            generated_descriptor = _descriptor(generated_outputs[video_role][1], filename=generated_path.name)
+            compose_extra = {"compilation": compilation_descriptor, "input_bundle": bundle_descriptor}
+            compose_refs = [
+                _bound_producer_ref("preparation", "preparation", preparation_row),
+                _bound_producer_ref("compilation", "compilation", compilation_row),
+                _bound_producer_ref("generated", video_port, generated_outputs[video_role][1]),
+                _root_ref("input_bundle", bundle_descriptor),
+            ]
+            if generated_audio_path is not None:
+                compose_extra["generated_audio"] = _descriptor(generated_outputs["audio"][1], filename=generated_audio_path.name)
+                compose_refs.append(_bound_producer_ref("generated_audio", "vibecomfy_run", generated_outputs["audio"][1]))
+        else:
+            preparation_descriptor = _import_runtime_file(
+                client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
+            )
+            generated_input_path = generated_bundle_path or generated_path
+            generated_descriptor = _import_runtime_file(
+                client, project=args.project, path=generated_input_path, filename=generated_input_path.name,
+            )
+            compose_extra = source_inputs
         composed = _invoke_stage(
             client, "h3_av.compose",
             inputs={
                 "preparation": preparation_descriptor,
                 "generated": generated_descriptor,
-                **source_inputs,
+                **compose_extra,
             },
             out=root / "05-compose", project=args.project,
             saved_result=root / "05-compose" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="compose",
+            **({"delegated_stage": "compose", "delegated_input_refs": compose_refs} if delegated else {}),
             idempotency_context=idempotency_context,
         )
         composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
@@ -1266,17 +1437,55 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                 "preparation": preparation_descriptor,
                 "composition": _descriptor(composition_row, filename="composition-manifest.json"),
                 "candidate": _descriptor(candidate_row, filename="candidate.media"),
-                **source_inputs,
+                **({"compilation": compilation_descriptor, "input_bundle": bundle_descriptor} if delegated else source_inputs),
             },
             out=root / "06-verify", project=args.project,
             saved_result=root / "06-verify" / "invocation-result.json",
             resume=bool(getattr(args, "resume", False)),
             journal=journal,
             phase="verify",
+            **({"delegated_stage": "verify", "delegated_input_refs": [
+                _bound_producer_ref("preparation", "preparation", preparation_row),
+                _bound_producer_ref("compilation", "compilation", compilation_row),
+                _bound_producer_ref("composition", "composition", composition_row),
+                _bound_producer_ref("candidate", "candidate", candidate_row),
+                _root_ref("input_bundle", bundle_descriptor),
+            ]} if delegated else {}),
             idempotency_context=idempotency_context,
         )
         verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
+        if delegated:
+            verified_path, verified_row = _materialize_output(
+                client, verified, "verified_candidate", root / "06-verify", managed_only=True)
+            if _digest(candidate_row) != _digest(verified_row) or candidate_row.get("size") != verified_row.get("size"):
+                raise RuntimeError("compose candidate and verified candidate identities differ")
+            finalized = _invoke_stage(
+                client, "h3_av.publication_finalizer",
+                inputs={"verified_candidate": _descriptor(verified_row, filename=verified_path.name)},
+                out=root / "07-finalizer", project=args.project,
+                saved_result=root / "07-finalizer" / "invocation-result.json",
+                resume=bool(getattr(args, "resume", False)), journal=journal, phase="finalizer",
+                idempotency_context=idempotency_context,
+                delegated_stage="finalize",
+                delegated_input_refs=[_bound_producer_ref("verified_candidate", "verified_candidate", verified_row)],
+            )
+            final_path, final_row = _materialize_output(
+                client, finalized, "verified_candidate", root / "07-finalizer", managed_only=True)
+            if _digest(candidate_row) != _digest(final_row) or candidate_row.get("size") != final_row.get("size"):
+                raise RuntimeError("compose candidate and finalized candidate identities differ")
+            journal.record("operation", "completed", object_id=_digest(final_row))
+            return {
+                "status": "ready_for_parent_publication",
+                "preparation": str(preparation_path), "compilation": str(compilation_path),
+                "generated": str(generated_path), "composition": str(composition_path),
+                "verification": str(verification_path), "candidate": str(candidate_path),
+                "final": str(final_path), "object_id": _digest(final_row),
+                "task_id": getattr(finalized, "kernel_task_id", None),
+                "attempt_id": getattr(finalized, "kernel_attempt_id", None),
+                "selector": {"group_key": "main", "variant_key": "original", "ordinal": 0},
+                "retrieval_receipt": final_row.get("receipt_path"),
+            }
         task_evidence = {
             key: value
             for key, value in {
@@ -1303,11 +1512,17 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
                     verification=verification,
                     raw_managed_publication=raw_managed_publication,
                 )
+                # The direct legacy route keeps its publication selector, but
+                # forwards the verify-stage managed bytes just like delegation.
+                verified_path, verified_row = _materialize_output(
+                    client, verified, "verified_candidate", root / "06-verify", managed_only=True)
+                if _digest(candidate_row) != _digest(verified_row):
+                    raise RuntimeError("compose candidate and verified candidate identities differ")
                 finalizer = _invoke_stage(
                     client,
                     "h3_av.publication_finalizer",
                     inputs={
-                        "candidate": _descriptor(candidate_row, filename="candidate.media"),
+                        "candidate": _descriptor(verified_row, filename=verified_path.name),
                         "generation_intent": finalizer_intent,
                     },
                     out=root / "07-finalizer",

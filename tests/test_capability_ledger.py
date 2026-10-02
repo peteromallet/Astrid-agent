@@ -9,9 +9,10 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
 
-    assert sources["counts"]["pack_labels"] == 93
-    assert sources["counts"]["historical_pack_labels"] == 98
-    assert sources["counts"]["executor_inventory"] == 86
+    assert sources["counts"]["pack_labels"] == 94
+    assert sources["counts"]["historical_pack_labels"] == 99
+    assert sources["counts"]["executor_inventory"] == 87
+    assert any(row["id"] == "h3_av.publication_finalizer" for row in sources["executor_inventory"])
     assert sources["counts"]["legacy_ids"] == 19
     assert all(section["complete"] for section in sources["coverage"].values())
     assert not sources["coverage"]["source_labels"]["missing"]
@@ -40,8 +41,8 @@ def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
     from astrid.core.execution.generic_host import GenericPackHost
 
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
-    assert host.ledger["sources"]["counts"]["pack_labels"] == 93
-    assert len(host.matrix) == 84
+    assert host.ledger["sources"]["counts"]["pack_labels"] == 94
+    assert len(host.matrix) == 85
 
 
 def test_vibecomfy_readiness_reserves_gpu_for_workflow_execution():

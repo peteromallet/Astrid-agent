@@ -8,7 +8,7 @@ bundle; preparation records carry member identities, not previous-attempt paths.
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from astrid.packs.vibecomfy.asset_manifest import read_archive
@@ -16,6 +16,39 @@ from astrid.packs.vibecomfy.asset_manifest import read_archive
 from .compile import _write_asset_bundle
 from .prepare import PreparationError, _asset_ids
 from .request import H3Request, normalize_request
+
+
+def primary_baseline_asset(preparation: Mapping[str, Any]) -> str | None:
+    """Select the existing main baseline without importing a new graph model."""
+    request = normalize_request(preparation["request"])
+    if request.value.get("version") != 2:
+        source = request.value.get("source")
+        return str(source["asset"]) if source else None
+    from .request_v2 import branch_for
+    if branch_for(request) in {"source_free", "audio_only"}:
+        return None
+    videos = [item for item in request.value["media"]
+              if item["role"] == "timeline" and item.get("modality") == "video"]
+    return str(videos[0]["asset"]) if len(videos) == 1 else None
+
+
+def bundle_generated_pair(video: Path, audio: Path, destination: Path) -> Path:
+    """Adapt managed video/audio ports to main's existing composition archive."""
+    import json
+    import zipfile
+    records = []
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w") as archive:
+        for role, path in (("video", video), ("audio", audio)):
+            data = path.read_bytes()
+            member = f"outputs/{role}-{path.name}"
+            records.append({"role": role, "member": member, "filename": path.name,
+                            "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+            archive.writestr(member, data)
+        archive.writestr("manifest.json", json.dumps({
+            "schema_version": 1, "kind": "h3_av_generated_av", "outputs": records,
+        }, sort_keys=True))
+    return destination
 
 
 def build_input_bundle(request: H3Request, asset_map: Mapping[str, Any], destination: Path) -> Path:
@@ -42,8 +75,14 @@ def materialize_input_bundle(
     destination = destination.resolve()
     paths: dict[str, str] = {}
     identities: list[dict[str, Any]] = []
-    for row in records:
-        target = (destination / row["member"]).resolve()
+    for index, row in enumerate(records):
+        # The archive has already verified this digest. Strip only its exact
+        # managed prefix, once, so rebuilding does not prefix it a second time.
+        # Private per-record directories keep equal semantic names independent.
+        name = PurePosixPath(row["member"]).name.removeprefix(f"{row['sha256'][:16]}-")
+        if not name or name in {".", ".."}:
+            raise PreparationError("input bundle member has no safe semantic basename")
+        target = (destination / "assets" / str(index) / name).resolve()
         if not target.is_relative_to(destination):
             raise PreparationError("input bundle member escapes its attempt directory")
         target.parent.mkdir(parents=True, exist_ok=True)

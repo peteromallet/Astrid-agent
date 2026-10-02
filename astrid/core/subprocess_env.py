@@ -85,6 +85,11 @@ _ASTRID_PROPAGATED_ENV = frozenset(
         PROJECT_SLUG_ENV,
         ASTRID_AUTHOR_TEST,
         ASTRID_INTERNAL_INVOCATION,
+        # The capability host issues this integrity-bound handoff to the
+        # orchestrator process. Preserve both fields across its command child
+        # boundary; the SDK still validates their path and digest on attach.
+        "ASTRID_NESTED_RUNTIME_HANDOFF_PATH",
+        "ASTRID_NESTED_RUNTIME_HANDOFF_HASH",
         TASK_RUN_ID_ENV,
         TASK_PROJECT_ENV,
         TASK_STEP_ID_ENV,

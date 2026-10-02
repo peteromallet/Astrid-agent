@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 from astrid.packs.h3_av.src.compile import compile_preparation
@@ -23,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    result_manifest = args.out / "manifest.json"
+    if result_manifest.is_symlink():
+        raise ValueError("compile result manifest is a symlink")
+    result_manifest.unlink(missing_ok=True)
     preparation = json.loads(args.preparation.read_text(encoding="utf-8"))
     if not isinstance(preparation, dict):
         raise ValueError("preparation must be a JSON object")
@@ -50,11 +55,20 @@ def main(argv: list[str] | None = None) -> int:
         if actual != expected:
             raise RuntimeError(f"published workflow member {filename!r} failed hash verification")
         published[output_name] = str(destination)
-    print(json.dumps({
+    output_paths = {
         "compilation": result["manifest_path"],
         "managed_assets": result["managed_assets"]["path"],
         **published,
-    }, sort_keys=True))
+    }
+    write_manifest(result_manifest, build_manifest(
+        kind="h3_av_compile_result", inputs={"request_digest": result["request_digest"]},
+        outputs=[{"name": name, "path": Path(path).name, "output_port": name,
+                  "ordinal": ordinal, "role": "result" if ordinal == 0 else "auxiliary",
+                  "is_primary": ordinal == 0}
+                 for ordinal, (name, path) in enumerate(output_paths.items())],
+        created="h3_av.compile.v1",
+    ))
+    print(json.dumps(output_paths, sort_keys=True))
     return 0
 
 

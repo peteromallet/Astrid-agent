@@ -34,6 +34,7 @@ capabilities:
   - compile_transform
   - compose_transform
   - verify_transform
+  - publication_finalizer
   - transform
 agent:
   purpose: Use this pack for request-driven H3 video/audio continuation, editing, masking, and reference-guided continuation.

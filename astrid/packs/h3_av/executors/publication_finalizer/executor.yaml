@@ -1,0 +1,51 @@
+schema_version: 1
+id: h3_av.publication_finalizer
+name: Publish verified H3 candidate
+kind: built_in
+version: 0.1.0
+short_description: Forward one verified candidate to Runtime publication settlement.
+description: Copies an already verified managed candidate without invoking inference or media composition.
+keywords: [h3, video, publication]
+inputs:
+  - name: verified_candidate
+    type: file
+    required: false
+    description: Managed result of h3_av.verify.
+  - name: candidate
+    type: file
+    required: false
+    description: Legacy direct transform alias for the managed verified candidate; not admitted by the delegated child policy.
+outputs:
+  - name: verified_candidate
+    type: file
+    path_template: "{out}/verified-candidate.mkv"
+    artifact_type: video/x-matroska
+command:
+  argv:
+    - "{python_exec}"
+    - -m
+    - astrid.packs.h3_av.executors.publication_finalizer.run
+    - --out
+    - "{out}"
+  input_args:
+    - input: verified_candidate
+      flag: --verified-candidate
+      optional: true
+    - input: candidate
+      flag: --candidate
+      optional: true
+cache:
+  mode: none
+docs:
+  stage: STAGE.md
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  output_result_manifest: true
+  generation_publication:
+    version: 1
+    modality: video
+    output_port: verified_candidate
+  runtime_module: astrid.packs.h3_av.executors.publication_finalizer.run
+  runtime_file: run.py

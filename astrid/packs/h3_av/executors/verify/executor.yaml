@@ -7,6 +7,14 @@ short_description: Verify H3 artifact custody and protected-source evidence.
 description: Fail closed when a candidate, preparation, composition, or preservation claim is missing or contradictory.
 keywords: [h3, video, audio, verify, preservation, evidence]
 inputs:
+  - name: compilation
+    type: file
+    required: false
+    description: Managed compilation binding the composition evidence.
+  - name: input_bundle
+    type: file
+    required: false
+    description: Admitted archive containing authoritative source assets.
   - name: preparation
     type: file
     required: true
@@ -24,6 +32,10 @@ inputs:
     required: false
     description: Source media required for exact whole-file preservation verification.
 outputs:
+  - name: verified_candidate
+    type: file
+    path_template: "{out}/verified-candidate.mkv"
+    artifact_type: video/x-matroska
   - name: verification
     type: file
     path_template: "{out}/verification.json"
@@ -42,6 +54,12 @@ command:
     - "--out"
     - "{out}/verification.json"
   input_args:
+    - input: compilation
+      flag: "--compilation"
+      optional: true
+    - input: input_bundle
+      flag: "--input-bundle"
+      optional: true
     - input: source
       flag: "--source"
       optional: true
@@ -51,5 +69,6 @@ isolation:
   mode: subprocess
   network: false
 metadata:
+  output_result_manifest: true
   runtime_module: astrid.packs.h3_av.executors.verify.run
   runtime_file: run.py

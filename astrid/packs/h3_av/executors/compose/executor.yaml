@@ -7,6 +7,18 @@ short_description: Settle an H3 candidate with explicit changed and protected pe
 description: Copy a generated candidate into an attempt-local result directory and publish deterministic composition evidence without inventing preservation claims.
 keywords: [h3, video, audio, compose, evidence]
 inputs:
+  - name: compilation
+    type: file
+    required: false
+    description: Managed compilation binding the selected workflow and assets.
+  - name: input_bundle
+    type: file
+    required: false
+    description: Admitted archive containing authoritative source assets.
+  - name: generated_audio
+    type: file
+    required: false
+    description: Separate managed LanPaint audio output.
   - name: preparation
     type: file
     required: true
@@ -45,6 +57,15 @@ command:
     - "--out"
     - "{out}"
   input_args:
+    - input: compilation
+      flag: "--compilation"
+      optional: true
+    - input: input_bundle
+      flag: "--input-bundle"
+      optional: true
+    - input: generated_audio
+      flag: "--generated-audio"
+      optional: true
     - input: source
       flag: "--source"
       optional: true
@@ -57,5 +78,6 @@ isolation:
   mode: subprocess
   network: false
 metadata:
+  output_result_manifest: true
   runtime_module: astrid.packs.h3_av.executors.compose.run
   runtime_file: run.py

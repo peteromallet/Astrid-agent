@@ -15,17 +15,38 @@ import io
 import tarfile
 from typing import Any, Mapping
 
+from astrid.core.generation.model_root import canonical_model_inventory_digest
+from astrid.packs.h3_av.src.timing import plan_continuation
+
 ASTRID_ROOT = Path(__file__).resolve().parents[2]
-WORKSPACE_ROOT = ASTRID_ROOT.parents[2]
+
+
+def _repository_evidence_root(source_root: Path) -> Path:
+    """Locate shared fixture evidence for normal checkouts and nested worktrees."""
+    result = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(result.stdout.strip()).resolve().parent
+
+
+WORKSPACE_ROOT = _repository_evidence_root(ASTRID_ROOT)
+_runtime_candidate = ASTRID_ROOT.parent / "Runtime"
 RUNTIME_ROOT = Path(
     os.environ.get("ASTRID_STAGE1_RUNTIME_CHECKOUT")
-    or WORKSPACE_ROOT.parent / "banodoco-workspace-runtime"
+    or (_runtime_candidate if _runtime_candidate.is_dir() else WORKSPACE_ROOT.parent / "banodoco-workspace-runtime")
 ).resolve()
 VIBECOMFY_ROOT = Path(
     os.environ.get("ASTRID_VIBECOMFY_CHECKOUT") or WORKSPACE_ROOT.parent / "vibecomfy"
 ).resolve()
 VIBECOMFY_SOURCE_ROOT = VIBECOMFY_ROOT
-PINNED_VIBECOMFY_REVISION = "01f38461d633651c8857712b2331650aedaee461"
+# The CPU candidate includes the source-derived ModelAttentionBackend schema.
+# Its measured local_snapshot readiness profile selects this revision without
+# advancing Astrid's production VIBECOMFY_ENGINE_REVISION.
+CPU_VIBECOMFY_CANDIDATE_REVISION = "b554ed14dbb481130b96dd0c927e1fde4f02e447"
+H3_CAPTURED_VIBECOMFY_REVISION = "01f38461d633651c8857712b2331650aedaee461"
 H3_RUNPOD_SCHEMA_SHA256 = "1133daa166d646db626e05d9aba1c8d5b689fa0a19216e3d10ea08e7a9fb6810"
 H3_RUNPOD_GRAPH_CLOSURE_SHA256 = "af9271339890a3dcc36f1068a51eadb4f5a3ccb67652e7ec63c3ec41926b0e55"
 H3_RUNPOD_OVERLAY_SHA256 = "50f38e439f2c3945f0fad13b11e565defb72433aabd92fe9d0dd379a014bd020"
@@ -275,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
                 prompt_id = f"h3-c11-fixture-{len(histories) + 1:04d}"
                 filename = f"{prompt_id}.mp4"
                 output = output_directory / filename
-                duration = float(expected.get("generated_seconds", 13))
+                duration = float(expected["generated_seconds"])
                 subprocess.run([
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                     "-f", "lavfi", "-i", f"color=c=red:s=64x64:r=24:d={duration}",
@@ -319,16 +340,16 @@ def _prepare_clean_vibecomfy_checkout(root: Path) -> Path:
     if not (source_root / "vibecomfy" / "__init__.py").is_file():
         raise RuntimeError(f"VibeComfy source package is unavailable: {source_root}")
     pinned_revision = subprocess.run(
-        ["git", "-C", str(source_root), "rev-parse", "--verify", f"{PINNED_VIBECOMFY_REVISION}^{{commit}}"],
+        ["git", "-C", str(source_root), "rev-parse", "--verify", f"{CPU_VIBECOMFY_CANDIDATE_REVISION}^{{commit}}"],
         capture_output=True,
         text=True,
         check=True,
         timeout=10,
     ).stdout.strip()
-    if pinned_revision != PINNED_VIBECOMFY_REVISION:
+    if pinned_revision != CPU_VIBECOMFY_CANDIDATE_REVISION:
         raise RuntimeError(
             "C11 requires the pinned VibeComfy source revision "
-            f"{PINNED_VIBECOMFY_REVISION}, got {pinned_revision}"
+            f"{CPU_VIBECOMFY_CANDIDATE_REVISION}, got {pinned_revision}"
         )
 
     checkout = (root / "dependencies" / "vibecomfy").resolve()
@@ -382,7 +403,7 @@ def _prepare_clean_vibecomfy_checkout(root: Path) -> Path:
         check=True,
         timeout=10,
     ).stdout
-    if actual_revision != PINNED_VIBECOMFY_REVISION or branch.returncode == 0 or status:
+    if actual_revision != CPU_VIBECOMFY_CANDIDATE_REVISION or branch.returncode == 0 or status:
         raise RuntimeError(
             "C11 VibeComfy clone is not a clean detached checkout: "
             f"revision={actual_revision!r}, branch={branch.stdout.strip()!r}, status={status!r}"
@@ -470,7 +491,7 @@ def _probe_vibecomfy_checkout(checkout: Path) -> dict[str, str]:
     digest_hex = content_digest.removeprefix("sha256:")
     if (
         not origin.is_relative_to(source)
-        or revision != PINNED_VIBECOMFY_REVISION
+        or revision != CPU_VIBECOMFY_CANDIDATE_REVISION
         or not content_digest.startswith("sha256:")
         or len(digest_hex) != 64
         or any(character not in "0123456789abcdef" for character in digest_hex)
@@ -564,7 +585,7 @@ def _object_info_from_checkout(checkout: Path) -> dict[str, Any]:
     assert provenance["raw_object_info_sha256"] == (
         "505f7c31ebea6a48ea3db3ef77184923a529a6073fd373f780d48f693463154b"
     )
-    assert provenance["vibecomfy_revision"] == PINNED_VIBECOMFY_REVISION
+    assert provenance["vibecomfy_revision"] == H3_CAPTURED_VIBECOMFY_REVISION
     assert provenance["h3_pack"]["revision"] == (
         "361624fb406b63eb6694442eac6c895fc1533a70"
     )
@@ -615,7 +636,7 @@ def _object_info_from_checkout(checkout: Path) -> dict[str, Any]:
         "505f7c31ebea6a48ea3db3ef77184923a529a6073fd373f780d48f693463154b"
     )
     assert overlay_provenance["filtered_closure_sha256"] == H3_RUNPOD_GRAPH_CLOSURE_SHA256
-    assert overlay_provenance["vibecomfy_revision"] == PINNED_VIBECOMFY_REVISION
+    assert overlay_provenance["vibecomfy_revision"] == H3_CAPTURED_VIBECOMFY_REVISION
     assert overlay_provenance["h3_pack_revision"] == closure_provenance["h3_pack"]["revision"]
     assert overlay_provenance["comfy_revision"] == provenance["comfy_revision"]
     assert overlay_provenance["overlaid_class"] == "CLIPLoader"
@@ -825,6 +846,20 @@ class H3CpuRuntime:
                 model_path.write_bytes(f"c11-model-fixture:{relative}\n".encode("utf-8"))
                 if model_path.is_symlink() or not model_path.is_file() or model_path.stat().st_size == 0:
                     raise RuntimeError(f"C11 model fixture is not a regular non-empty file: {model_path}")
+            model_inventory = []
+            for model_path in sorted(self.models_root.rglob("*")):
+                if not model_path.is_file() or model_path.is_symlink():
+                    continue
+                relative = model_path.relative_to(self.models_root)
+                model_inventory.append(
+                    {
+                        "name": relative.name,
+                        "sha256": "sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest(),
+                        "size": model_path.stat().st_size,
+                        "subdir": "" if relative.parent.as_posix() == "." else relative.parent.as_posix(),
+                    }
+                )
+            model_inventory.sort(key=lambda entry: (entry["subdir"], entry["name"]))
             if not self.root.joinpath("realm").exists():
                 RealmStore.initialize(self.root / "realm").close()
             with _temporary_environment(
@@ -873,7 +908,12 @@ class H3CpuRuntime:
                 },
                 "launch": {
                     "output_root": str(self.schema_session.output_root),
-                    "model_root": str(self.models_root),
+                    "model_root": {
+                        "schema_version": 1,
+                        "path": str(self.models_root),
+                        "inventory": model_inventory,
+                        "inventory_digest": canonical_model_inventory_digest(model_inventory),
+                    },
                 },
                 "vibecomfy_candidate": {
                     "kind": "local_snapshot",
@@ -995,6 +1035,9 @@ class H3CpuRuntime:
                     "ASTRID_HOST_READINESS_PROFILE_PATH": str(self.readiness_profile_path),
                     "ASTRID_HOST_READINESS_PROFILE_HASH": self.readiness_profile_hash,
                     "ASTRID_VIBECOMFY_CHECKOUT": str(self.vibecomfy_root),
+                    "ASTRID_VIBECOMFY_CANDIDATE_KIND": "local_snapshot",
+                    "ASTRID_VIBECOMFY_CANDIDATE_REVISION": source_revision,
+                    "ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST": source_digest,
                     "BANODOCO_LOCAL_DATA_ROOT": str(self.data_root),
                     "BANODOCO_RUNTIME_ENDPOINT": str(self.daemon.endpoint),
                     "BANODOCO_RUNTIME_CREDENTIAL": str(self.daemon.credential_path),
@@ -1153,7 +1196,10 @@ class H3CpuRuntime:
             "sha256": source_record["sha256"],
             "size": source_record["size"],
             "generated_seconds": (
-                float(request["output"]["duration"]) - float(request["source"]["range"][1])
+                plan_continuation(
+                    source_end=float(request["source"]["range"][1]),
+                    output_duration=float(request["output"]["duration"]),
+                ).expected_graph_output_duration
                 if int(request.get("version", 0)) == 1 else 13
             ),
         }))

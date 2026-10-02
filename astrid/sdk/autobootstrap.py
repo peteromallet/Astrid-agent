@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import math
 import os
 import shutil
@@ -423,6 +425,154 @@ def _connection_failure_is_recoverable(exc: AutoBootstrapError) -> bool:
     )
 
 
+def _nested_handoff_from_environment() -> Mapping[str, Any] | None:
+    """Load only a complete host-issued handoff whose issuer is an ancestor."""
+    from astrid.sdk.host_bootstrap import (
+        NESTED_HANDOFF_HASH_ENV,
+        NESTED_HANDOFF_PATH_ENV,
+    )
+
+    raw_path = os.environ.get(NESTED_HANDOFF_PATH_ENV)
+    raw_hash = os.environ.get(NESTED_HANDOFF_HASH_ENV)
+    if raw_path is None and raw_hash is None:
+        if os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1":
+            raise AutoBootstrapError(
+                "internal runtime acquisition requires a validated host handoff",
+                code="nested_handoff_missing",
+            )
+        return None
+    if not raw_path or not raw_hash:
+        raise AutoBootstrapError("nested runtime handoff is partial", code="nested_handoff_invalid")
+    path = Path(raw_path)
+    try:
+        metadata = path.lstat()
+        if (not path.is_absolute() or path.is_symlink() or not path.is_file()
+                or metadata.st_mode & 0o777 != 0o600):
+            raise OSError("handoff must be an absolute owner-only regular file")
+        payload = path.read_bytes()
+        observed = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if not hmac.compare_digest(observed, raw_hash):
+            raise OSError("handoff bytes do not match their host-issued hash")
+        value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise OSError("handoff payload must be an object")
+        required = (
+            "schema_version", "attempt_id", "support_root", "endpoint", "executor_id",
+            "runtime_instance_id", "runtime_epoch", "schema_digest", "issuer_pid",
+            "issuer_birth_id", "ready_file", "source_checkout", "source_checkout_digest",
+            "source_inventory_identity", "boot_manifest_path", "boot_manifest_hash",
+            "readiness_profile_path", "readiness_profile_hash",
+            "vibecomfy_execution_attestation", "effective_capacity", "python_executable",
+        )
+        if value.get("schema_version") != 1 or any(key not in value for key in required):
+            raise OSError("handoff schema or required identity is incomplete")
+        for field in ("support_root", "ready_file", "source_checkout", "boot_manifest_path", "python_executable"):
+            item = value.get(field)
+            if not isinstance(item, str) or not Path(item).is_absolute():
+                raise OSError(f"handoff {field} must be an absolute path")
+        if value.get("readiness_profile_path") is not None and (
+            not isinstance(value.get("readiness_profile_path"), str)
+            or not Path(str(value["readiness_profile_path"])).is_absolute()
+        ):
+            raise OSError("handoff readiness profile path must be absolute or null")
+        issuer = value.get("issuer_pid")
+        birth = value.get("issuer_birth_id")
+        if isinstance(issuer, bool) or not isinstance(issuer, int) or issuer <= 1 or not isinstance(birth, str) or not birth:
+            raise OSError("handoff issuer identity is invalid")
+        from astrid.core.execution.process_group import _process_snapshot
+
+        census = _process_snapshot()
+        current = os.getpid()
+        seen: set[int] = set()
+        ancestor = False
+        while current in census and current not in seen:
+            seen.add(current)
+            info = census[current]
+            if info.pid == issuer and hmac.compare_digest(info.birth, birth):
+                ancestor = True
+                break
+            current = info.ppid
+        if not ancestor:
+            raise OSError("handoff issuer is not a live process ancestor")
+        return dict(value)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise AutoBootstrapError("nested runtime handoff is invalid or stale", code="nested_handoff_invalid") from exc
+
+
+def _live_runtime_identity(connection: Mapping[str, Any]) -> dict[str, Any]:
+    """Read canonical runtime identity from health for a selected connection."""
+    from astrid.sdk.workspace_client import (
+        PROTOCOL,
+        SCHEMA_DIGEST,
+        WorkspaceClient,
+        _read_credential,
+    )
+
+    endpoint = connection.get("endpoint")
+    credential_file = connection.get("worker_credential_file")
+    if not isinstance(endpoint, str) or not isinstance(credential_file, str) or not credential_file:
+        raise AutoBootstrapError(
+            "neutral runtime connection has no explicit worker health credential",
+            code="runtime_identity_unavailable",
+        )
+    try:
+        from astrid.sdk.workspace_client import _safe_local_path, validate_runtime_endpoint
+
+        endpoint = validate_runtime_endpoint(endpoint)
+        credential_path = _safe_local_path(credential_file, field="credential")
+        if credential_path.is_symlink() or not credential_path.is_file():
+            raise ValueError("credential file is not a regular file")
+        token = _read_credential(credential_path)
+        health = WorkspaceClient(endpoint, token).health()
+    except Exception as exc:
+        raise AutoBootstrapError(
+            "selected runtime health identity could not be verified",
+            code="runtime_identity_unavailable",
+        ) from exc
+    if isinstance(health, Mapping):
+        fields = health
+    else:
+        fields = {
+            name: getattr(health, name, None)
+            for name in (
+                "status", "protocol", "schema_digest", "runtime_epoch",
+                "runtime_instance_id", "runtime_session_id",
+            )
+        }
+    epoch = fields.get("runtime_epoch")
+    instance_id = fields.get("runtime_instance_id")
+    schema_digest = fields.get("schema_digest")
+    if (
+        fields.get("status") != "ok"
+        or fields.get("protocol") != PROTOCOL
+        or schema_digest != SCHEMA_DIGEST
+        or isinstance(epoch, bool)
+        or not isinstance(epoch, int)
+        or epoch < 1
+        or not isinstance(instance_id, str)
+        or not instance_id.strip()
+        or not isinstance(fields.get("runtime_session_id"), str)
+        or not fields["runtime_session_id"].strip()
+    ):
+        raise AutoBootstrapError(
+            "selected runtime health identity is incomplete or incompatible",
+            code="runtime_identity_invalid",
+        )
+    observed = {
+        "runtime_instance_id": instance_id,
+        "runtime_epoch": epoch,
+        "schema_digest": schema_digest,
+    }
+    for field, actual in observed.items():
+        asserted = connection.get(field)
+        if asserted is not None and asserted != actual:
+            raise AutoBootstrapError(
+                f"launcher connection {field} disagrees with live runtime health",
+                code="runtime_identity_mismatch",
+            )
+    return observed
+
+
 def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None = None) -> Mapping[str, Any]:
     """Invoke the installed launcher once and return its bounded result.
 
@@ -430,7 +580,8 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
     neutral runtime remains the authority for those reads; only execution
     needs the generic pack host to be registered and preflight-ready.
     """
-    manifest = _manifest_from_environment()
+    nested_handoff = _nested_handoff_from_environment()
+    manifest = None if nested_handoff is not None else _manifest_from_environment()
     explicit_data_root = data_root is not None
     try:
         from astrid.sdk.storage_root import ensure_no_unmigrated_runtime, resolve_runtime_data_root
@@ -438,7 +589,7 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
         data_root = (
             Path(data_root).expanduser().absolute()
             if explicit_data_root
-            else resolve_runtime_data_root()
+            else None if nested_handoff is not None else resolve_runtime_data_root()
         )
         if data_root is not None and not explicit_data_root:
             ensure_no_unmigrated_runtime(data_root)
@@ -452,6 +603,91 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
             f"Astrid runtime data-root is not ready: {exc}; {next_action}",
             next_action=next_action,
         ) from exc
+    if nested_handoff is not None and data_root is not None:
+        expected_support = (Path(data_root) / "runtime").resolve(strict=False)
+        raw_support = nested_handoff.get("support_root")
+        issued_support = Path(raw_support).resolve(strict=False) if isinstance(raw_support, str) else None
+        if issued_support is None or not Path(raw_support).is_absolute() or issued_support != expected_support:
+            raise AutoBootstrapError(
+                "nested runtime handoff belongs to a different support root",
+                code="nested_handoff_mismatch",
+            )
+    if nested_handoff is not None:
+        # Nested pack children are already inside the Runtime-owned host.
+        # They must not rediscover or launch the neutral CLI: on a remote
+        # worker there may be no ``banodoco-local`` executable at all, and a
+        # second launcher would create a competing authority.  The host's
+        # owner-only handoff is the complete connection contract.
+        worker_file = nested_handoff.get("worker_credential_file")
+        authority = nested_handoff.get("child_authority")
+        policy = nested_handoff.get("child_delegation")
+        worker_actor = nested_handoff.get("worker_actor")
+        if (
+            not isinstance(worker_file, str)
+            or not worker_file
+            or not isinstance(authority, str)
+            or not authority
+            or not isinstance(policy, Mapping)
+            or not isinstance(worker_actor, str)
+            or not worker_actor
+        ):
+            raise AutoBootstrapError(
+                "nested runtime handoff has no delegated child admission context",
+                code="nested_delegation_missing",
+            )
+        try:
+            from astrid.sdk.workspace_client import _safe_local_path
+
+            worker_path = _safe_local_path(worker_file, field="worker credential")
+            if (
+                worker_path.is_symlink()
+                or not worker_path.is_file()
+                or worker_path.stat().st_mode & 0o777 != 0o600
+            ):
+                raise ValueError("worker credential must be an owner-only regular file")
+        except Exception as exc:
+            raise AutoBootstrapError(
+                "nested runtime worker credential is unavailable",
+                code="nested_delegation_invalid",
+            ) from exc
+        connection = {
+            "endpoint": nested_handoff.get("endpoint"),
+            "worker_credential_file": str(worker_path),
+            "runtime_instance_id": nested_handoff.get("runtime_instance_id"),
+            "runtime_epoch": nested_handoff.get("runtime_epoch"),
+            "schema_digest": nested_handoff.get("schema_digest"),
+        }
+        live_identity = _live_runtime_identity(connection)
+        value = {**dict(nested_handoff), **live_identity}
+        from astrid.sdk.host_bootstrap import attach_pack_host
+
+        try:
+            attached = attach_pack_host(
+                nested_handoff,
+                {
+                    "endpoint": nested_handoff.get("endpoint"),
+                    **_live_runtime_identity(connection),
+                },
+            )
+        except Exception as exc:
+            raise AutoBootstrapError(
+                f"nested runtime attachment was rejected: {exc}",
+                code=str(getattr(exc, "code", "nested_attach_rejected")),
+                details={"terminal": True},
+            ) from exc
+        result = dict(value)
+        result.update(attached)
+        result.update(
+            {
+                "worker_credential_file": str(worker_path),
+                "worker_actor": worker_actor,
+                "worker_scopes": list(nested_handoff.get("worker_scopes") or ()),
+                "child_authority": authority,
+                "child_authority_expires_at": nested_handoff.get("child_authority_expires_at"),
+                "child_delegation": dict(policy),
+            }
+        )
+        return result
     launcher = _launcher_command()
     base = [*launcher, "up", "--profile", PROFILE]
     if manifest is not None:

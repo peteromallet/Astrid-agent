@@ -490,6 +490,72 @@ def test_input_bundle_contains_only_declared_source_refs_and_masks(tmp_path: Pat
         resolve_preparation_assets(preparation, bundle, tmp_path / "compile")
 
 
+@pytest.mark.parametrize("semantic_prefix", ["", "foreign_digest", "matching_digest"])
+def test_input_bundle_roundtrip_preserves_semantic_names_and_verified_assets(
+    tmp_path: Path, semantic_prefix: str,
+):
+    from astrid.packs.h3_av.src.compile import _write_asset_bundle
+
+    raw = _request().value
+    raw["references"] = [{"asset": "reference", "purpose": "appearance"}]
+    request = normalize_request(raw)
+    payloads = {"source": b"source", "reference": b"reference"}
+    prefix = {
+        "": "",
+        "foreign_digest": "0123456789abcdef-",
+        "matching_digest": hashlib.sha256(payloads["source"]).hexdigest()[:16] + "-",
+    }[semantic_prefix]
+    basename = prefix + "scene.mp4"
+    assets = {}
+    for binding, payload in payloads.items():
+        path = tmp_path / "original" / binding / basename
+        path.parent.mkdir(parents=True)
+        path.write_bytes(payload)
+        assets[binding] = str(path)
+
+    bundle = build_input_bundle(request, assets, tmp_path / "inputs.zip")
+    original = read_archive(bundle).manifest["assets"]
+    paths, identities = materialize_input_bundle(request, bundle, tmp_path / "attempt")
+    assert {Path(path).name for path in paths.values()} == {basename}
+    assert len({Path(path).parent for path in paths.values()}) == len(payloads)
+    assert identities == [
+        {"asset": row["binding"], "member": row["member"],
+         "sha256": row["sha256"], "size": row["size"],
+         "kind": "bundle_member", "status": "resolved"}
+        for row in original
+    ]
+    managed = tmp_path / "managed.zip"
+    managed_bindings = {"source": "source_video", "reference": "reference_0"}
+    _write_asset_bundle(managed, {
+        managed_bindings[binding]: Path(path) for binding, path in paths.items()
+    })
+    rebuilt = read_archive(managed)
+    by_binding = {row["binding"]: row for row in rebuilt.manifest["assets"]}
+    for row in original:
+        rebuilt_row = by_binding[managed_bindings[row["binding"]]]
+        assert {key: rebuilt_row[key] for key in ("member", "sha256", "size")} == {
+            key: row[key] for key in ("member", "sha256", "size")
+        }
+        assert rebuilt_row["lineage"]["filename"] == basename
+        assert rebuilt.members[rebuilt_row["member"]] == payloads[row["binding"]]
+
+
+@pytest.mark.parametrize("basename", ["scene.mp4", "0123456789abcdef-scene.mp4"])
+def test_input_bundle_preserves_members_without_the_verified_digest_prefix(tmp_path: Path, basename: str):
+    source = tmp_path / "scene.mp4"
+    source.write_bytes(b"source")
+    bundle = build_input_bundle(_request(), {"source": str(source)}, tmp_path / "inputs.zip")
+    manifest = read_archive(bundle).manifest
+    manifest["assets"][0]["member"] = f"assets/{basename}"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr(f"assets/{basename}", b"source")
+    paths, identities = materialize_input_bundle(_request(), bundle, tmp_path / "attempt")
+    assert Path(paths["source"]).name == basename
+    assert Path(paths["source"]).read_bytes() == b"source"
+    assert identities[0]["member"] == f"assets/{basename}"
+
+
 def test_missing_dependency_stops_transform_before_any_import_or_submission(tmp_path: Path, monkeypatch):
     from astrid.packs.h3_av.orchestrators.transform import run as transform
     from unittest.mock import Mock
@@ -518,7 +584,7 @@ def test_import_rejects_object_identity_different_from_uploaded_bytes(tmp_path: 
         _import_runtime_file(client, project="project", path=path, filename=path.name)
 
 
-@pytest.mark.parametrize("mutation", ["payload", "traversal", "undeclared"])
+@pytest.mark.parametrize("mutation", ["payload", "digest", "size", "traversal", "undeclared"])
 def test_input_bundle_rejects_tampering_before_materialization(tmp_path: Path, mutation: str):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
@@ -527,6 +593,10 @@ def test_input_bundle_rejects_tampering_before_materialization(tmp_path: Path, m
     manifest = resolved.manifest
     member = manifest["assets"][0]["member"]
     payload = b"changed" if mutation == "payload" else b"source"
+    if mutation == "digest":
+        manifest["assets"][0]["sha256"] = "0" * 64
+    if mutation == "size":
+        manifest["assets"][0]["size"] += 1
     if mutation == "traversal":
         member = "../escaped"
         manifest["assets"][0]["member"] = member

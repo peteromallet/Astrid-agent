@@ -11,6 +11,7 @@ import errno
 import ipaddress
 import json
 import os
+import re
 import stat
 import sys
 from dataclasses import asdict, is_dataclass
@@ -263,6 +264,7 @@ class WorkspaceClient:
                 "create_generation", "create_variant",
                 "list_capabilities", "register_capability", "claim_task", "register_executor",
                 "settle_attempt", "fail_attempt", "publish_timeline_render",
+                "issue_child_authority", "admit_delegated_task",
             }
             if operation not in operations:
                 raise ValueError(f"unknown generated workspace operation: {operation!r}")
@@ -785,6 +787,8 @@ class WorkspaceClient:
         required_facts: Mapping[str, Any] | None = None,
         execution_request: Mapping[str, Any] | None = None,
         child_delegation: Mapping[str, Any] | None = None,
+        stage: str | None = None,
+        input_refs: list[Mapping[str, Any]] | None = None,
     ) -> Any:
         """Admit one task through the Runtime-owned admission contract.
 
@@ -793,6 +797,11 @@ class WorkspaceClient:
         workspace.v1 Runtime has no such field or claim contract, so a target
         is never queued as an opaque spec hint.
         """
+        if stage is not None or input_refs is not None:
+            raise WorkspaceClientError(
+                400, "validation_error",
+                "staged child admission requires a delegated Runtime client",
+            )
         wire_spec = dict(spec or {})
         if execution_request is not None:
             from .execution_request import (
@@ -963,6 +972,36 @@ class WorkspaceClient:
         items, next_cursor = page
         return [[asdict(item) if is_dataclass(item) else item for item in items], next_cursor]
 
+    def issue_child_authority(
+        self,
+        attempt_id: str,
+        *,
+        lease_id: str,
+        fence: int,
+        runtime_epoch: int,
+    ) -> Any:
+        return self._call_generated(
+            "issue_child_authority",
+            attempt_id,
+            lease_id=lease_id,
+            fence=fence,
+            runtime_epoch=runtime_epoch,
+        )
+
+    def admit_delegated_task(
+        self,
+        *,
+        authority: str,
+        task: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> Any:
+        return self._call_generated(
+            "admit_delegated_task",
+            authority=authority,
+            task=task,
+            idempotency_key=idempotency_key,
+        )
+
     def register_capability(self, capability_id: str, definition_digest: str, *, required_resource_keys: list[str] | None = None, status: str = "ready", estimated_scratch_bytes: int = 0, estimated_output_bytes: int = 0, unavailable_reason: str | None = None, idempotency_key: str | None = None) -> Any:
         return self._call_generated("register_capability", capability_id, definition_digest, required_resource_keys=required_resource_keys, status=status, estimated_scratch_bytes=estimated_scratch_bytes, estimated_output_bytes=estimated_output_bytes, unavailable_reason=unavailable_reason, idempotency_key=idempotency_key)
 
@@ -1076,4 +1115,234 @@ class WorkspaceClient:
             config=config, registry=registry, render=render,
             idempotency_key=idempotency_key,
             **{key: value for key, value in (("slug", slug), ("name", name)) if value is not None},
+        )
+
+
+class DelegatedWorkspaceClient(WorkspaceClient):
+    """Runtime transport for one parent-attempt child authority.
+
+    This deliberately reuses the normal generated transport and object/media
+    readers, but replaces broad public task admission with the Runtime's
+    attempt-scoped delegated route. Capability discovery is the immutable
+    child policy carried in the host handoff; it never queries a wider catalog
+    with the worker token.
+    """
+
+    CHILD_SCOPES = (
+        "handshake",
+        "worker:execute",
+        "tasks:read",
+        "objects:read",
+        "objects:write",
+    )
+
+    def __init__(
+        self,
+        endpoint: str,
+        token: str,
+        *,
+        authority: str,
+        capability_rows: list[Mapping[str, Any]],
+        parent_context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(endpoint, token)
+        if not isinstance(authority, str) or not authority.strip():
+            raise ValueError("delegated Runtime authority must be non-empty")
+        self.child_authority = authority
+        self.child_authority_expires_at: str | None = None
+        if parent_context is None:
+            self._parent_context: dict[str, Any] | None = None
+        else:
+            required_parent = {
+                "attempt_id": parent_context.get("attempt_id"),
+                "lease_id": parent_context.get("lease_id"),
+                "fence": parent_context.get("fence"),
+                "runtime_epoch": parent_context.get("runtime_epoch"),
+            }
+            if (
+                not isinstance(required_parent["attempt_id"], str)
+                or not required_parent["attempt_id"]
+                or not isinstance(required_parent["lease_id"], str)
+                or not required_parent["lease_id"]
+                or isinstance(required_parent["fence"], bool)
+                or not isinstance(required_parent["fence"], int)
+                or required_parent["fence"] < 0
+                or isinstance(required_parent["runtime_epoch"], bool)
+                or not isinstance(required_parent["runtime_epoch"], int)
+                or required_parent["runtime_epoch"] < 1
+            ):
+                raise ValueError("delegated parent lease context is incomplete")
+            self._parent_context = required_parent
+        normalized_rows: list[dict[str, Any]] = []
+        for raw_row in capability_rows:
+            if not isinstance(raw_row, Mapping):
+                raise ValueError("delegated capability policy row must be an object")
+            capability_id = raw_row.get("capability_id")
+            if not isinstance(capability_id, str) or not capability_id.strip():
+                raise ValueError("delegated capability policy row has no capability_id")
+            policy_digest = raw_row.get("capability_digest")
+            catalog_digest = raw_row.get("definition_digest")
+            if policy_digest is not None and catalog_digest is not None and policy_digest != catalog_digest:
+                raise ValueError(
+                    f"delegated capability {capability_id!r} has conflicting digests"
+                )
+            digest = policy_digest if policy_digest is not None else catalog_digest
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+            ):
+                raise ValueError(
+                    f"delegated capability {capability_id!r} has an invalid digest"
+                )
+            # The Runtime handoff calls this field capability_digest because it
+            # is a signed child-policy assertion.  RemoteTasks.create() consumes
+            # the catalog spelling definition_digest.  Project the signed row
+            # once at this boundary; never broaden discovery to the public
+            # catalog or invent a fallback digest.
+            normalized_rows.append({
+                "capability_id": capability_id,
+                "definition_digest": digest,
+            })
+        self._delegated_capability_rows = tuple(normalized_rows)
+
+    def _refresh_child_authority(self) -> None:
+        """Refresh authority against the live parent lease immediately before admission."""
+        if self._parent_context is None:
+            return
+        value = self._call_generated(
+            "issue_child_authority",
+            self._parent_context["attempt_id"],
+            lease_id=self._parent_context["lease_id"],
+            fence=self._parent_context["fence"],
+            runtime_epoch=self._parent_context["runtime_epoch"],
+        )
+        if not isinstance(value, Mapping) or not isinstance(value.get("authority"), str) or not value["authority"]:
+            raise WorkspaceClientError(
+                0,
+                "protocol_error",
+                "Runtime child-authority refresh returned no authority",
+            )
+        self.child_authority = str(value["authority"])
+        expires_at = value.get("expires_at")
+        self.child_authority_expires_at = str(expires_at) if isinstance(expires_at, str) else None
+
+    @staticmethod
+    def _authority_is_stale(error: WorkspaceClientError) -> bool:
+        return (
+            error.code == "unauthorized"
+            and "child authority" in error.message.lower()
+        )
+
+    def _admit_delegated_task_with_refresh(
+        self,
+        *,
+        task: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> Any:
+        # Runtime deliberately invalidates an authority whenever the parent
+        # lease is heartbeated. Refresh immediately before every child
+        # admission, then retry exactly once if a heartbeat races the wire
+        # request. The task and idempotency key are unchanged.
+        self._refresh_child_authority()
+        try:
+            return self.admit_delegated_task(
+                authority=self.child_authority,
+                task=task,
+                idempotency_key=idempotency_key,
+            )
+        except WorkspaceClientError as exc:
+            if self._parent_context is None or not self._authority_is_stale(exc):
+                raise
+            self._refresh_child_authority()
+            return self.admit_delegated_task(
+                authority=self.child_authority,
+                task=task,
+                idempotency_key=idempotency_key,
+            )
+
+    def list_capabilities(self, *, cursor: str | None = None, limit: int = 50) -> Any:
+        if cursor not in (None, ""):
+            return [[], None]
+        return [list(self._delegated_capability_rows)[: int(limit)], None]
+
+    def admit_task(
+        self,
+        *,
+        capability_id: str,
+        capability_digest: str,
+        input_object_ids: list[str],
+        idempotency_key: str,
+        schema_version: str = "1",
+        settlement_effect: Mapping[str, Any] | None = None,
+        project_id: str | None = None,
+        spec: Mapping[str, Any] | None = None,
+        generation_intent: Mapping[str, Any] | None = None,
+        storage_estimate: Mapping[str, int] | None = None,
+        required_facts: Mapping[str, Any] | None = None,
+        execution_request: Mapping[str, Any] | None = None,
+        stage: str | None = None,
+        input_refs: list[Mapping[str, Any]] | None = None,
+    ) -> Any:
+        del project_id  # Runtime derives the child project from the parent.
+        from .execution_request import (
+            merge_execution_input_manifest,
+            merge_execution_request_inputs,
+            normalize_execution_request,
+            reject_caller_execution_binding,
+            require_targeted_execution_binding_support,
+        )
+
+        wire_spec = dict(spec or {})
+        if execution_request is not None:
+            reject_caller_execution_binding(execution_request, wire_spec)
+            normalized = normalize_execution_request(execution_request)
+            if normalized is None:
+                raise ValueError("execution_request must not normalize to null")
+            require_targeted_execution_binding_support(self)
+            if stage is None:
+                wire_spec = merge_execution_request_inputs(normalized, wire_spec)
+                input_object_ids = merge_execution_input_manifest(normalized, input_object_ids)
+            else:
+                # A staged child receives its effective inputs from Runtime's
+                # declared lineage refs.  Passing the caller's ordinary
+                # manifest here would let the child bypass that ordered
+                # resolution and is rejected by the delegated admission
+                # contract. Keep only target/lifecycle fields in the request.
+                normalized = {
+                    key: value for key, value in normalized.items()
+                    if key != "inputs"
+                }
+        else:
+            reject_caller_execution_binding(None, wire_spec)
+            normalized = None
+
+        task: dict[str, Any] = {
+            "capability_id": capability_id,
+            "capability_digest": capability_digest,
+            "schema_version": schema_version,
+            "spec": wire_spec,
+        }
+        if stage is None:
+            task["input_object_ids"] = list(input_object_ids)
+        else:
+            if input_refs is None:
+                raise ValueError("staged delegated child requires input_refs")
+            task["stage"] = stage
+            task["input_refs"] = [dict(ref) for ref in input_refs]
+        # Publication is a Runtime-owned property of the parent's declared
+        # final stage. A child cannot smuggle an effect through the delegated
+        # route, so intentionally do not forward settlement_effect here.
+        if generation_intent is not None:
+            task["generation_intent"] = dict(generation_intent)
+        if storage_estimate is not None:
+            task["storage_estimate"] = dict(storage_estimate)
+        if required_facts is not None:
+            task["required_facts"] = dict(required_facts)
+        if normalized is not None:
+            task["execution_request"] = dict(normalized)
+        if input_refs is not None and stage is None:
+            task["input_refs"] = [dict(ref) for ref in input_refs]
+        return self._admit_delegated_task_with_refresh(
+            task=task,
+            idempotency_key=idempotency_key,
         )

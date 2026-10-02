@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import types
+import json
 from pathlib import Path
 from typing import Any
 
@@ -218,6 +219,32 @@ def test_command_orchestrator_preserves_declared_passthrough_env(
 
     assert result.returncode == 0
     assert out_file.read_text(encoding="utf-8") == "from-parent"
+
+
+def test_command_orchestrator_preserves_nested_runtime_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ASTRID_NESTED_RUNTIME_HANDOFF_PATH", "/private/attempt/handoff.json")
+    monkeypatch.setenv("ASTRID_NESTED_RUNTIME_HANDOFF_HASH", "sha256:" + "a" * 64)
+    out_file = tmp_path / "nested-handoff.json"
+    script = (
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "keys = ('ASTRID_NESTED_RUNTIME_HANDOFF_PATH', 'ASTRID_NESTED_RUNTIME_HANDOFF_HASH')\n"
+        "Path(sys.argv[1]).write_text(json.dumps({key: os.environ.get(key) for key in keys}), encoding='utf-8')\n"
+    )
+    orch = _command_orchestrator(
+        argv=(sys.executable, "-c", script, str(out_file)),
+    )
+    registry = _registry(orch)
+
+    result = run_orchestrator(OrchestratorRunRequest(orchestrator_id=orch.id, out=tmp_path), registry)
+
+    assert result.returncode == 0
+    assert json.loads(out_file.read_text(encoding="utf-8")) == {
+        "ASTRID_NESTED_RUNTIME_HANDOFF_PATH": "/private/attempt/handoff.json",
+        "ASTRID_NESTED_RUNTIME_HANDOFF_HASH": "sha256:" + "a" * 64,
+    }
 
 
 def test_command_orchestrator_does_not_spread_undeclared_host_env(

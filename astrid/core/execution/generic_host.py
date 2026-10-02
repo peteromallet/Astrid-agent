@@ -46,11 +46,19 @@ from astrid.core.contracts.binding import (
     expand_command,
 )
 from astrid.core.contracts.errors import AstridError
+from astrid.core.contracts.generation_publication import (
+    GenerationPublicationError,
+    resolve_generation_publication,
+)
 from astrid.core.env_vars import (
     ASTRID_INTERNAL_INVOCATION,
     ASTRID_PACKS_PATH,
 )
 from astrid.core.execution.capability_ledger import load_capability_ledger
+from astrid.core.execution.host_lane_policy import (
+    CANONICAL_PACK_HOST_MAX_CONCURRENCY,
+    effective_host_capacity,
+)
 from astrid.core.execution.guards import (
     EvidenceCapError,
     ExecutionGuardError,
@@ -160,6 +168,10 @@ _ACTIVATION_RECEIPT_VERSION = "runtime.local-worker-activation-recorded/v1"
 _ACTIVATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTIVATION_FRAME_LIMIT = 64 * 1024
 
+ORCHESTRATION_RESOURCE_KEY = "astrid-orchestration"
+_LANE_EXECUTOR = "executor"
+_LANE_ORCHESTRATION = "orchestration"
+
 _SETTLEMENT_OUTPUT_METADATA_FIELDS = (
     "role",
     "is_primary",
@@ -234,6 +246,17 @@ def _runtime_output_filename(value: str) -> str:
     raise HostError("generated output has an invalid managed filename")
 
 
+def _host_generation_publication(definition: Any) -> Any | None:
+    """Preserve main's legacy UI annotation while validating explicit contracts."""
+    metadata = getattr(definition, "metadata", {})
+    declaration = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None
+    if isinstance(declaration, Mapping) and set(declaration) == {"modality", "variant_of", "primary"}:
+        # These predate the versioned output-port contract and carry no
+        # publication authority. Existing port inference remains authoritative.
+        return None
+    return resolve_generation_publication(definition, capability_type="executor")
+
+
 def _generation_output_port(record: Any, intent: Mapping[str, Any] | None) -> str | None:
     """Resolve the primary generated output port from the admitted schema."""
     if not isinstance(intent, Mapping):
@@ -241,6 +264,17 @@ def _generation_output_port(record: Any, intent: Mapping[str, Any] | None) -> st
     modality = intent.get("modality")
     if modality not in {"image", "video", "audio"}:
         return None
+    try:
+        declared_publication = _host_generation_publication(getattr(record, "definition", None))
+    except GenerationPublicationError as exc:
+        raise HostError(str(exc)) from exc
+    if declared_publication is not None:
+        if declared_publication.modality != modality:
+            raise HostError(
+                "generation publication declaration modality does not match intent"
+            )
+        return declared_publication.output_port
+
     expected = {"image": "generated_images", "video": "generated_videos", "audio": "generated_audio"}[modality]
     candidates = [
         output.name for output in (getattr(getattr(record, "definition", None), "outputs", ()) or ())
@@ -1263,6 +1297,13 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _ack_field(value: Any, name: str) -> Any:
+    """Read a registration acknowledgement field without repr parsing."""
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
 def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
     _signal_owned_group(process, sig)
     return
@@ -1539,13 +1580,22 @@ def _network_sandbox_argv(argv: list[str], attempt: Path, endpoint: str | None) 
 
 def _native_network_command(record: "CapabilityRecord") -> bool:
     """Whether a network-required manifest escapes Python hook observability."""
-    if record.definition.command is None:
+    command = _record_command(record)
+    if command is None:
         return False
     metadata = record.definition.metadata
     if bool(metadata.get("native")) or str(metadata.get("execution_kind", "")).lower() == "native":
         return True
-    first = str(record.definition.command.argv[0] if record.definition.command.argv else "").lower()
+    first = str(command.argv[0] if command.argv else "").lower()
     return first not in {"{python_exec}", sys.executable.lower(), "python", "python3"} and not first.endswith("/python") and not first.endswith("/python3")
+
+
+def _record_command(record: "CapabilityRecord") -> Any | None:
+    """Return the dispatch command for either an executor or orchestrator."""
+    if record.capability_kind == "orchestrator":
+        runtime = getattr(record.definition, "runtime", None)
+        return getattr(runtime, "command", None)
+    return getattr(record.definition, "command", None)
 
 
 def _enforceable_network_gateway(policy: Mapping[str, Any] | None) -> bool:
@@ -2381,7 +2431,7 @@ def _attach_pack_metadata(definition: "ExecutorDefinition", executor_root: Path)
 
 @dataclass(frozen=True)
 class CapabilityRecord:
-    definition: ExecutorDefinition
+    definition: Any
     capability_digest: str
     source_digest: str
     source_root: Path
@@ -2390,6 +2440,7 @@ class CapabilityRecord:
     preflight: Mapping[str, Any] = field(default_factory=dict)
     ready: bool = False
     matrix: Mapping[str, Any] = field(default_factory=dict)
+    capability_kind: str = "executor"
 
     @property
     def id(self) -> str:
@@ -2402,11 +2453,17 @@ class CapabilityRecord:
         if isinstance(values, str):
             values = (values,)
         declared = tuple(str(value) for value in (values or ()))
-        adapter = AdapterRegistry.from_matrix(self.definition, self.matrix)
+        adapter = self.adapter
         return tuple(dict.fromkeys((*adapter.resource_keys, *declared)))
 
     @property
     def adapter(self) -> AdapterSpec:
+        # An orchestrator's ``isolation.network`` describes the child
+        # Runtime/SDK boundary it coordinates; it is not provider egress.
+        # Keep that public task path on the local CPU adapter, but give it a
+        # distinct coordination reservation so it can admit child executors.
+        if self.capability_kind == "orchestrator":
+            return AdapterSpec("cpu", (ORCHESTRATION_RESOURCE_KEY,))
         return AdapterRegistry.from_matrix(self.definition, self.matrix)
 
     @property
@@ -2421,6 +2478,7 @@ class CapabilityRecord:
         source_roots = _admitted_source_roots(self.source_root, self.definition)
         return {
             "id": self.id,
+            "capability_kind": self.capability_kind,
             "definition": self.definition.to_dict(),
             "inputs": [port.__dict__ for port in self.definition.inputs],
             "outputs": [output.__dict__ for output in self.definition.outputs],
@@ -3018,6 +3076,7 @@ class GenericPackHost:
         boot_manifest_path: str | Path | None = None,
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
+        require_capacity_ack: bool = False,
     ):
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
@@ -3030,6 +3089,8 @@ class GenericPackHost:
         self.client = client
         self.executor_id = executor_id
         self.max_concurrency = max(1, int(max_concurrency))
+        self._requested_max_concurrency = self.max_concurrency
+        self.require_capacity_ack = bool(require_capacity_ack)
         if attempt_root is not None and attempt_base is not None:
             raise ValueError("attempt_root and attempt_base are mutually exclusive")
         self.attempt_root = Path(attempt_root).expanduser().resolve() if attempt_root else None
@@ -3083,6 +3144,11 @@ class GenericPackHost:
         )
 
         self._active_processes: set[subprocess.Popen] = set()
+        # Coordination owns subprocesses, never a second native engine manager.
+        self._orchestration_processes: set[subprocess.Popen] = set()
+        self._lane_local = threading.local()
+        self._lane_locks = {name: threading.Lock() for name in (_LANE_EXECUTOR, _LANE_ORCHESTRATION)}
+        self._parallel_enabled = False
         self._process_lock = threading.RLock()
         self._shutdown = threading.Event()
         # An unregistered host must retain the existing claim-loop failure
@@ -3133,7 +3199,8 @@ class GenericPackHost:
 
     def _track_process(self, process: subprocess.Popen) -> None:
         with self._process_lock:
-            self._active_processes.add(process)
+            processes = self._orchestration_processes if getattr(self._lane_local, "name", None) == _LANE_ORCHESTRATION else self._active_processes
+            processes.add(process)
         # A signal can arrive between Popen and registration in the set.  Do
         # not let that small window leave an owned child running after host
         # shutdown has begun.
@@ -3143,6 +3210,7 @@ class GenericPackHost:
     def _untrack_process(self, process: subprocess.Popen) -> None:
         with self._process_lock:
             self._active_processes.discard(process)
+            self._orchestration_processes.discard(process)
 
     def prepare_wan_session(
         self, *, owner_dir: str | Path, root: str | Path, python: str | Path,
@@ -3241,7 +3309,7 @@ class GenericPackHost:
         self._shutdown.set()
         self.managed_tool_session.close(reason="host_shutdown")
         with self._process_lock:
-            active = tuple(self._active_processes)
+            active = tuple(self._active_processes | self._orchestration_processes)
         for process in active:
             try:
                 _terminate_process_group(process, grace_seconds=1.0)
@@ -3332,6 +3400,12 @@ class GenericPackHost:
                     continue
                 definition = _attach_pack_metadata(definition, executor_root)
                 definition = _bind_vibecomfy_execution_attestation(definition)
+                try:
+                    _host_generation_publication(definition)
+                except GenerationPublicationError as exc:
+                    raise HostError(
+                        f"invalid generation_publication declaration for {definition.id!r}: {exc}"
+                    ) from exc
                 manifest = next((executor_root / name for name in ("executor.yaml", "executor.yml", "executor.json") if (executor_root / name).is_file()), None)
                 matrix_entry = self.matrix.get(definition.id, {})
                 source_roots = _admitted_source_roots(executor_root, definition)
@@ -3359,7 +3433,53 @@ class GenericPackHost:
             key: CapabilityRecord(**{**record.__dict__, "dependency_digest": _dependency_digest(record.definition, records)})
             for key, record in records.items()
         }
+        # Orchestrators are public task capabilities too.  Keep them in the
+        # same host registration and admission census as executors, while
+        # leaving the executor capability matrix authoritative for executor
+        # rows only.
+        from astrid.core.execution.orchestrator.folder import (
+            discover_folder_orchestrator_roots,
+            load_folder_orchestrator,
+        )
+
+        for root in self.pack_roots:
+            for orchestrator_root in discover_folder_orchestrator_roots(root):
+                try:
+                    definition = load_folder_orchestrator(orchestrator_root)
+                except (OSError, ValueError):
+                    continue
+                definition = _attach_pack_metadata(definition, orchestrator_root)
+                source_roots = _admitted_source_roots(orchestrator_root, definition)
+                records[definition.id] = CapabilityRecord(
+                    definition=definition,
+                    capability_digest=_capability_digest(definition.to_dict()),
+                    source_digest=_source_digest_for_roots(source_roots),
+                    source_root=orchestrator_root,
+                    manifest_path=next((orchestrator_root / name for name in ("orchestrator.yaml", "orchestrator.yml", "orchestrator.json") if (orchestrator_root / name).is_file()), None),
+                    matrix={},
+                    capability_kind="orchestrator",
+                )
+        # Resolve child identities after every orchestrator is known, so folder
+        # ordering cannot silently omit a declared child orchestrator.
+        records = {
+            key: replace(record, dependency_digest=_canonical_digest({
+                "children": {
+                    child: records[child].capability_digest if child in records else None
+                    for child in (*record.definition.child_executors, *record.definition.child_orchestrators)
+                },
+                "requirements": sorted(str(value) for value in (record.definition.isolation.requirements or ())),
+            })) if record.capability_kind == "orchestrator" else record
+            for key, record in records.items()
+        }
         self.capabilities = records
+        self._parallel_enabled = bool(
+            self._requested_max_concurrency >= 2
+            and any(record.capability_kind == "orchestrator" for record in records.values())
+        )
+        if self._parallel_enabled and self.attempt_root is not None:
+            raise HostError("parallel host lanes require attempt_base, not a shared attempt_root")
+        # Advertise actual bounded execution capacity, including serial hosts.
+        self.max_concurrency = 2 if self._parallel_enabled else 1
         root = self.pack_roots[0] if self.pack_roots else Path.cwd()
         self.source_epoch = _canonical_digest({
             "vcs_revision": _vcs_revision(root),
@@ -3560,7 +3680,11 @@ class GenericPackHost:
             self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
             self._registered_state = state
             self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
-            return {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed}
+            capacity = effective_host_capacity(
+                self.max_concurrency,
+                parallel_lanes_enabled=self._parallel_enabled,
+            )
+            return {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed, "effective_capacity": capacity}
         # Publish capability admission metadata before advertising the executor.
         # A real runtime must be able to validate a task against the exact
         # definition digest/source-derived readiness before it can claim work.
@@ -3615,6 +3739,31 @@ class GenericPackHost:
             registration = self.client.register_executor(
                 self.executor_id, **registration_kwargs
             )
+            acknowledged_capacity = _ack_field(registration, "max_concurrency")
+            acknowledged_resources = _ack_field(registration, "resource_keys")
+            if self.require_capacity_ack and (
+                isinstance(acknowledged_capacity, bool)
+                or not isinstance(acknowledged_capacity, int)
+                or acknowledged_capacity != self.max_concurrency
+                or not isinstance(acknowledged_resources, (list, tuple))
+                or sorted(set(acknowledged_resources)) != all_keys
+            ):
+                raise HostRegistrationError(
+                    "Runtime executor registration acknowledgement does not match effective host capacity/resources",
+                    code="executor_capacity_ack_mismatch",
+                )
+            effective_capacity = effective_host_capacity(
+                acknowledged_capacity
+                if isinstance(acknowledged_capacity, int)
+                and not isinstance(acknowledged_capacity, bool)
+                else self.max_concurrency,
+                parallel_lanes_enabled=self._parallel_enabled,
+                resource_keys=(
+                    acknowledged_resources
+                    if isinstance(acknowledged_resources, (list, tuple))
+                    else all_keys
+                ),
+            )
             # Removed capabilities cannot be expressed by the current
             # executor-registration payload.  Withdraw them only after the
             # replacement executor state is committed, so failure is
@@ -3643,7 +3792,7 @@ class GenericPackHost:
         self._registered_state = state
         self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
         self._registration_refresh_deadline = time.monotonic() + _EXECUTOR_REFRESH_SECONDS
-        return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
+        return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed, "effective_capacity": effective_capacity}
 
     def _renew_executor_registration(self) -> None:
         """Refresh runtime executor liveness without replaying a receipt."""
@@ -3707,6 +3856,8 @@ class GenericPackHost:
             "schema_digest": getattr(health, "schema_digest", None),
             "runtime_epoch": getattr(health, "runtime_epoch", None),
             "runtime_session_id": getattr(health, "runtime_session_id", None),
+            "runtime_instance_id": getattr(health, "runtime_instance_id", None) or getattr(health, "instance_id", None),
+            "coordinator_epoch": getattr(health, "coordinator_epoch", None),
         }
         actual_protocol = str(value.get("protocol", ""))
         actual_schema = str(value.get("schema_digest", ""))
@@ -5025,7 +5176,7 @@ class GenericPackHost:
         Built-in pipeline steps and command capabilities are both runnable from
         an attempt directory alone.
         """
-        command = record.definition.command
+        command = _record_command(record)
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
         attempt_output_root = (attempt / "outputs").resolve()
@@ -5341,6 +5492,13 @@ class GenericPackHost:
             explicit_env={ASTRID_INTERNAL_INVOCATION: "1"},
         ))
         env[ASTRID_INTERNAL_INVOCATION] = "1"
+        if nested_handoff_path is not None and nested_handoff_hash is not None:
+            from astrid.sdk.host_bootstrap import NESTED_HANDOFF_HASH_ENV, NESTED_HANDOFF_PATH_ENV
+
+            # These names are reserved to the supervising host. Manifest and
+            # project env cannot replace the host-issued attempt reference.
+            env[NESTED_HANDOFF_PATH_ENV] = str(nested_handoff_path)
+            env[NESTED_HANDOFF_HASH_ENV] = nested_handoff_hash
         # The attempt directory is the child cwd; the host worker itself uses
         # this checkout, while external source-pack imports use only the
         # explicitly admitted import parents validated against source roots.
@@ -5642,6 +5800,35 @@ class GenericPackHost:
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
     ) -> Mapping[str, Any]:
+        """Serialize each lane without borrowing the native manager for parents."""
+        task_data = task.get("task", task)
+        if str(task_data.get("capability")) not in self.capabilities:
+            self.discover()
+        record = self.capabilities.get(str(task_data.get("capability")))
+        lane = _LANE_ORCHESTRATION if record is not None and record.capability_kind == "orchestrator" else _LANE_EXECUTOR
+        # Serial embedding keeps its original single-slot behavior.
+        lock_lane = lane if self._parallel_enabled else _LANE_EXECUTOR
+        with self._lane_locks[lock_lane]:
+            previous = getattr(self._lane_local, "name", _LANE_EXECUTOR)
+            self._lane_local.name = lane
+            try:
+                return self._run_task(
+                    task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                    keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                )
+            finally:
+                self._lane_local.name = previous
+
+    def _run_task(
+        self,
+        task: Mapping[str, Any],
+        *,
+        lease_token: str,
+        attempt_id: str | None = None,
+        fence: int | None = None,
+        keep_attempt: bool = False,
+        provider_route_grant: str | None = None,
+    ) -> Mapping[str, Any]:
         if self._cleanup_uncertain:
             raise HostError("generic host admissions are blocked by cleanup uncertainty")
         if self.client is None:
@@ -5747,6 +5934,22 @@ class GenericPackHost:
                         f"got {storage_estimate}"
                     )
             input_size_limits = _storage_input_limits(record.definition.metadata)
+            child_authority = None
+            child_delegation = None
+            if record.capability_kind == "orchestrator":
+                envelope = task_data.get("spec")
+                child_delegation = envelope.get("child_delegation") if isinstance(envelope, Mapping) else None
+                if not isinstance(child_delegation, Mapping):
+                    raise HostError(f"orchestrator capability {capability_id!r} is missing admitted child_delegation")
+                if not isinstance(self.nested_handoff_template, Mapping):
+                    raise HostError("orchestrator requires a runtime-authenticated nested host attachment")
+                if isinstance(claim_epoch, bool) or not isinstance(claim_epoch, int) or claim_epoch < 1:
+                    raise HostError("orchestrator requires a claimed runtime_epoch")
+                child_authority = self.client.issue_child_authority(
+                    attempt_id, lease_id=lease_token, fence=fence, runtime_epoch=claim_epoch,
+                )
+                if not isinstance(child_authority, Mapping) or not isinstance(child_authority.get("authority"), str) or not child_authority["authority"]:
+                    raise HostError("Runtime child-authority response is incomplete")
         except Exception as exc:
             fail_admission(exc)
         try:
@@ -5808,6 +6011,12 @@ class GenericPackHost:
             "network_nonce": secrets_module.token_urlsafe(24),
             "allowed_routes": list((_network_policy(record) or {}).get("allowed_routes", (_network_policy(record) or {}).get("allowed_destinations", ()))),
         }
+        if child_authority is not None:
+            network_admission.update(
+                child_authority=child_authority["authority"],
+                child_authority_expires_at=child_authority.get("expires_at"),
+                child_delegation=dict(child_delegation),
+            )
         cancel_signal = threading.Event()
         managed_adapter = _ManagedTaskAdapter(
             cancel_signal,
@@ -5867,8 +6076,9 @@ class GenericPackHost:
         execution_identity = ""
         model_id = "vibecomfy.run"
         template_id = "vibecomfy.run"
-        self._vibecomfy_current_warmth_hint = None
-        self._vibecomfy_requested_warmth_hint = None
+        if record.capability_kind == "executor":
+            self._vibecomfy_current_warmth_hint = None
+            self._vibecomfy_requested_warmth_hint = None
 
         def cancelled():
             nonlocal deadline_exceeded, evidence_cap_exceeded
@@ -6296,7 +6506,7 @@ class GenericPackHost:
                 )
                 managed_opened = True
                 self.managed_tool_session.observe(managed_binding)
-            else:
+            elif record.capability_kind == "executor":
                 self.managed_tool_session.open(
                     capability=managed_capability,
                     binding=managed_binding,
@@ -6304,10 +6514,11 @@ class GenericPackHost:
                 )
                 managed_opened = True
                 self.managed_tool_session.observe(managed_binding)
-            managed_token = self.managed_tool_session.admit(
-                capability_id=capability_id,
-                invocation_id=f"{task_id}:{attempt_id}:{fence}",
-            )
+            if record.capability_kind == "executor":
+                managed_token = self.managed_tool_session.admit(
+                    capability_id=capability_id,
+                    invocation_id=f"{task_id}:{attempt_id}:{fence}",
+                )
             if record.adapter.family == "provider" and record.definition.isolation.network:
                 policy = _network_policy(record)
                 descriptor = (policy or {}).get("broker", {})
@@ -6343,6 +6554,15 @@ class GenericPackHost:
                     handle_guard_abort()
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+                orchestrator_args: tuple[str, ...] = ()
+                if record.capability_kind == "orchestrator":
+                    admitted_spec = _admitted_task_spec(task_data)
+                    raw_orchestrator_args = admitted_spec.get("orchestrator_args", ())
+                    if not isinstance(raw_orchestrator_args, (list, tuple)) or any(
+                        not isinstance(value, str) for value in raw_orchestrator_args
+                    ):
+                        raise HostError("orchestrator_args must be a list of strings")
+                    orchestrator_args = tuple(raw_orchestrator_args)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -6355,7 +6575,7 @@ class GenericPackHost:
                     effective_output_root = getattr(result, "output_root", None)
                     if isinstance(effective_output_root, (str, Path)):
                         output_root = Path(effective_output_root).expanduser().resolve()
-                elif record.definition.command is not None:
+                elif record.capability_kind == "executor" and _record_command(record) is not None:
                     result = self._run_command_definition(
                         record,
                         inputs,
@@ -6393,19 +6613,47 @@ class GenericPackHost:
                     worker_admission = network_admission
                     worker_env, worker_secrets = self._child_environment(record, root, admission=worker_admission, network_broker=network_broker)
                     try:
+                        orchestrator_request = {
+                            "out": str(output_root),
+                            "inputs": inputs,
+                            "project": task_data.get("project_id"),
+                            "project_was_auto_resolved": True,
+                            "python_exec": sys.executable,
+                            "run_id": task_id,
+                            "run_root": str(root),
+                            "invocation": "runtime",
+                            **(
+                                {"orchestrator_args": orchestrator_args}
+                                if record.capability_kind == "orchestrator"
+                                else {}
+                            ),
+                        }
+                        if record.capability_kind == "orchestrator" and execution_contract is not None:
+                            declared_inputs = {
+                                str(port.name) for port in record.definition.inputs
+                            }
+                            if "execution_request" in declared_inputs:
+                                execution_request_path = (
+                                    root / "inputs" / "execution-request.json"
+                                ).resolve()
+                                execution_request_path.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )
+                                execution_request_path.write_text(
+                                    json.dumps(
+                                        execution_contract,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ),
+                                    encoding="utf-8",
+                                )
+                                orchestrator_request["execution_request"] = str(
+                                    execution_request_path
+                                )
                         result = self.invoke_capability(
-                            capability_kind="executor",
+                            capability_kind=record.capability_kind,
                             capability_id=capability_id,
-                            request={
-                                "out": str(output_root),
-                                "inputs": inputs,
-                                "project": task_data.get("project_id"),
-                                "project_was_auto_resolved": True,
-                                "python_exec": sys.executable,
-                                "run_id": task_id,
-                                "run_root": str(root),
-                                "invocation": "runtime",
-                            },
+                            request=orchestrator_request,
                             attempt=root,
                             cancelled=cancelled,
                             definition=record.definition.to_dict(),
@@ -6578,7 +6826,11 @@ class GenericPackHost:
                 payload["thumbnail_diagnostics"] = thumbnail_diagnostics
             network_evidence = self._network_evidence(
                 root,
-                admission=worker_admission if record.definition.command is None else network_admission,
+                admission=(
+                    worker_admission
+                    if record.capability_kind == "orchestrator" or _record_command(record) is None
+                    else network_admission
+                ),
                 # Provider egress requires host-owned signed broker evidence.
                 # A local-generation adapter may have ``isolation.network``
                 # solely because it talks to the host-owned Comfy daemon on
@@ -6640,19 +6892,20 @@ class GenericPackHost:
             # Re-observe the actual engine session after output custody and
             # immediately before consuming the manager token.  A session
             # restart or identity change cannot become a Runtime settlement.
-            self.managed_tool_session.observe(managed_binding)
-            managed_envelope = self.managed_tool_session.settle(
-                managed_token,
-                result_evidence={
-                    "token_id": managed_token.token_id,
-                    "invocation_id": managed_token.invocation_id,
-                    "generation": managed_token.generation,
-                    "binding_identity": list(managed_token.binding_identity),
-                    "outputs": outputs,
-                },
-            )
-            managed_settled = True
-            payload["managed_tool_session"] = managed_envelope.to_dict()
+            if record.capability_kind == "executor":
+                self.managed_tool_session.observe(managed_binding)
+                managed_envelope = self.managed_tool_session.settle(
+                    managed_token,
+                    result_evidence={
+                        "token_id": managed_token.token_id,
+                        "invocation_id": managed_token.invocation_id,
+                        "generation": managed_token.generation,
+                        "binding_identity": list(managed_token.binding_identity),
+                        "outputs": outputs,
+                    },
+                )
+                managed_settled = True
+                payload["managed_tool_session"] = managed_envelope.to_dict()
             settlement = self.client.settle(
                 task_id,
                 lease_token,
@@ -6849,7 +7102,7 @@ class GenericPackHost:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 
-    def claim_once(self) -> Mapping[str, Any] | None:
+    def claim_once(self, *, lane: str | None = None) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._cleanup_uncertain:
             raise HostError("generic host admissions are blocked by cleanup uncertainty")
@@ -6865,7 +7118,10 @@ class GenericPackHost:
         # an unavailable task only to fail it after lease acquisition.
         if not self.capabilities:
             self.discover()
-        ready_records = self.preflight()
+        if lane not in (None, _LANE_ORCHESTRATION, _LANE_EXECUTOR):
+            raise HostError(f"unsupported generic-host lane {lane!r}")
+        with self._registration_lock:
+            ready_records = self.preflight()
         try:
             self.execution_policy.assert_budget_available()
         except ExecutionGuardError as exc:
@@ -6874,6 +7130,7 @@ class GenericPackHost:
             record.id
             for record in ready_records
             if record.ready and not _is_withdrawn(record)
+            and (lane is None or record.capability_kind == ("orchestrator" if lane == _LANE_ORCHESTRATION else "executor"))
         )
         if not capability_ids:
             return None
@@ -6960,6 +7217,8 @@ class GenericPackHost:
 
         if task_data.get("id") not in (None, task_id):
             fail_claim_handoff("claimed task_id disagrees with task read")
+        if task_data.get("capability") not in capability_ids:
+            fail_claim_handoff("claimed capability is outside the requested host lane")
         claim_spec = claim_data.get("spec")
         read_spec = task_data.get("spec")
         missing_request = object()
@@ -7069,8 +7328,71 @@ class GenericPackHost:
             provider_route_grant=provider_route_grant,
         )
 
+    def _run_parallel_lanes(self, *, poll_seconds: float, max_tasks: int | None) -> list[Mapping[str, Any]]:
+        """Run serial coordination and execution loops under one supervisor.
+
+        A task limit stops new parents; admitted parents can finish their child
+        chain before shutdown. Runtime still owns every lease and reservation.
+        """
+        results: list[Mapping[str, Any]] = []
+        lock = threading.Lock()
+        stop = threading.Event()
+        parent_running = False
+
+        def worker(lane: str) -> None:
+            nonlocal parent_running
+            failures = 0
+            while not self._shutdown.is_set() and not stop.is_set():
+                with lock:
+                    limit_reached = max_tasks is not None and len(results) >= max_tasks
+                    if limit_reached and (lane == _LANE_ORCHESTRATION or not parent_running):
+                        if not parent_running:
+                            stop.set()
+                        break
+                    if lane == _LANE_ORCHESTRATION:
+                        parent_running = True
+                result = None
+                try:
+                    result = self.claim_once(lane=lane)
+                    failures = 0
+                except Exception as exc:
+                    failures += 1
+                    if failures == 1 or not failures & (failures - 1):
+                        print(f"generic host {lane} claim failed ({failures} consecutive): {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                finally:
+                    with lock:
+                        if lane == _LANE_ORCHESTRATION:
+                            parent_running = False
+                        if result is not None:
+                            results.append(result)
+                if result is None:
+                    delay = min(30.0, max(0.05, float(poll_seconds)) * 2 ** min(max(0, failures - 1), 10))
+                    stop.wait(delay)
+
+        threads = [threading.Thread(target=worker, args=(lane,), name=f"astrid-generic-host-{lane}", daemon=True) for lane in (_LANE_ORCHESTRATION, _LANE_EXECUTOR)]
+        for thread in threads:
+            thread.start()
+        try:
+            while any(thread.is_alive() for thread in threads):
+                if time.monotonic() >= self._registration_refresh_deadline:
+                    with self._registration_lock:
+                        if time.monotonic() >= self._registration_refresh_deadline:
+                            self._renew_executor_registration()
+                self._shutdown.wait(0.05)
+        except BaseException:
+            stop.set()
+            self.shutdown()
+            raise
+        finally:
+            stop.set()
+            for thread in threads:
+                thread.join(timeout=2.0)
+        return results
+
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
+        if self._parallel_enabled and not once:
+            return self._run_parallel_lanes(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
@@ -7409,6 +7731,12 @@ def _await_enabled_runtime_credential(
     raise HostError("activated Runtime credential was not enabled") from last_error
 
 
+def _effective_cli_max_concurrency(command: str, requested: int | None) -> int:
+    if requested is not None:
+        return max(1, min(CANONICAL_PACK_HOST_MAX_CONCURRENCY, int(requested)))
+    return CANONICAL_PACK_HOST_MAX_CONCURRENCY if command == "run" else 1
+
+
 def _cli() -> int:
 
     parser = argparse.ArgumentParser(prog="astrid-generic-host")
@@ -7417,7 +7745,7 @@ def _cli() -> int:
     parser.add_argument("--runtime-endpoint")
     parser.add_argument("--credential-file", help="owner-only file containing the worker bearer credential")
     parser.add_argument("--executor-id", default="astrid-pack-host")
-    parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--max-concurrency", type=int, default=None)
     parser.add_argument("--attempt-root")
     parser.add_argument("--attempt-base", help="host-owned base directory; allocate one isolated child per task attempt")
     parser.add_argument("--capability-matrix")
@@ -7442,6 +7770,7 @@ def _cli() -> int:
     parser.add_argument("--readiness-profile-path", help="Worker-published HC-03 readiness profile")
     parser.add_argument("--readiness-profile-hash", help="expected SHA-256 hash of the readiness profile")
     parser.add_argument("--execution-target-json", help="explicit target JSON used for claim binding")
+    parser.add_argument("--runtime-issued-target-json", help=argparse.SUPPRESS)
     parser.add_argument(
         "--require-target-attestation",
         action="store_true",
@@ -7454,6 +7783,7 @@ def _cli() -> int:
         "--activation-timeout-seconds", type=float, default=120.0, help=argparse.SUPPRESS
     )
     args = parser.parse_args()
+    args.max_concurrency = _effective_cli_max_concurrency(args.command, args.max_concurrency)
     if args.attempt_root and args.attempt_base:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     activation_values = (
@@ -7485,6 +7815,18 @@ def _cli() -> int:
     )
     if target_requested and args.activation_fd is None:
         parser.error("targeted execution requires Worker-supervised activation")
+    if args.runtime_issued_target_json is not None:
+        if target_requested:
+            parser.error("Runtime-issued target conflicts with an ambient targeted-launch selector")
+        try:
+            runtime_target = _configured_claim_target(args.runtime_issued_target_json)
+        except HostError as exc:
+            parser.error(str(exc))
+        if runtime_target is None:
+            parser.error("Runtime-issued target must be explicit")
+        os.environ["ASTRID_EXECUTION_TARGET_JSON"] = json.dumps(
+            runtime_target, sort_keys=True, separators=(",", ":")
+        )
     activation = None
     if args.activation_fd is not None:
         if not args.credential_file:
@@ -7621,6 +7963,7 @@ def _cli() -> int:
         client=client,
         executor_id=args.executor_id,
         max_concurrency=args.max_concurrency,
+        require_capacity_ack=args.command == "run",
         attempt_root=args.attempt_root,
         attempt_base=args.attempt_base,
         capability_matrix=args.capability_matrix,
@@ -7706,6 +8049,7 @@ def _cli() -> int:
             "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
             "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
             "registration": registration,
+            "effective_capacity": registration.get("effective_capacity") if isinstance(registration, Mapping) else None,
             "ready_file": str(ready_path),
             "credential_file": str(credential_path) if credential_path else None,
             "support_root": str(support_root) if support_root else None,
@@ -7769,6 +8113,7 @@ def _cli() -> int:
             "readiness_profile_path": ready_payload["readiness_profile_path"],
             "readiness_profile_hash": ready_payload["readiness_profile_hash"],
             "vibecomfy_execution_attestation": ready_payload["vibecomfy_execution_attestation"],
+            "effective_capacity": ready_payload["effective_capacity"],
             "python_executable": ready_payload["python_executable"],
             # The worker token remains a path reference, never a token value.
             # Nested children use it only with the Runtime-issued delegated

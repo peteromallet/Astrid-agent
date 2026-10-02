@@ -377,6 +377,8 @@ def _manifest_dry_run_result(
     brief: Path | str | None,
     python_exec: str | None,
     out: Path | str | None = None,
+    project: str | None = None,
+    execution_request: Mapping[str, Any] | None = None,
     orchestrator_args: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Build the stable no-side-effect preview envelope from a capability DTO."""
@@ -406,6 +408,8 @@ def _manifest_dry_run_result(
         brief=brief,
         python_exec=python_exec,
         out=out,
+        project=project,
+        execution_request=execution_request,
         orchestrator_args=orchestrator_args,
     )
     if capability.capability_type == "executor":
@@ -541,6 +545,8 @@ def _manifest_preview_command(
     brief: Path | str | None,
     python_exec: str | None,
     out: Path | str | None = None,
+    project: str | None = None,
+    execution_request: Mapping[str, Any] | None = None,
     orchestrator_args: tuple[str, ...] = (),
 ) -> list[str]:
     """Expand a manifest command through the same lossless contract as execution."""
@@ -554,6 +560,11 @@ def _manifest_preview_command(
     values.setdefault("brief", brief)
     values.setdefault("python_exec", python_exec or "python")
     values.setdefault("verbose", "false")
+    values.setdefault("project", project or "")
+    if execution_request is not None:
+        values["execution_request"] = json.dumps(execution_request, sort_keys=True, separators=(",", ":"))
+    else:
+        values.setdefault("execution_request", "")
     if out not in (None, ""):
         values["out"] = out
     elif isinstance(outputs, Mapping) and "out" in outputs:
@@ -1929,6 +1940,80 @@ def _validate_variant_controls(
         raise CapabilityValidationError("primary='promote' requires variant_of")
 
 
+def _h3_dynamic_child_delegation(
+    client: Any,
+    *,
+    project: str | None,
+    request_inputs: Mapping[str, Any],
+    execution_request: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Compile H3's child policy from the admitted request bytes.
+
+    The pack manifest may describe a conservative plan, but H3 v1 and v2
+    compile to different VibeComfy input contracts.  Admission must therefore
+    derive the policy from the exact managed request object, not from the
+    Runtime envelope schema or a static manifest hint.
+    """
+    def object_id(value: Any, name: str) -> str:
+        if not isinstance(value, Mapping):
+            raise CapabilityValidationError(f"h3_av.transform input {name!r} must be a managed descriptor")
+        declared = value.get("object_id")
+        digest = value.get("digest")
+        if declared is not None and digest is not None and declared != digest:
+            raise CapabilityValidationError(f"h3_av.transform input {name!r} has conflicting object identities")
+        result = declared or digest
+        if not isinstance(result, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", result):
+            raise CapabilityValidationError(f"h3_av.transform input {name!r} must carry a sha256 object identity")
+        return result
+
+    request_object_id = object_id(request_inputs.get("request"), "request")
+    bundle_object_id = object_id(request_inputs.get("input_bundle"), "input_bundle")
+    media = getattr(client, "media", None)
+    reader = getattr(media, "read_bytes", None)
+    if not callable(reader):
+        raise CapabilityPreconditionError("h3_av.transform admission requires the Runtime object reader")
+    try:
+        request_bytes = reader(request_object_id)
+    except Exception as exc:  # noqa: BLE001 - fail closed at admission
+        raise CapabilityPreconditionError(
+            "h3_av.transform request object could not be read during admission",
+            details={"object_id": request_object_id, "cause": _redact_message(str(exc))},
+        ) from exc
+    if not isinstance(request_bytes, bytes):
+        raise CapabilityPreconditionError("h3_av.transform request object reader returned non-bytes")
+    if hashlib.sha256(request_bytes).hexdigest() != request_object_id.removeprefix("sha256:"):
+        raise CapabilityValidationError("h3_av.transform request object failed its content digest check")
+    try:
+        raw_request = json.loads(request_bytes.decode("utf-8"))
+        from astrid.packs.h3_av.src.request import normalize_request
+        normalized = normalize_request(raw_request)
+    except Exception as exc:  # noqa: BLE001 - request contract is an admission boundary
+        raise CapabilityValidationError(
+            f"h3_av.transform request object is not a valid H3 request: {exc}"
+        ) from exc
+    request_schema = normalized.value.get("version")
+    if isinstance(request_schema, bool) or not isinstance(request_schema, int):
+        raise CapabilityValidationError("normalized H3 request has no supported integer version")
+    if request_schema == 2:
+        # Canonical v2 is media-shaped and deliberately has no v1
+        # ``operation`` field.  Its public transform dispatch is implicit.
+        operation = "transform"
+    else:
+        operation = normalized.value.get("operation")
+        if not isinstance(operation, str):
+            raise CapabilityValidationError("normalized H3 request has no supported operation")
+    target = execution_request.get("target") if isinstance(execution_request, Mapping) else None
+    from astrid.packs.h3_av.src.execution_contract import build_child_execution_contract
+    return build_child_execution_contract(
+        project_id=str(project or ""),
+        request_schema=request_schema,
+        request_object_id=request_object_id,
+        input_bundle_object_id=bundle_object_id,
+        operation=operation,
+        run_target=target if isinstance(target, Mapping) else None,
+    )
+
+
 def _kernel_invoke(
     capability: Any,
     *,
@@ -1949,6 +2034,9 @@ def _kernel_invoke(
     storage_estimate: Mapping[str, int] | None = None,
     registry: Any | None = None,
     _client: Any | None = None,
+    delegated_stage: str | None = None,
+    delegated_input_refs: list[Mapping[str, Any]] | None = None,
+    idempotency_key: str | None = None,
 ) -> tuple[str, str, str, Path | None, dict[str, Any], bool, Any]:
     """Admit an invocation through the runtime client and generic host.
 
@@ -2003,6 +2091,16 @@ def _kernel_invoke(
         spec = merge_execution_request_inputs(execution_request, spec)
     except ExecutionRequestError as exc:
         raise CapabilityValidationError(str(exc)) from exc
+    if str(capability.id) == "h3_av.transform":
+        spec["child_delegation"] = _h3_dynamic_child_delegation(
+            _client, project=project, request_inputs=spec["inputs"],
+            execution_request=execution_request,
+        )
+        spec["h3_transform_contract"] = {
+            "version": 2,
+            "python_execution_consent": "confirmed",
+            "vibecomfy_session_binding": "profile-attested-managed-session",
+        }
     if str(capability.id) == "vibecomfy.run":
         # Canonical sibling/source invocations use the same preflight as the
         # direct remote task route.  Convert request-owned descriptors into the
@@ -2275,6 +2373,12 @@ def _kernel_invoke(
             unique_manifest.append(normalized_id)
         input_manifest = unique_manifest
 
+    # The request's ordered CAS list is the parent H3 input authority. File
+    # ports are discovered in sorted name order above, which need not match it.
+    if str(capability.id) == "h3_av.transform" and execution_request is not None:
+        declared_ids = [item["object_id"] for item in execution_request.get("inputs", [])]
+        if set(declared_ids) == set(input_manifest):
+            input_manifest = declared_ids
     try:
         input_manifest = merge_execution_input_manifest(
             execution_request,
@@ -2315,6 +2419,12 @@ def _kernel_invoke(
         )
     if execution_request is not None:
         admission["execution_request"] = dict(execution_request)
+    if delegated_stage is not None:
+        admission["stage"] = delegated_stage
+    if delegated_input_refs is not None:
+        admission["input_refs"] = [dict(ref) for ref in delegated_input_refs]
+    if idempotency_key is not None:
+        admission["idempotency_key"] = idempotency_key
     result = create_task(**admission)
     result_ok = bool(getattr(result, "ok", isinstance(result, Mapping)))
     data = getattr(result, "data", result if isinstance(result, Mapping) else None)
@@ -2539,6 +2649,9 @@ def invoke(
     wait: bool = False,
     timeout_seconds: float = 3600.0,
     poll_seconds: float = 1.0,
+    delegated_stage: str | None = None,
+    delegated_input_refs: list[Mapping[str, Any]] | None = None,
+    idempotency_key: str | None = None,
     _include_internal: bool = False,
     _internal_dispatch_token: object | None = None,
 ) -> InvocationResult:
@@ -2830,6 +2943,8 @@ def invoke(
                 brief=brief,
                 python_exec=python_exec,
                 out=out,
+                project=project,
+                execution_request=normalized_execution_request,
                 orchestrator_args=tuple(orchestrator_args),
             )
         except AstridSDKError:
@@ -2867,7 +2982,9 @@ def invoke(
             kernel_attempt_id=None,
         )
 
-    if capability.capability_type == "orchestrator":
+    if capability.capability_type == "orchestrator" and not (
+        capability.id == "h3_av.transform" and normalized_execution_request is not None
+    ):
         # The Runtime task registry is the executor/worker surface.  A
         # parent orchestrator is the public launcher that coordinates those
         # registered child tasks and owns the caller's output directory.
@@ -2920,6 +3037,12 @@ def invoke(
             kernel_kwargs["variant_context"] = variant_context
         if normalized_execution_request is not None:
             kernel_kwargs["execution_request"] = normalized_execution_request
+        if delegated_stage is not None:
+            kernel_kwargs["delegated_stage"] = delegated_stage
+        if delegated_input_refs is not None:
+            kernel_kwargs["delegated_input_refs"] = delegated_input_refs
+        if idempotency_key is not None:
+            kernel_kwargs["idempotency_key"] = idempotency_key
         if registry is not None:
             kernel_kwargs["registry"] = registry
         kr, kt, ka, mpath, raw_result, ok, _ = _kernel_invoke(
@@ -2936,7 +3059,7 @@ def invoke(
                 poll_seconds=poll_seconds,
                 read_managed_outputs=(
                     capability.capability_type == "executor"
-                    and intent_modality is not None
+                    and (intent_modality is not None or delegated_stage is not None)
                 ),
             )
             if waited_attempt_id:

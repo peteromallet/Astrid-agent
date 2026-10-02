@@ -111,11 +111,13 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     runtime = FakeRuntime()
     runtime.get_object = lambda requested: data  # type: ignore[method-assign]
     profile_reads: list[int] = []
+    events: list[str] = []
 
     def read_profile() -> dict[str, object]:
         profile = _profile()
         pid = 100 + len(profile_reads)
         profile_reads.append(pid)
+        events.append(f"profile-read:{pid}")
         session = profile["vibecomfy_session"]
         assert isinstance(session, dict)
         session["pid"] = pid
@@ -125,7 +127,6 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     identities = iter((("execution-a", "model-a"), ("execution-a", "model-a"), ("execution-b", "model-b"), ("execution-b", "model-b")))
     monkeypatch.setattr(generic_host, "_prepare_vibecomfy_execution_identity", lambda *args: (lambda value: (value[0], value[1], "template-a", {"model_id": value[1], "resident_metadata": {"model_assets": [value[1]]}}))(next(identities)))
     from astrid.core.generation.backends import vibecomfy
-    events: list[str] = []
     monkeypatch.setattr(
         vibecomfy.CheckoutServerAdapter,
         "from_host_session",
@@ -147,7 +148,9 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     release_index = events.index("release:capacity_replacement")
     assert events.index("old-child-exited") < release_index
     assert release_index < events.index("construct", release_index + 1)
-    assert "profile-pid:103" in events
+    replacement_index = events.index("construct", release_index + 1)
+    selected_profile = events[replacement_index - 1].replace("profile-pid:", "profile-read:")
+    assert selected_profile in events[release_index + 1:replacement_index - 1]
     assert events.count("release:capacity_replacement") == 1
     host.managed_tool_session.close()
 
