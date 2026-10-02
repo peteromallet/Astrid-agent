@@ -23,10 +23,13 @@ python3 -m astrid doctor --json   # read-only health check
 python3 -m astrid projects list --json
 ```
 
-There is no session-binding step and no `setup` command: product commands use
-the selected workspace runtime. Project/run identity comes only from its
-generated client (`projects.list/show`, `runs.list/show`); local project and
-run JSON files are output/provenance artifacts, never selection authority.
+There is no session-binding step. Workspace selection is explicit through the
+product gateway (`python3 -m astrid setup --create|--attach` with `--check` or
+`--apply`); the lower-level `astrid-local` launcher has no `setup` subcommand.
+After setup, product commands use the selected workspace runtime. Project/run
+identity comes only from its generated client (`projects.list/show`,
+`runs.list/show`); local project and run JSON files are output/provenance
+artifacts, never selection authority.
 
 Canonical discovery is the SDK; the `--json` CLI reads are the shell
 equivalents:

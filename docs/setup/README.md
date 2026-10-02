@@ -9,18 +9,27 @@ guide does not claim support for them.
 
 ## 1. Install the pinned composition
 
-You need Python 3.11.16 for the Astrid/Runtime install. Git is only needed when
-installing from the published source revisions. The release provenance supplies
-one immutable 40-character commit for each repository; keep those values in the
+You need Python 3.11.16 for the Astrid/Runtime install. This guide installs the
+qualified source revisions directly; it does not claim that a public wheel or
+hosted release artifact exists. Keep the immutable implementation commits in the
 shell that performs the install:
 
 ```bash
 git --version
 python3.11 --version
-export ASTRID_COMMIT='<40-character Astrid commit from release provenance>'
-export RUNTIME_COMMIT='<40-character Runtime commit from release provenance>'
+export ASTRID_COMMIT='6a3f4d6a65b0668a40e16568d9e240a1708a2642'
+export RUNTIME_COMMIT='9070d90227385eeb8ea1e9ec3d3caf2e379be281'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 ```
+
+These are the implementation commits used for the installed qualification:
+Astrid `6a3f4d6a65b0668a40e16568d9e240a1708a2642`, Runtime
+`9070d90227385eeb8ea1e9ec3d3caf2e379be281`, Worker
+`2c5c633b4a40681d25cda19b11043c09548dd13c`, and App
+`9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App commits are
+recorded for the cross-repository composition; the two pip commands below install
+only Astrid and Runtime. Documentation-only commits made after this qualification
+do not change these pins or the tested artifacts.
 
 Use a new folder for this installation. If you already have Astrid, keep that
 installation and begin with [checking it](#3-check-workspace-diagnostics-and-worker). The commands
@@ -38,9 +47,10 @@ export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
 astrid-local --provenance
 ```
 
-The shell guard rejects moving branch names and malformed refs. Do not mix an
-existing installation with unrelated development revisions. The installed
-profile must not depend on a source checkout or `PYTHONPATH`.
+The shell guard rejects moving branch names and malformed refs. Do not replace
+these commits with a branch name or mix the installation with unrelated
+development revisions. The installed profile must not depend on a source checkout
+or `PYTHONPATH`.
 
 ## 2. Preview and apply one workspace
 
@@ -58,7 +68,9 @@ copies or silently adopts a checkout. Runtime owns the selected workspace,
 credentials, database, task ledger, and outputs.
 
 `astrid-local` is the lower-level operator surface for an already selected
-workspace (`up`, `status`, `doctor`, `restart`, `down`, and `start-worker`).
+workspace (`up`, `connect`, `status`, `doctor`, `restart`, `down`, and
+`start-worker`). It does not provide a `setup` subcommand; workspace creation and
+attachment belong to the product gateway above.
 `banodoco-local` and `astrid-runtime` remain deprecated aliases and print a
 warning. If canonical and legacy environment values differ, setup fails
 closed; a legacy-only value is accepted with a warning. Use `ASTRID_LOCAL_*`

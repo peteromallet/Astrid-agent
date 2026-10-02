@@ -18,12 +18,13 @@ result = sdk.invoke(
 )
 ```
 
-Astrid is not session-gated and has no `setup` command: product commands run
-through the workspace runtime (`python3 -m astrid doctor --json` first, then
-the `projects`/`timelines`/`media`/`tasks`/`runs` families), and pack
-capabilities run through the SDK (`astrid.sdk.discover` / `get_capability` /
-`invoke`). The runtime owns durable state; tool authors must use these public
-surfaces rather than opening a database or writing a parallel state store.
+Astrid is not session-gated. Select a workspace with the product gateway
+(`python3 -m astrid setup --create|--attach --check|--apply`), then use the
+workspace runtime (`python3 -m astrid doctor --json` first, followed by the
+`projects`/`timelines`/`media`/`tasks`/`runs` families). Pack capabilities run
+through the SDK (`astrid.sdk.discover` / `get_capability` / `invoke`). The
+runtime owns durable state; tool authors must use these public surfaces rather
+than opening a database or writing a parallel state store.
 
 Do not chain pipeline internals by hand unless you are debugging one specific
 stage. Source-analysis executors intentionally pass file artifacts such as
