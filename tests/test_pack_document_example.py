@@ -16,7 +16,6 @@ from astrid.sdk.documents import stable_document_id
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClientError
 
-
 KIND = "example_pack.project_brief"
 
 
@@ -29,11 +28,13 @@ def consume_project_brief(client: AstridClient, project_id: str, markdown: str) 
         raise RuntimeError(listed.error.message)
 
     matches = listed.data
-    if matches:
-        document = matches[0]
+    document = next(
+        (row for row in matches if row.get("document_id") == document_id),
+        None,
+    )
+    if document is not None:
         if (
             document.get("project_id") != project_id
-            or document.get("document_id") != document_id
             or document.get("kind") != KIND
         ):
             raise RuntimeError("Runtime returned a project brief with mismatched identity.")
@@ -236,3 +237,54 @@ def test_pack_journey_pins_project_kind_and_consumed_version(runtime_client) -> 
     }
     assert any(call[0] == "update_document" and call[3] == 1 for call in runtime.calls)
     assert any(call[0] == "get_document" and call[1:] == (project_id, document_id) for call in runtime.calls)
+
+
+def test_pack_journey_selects_stable_document_after_other_same_kind_documents(runtime_client) -> None:
+    client, runtime = runtime_client
+    project_id = "project:target"
+    default_id = stable_document_id(project_id, KIND, name="default")
+    other_id = stable_document_id(project_id, KIND, name="named-brief")
+    runtime.documents[other_id] = {
+        "project_id": project_id,
+        "document_id": other_id,
+        "kind": KIND,
+        "content": "# Named brief\n\nKeep this document.\n",
+        "version": 1,
+    }
+    runtime.documents[default_id] = {
+        "project_id": project_id,
+        "document_id": default_id,
+        "kind": KIND,
+        "content": "# Default brief\n\nOld content.\n",
+        "version": 1,
+    }
+
+    result = consume_project_brief(client, project_id, "# Default brief\n\nUpdated content.\n")
+
+    assert result["document_id"] == default_id
+    assert result["version"] == 2
+    assert runtime.documents[default_id]["content"] == "# Default brief\n\nUpdated content.\n"
+    assert runtime.documents[other_id]["content"] == "# Named brief\n\nKeep this document.\n"
+    assert ("update_document", project_id, default_id, 1, f"example-pack-update-brief:{project_id}:{default_id}:1") in runtime.calls
+
+
+def test_pack_journey_creates_stable_document_when_only_other_same_kind_document_exists(runtime_client) -> None:
+    client, runtime = runtime_client
+    project_id = "project:target"
+    default_id = stable_document_id(project_id, KIND, name="default")
+    other_id = stable_document_id(project_id, KIND, name="named-brief")
+    runtime.documents[other_id] = {
+        "project_id": project_id,
+        "document_id": other_id,
+        "kind": KIND,
+        "content": "# Named brief\n\nKeep this document.\n",
+        "version": 1,
+    }
+
+    result = consume_project_brief(client, project_id, "# Default brief\n\nCreated default.\n")
+
+    assert result["document_id"] == default_id
+    assert result["version"] == 1
+    assert runtime.documents[default_id]["content"] == "# Default brief\n\nCreated default.\n"
+    assert runtime.documents[other_id]["content"] == "# Named brief\n\nKeep this document.\n"
+    assert ("create_document", project_id, default_id, f"example-pack-create-brief:{project_id}") in runtime.calls

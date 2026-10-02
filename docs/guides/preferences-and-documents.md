@@ -114,9 +114,11 @@ with AstridClient.open_from_launcher() as client:
     if not matches.ok:
         raise RuntimeError(matches.error.message)
     documents = matches.data
-    if documents:
-        document = documents[0]
-    else:
+    document = next(
+        (row for row in documents if row.get("document_id") == document_id),
+        None,
+    )
+    if document is None:
         created = client.documents.create(
             project=project_id,
             document_id=document_id,
@@ -127,29 +129,44 @@ with AstridClient.open_from_launcher() as client:
         if not created.ok:
             raise RuntimeError(created.error.message)
         document = created.data
+    elif document.get("project_id") != project_id or document.get("kind") != kind:
+        raise RuntimeError("Runtime returned a project brief with mismatched identity.")
 
-# Human editing happens through a pinned local checkout, never by replacing
-# the runtime value directly.
-checkout = client.documents.checkout(
-    document=document["document_id"],
-    project=project_id,
-    file="./project-brief.md",
-)
-if not checkout.ok:
-    raise RuntimeError(checkout.error.message)
+    # Human editing happens through a pinned local checkout, never by replacing
+    # the runtime value directly.
+    checkout = client.documents.checkout(
+        document=document_id,
+        project=project_id,
+        file="./project-brief.md",
+    )
+    if not checkout.ok:
+        raise RuntimeError(checkout.error.message)
+```
 
-# After editing ./project-brief.md, check it in. Astrid validates the sidecar's
-# project/document/version and preserves the file if the version is stale.
-saved = client.documents.checkin(file="./project-brief.md")
-if not saved.ok:
-    raise RuntimeError(saved.error.message)
+Run the first block to create or find the default and check it out. Then edit
+`./project-brief.md` with your usual editor. In a second invocation, check in
+the edited file and read the exact revision that an executor will consume:
 
-# Executors read the checked-in version and can attach its version and project
-# identity to their run result/provenance.
-current = client.documents.show(document["document_id"], project=project_id)
-if not current.ok:
-    raise RuntimeError(current.error.message)
-brief = current.data
+```python
+from astrid.sdk import AstridClient
+from astrid.sdk.documents import stable_document_id
+
+project_id = "project-id-from-runtime"
+kind = "my_pack.project_brief"
+document_id = stable_document_id(project_id, kind, name="default")
+
+# Astrid validates the sidecar's project/document/version and preserves the
+# file if the version is stale.
+with AstridClient.open_from_launcher() as client:
+    saved = client.documents.checkin(file="./project-brief.md")
+    if not saved.ok:
+        raise RuntimeError(saved.error.message)
+
+    current = client.documents.show(document_id, project=project_id)
+    if not current.ok:
+        raise RuntimeError(current.error.message)
+    brief = current.data
+
 # Include these runtime-owned references in the executor's normal run/result
 # evidence so a consumer can tell exactly which brief revision it used.
 brief_provenance = {

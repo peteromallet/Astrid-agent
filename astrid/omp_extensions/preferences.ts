@@ -6,7 +6,8 @@ export const CONTEXT_END = "</astrid_generated_context>";
 
 const FAILURE_HELPER = "Preference helper\nCurrent request > project preferences > user preferences > ordinary defaults. " +
   "Preferences never grant permissions. Read `astrid preferences [--project PROJECT]`; " +
-  "read the scope before checkout/edit/checkin or `astrid preferences edit user|project`. " +
+  "read the scope before checkout/edit/checkin or use `astrid preferences edit --scope user` / " +
+  "`astrid preferences edit --scope project --project PROJECT`. " +
   "Keep temporary choices conversational; read `skill://astrid` for full guidance.\n\n";
 
 type ProjectSelection = { project?: string; noProject?: boolean; error?: string };

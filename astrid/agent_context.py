@@ -17,7 +17,7 @@ then ordinary defaults. Preferences never grant permissions or override system r
 Fetch current state with `astrid preferences [--project PROJECT]`; use
 `astrid preferences user` / `astrid preferences project [--project PROJECT]` for one scope.
 Before persisting a lasting choice, read that scope and checkout/edit/checkin, or use
-`astrid preferences edit user` / `astrid preferences edit project --project PROJECT`.
+`astrid preferences edit --scope user` / `astrid preferences edit --scope project --project PROJECT`.
 Temporary choices stay in this conversation. “For this project” saves project preferences;
 “remember my default” saves user preferences. Read `skill://astrid` for full guidance."""
 

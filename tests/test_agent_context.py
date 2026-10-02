@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from astrid import agent_context, omp_agent
+from astrid.core.cli.domain_preferences import build_parser as build_preferences_parser
 
 
 def client(data=None, error=None):
@@ -38,7 +39,20 @@ def test_shared_context_labeled_precedence_and_visible_pack_skill():
     assert "Project preferences (project p)\nUse model B." in text
     assert "skill://astrid-generation" in text
     assert "checkout/edit/checkin" in text
+    assert "astrid preferences edit --scope user" in text
+    assert "astrid preferences edit --scope project --project PROJECT" in text
     assert "Temporary choices stay" in text
+
+
+def test_preference_helper_edit_commands_match_cli_parser():
+    parser = build_preferences_parser(client=object())
+    user = parser.parse_args(["edit", "--scope", "user"])
+    project = parser.parse_args(["edit", "--scope", "project", "--project", "project-id"])
+
+    assert user.scope == "user"
+    assert user.project is None
+    assert project.scope == "project"
+    assert project.project == "project-id"
 
 
 def test_empty_scopes_keep_helper_and_are_distinct_from_runtime_error():
