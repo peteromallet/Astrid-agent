@@ -348,6 +348,14 @@ class AstridClient:
         return None
 
     @property
+    def documents(self) -> Any:
+        return self._remote.documents
+
+    @property
+    def preferences(self) -> Any:
+        return self._remote.preferences
+
+    @property
     def projects(self) -> Any:
         return self._remote.projects
 

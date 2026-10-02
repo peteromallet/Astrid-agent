@@ -325,14 +325,27 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
+        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "get_preferences", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
             # Keep the operation vocabulary auditable.  In particular, never
             # let a caller turn an arbitrary string into an attribute lookup
             # on the generated client.
-            if operation == "add_shot_item": value = self._client.add_shot_item(*args, **kwargs)
+            if operation == "get_preferences":
+                value = self._client.get_preferences(*args, **kwargs)
+            elif operation == "update_preferences":
+                value = self._client.update_preferences(*args, **kwargs)
+            elif operation == "create_document":
+                value = self._client.create_document(*args, **kwargs)
+            elif operation == "get_document":
+                value = self._client.get_document(*args, **kwargs)
+            elif operation == "update_document":
+                value = self._client.update_document(*args, **kwargs)
+            elif operation == "list_documents":
+                value = self._client.list_documents(*args, **kwargs)
+            elif operation == "add_shot_item":
+                value = self._client.add_shot_item(*args, **kwargs)
             elif operation == "admit_task": value = self._client.admit_task(*args, **kwargs)
             elif operation == "attach_variant_thumbnail": value = self._client.attach_variant_thumbnail(*args, **kwargs)
             elif operation == "archive_project_reference": value = self._client.archive_project_reference(*args, **kwargs)
@@ -2204,7 +2217,11 @@ class RemoteGenerations(_RemoteFamily):
 class RemoteAstridClient:
     def __init__(self, transport: WorkspaceClient):
         self._transport = transport
+        from .documents import Documents, Preferences
+
         self.projects = RemoteProjects(transport)
+        self.documents = Documents(transport)
+        self.preferences = Preferences(transport)
         self.timelines = RemoteTimelines(transport, invoker=self._timeline_invoke_result)
         self.media = RemoteMedia(transport)
         self.tasks = RemoteTasks(transport)

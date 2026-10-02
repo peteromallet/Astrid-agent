@@ -214,6 +214,59 @@ def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
     return descriptors
 
 
+def list_visible_pack_summaries() -> list[dict[str, str]]:
+    """Return compact, visible pack summaries for an agent system prompt.
+
+    Discovery remains the authority for which packs are installed and visible;
+    the skill registry supplies each pack's concise agent-facing description
+    and canonical harness skill id. Packs without a pack-level skill still
+    appear when their manifest provides a purpose or description. Nested
+    executor skills are intentionally omitted here: a prompt gets one summary
+    per pack and can inspect that pack's skill for its detailed entrypoints.
+
+    The mapping keys are stable and deliberately small: ``pack_id``, ``name``,
+    ``description``, and (when present) ``skill_id``. No skill body, absolute
+    path, hidden pack, or host-specific skill index is included.
+    """
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    descriptors = {
+        descriptor.pack_id: descriptor
+        for descriptor in list_skills()
+        if "." not in descriptor.pack_id
+    }
+    summaries: list[dict[str, str]] = []
+    for discovered in discover_pack_metadata():
+        pack = discovered.pack
+        if pack.visibility == "hidden" or pack.status == "deprecated":
+            continue
+        if pack.id == "_core":
+            # The core skill is already the host entrypoint and the prompt's
+            # preference helper links to it directly.
+            continue
+        descriptor = descriptors.get(pack.id)
+        description = (
+            descriptor.short_description.strip()
+            if descriptor is not None and descriptor.short_description.strip()
+            else str(pack.agent.get("purpose") or pack.description or "").strip()
+        )
+        description = " ".join(description.split())
+        if not description:
+            continue
+        summary = {
+            "pack_id": pack.id,
+            "name": pack.name,
+            "description": description[:180],
+        }
+        if descriptor is not None:
+            # `astrid-<id>` is the stable skill name emitted by the canonical
+            # harness registry; hosts can resolve it through their skill API.
+            summary["skill_id"] = f"astrid-{pack.id}"
+        summaries.append(summary)
+    summaries.sort(key=lambda item: item["pack_id"])
+    return summaries
+
+
 def lint_shared_skill_md(text: str) -> list[str]:
     """Return human-readable findings if `text` contains forbidden tokens."""
     findings: list[str] = []
@@ -237,4 +290,5 @@ __all__ = [
     "get",
     "lint_shared_skill_md",
     "list_skills",
+    "list_visible_pack_summaries",
 ]

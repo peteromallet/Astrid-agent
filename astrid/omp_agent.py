@@ -24,7 +24,7 @@ DEFAULT_AGENT = "astrid"
 # time; a pack does not need a second launcher allowlist entry. Reserved
 # conversational/auth words stay blocked so they cannot be claimed by a pack.
 _PRODUCT_TOOLKIT_FAMILIES = frozenset(
-    {"projects", "timelines", "media", "tasks", "runs", "doctor", "backup"}
+    {"projects", "timelines", "media", "tasks", "runs", "documents", "preferences", "doctor", "backup"}
 )
 _PACK_ROUTE_BLOCKLIST = frozenset(
     {"agent", "auth", "help", "login", "status", "logout", "revoke"}
@@ -353,7 +353,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _select_omp_bin()
+    # The same per-turn hook serves terminal and ACP, including resumed sessions.
+    # Pin the Python interpreter that launched Astrid so OMP's subprocess reads
+    # the same installed product and runtime configuration.
+    if agent == DEFAULT_AGENT:
+        os.environ["ASTRID_CONTEXT_PYTHON"] = sys.executable
     exec_argv = [str(launcher), "run", agent, *flags]
+    if agent == DEFAULT_AGENT:
+        extension = Path(__file__).parent / "omp_extensions" / "preferences.ts"
+        exec_argv.append(f"--extension={extension}")
     if not any(flag in flags for flag in ("--system-prompt", "--append-system-prompt")):
         exec_argv += _prompt_args(flags, agent=agent)
     if message:

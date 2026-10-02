@@ -51,12 +51,14 @@ __all__ = [
 
 PRODUCT_FAMILIES: tuple[str, ...] = (
     "projects",
+    "documents",
+    "preferences",
     "media",
     "tasks",
     "runs",
     "timelines",
 )
-"""Exactly the five product families (frozen m4 contract, plan step 24)."""
+"""The seven core product families (frozen m4 contract, plan step 24)."""
 
 PRODUCT_FAMILY_SET: frozenset[str] = frozenset(PRODUCT_FAMILIES)
 
@@ -278,6 +280,8 @@ def family_mount(family: str) -> ProductMount:
 # the static contract, and the import stays lazy until dispatch.
 FAMILY_PARSER_MODULES: dict[str, str] = {
     "projects": "astrid.core.cli.domain_projects",
+    "documents": "astrid.core.cli.domain_documents",
+    "preferences": "astrid.core.cli.domain_preferences",
     "timelines": "astrid.packs.timeline.cli",
     "shots": "astrid.packs.shots.cli",
     "media": "astrid.core.cli.domain_media",
@@ -296,6 +300,8 @@ def command_requires_pack_host(family: str, args: Sequence[str]) -> bool:
     still responsible for reporting the usage error.  This keeps lifecycle
     acquisition independent from an expanding, hand-maintained read allowlist.
     """
+    if family == "preferences" and (not args or str(args[0]).startswith("--")):
+        return False
     if family not in PRODUCT_FAMILY_SET:
         return True
     module_name = FAMILY_PARSER_MODULES.get(family)
@@ -326,7 +332,7 @@ def run_product_family(
     The family's in-tree parser builder is resolved from the static
     :data:`FAMILY_PARSER_MODULES` mapping (never discovered) and receives
     the shared ``AstridClient``; the configured handler then runs with
-    zero domain rules in this module. Only the five core families dispatch
+    zero domain rules in this module. The seven core families dispatch
     here — nested families (shots, references) are routed by their parent
     family parsers. ``_parser_modules`` is a test seam that replaces the
     module-name mapping with module objects.

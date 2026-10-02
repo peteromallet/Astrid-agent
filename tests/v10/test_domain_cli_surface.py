@@ -49,16 +49,18 @@ from astrid.sdk.contracts import DomainResult, ErrorObject
 # ---------------------------------------------------------------------------
 
 
-def test_product_census_is_exactly_five_families() -> None:
+def test_product_census_is_exactly_seven_families() -> None:
     assert tuple(PRODUCT_FAMILIES) == (
         "projects",
+        "documents",
+        "preferences",
         "media",
         "tasks",
         "runs",
         "timelines",
     )
     assert product_top_level_commands() == frozenset(PRODUCT_FAMILIES)
-    assert len(PRODUCT_FAMILIES) == 5
+    assert len(PRODUCT_FAMILIES) == 7
 
 
 def test_operational_families_are_excluded_from_product_census() -> None:
@@ -97,6 +99,8 @@ def test_mounts_include_core_and_the_two_nested_mounts() -> None:
     by_family = {mount.family: mount for mount in mounts}
     assert set(by_family) == {
         "projects",
+        "documents",
+        "preferences",
         "media",
         "tasks",
         "runs",
@@ -530,12 +534,14 @@ def test_product_census_hook_matches_domain_registry() -> None:
     assert dispatch._product_top_level_commands() == product_top_level_commands()
 
 
-def test_top_level_commands_are_exactly_seven_families() -> None:
+def test_top_level_commands_are_exactly_nine_families() -> None:
     from astrid.core.gateway import dispatch
 
     assert dispatch._top_level_commands() == frozenset(
         {
             "projects",
+            "preferences",
+            "documents",
             "timelines",
             "media",
             "tasks",
@@ -544,7 +550,7 @@ def test_top_level_commands_are_exactly_seven_families() -> None:
             "backup",
         }
     )
-    assert len(dispatch._top_level_commands()) == 7
+    assert len(dispatch._top_level_commands()) == 9
 
 
 def test_all_five_product_families_route_through_product_dispatch(
@@ -713,8 +719,8 @@ def test_print_result_returns_stable_exit_codes(capsys) -> None:
 def test_product_help_text_declares_exact_census_and_mounts() -> None:
     text = _product_help_text()
     assert (
-        "Family census (exactly seven families): "
-        "projects timelines media tasks runs doctor backup" in text
+        "Family census (exactly nine families): "
+        "projects timelines media tasks runs preferences documents doctor backup" in text
     )
     for family in PRODUCT_FAMILIES:
         assert family in text
@@ -734,14 +740,14 @@ def test_product_help_census_matches_explicit_registry() -> None:
         line for line in text.splitlines() if line.startswith("Family census")
     )
     census = census_line.split(":", 1)[1].split()
-    assert tuple(census[5:]) == ("doctor", "backup")
-    assert set(census[:5]) == set(PRODUCT_FAMILIES)
+    assert tuple(census[7:]) == ("doctor", "backup")
+    assert set(census[:7]) == set(PRODUCT_FAMILIES)
     # Every advertised product family is a real registered product family.
-    for family in census[:5]:
+    for family in census[:7]:
         assert is_product_family(family)
     # Only the two current operational families are advertised; ``serve`` is
     # a retired rejected token, not a public family.
-    assert set(census[5:]) == {"doctor", "backup"}
+    assert set(census[7:]) == {"doctor", "backup"}
 
 
 def test_product_help_documents_stable_exit_codes() -> None:
@@ -771,4 +777,4 @@ def test_print_product_help_prints_to_stdout(capsys) -> None:
     _print_product_help()
     captured = capsys.readouterr()
     assert captured.out.startswith("Astrid product commands")
-    assert "Family census (exactly seven families)" in captured.out
+    assert "Family census (exactly nine families)" in captured.out

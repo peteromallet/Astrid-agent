@@ -8,11 +8,12 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 PROTOCOL = "workspace.v1"
-SCHEMA_DIGEST = "sha256:62da8b1285ba3586b3b9707d4f7ea9b1bd4c31833b7fffc6cbacd2b2a8442f0f"
-OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+_UNSET = object()
+SCHEMA_DIGEST = "sha256:21ee7cecb9a230e1dee787db5cb65f5ccf03ccdfb4fcce68e7b062ae1a38e9d6"
+OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,37 @@ class ProjectDocument:
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> "ProjectDocument":
         return cls(document_id=value["document_id"], project_id=value["project_id"], kind=value["kind"], content=value.get("content"), version=int(value["version"]), created_at=value["created_at"], updated_at=value["updated_at"])
+
+
+@dataclass(frozen=True)
+class PreferenceResource:
+    scope: Literal["user", "project"]
+    actor_id: str | None
+    project_id: str | None
+    document_id: str
+    content: str
+    version: int
+    created_at: str | None
+    updated_at: str | None
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> "PreferenceResource":
+        fields = {"scope", "actor_id", "project_id", "document_id", "content", "version", "created_at", "updated_at"}
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ApiError(0, "invalid_response", "preference resource fields are required")
+        scope = value["scope"]
+        owner = value["actor_id"] if scope == "user" else value["project_id"]
+        other = value["project_id"] if scope == "user" else value["actor_id"]
+        if scope not in ("user", "project") or not isinstance(owner, str) or not owner or other is not None:
+            raise ApiError(0, "invalid_response", "preference resource ownership is invalid")
+        if value["document_id"] != f"preferences:{scope}:{owner}" or not isinstance(value["content"], str):
+            raise ApiError(0, "invalid_response", "preference resource identity or content is invalid")
+        if type(value["version"]) is not int or value["version"] < 0 or any(item is not None and not isinstance(item, str) for item in (value["created_at"], value["updated_at"])):
+            raise ApiError(0, "invalid_response", "preference resource version or timestamps are invalid")
+        return cls(**value)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
 
 
 @dataclass(frozen=True)
@@ -513,6 +545,14 @@ class MutationResult(dict):
             raise AttributeError(name) from exc
 
 
+class PreferenceMutationResult(MutationResult):
+    """Typed preference result; only user preference writes carry a null receipt."""
+
+    def __init__(self, data: PreferenceResource, receipt: Mapping[str, Any] | None):
+        super().__init__(vars(data), receipt)
+        self.data = data
+
+
 class WorkspaceClient:
     """Small stdlib HTTP client generated from the neutral OpenAPI contract.
 
@@ -647,12 +687,44 @@ class WorkspaceClient:
         _, _, body = self._request("PATCH", f"/v1/projects/{_path_part(project_id)}", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})
         return Project.from_json(self._json(body))
 
+    @staticmethod
+    def _preferences_path(scope: Literal["user", "project"], project_id: str | None) -> str:
+        if scope not in ("user", "project"):
+            raise ValueError("preference scope must be user or project")
+        if scope == "user" and project_id is not None:
+            raise ValueError("user preferences cannot select a project")
+        return f"/v1/preferences/{scope}" + (f"?project_id={_path_part(project_id)}" if project_id is not None else "")
+
+    def get_preferences(self, scope: Literal["user", "project"], project_id: str | None = None) -> PreferenceResource:
+        resource = PreferenceResource.from_json(self._json(self._request("GET", self._preferences_path(scope, project_id))[2]))
+        if resource.scope != scope:
+            raise ApiError(0, "invalid_response", "preference response scope does not match request")
+        return resource
+
+    def update_preferences(self, scope: Literal["user", "project"], content: str, expected_version: int, idempotency_key: str, project_id: str | None = None) -> PreferenceMutationResult:
+        path = self._preferences_path(scope, project_id)
+        payload = {"content": content, "expected_version": expected_version}
+        body = self._request("PUT", path, body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})[2]
+        if scope == "project":
+            mutation = self._mutation_json(body)
+            resource = PreferenceResource.from_json({key: value for key, value in mutation.items() if key != "receipt"})
+            receipt = mutation.receipt
+        else:
+            value = self._json(body)
+            if set(value) != {"data", "receipt"} or value["receipt"] is not None:
+                raise ApiError(0, "invalid_response", "user preference mutation requires data and null receipt")
+            resource = PreferenceResource.from_json(value["data"])
+            receipt = None
+        if resource.scope != scope:
+            raise ApiError(0, "invalid_response", "preference response scope does not match request")
+        return PreferenceMutationResult(resource, receipt)
+
     def create_document(self, project_id: str, document_id: str, kind: str, content: Any, *, idempotency_key: str) -> MutationResult:
         payload = {"document_id": document_id, "kind": kind, "content": content}
         return self._mutation_json(self._request("POST", f"/v1/projects/{_path_part(project_id)}/documents", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
 
-    def list_documents(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> tuple[list[ProjectDocument], str | None]:
-        query = f"?limit={int(limit)}" + (f"&cursor={_path_part(cursor)}" if cursor else "")
+    def list_documents(self, project_id: str, *, cursor: str | None = None, limit: int = 50, kind: str | None = None) -> tuple[list[ProjectDocument], str | None]:
+        query = f"?limit={int(limit)}" + (f"&cursor={_path_part(cursor)}" if cursor else "") + (f"&kind={_path_part(kind)}" if kind is not None else "")
         value = self._json(self._request("GET", f"/v1/projects/{_path_part(project_id)}/documents" + query)[2])
         items, next_cursor = self._page(value)
         return [ProjectDocument.from_json(item) for item in items], next_cursor
@@ -660,9 +732,9 @@ class WorkspaceClient:
     def get_document(self, project_id: str, document_id: str) -> ProjectDocument:
         return ProjectDocument.from_json(self._json(self._request("GET", f"/v1/projects/{_path_part(project_id)}/documents/{_path_part(document_id)}")[2]))
 
-    def update_document(self, project_id: str, document_id: str, *, expected_version: int, idempotency_key: str, content: Any = None, kind: str | None = None) -> MutationResult:
+    def update_document(self, project_id: str, document_id: str, *, expected_version: int, idempotency_key: str, content: Any = _UNSET, kind: str | None = None) -> MutationResult:
         payload: dict[str, Any] = {"expected_version": expected_version}
-        if content is not None: payload["content"] = content
+        if content is not _UNSET: payload["content"] = content
         if kind is not None: payload["kind"] = kind
         return self._mutation_json(self._request("PATCH", f"/v1/projects/{_path_part(project_id)}/documents/{_path_part(document_id)}", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})[2])
 

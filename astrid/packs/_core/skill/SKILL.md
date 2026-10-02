@@ -51,6 +51,30 @@ python3 -m astrid runs open
 payload. Use it when structured results help; ordinary commands and examples
 for users can omit it.
 
+## Preferences and project documents
+
+At the start of work, read the user's preferences and, when working in a
+project, that project's preferences. Re-read them when the project changes.
+Current explicit instructions take precedence over project preferences, then
+user preferences, then ordinary defaults. A temporary choice stays in the
+conversation. Save a lasting default only when the user asks to remember it;
+"for this project" means project scope, while "remember my default" means user
+scope. User preferences do not require a selected project and project
+preferences never silently become user defaults.
+
+Use `astrid preferences` for the labeled user/project view,
+`astrid preferences user` for the user document, and
+`astrid preferences project [--project PROJECT]` for a project document. To
+change lasting guidance, read the correct scope, then use
+`astrid preferences edit --scope user|project [--project PROJECT]` or the
+explicit checkout/edit/check-in flow. Astrid's generated system-prompt helper
+also points to these shortcuts, the full command help, and this core skill.
+See the [preferences and project
+documents guide](../../../../docs/guides/preferences-and-documents.md) for
+external CLI use, conflict recovery, and the pack-author SDK path. Do not edit
+runtime storage directly. Generic project documents are pack-owned data and
+are not prompt context unless an agent deliberately reads them.
+
 On a new machine, follow the brief [getting started guide](../../../../docs/getting-started.md)
 for Python, the runtime package, and the source manifest. Then check the
 runtime:

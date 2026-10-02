@@ -1296,6 +1296,8 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
     assert dispatch._top_level_commands() == frozenset(
         {
             "projects",
+            "preferences",
+            "documents",
             "timelines",
             "media",
             "tasks",

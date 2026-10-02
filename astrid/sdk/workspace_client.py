@@ -33,6 +33,8 @@ __all__ = [
     "resolve_runtime_connection",
 ]
 
+_DOCUMENT_CONTENT_UNSET = object()
+
 RECONFIGURE_ACTION = "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`"
 
 
@@ -250,7 +252,7 @@ class WorkspaceClient:
                 "rebind_project_shot_text_binding",
                 "get_project_reference", "update_project_reference", "archive_project_reference",
                 "recover_project_reference", "associate_reference", "set_primary_reference",
-                "link_references", "create_document", "list_documents", "get_document",
+                "get_preferences", "update_preferences", "link_references", "create_document", "list_documents", "get_document",
                 "update_document", "ingest_object", "ingest_project_object",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
@@ -653,11 +655,17 @@ class WorkspaceClient:
     def link_references(self, project_id: str, link: Mapping[str, Any], *, idempotency_key: str) -> Any:
         return self._call_generated("link_references", project_id, link, idempotency_key=idempotency_key)
 
+    def get_preferences(self, scope: str, *, project_id: str | None = None) -> Any:
+        return self._call_generated("get_preferences", scope, project_id=project_id)
+
+    def update_preferences(self, scope: str, content: str, *, expected_version: int, idempotency_key: str, project_id: str | None = None) -> Any:
+        return self._call_generated("update_preferences", scope, content, expected_version=expected_version, idempotency_key=idempotency_key, project_id=project_id)
+
     def create_document(self, project_id: str, document_id: str, kind: str, content: Any, *, idempotency_key: str) -> Any:
         return self._call_generated("create_document", project_id, document_id, kind, content, idempotency_key=idempotency_key)
 
-    def list_documents(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
-        return self._call_generated("list_documents", project_id, cursor=cursor, limit=limit)
+    def list_documents(self, project_id: str, *, cursor: str | None = None, limit: int = 50, kind: str | None = None) -> Any:
+        return self._call_generated("list_documents", project_id, cursor=cursor, limit=limit, **({"kind": kind} if kind is not None else {}))
 
     def get_document(self, project_id: str, document_id: str) -> Any:
         return self._call_generated("get_document", project_id, document_id)
@@ -669,7 +677,7 @@ class WorkspaceClient:
         *,
         expected_version: int,
         idempotency_key: str,
-        content: Any = None,
+        content: Any = _DOCUMENT_CONTENT_UNSET,
         kind: str | None = None,
     ) -> Any:
         return self._call_generated(
@@ -678,8 +686,8 @@ class WorkspaceClient:
             document_id,
             expected_version=expected_version,
             idempotency_key=idempotency_key,
-            content=content,
             kind=kind,
+            **({"content": content} if content is not _DOCUMENT_CONTENT_UNSET else {}),
         )
 
     def ingest_object(self, data: bytes, *, media_type: str, idempotency_key: str, filename: str | None = None, upload_binding: Mapping[str, Any] | None = None) -> Any:
