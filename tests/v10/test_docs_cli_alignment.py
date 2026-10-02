@@ -11,8 +11,8 @@ command on the shipped gateway:
 - product-family verbs must be accepted by that family's argparse parser
   (built through ``astrid.core.cli.domain_product.FAMILY_PARSER_MODULES`` with
   a ``None`` client — parsing never touches the database);
-- ghost verbs from the retired task-mode CLI (``next``, ``status``, ``attach``,
-  ``start``, ``ack``, ``executors``, ``orchestrators``, ``elements``,
+- ghost verbs from the retired task-mode CLI (``next``, ``attach``, ``start``,
+  ``ack``, ``executors``, ``orchestrators``, ``elements``,
   ``sessions``, ``packs``, ``skills``) must not appear as commands, and
   AGENTS.md + SKILL.md must not contain the retired invocation strings at all.
 
@@ -34,7 +34,10 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 
 _TOP_LEVEL_FAMILIES = frozenset(
-    {"projects", "timelines", "media", "tasks", "runs", "serve", "doctor", "backup", "auth"}
+    {
+        "projects", "timelines", "media", "tasks", "runs",
+        "setup", "status", "worker", "doctor", "backup", "auth", "hivemind",
+    }
 )
 
 # (family, nested) -> parser module for the manifest-declared nested mounts.
@@ -59,7 +62,6 @@ _BACKUP_COMMANDS = frozenset(
 # Retired task-mode invocation strings that must not appear verbatim.
 _GHOST_STRINGS = (
     "astrid next",
-    "astrid status",
     "astrid attach",
     "astrid start ",
     "astrid ack",
@@ -193,6 +195,57 @@ def _auth_parser():
     return importlib.import_module("astrid.core.auth")._parser()  # noqa: SLF001
 
 
+def _operational_parser(family: str):
+    """Build the parser for a workspace-level gateway command.
+
+    ``setup`` uses the product's parser directly.  The status and worker
+    dispatchers keep their parsers local to their side-effecting handlers, so
+    this mirrors those flag and subcommand surfaces without importing code
+    that observes or starts the Runtime during documentation validation.
+    """
+    if family == "setup":
+        return importlib.import_module("astrid.setup")._parser()  # noqa: SLF001
+    if family == "hivemind":
+        return importlib.import_module("astrid.core.gateway.hivemind")._parser()  # noqa: SLF001
+    argparse = __import__("argparse")
+    if family == "status":
+        parser = argparse.ArgumentParser(prog="astrid status")
+        parser.add_argument("--json", action="store_true")
+        parser.add_argument("--diagnostic", action="store_true")
+        parser.add_argument("--shared", action="store_true")
+        return parser
+    if family == "worker":
+        parser = argparse.ArgumentParser(prog="astrid worker")
+        sub = parser.add_subparsers(dest="operation", required=True)
+        start = sub.add_parser("start")
+        start.add_argument("--json", action="store_true")
+        return parser
+    return None
+
+
+def _validate_operational_command(tokens: list[str], where: str) -> list[str]:
+    parser = _operational_parser(tokens[0])
+    if parser is None:
+        return []
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            parser.parse_args(tokens[1:])
+    except SystemExit as exc:
+        detail = stderr.getvalue()
+        if exc.code != 0 and (
+            "invalid choice" in detail
+            or "unrecognized arguments" in detail
+            or "arguments are required" in detail
+        ):
+            last = detail.strip().splitlines()
+            return [
+                f"{where}: documented command does not parse: {tokens!r} "
+                f"(exit {exc.code}: {last[-1] if last else 'no stderr'})"
+            ]
+    return []
+
+
 def _subcommands(parser) -> frozenset[str]:
     for action in parser._actions:  # noqa: SLF001
         if isinstance(action, __import__("argparse")._SubParsersAction):
@@ -208,8 +261,10 @@ def _validate_command(tokens: list[str], where: str) -> list[str]:
     if first not in _TOP_LEVEL_FAMILIES:
         errors.append(f"{where}: unknown top-level command {tokens!r}")
         return errors
-    if first in {"serve", "doctor"}:
-        # Operational families take flags only; the family token is the surface.
+    if first in {"setup", "status", "worker", "hivemind"}:
+        return _validate_operational_command(tokens, where)
+    if first == "doctor":
+        # The doctor operational family takes flags only.
         return errors
     if first == "backup":
         if len(tokens) >= 2 and tokens[1] not in {"--help", "-h"}:
@@ -285,7 +340,7 @@ def _validate_command(tokens: list[str], where: str) -> list[str]:
 
 
 def test_documented_commands_are_real_gateway_commands() -> None:
-    """Every documented ``astrid`` command matches the eight-family surface."""
+    """Every documented ``astrid`` command matches the gateway surface."""
     errors: list[str] = []
     count = 0
     for path in _all_docs():
@@ -310,10 +365,19 @@ def test_validator_rejects_invalid_verb_and_flag() -> None:
     assert _validate_command(
         ["projects", "list", "--definitely-invalid"], "regression"
     )
+    # Workspace-level commands use their own supported parser surfaces.
+    assert _validate_command(["setup", "--definitely-invalid"], "regression")
+    assert _validate_command(["status", "--definitely-invalid"], "regression")
+    assert _validate_command(["worker", "stop"], "regression")
+    assert _validate_command(["hivemind", "unknown"], "regression")
     # Unknown verb beneath a nested mount.
     assert _validate_command(["media", "references", "frobnicate"], "regression")
     # The well-formed counterparts stay clean.
     assert _validate_command(["projects", "list", "--json"], "regression") == []
+    assert _validate_command(["setup", "--create", "--check", "--json"], "regression") == []
+    assert _validate_command(["status", "--json"], "regression") == []
+    assert _validate_command(["worker", "start", "--json"], "regression") == []
+    assert _validate_command(["hivemind", "search", "QUERY", "--json"], "regression") == []
     # Value-level data errors on an otherwise real command stay out of scope:
     # `media import` rejects nonexistent paths at parse time, but that is
     # argument data, not a usage defect — the documented shape is real.
