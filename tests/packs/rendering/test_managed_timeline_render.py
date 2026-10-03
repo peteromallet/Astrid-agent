@@ -21,6 +21,45 @@ from astrid.sdk.exceptions import CapabilityValidationError
 from astrid.sdk.invocation import _prepare_managed_render_inputs
 
 
+@pytest.mark.parametrize("location", ["config", "duplicate", "payload"])
+def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
+    from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
+    from tests.packs.rendering.test_live_scene_boundary import _package
+
+    clips = [{"id": "scene", "clipType": "com.reigh.astrid.liveScene", "track": "v1", "at": 50, "from": 63, "to": 70, "speed": 2, "app": {"liveScene": _package()}}]
+    config = {"tracks": [{"id": "v1", "kind": "visual"}], "clips": clips if location != "payload" else [], "theme": "banodoco-default", "app": {"sentinel": 1}}
+    parent = {"project_id": "project-demo", "timeline_id": "timeline-1", "revision_id": "saved", "payload": {"config": config, "clips": clips if location != "config" else [], "registry": {"assets": {}}, "occurrences": []}}
+    projected = project_runtime_parent_composition(parent, shot_revisions=[], internal_timeline_revisions=[])
+    assert projected.config["clips"] == clips
+    assert projected.config["app"]["sentinel"] == 1
+    assert projected.config["tracks"] == config["tracks"]
+
+
+def test_saved_parent_disagreeing_populated_clips_fail_closed():
+    from astrid.core.timeline.shot_composition_projection import (
+        ShotCompositionProjectionError,
+        project_runtime_parent_composition,
+    )
+
+    parent = {"project_id": "p", "timeline_id": "t", "revision_id": "r", "payload": {"config": {"clips": [{"id": "a"}]}, "clips": [{"id": "b"}], "occurrences": [], "registry": {"assets": {}}}}
+    with pytest.raises(ShotCompositionProjectionError, match="disagree"):
+        project_runtime_parent_composition(parent, shot_revisions=[], internal_timeline_revisions=[])
+
+
+def test_managed_saved_prepared_scene_validates_and_corruption_fails():
+    from tests.packs.rendering.test_live_scene_boundary import _package
+
+    runtime = _Runtime()
+    package = _package()
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [{"id": "scene", "track": "v1", "clipType": "com.reigh.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": package}}]}
+    snapshot = resolve_managed_render_snapshot(project_ref="demo", timeline_ref="main", client=runtime)
+    validate_managed_render_snapshot(snapshot)
+    package["html"] += "corrupt"
+    snapshot = resolve_managed_render_snapshot(project_ref="demo", timeline_ref="main", client=runtime)
+    with pytest.raises(ManagedRenderValidationError, match="entry digest"):
+        validate_managed_render_snapshot(snapshot)
+
+
 def _result(data: object = None, *, ok: bool = True) -> SimpleNamespace:
     return SimpleNamespace(ok=ok, data=data, error=None if ok else {"message": "not found"})
 
@@ -262,7 +301,12 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
             project_ref="demo", timeline_ref="main", client=runtime,
             candidate_preview=True,
         )
-        assert preview_base.config["clips"][0]["id"] == "occ-0:charcoal-process-preview"
+        assert preview_base.project_id == "project-demo"
+        assert preview_base.timeline_id == "timeline-1"
+        assert preview_base.head_event_id == "parent-committed"
+        assert preview_base.head_hash == "d" * 64
+        assert preview_base.config["clips"] == []
+        assert preview_base.expansion is None
 
     clips = snapshot.config["clips"]
     assert [clip["id"] for clip in clips] == [

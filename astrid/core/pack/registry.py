@@ -306,6 +306,31 @@ def _resolve_pack_rendering_manifest_paths(
         resolved_paths.append(resolved)
     return tuple(resolved_paths)
 
+def pack_editor_entry_paths(pack: "PackDefinition") -> tuple[Path, ...]:
+    """Return declared browser editor entry modules owned by *pack*.
+
+    The pack manifest is the authority. Entries are resolved only within the
+    pack root and must be regular files so a generated browser catalog cannot
+    silently import a path outside the trusted pack.
+    """
+    editor = pack.extensions.get("editor", {})
+    entries = editor.get("entries", ()) if isinstance(editor, dict) else ()
+    root = pack.root.resolve()
+    resolved_paths: list[Path] = []
+    for index, raw_path in enumerate(entries):
+        relative_path = Path(raw_path)
+        resolved = (root / relative_path).resolve()
+        if relative_path.is_absolute() or not resolved.is_relative_to(root):
+            raise PackValidationError(
+                f"pack.extensions.editor.entries[{index}] must stay within the pack root"
+            )
+        if not resolved.is_file():
+            raise PackValidationError(
+                f"pack.extensions.editor.entries[{index}] must name a regular file: {raw_path}"
+            )
+        resolved_paths.append(resolved)
+    return tuple(resolved_paths)
+
 
 def pack_element_kind_descriptors(pack: "PackDefinition") -> tuple[ElementKindDescriptor, ...]:
     element_extensions = pack.extensions.get("elements", {})

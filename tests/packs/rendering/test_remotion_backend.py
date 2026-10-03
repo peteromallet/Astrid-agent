@@ -138,6 +138,7 @@ def _execute_direct(
     theme_path: Path | None = None,
     materialized_root: Path | None = None,
     materialized_objects: dict[str, str] | None = None,
+    encode_aac_at_stitch: bool = False,
 ) -> tuple[Path, dict[str, object]]:
     """Exercise the canonical backend implementation without restoring its retired facade."""
 
@@ -152,6 +153,7 @@ def _execute_direct(
         min_free_gb=None,
         materialized_root=materialized_root,
         materialized_objects=materialized_objects,
+        encode_aac_at_stitch=encode_aac_at_stitch,
     )
     provenance = render_remotion._render_provenance_payload(
         project_dir=project_dir,
@@ -1456,6 +1458,56 @@ def _stamped_text_timeline(tmp_path: Path, *, alpha: bool = True) -> Path:
         path,
     )
     return path
+
+
+@pytest.mark.parametrize("selected,alpha", [(False, False), (True, False), (True, True)])
+def test_pcm_aac_capture_is_invocation_scoped_and_keeps_alpha_and_default_paths(
+    tmp_path: Path, selected: bool, alpha: bool,
+) -> None:
+    """Exercise private output construction with a fake CLI; never render."""
+    timeline_path, assets_path = _write_inputs(tmp_path)
+    if alpha:
+        timeline_path = _stamped_text_timeline(tmp_path, alpha=True)
+    project = _write_project(tmp_path)
+    output = tmp_path / ("result.mov" if alpha else "result.mp4")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(command, **kwargs):
+        normalized = [str(part) for part in command]
+        if _is_remotion_render_command(normalized):
+            seen.append((normalized, kwargs["env"]))
+            _write_fake_remotion_output(normalized)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with (
+        mock.patch.dict(os.environ, {"ASTRID_REMOTION_PCM_AAC_OUTPUT": "/ambient/unrelated.mov"}),
+        mock.patch.object(remotion, "_regenerate_element_registries"),
+        mock.patch.object(remotion, "_effective_registry_state", return_value={"version": 1, "hash": "test"}),
+        mock.patch.object(remotion, "_active_pack_order_for_provenance", return_value=[]),
+        mock.patch.object(remotion.subprocess, "run", side_effect=fake_run),
+    ):
+        _execute_direct(timeline_path, assets_path, output, project_dir=project,
+                        encode_aac_at_stitch=selected)
+
+    assert output.read_bytes() == b"fake-remotion-video"
+    assert len(seen) == 1
+    args, env = seen[0]
+    cli_video = Path(args[args.index("--output") + 1])
+    assert "--enforce-audio-track" in args
+    if selected and not alpha:
+        assert cli_video.name == "capture.mov"
+        assert cli_video.parent == Path(env["TMPDIR"])
+        assert env["ASTRID_REMOTION_PCM_AAC_OUTPUT"] == str(cli_video)
+        assert "--audio-codec=pcm-16" in args
+        assert "--codec=h264" in args
+        assert "--sample-rate=48000" in args
+        assert "--audio-bitrate=320K" in args
+    else:
+        assert "ASTRID_REMOTION_PCM_AAC_OUTPUT" not in env
+        assert "--audio-codec=pcm-16" not in args
+        assert "--sample-rate=48000" not in args
+        assert cli_video.suffix == output.suffix
+    assert not cli_video.exists()  # private capture lifecycle remains bounded
 
 
 def test_alpha_stamp_appends_transparent_flags_to_remotion_cli(

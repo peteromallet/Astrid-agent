@@ -60,8 +60,12 @@ from astrid.core.execution.managed_tool_session import (
     SessionBinding,
 )
 from astrid.core.execution.process_group import (
+    CleanupUncertainError,
     _process_snapshot,
+    observe_tree,
     popen_owned_group,
+    terminate_tree,
+    verify_tree_absent,
 )
 from astrid.core.execution.process_group import (
     group_exists as _owned_group_exists,
@@ -787,7 +791,17 @@ def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float 
     ``waitpid``-reaped here; killing the owned session is the relevant
     containment guarantee.
     """
+    if hasattr(process, "_astrid_tree_members") or hasattr(process, "_astrid_tree_uncertain"):
+        try:
+            terminate_tree(process, grace_seconds=grace_seconds)
+        except BaseException:
+            # Best-effort cleanup of the private group cannot certify absence
+            # of detached writers, nor erase a failed earlier tree census.
+            _terminate_owned_group(process, grace_seconds=grace_seconds)
+            raise
     _terminate_owned_group(process, grace_seconds=grace_seconds)
+    if hasattr(process, "_astrid_tree_members"):
+        verify_tree_absent(process)
 
 
 def _confined_cwd(
@@ -2473,6 +2487,8 @@ class GenericPackHost:
     def _cleanup_ephemeral_attempt_or_latch(self, root: Path) -> None:
         """Delete one owned root, latching uncertainty if observation fails."""
         try:
+            if self._cleanup_uncertain:
+                raise HostError("process cleanup uncertainty; attempt retained")
             _cleanup_ephemeral_attempt(root)
         except Exception as exc:
             self._cleanup_uncertain = True
@@ -4399,7 +4415,9 @@ class GenericPackHost:
         )
         self._track_process(process)
         try:
+            observe_tree(process)
             while process.poll() is None:
+                observe_tree(process)
                 _assert_live_storage_envelope(storage_estimate, attempt, output_root)
                 if cancelled is not None and cancelled():
                     _terminate_process_group(process)
@@ -4452,13 +4470,22 @@ class GenericPackHost:
                 returncode=returncode,
                 process_id=process_id,
             )
+        except BaseException as exc:
+            # The first census may fail before tree_members exists. Latch
+            # before the finalizer can select a successful group-only fallback.
+            if isinstance(exc, CleanupUncertainError) or hasattr(process, "_astrid_tree_uncertain"):
+                self._cleanup_uncertain = True
+            raise
         finally:
-            if process.poll() is None:
+            try:
                 _terminate_process_group(process)
-            self._untrack_process(process)
-            _release_owned_group(process)
-            env.clear()
-            secrets.clear()
+            except BaseException as exc:
+                self._cleanup_uncertain = True
+                raise HostError(f"owned command cleanup uncertain: {exc}") from exc
+            finally:
+                self._untrack_process(process)
+                env.clear()
+                secrets.clear()
 
     def invoke_capability(
         self,

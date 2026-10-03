@@ -543,6 +543,7 @@ def _stage_effect_assets_for_timeline(
     project_dir: Path,
     theme_path: Path | None,
     render_hash: str,
+    composition_clip_types: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     # Resolve one immutable element registry for this render. Effects and
     # animation/transition references must agree even if the filesystem pack
@@ -567,6 +568,7 @@ def _stage_effect_assets_for_timeline(
             if isinstance(clip, Mapping)
             and isinstance(clip.get("clipType"), str)
             and clip.get("clipType") not in _BUILTIN_MEDIA_CLIP_TYPES
+            and clip.get("clipType") not in composition_clip_types
             and clip.get("clipType") != "effect-layer"
             and clip.get("clipType") not in effects
             and clip.get("clipType") not in aliases
@@ -674,6 +676,8 @@ def _execute_remotion(
     materialized_root: Path | None = None,
     staging_parent: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    composition_clip_types: frozenset[str] = frozenset(),
+    encode_aac_at_stitch: bool = False,
 ) -> _ExecutionDetails:
     """Render one private video and return the data needed for provenance."""
 
@@ -695,6 +699,8 @@ def _execute_remotion(
                 materialized_root=materialized_root,
                 staging_parent=staging_parent,
                 materialized_objects=materialized_objects,
+                composition_clip_types=composition_clip_types,
+                encode_aac_at_stitch=encode_aac_at_stitch,
             )
 
     # Direct backend callers may pass the final output as the staging path.
@@ -727,6 +733,8 @@ def _execute_remotion(
                 materialized_root=materialized_root,
                 staging_parent=staging_parent,
                 materialized_objects=materialized_objects,
+                composition_clip_types=composition_clip_types,
+                encode_aac_at_stitch=encode_aac_at_stitch,
             )
         os.replace(isolated_stage, final_path)
         return details
@@ -749,6 +757,8 @@ def _execute_remotion_locked(
     materialized_root: Path | None = None,
     staging_parent: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    composition_clip_types: frozenset[str] = frozenset(),
+    encode_aac_at_stitch: bool = False,
 ) -> _ExecutionDetails:
     """Execute one render while the caller owns the non-recursive outer lock."""
 
@@ -824,6 +834,20 @@ def _execute_remotion_locked(
             # ProRes 4444 is the alpha path); the unstamped path keeps
             # today's jpeg/h264/MP4 contract exactly.
             alpha = _timeline_alpha(merged_props["timeline"])
+            # Remotion 4.0.509 otherwise compresses the mix to raw ADTS AAC
+            # before copying it into MP4, losing encoder priming metadata.
+            # Keep this correction explicit and scoped to opaque MP4 capture.
+            # PCM requires a .mov/.mkv CLI name; the Astrid config hook writes
+            # MP4 bytes to this invocation-private .mov, then we stage them at
+            # the original path without changing the published output profile.
+            pcm_aac_mp4 = (
+                encode_aac_at_stitch
+                and not alpha
+                and staged_video.suffix.lower() == ".mp4"
+            )
+            cli_video = (
+                remotion_temp_root / "capture.mov" if pcm_aac_mp4 else staged_video
+            )
             if alpha:
                 # Theme background neutralization: the DOM
                 # TimelineComposition paints ``theme.visual.color.bg`` as an
@@ -840,6 +864,7 @@ def _execute_remotion_locked(
                 project_dir=project_dir,
                 theme_path=theme_path,
                 render_hash=render_hash,
+                composition_clip_types=composition_clip_types,
             )
             staged_video.parent.mkdir(parents=True, exist_ok=True)
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")
@@ -850,6 +875,8 @@ def _execute_remotion_locked(
                 "TMP": str(remotion_temp_root),
                 "TEMP": str(remotion_temp_root),
             }
+            if pcm_aac_mp4:
+                remotion_env_additions["ASTRID_REMOTION_PCM_AAC_OUTPUT"] = str(cli_video)
             schema_pythonpath = os.environ.get(TIMELINE_SCHEMA_PYTHONPATH_ENV)
             if schema_pythonpath:
                 # The renderer receives only the validated server-owned schema
@@ -867,7 +894,7 @@ def _execute_remotion_locked(
                 "--props",
                 str(props_path),
                 "--output",
-                str(staged_video),
+                str(cli_video),
                 "--allow-html-in-canvas",
                 "--enforce-audio-track",
                 f"--port={remotion_port}",
@@ -909,8 +936,22 @@ def _execute_remotion_locked(
                     f"--buffer-size={buffer_size_bps // 1000}K",
                     "--audio-bitrate=320K",
                 ]
+                if pcm_aac_mp4:
+                    # A MOV filename otherwise makes the CLI infer ProRes.
+                    remotion_args += [
+                        "--codec=h264",
+                        "--audio-codec=pcm-16",
+                        "--sample-rate=48000",
+                    ]
             if render_scale is not None and render_scale != 1:
                 remotion_args.append(f"--scale={render_scale:.15g}")
+            diagnostic_acceptance = any(clip.get('app', {}).get('liveScene', {}).get('__l1bTrace') is True for clip in merged_props['timeline'].get('clips', []))
+            diagnostic_trace = diagnostic_acceptance or any('<!-- astrid-l1b-diagnostic -->' in str(clip.get('app', {}).get('liveScene', {}).get('html', '')) for clip in merged_props['timeline'].get('clips', []))
+            diagnostic_root = project_dir.parent / '.otto' / 'l1b-fixtures'
+            diagnostic_label = 'acceptance' if diagnostic_acceptance else 'trace'
+            if diagnostic_trace:
+                remotion_args.append('--log=verbose')
+                (diagnostic_root / f'render-{diagnostic_label}-command.json').write_text(json.dumps({'args': remotion_args, 'cwd': str(project_dir)}))
             completed = subprocess.run(
                 remotion_args,
                 cwd=str(project_dir),
@@ -919,14 +960,19 @@ def _execute_remotion_locked(
                 check=False,
                 text=True,
             )
+            if diagnostic_trace:
+                (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(completed.stdout)
+                (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
             if completed.returncode != 0:
                 stderr_tail = _stderr_tail(completed.stderr)
                 message = f"Remotion render failed with exit code {completed.returncode}"
                 if stderr_tail:
                     message = f"{message}\n{stderr_tail}"
                 raise RuntimeError(message)
-            if not staged_video.is_file() or staged_video.stat().st_size <= 0:
+            if not cli_video.is_file() or cli_video.stat().st_size <= 0:
                 raise RuntimeError("Remotion render did not produce a non-empty video")
+            if pcm_aac_mp4:
+                os.replace(cli_video, staged_video)
             return _ExecutionDetails(
                 active_theme=theme_for_props,
                 registry_state=registry_state,

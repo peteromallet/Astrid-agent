@@ -299,6 +299,22 @@ def _validate_render_element_clip_types(
         if not isinstance(clip, Mapping):
             continue
         clip_type = clip.get("clipType", "media")
+        if clip_type == "com.reigh.astrid.liveScene":
+            from astrid.packs.rendering.live_scenes.package import validate_package
+
+            path = f"$.clips[{index}].app.liveScene"
+            try:
+                app = clip.get("app")
+                validate_package(app.get("liveScene") if isinstance(app, Mapping) else None)
+            except (ValueError, TypeError) as exc:
+                raise ManagedRenderValidationError(
+                    f"canonical timeline {snapshot.timeline_slug!r} is not renderable at {path}: {exc}",
+                    path=path,
+                    reason=str(exc),
+                    recovery="Repair the prepared scene package integrity, then retry.",
+                    validator="prepared_live_scene_package",
+                ) from exc
+            continue
         if not isinstance(clip_type, str) or clip_type in known:
             continue
         path = f"$.clips[{index}].clipType"
@@ -819,14 +835,14 @@ def _exact_mapping(value: Any, *, label: str) -> Mapping[str, Any]:
     return value
 
 
-def _project_exact_parent_head(
+def _read_exact_parent_head(
     *,
     client: Any,
     project_id: str,
     timeline_id: str,
     parent_revision_id: str,
-) -> tuple[Mapping[str, Any], Any, dict[str, Any]]:
-    """Read and project the closure pinned by one immutable parent head."""
+) -> Mapping[str, Any]:
+    """Read one immutable parent head without resolving its child closure."""
 
     reader = _exact_revision_reader(client)
     parent = _exact_mapping(
@@ -837,6 +853,32 @@ def _project_exact_parent_head(
     )
     if parent.get("revision_id") != parent_revision_id:
         raise ValueError("Runtime returned a different parent composition revision")
+    if str(parent.get("project_id")) != project_id:
+        raise ValueError("Runtime returned a parent composition for a different project")
+    if str(parent.get("timeline_id")) != timeline_id:
+        raise ValueError("Runtime returned a parent composition for a different timeline")
+    content_digest = parent.get("content_digest")
+    if not isinstance(content_digest, str) or not content_digest.startswith("sha256:"):
+        raise ValueError("canonical parent head has no content digest")
+    return parent
+
+
+def _project_exact_parent_head(
+    *,
+    client: Any,
+    project_id: str,
+    timeline_id: str,
+    parent_revision_id: str,
+) -> tuple[Mapping[str, Any], Any, dict[str, Any]]:
+    """Read and project the closure pinned by one immutable parent head."""
+
+    parent = _read_exact_parent_head(
+        client=client,
+        project_id=project_id,
+        timeline_id=timeline_id,
+        parent_revision_id=parent_revision_id,
+    )
+    reader = _exact_revision_reader(client)
     payload = parent.get("payload")
     occurrences = payload.get("occurrences") if isinstance(payload, Mapping) else None
     if not isinstance(occurrences, list):
@@ -1006,20 +1048,20 @@ def resolve_managed_render_snapshot(
 
     timeline_slug = str(listed_timeline.get("slug") or timeline_ref)
     project_id = str(project.get("id") or project["project_id"])
-    exact_parent, projected, expansion = _project_exact_parent_head(
-        client=client,
-        project_id=project_id,
-        timeline_id=timeline_id,
-        parent_revision_id=parent_head,
-    )
-    config = projected.config
-    stored_registry = projected.registry
-    composition_graph = projected.graph
-
-    parent_digest = exact_parent.get("content_digest")
-    if not isinstance(parent_digest, str) or not parent_digest.startswith("sha256:"):
-        raise ValueError("canonical parent head has no content digest")
     if candidate_preview:
+        # Candidate previews replace this base with their own frozen closure.
+        # Resolve only the exact parent identity here: superseded source
+        # children may be unavailable or intentionally unrenderable, and must
+        # not be fetched before the candidate's changed/reused pins are read.
+        exact_parent = _read_exact_parent_head(
+            client=client,
+            project_id=project_id,
+            timeline_id=timeline_id,
+            parent_revision_id=parent_head,
+        )
+        parent_digest = str(exact_parent["content_digest"])
+        identity_config: dict[str, Any] = {"tracks": [], "clips": []}
+        identity_registry: dict[str, Any] = {"assets": {}}
         return ManagedRenderSnapshot(
             project_id=project_id,
             project_slug=str(project["slug"]),
@@ -1029,14 +1071,23 @@ def resolve_managed_render_snapshot(
             config_version=version,
             head_event_id=parent_head,
             head_hash=parent_digest.removeprefix("sha256:"),
-            config=copy.deepcopy(config),
-            registry=copy.deepcopy(stored_registry),
-            config_hash=_digest(config),
-            registry_hash=_digest(stored_registry),
-            materialized_registry_hash=_digest(stored_registry),
-            expansion=expansion,
-            composition_graph=composition_graph,
+            config=identity_config,
+            registry=identity_registry,
+            config_hash=_digest(identity_config),
+            registry_hash=_digest(identity_registry),
+            materialized_registry_hash=_digest(identity_registry),
         )
+
+    exact_parent, projected, expansion = _project_exact_parent_head(
+        client=client,
+        project_id=project_id,
+        timeline_id=timeline_id,
+        parent_revision_id=parent_head,
+    )
+    config = projected.config
+    stored_registry = projected.registry
+    composition_graph = projected.graph
+    parent_digest = str(exact_parent["content_digest"])
 
     # The SDK's read model is the authority. Keep runtime-admitted media
     # identities in the snapshot; the generic host supplies bytes to the child

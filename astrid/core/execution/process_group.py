@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class CleanupUncertainError(RuntimeError):
+    """Owned process absence could not be proved; retain its attempt."""
+
+
 @dataclass(frozen=True)
 class _ProcessInfo:
     pid: int
@@ -33,6 +37,8 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
             timeout=1.0,
         )
     except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
         return {}
     entries: dict[int, _ProcessInfo] = {}
     for line in result.stdout.splitlines():
@@ -292,34 +298,115 @@ def _tree_members(
     }
 
 
+def observe_tree(process: subprocess.Popen) -> dict[int, str]:
+    """Remember birth-fenced ancestry while parents still exist, across sessions.
+
+    An empty census is never evidence of absence (``ps`` itself must exist).
+    Never adopt children of a missing or recycled previously observed parent.
+    """
+    uncertainty = getattr(process, "_astrid_tree_uncertain", None)
+    if uncertainty is not None:
+        raise CleanupUncertainError(uncertainty)
+    try:
+        return _observe_tree(process)
+    except BaseException as exc:
+        # An observation gap may hide a detached child that later reparents.
+        # A later successful census cannot recover the lost ancestry proof.
+        process._astrid_tree_uncertain = str(exc) or type(exc).__name__
+        raise
+
+
+def _observe_tree(process: subprocess.Popen) -> dict[int, str]:
+    snapshot = _process_snapshot()
+    if not snapshot:
+        raise CleanupUncertainError("owned process census unavailable")
+    known = getattr(process, "_astrid_tree_members", None)
+    if known is None:
+        known = {}
+        process._astrid_tree_members = known
+    if not known and process.pid not in snapshot:
+        raise CleanupUncertainError("owned leader exited before ancestry capture")
+    for pid, birth in tuple(known.items()):
+        current = snapshot.get(pid)
+        if current is not None and current.birth != birth:
+            raise CleanupUncertainError("owned process identity was reused")
+        if current is None and any(
+            info.ppid == pid and info.pid not in known for info in snapshot.values()
+        ):
+            raise CleanupUncertainError("unverified child of missing owned parent")
+    live = _tree_members(process, known, snapshot)
+    if process.pid not in known:
+        raise CleanupUncertainError("owned leader identity unavailable")
+    return live
+
+
+def verify_tree_absent(process: subprocess.Popen) -> None:
+    """Fail closed unless tracked identities and a private owned group are gone."""
+    try:
+        _verify_tree_absent(process)
+    except BaseException as exc:
+        process._astrid_tree_uncertain = str(exc) or type(exc).__name__
+        raise
+
+
+def _verify_tree_absent(process: subprocess.Popen) -> None:
+    if observe_tree(process):
+        raise CleanupUncertainError("owned command descendants remain")
+    if hasattr(process, "_astrid_process_group_id"):
+        snapshot = _process_snapshot()
+        if not snapshot:
+            raise CleanupUncertainError("owned group absence census unavailable")
+        if any(info.pgid == _group_id(process) for info in snapshot.values()):
+            raise CleanupUncertainError("owned group members remain")
+
+
 def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
-    """Terminate only *process* and descendants inside an inherited session."""
-    known: dict[int, str] = {}
-    _tree_members(process, known)
-    _signal_valid_tree_members(process, known, signal.SIGTERM)
+    """Stop a birth/ancestry-fenced tree, descendants before the leader.
+
+    Unlike group cleanup this never signals a containing/inherited group.
+    Ownership is remembered during execution, not recovered by name/path after
+    a parent exits. Success certifies observed identities absent.
+    """
+    try:
+        _terminate_tree(process, grace_seconds=grace_seconds)
+    except BaseException as exc:
+        process._astrid_tree_uncertain = str(exc) or type(exc).__name__
+        raise
+
+
+def _terminate_tree(process: subprocess.Popen, *, grace_seconds: float) -> None:
+    live = observe_tree(process)
+    known = process._astrid_tree_members
+    descendants = {pid: birth for pid, birth in live.items() if pid != process.pid}
+    _signal_valid_tree_members(process, descendants, signal.SIGTERM, strict=True)
     deadline = time.monotonic() + max(0.0, grace_seconds)
     while time.monotonic() < deadline:
-        snapshot = _process_snapshot()
-        live = _tree_members(process, known, snapshot)
-        if not live:
+        live = observe_tree(process)
+        if not any(pid != process.pid for pid in live):
             break
         time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+    # Keep the root alive through the descendant census and escalation. Late
+    # same-group members remain covered by the caller's owned-group cleanup.
+    live = observe_tree(process)
+    _signal_valid_tree_members(
+        process, {pid: birth for pid, birth in live.items() if pid != process.pid},
+        signal.SIGKILL, strict=True,
+    )
+    _signal_valid_tree_members(process, {process.pid: known[process.pid]}, signal.SIGTERM, strict=True)
     kill_deadline = time.monotonic() + max(1.0, grace_seconds)
     while time.monotonic() < kill_deadline:
-        snapshot = _process_snapshot()
-        live = _tree_members(process, known, snapshot)
+        process.poll()  # reap our direct child before its absence check
+        live = observe_tree(process)
         if not live:
             break
-        _signal_valid_tree_members(process, known, signal.SIGKILL, snapshot)
+        _signal_valid_tree_members(process, live, signal.SIGKILL, strict=True)
         time.sleep(0.02)
     try:
-        process.wait(timeout=max(1.0, grace_seconds))
+        process.wait(timeout=0)
     except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        process.wait()
+        raise CleanupUncertainError("owned leader survived bounded termination")
+    if observe_tree(process):
+        raise CleanupUncertainError("owned descendants survived bounded termination")
 
 
 def _signal_valid_tree_members(
@@ -327,16 +414,26 @@ def _signal_valid_tree_members(
     members: dict[int, str],
     sig: int,
     snapshot: dict[int, _ProcessInfo] | None = None,
+    *, strict: bool = False,
 ) -> None:
     snapshot = _process_snapshot() if snapshot is None else snapshot
-    for pid, birth in tuple(members.items()):
+    if strict and not snapshot:
+        raise CleanupUncertainError("owned signal census unavailable")
+    for pid, birth in reversed(tuple(members.items())):
         info = snapshot.get(pid)
-        if info is None or info.birth != birth:
+        if info is None:
+            continue
+        if info.birth != birth:
+            if strict:
+                raise CleanupUncertainError("owned signal identity was reused")
             continue
         try:
             os.kill(pid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
             pass
+        except OSError as exc:
+            if strict:
+                raise CleanupUncertainError("owned process signal failed") from exc
 
 
 def release_group(process: subprocess.Popen) -> None:

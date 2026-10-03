@@ -6,11 +6,12 @@ complete Astrid timelines through the ``ThreeTimelineComposition`` via the
 shared Remotion execution helper + lock.  The test exercises:
 
 * static manifest discovery + registry inspection;
-* honest support (text-only, background-only/empty accepted; media/hold/
+* honest support (text, prepared scenes, ordinary audio, background/empty;
+  visual media/hold/
   effect-layer/unknown clips, effects, transitions, animation, opacity != 1,
-  unsupported text fields/params, audio tracks/audible clips and
+  unsupported text fields/params, non-media audio/audible scenes and
   passthrough/none ownership rejected with stable clip-specific reasons);
-* window == None enforced on support and render;
+* matching frame windows admitted; mismatched frame clocks rejected;
 * own-namespace config only (unknown keys rejected, other backends' config
   ignored, v1 render accepts no own-namespace config);
 * protocol failure results are valid structured errors;
@@ -174,10 +175,10 @@ def test_threejs_manifest_registers_static_raw_command_backend() -> None:
     assert manifest.required_binaries == ("node", "npx", "ffprobe")
     assert manifest.timeout_seconds == 600
     capabilities = manifest.capabilities
-    assert capabilities["clip_types"] == ["text"]
-    assert capabilities["track_types"] == ["visual"]
+    assert capabilities["clip_types"] == ["text", "media", "com.reigh.astrid.liveScene"]
+    assert capabilities["track_types"] == ["visual", "audio"]
     assert capabilities["supports_full_timeline"] is True
-    assert capabilities["supports_windows"] is False
+    assert capabilities["supports_windows"] is True
     assert capabilities["output_profiles"] == ["video/mp4"]
     assert capabilities["audio_ownership"] == ["rendered"]
     features = capabilities["features"]
@@ -357,8 +358,7 @@ def test_threejs_support_rejects_unsupported_timelines_with_clip_reasons(
             {"id": "a1", "kind": "audio", "label": "A"},
         ],
     )
-    assert any("audio tracks are not supported" in r for r in reasons)
-    assert any("clip[0] sits on an audio track" in r for r in reasons)
+    assert any("audio tracks require ordinary media clips" in r for r in reasons)
     reasons = reasons_for(
         {
             "id": "c",
@@ -386,12 +386,15 @@ def test_threejs_support_rejects_non_rendered_audio_ownership(tmp_path: Path) ->
         ), report.reasons
 
 
-def test_threejs_support_and_render_reject_native_window(tmp_path: Path) -> None:
+def test_threejs_support_accepts_window_and_rejects_fps_mismatch(tmp_path: Path) -> None:
     timeline_path = _text_timeline(tmp_path)
     window = FrameWindow(start_frame=0, end_frame=30, fps_rational=(24, 1))
     report = support(THREEJS_ID, timeline_path=timeline_path, window=window)
+    assert report.supported is True, report.reasons
+    window = FrameWindow(start_frame=0, end_frame=30, fps_rational=(30, 1))
+    report = support(THREEJS_ID, timeline_path=timeline_path, window=window)
     assert report.supported is False
-    assert any("native frame windows" in reason for reason in report.reasons)
+    assert any("window FPS" in reason for reason in report.reasons)
 
     from astrid.core.rendering.contracts import RenderRequest
 

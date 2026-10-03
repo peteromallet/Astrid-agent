@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -12,8 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.execution import process_group
-from astrid.core.execution.guards import ExecutionGuardPolicy
+from astrid.core.execution import generic_host, process_group
 from astrid.core.execution.generic_host import (
     AdapterRegistry,
     GenericPackHost,
@@ -28,6 +27,7 @@ from astrid.core.execution.generic_host import (
     _task_storage_envelope,
     _terminate_process_group,
 )
+from astrid.core.execution.guards import ExecutionGuardPolicy
 
 
 class FakeRuntime:
@@ -778,6 +778,210 @@ def test_cancellation_terminates_descendant_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("descendant survived cancellation")
+
+
+@pytest.mark.parametrize("failure", [
+    "unavailable", "observation-error", "interrupted-census", "escaped-child",
+    "pid-reuse", "parent-missing", "signal-error",
+])
+def test_tree_uncertainty_retains_attempt_and_blocks_claim_after_group_cleanup(
+    tmp_path, monkeypatch, failure,
+):
+    """A successful group fallback cannot certify an unseen detached writer."""
+    root = tmp_path / "writer-pack"
+    manifest_path = _write_manifest(root)
+    manifest = json.loads(manifest_path.read_text())
+    writer_pid_path = tmp_path / "writer.pid"
+    writer_code = (
+        "import os,time; from pathlib import Path; "
+        "Path('{out}/retained.txt').write_text('attempt evidence'); "
+        f"Path({str(writer_pid_path)!r}).write_text(str(os.getpid())); "
+        "target=Path('{out}/writer.txt')\n"
+        "while True:\n    target.write_text('still owned'); time.sleep(0.02)\n"
+    )
+    manifest["command"]["argv"] = [
+        "{python_exec}", "-c",
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable,'-c',{writer_code!r}], start_new_session=True); "
+        "time.sleep(30)",
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[root], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    task = {"task": {
+        "id": "census-task", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "census-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["census-task"] = task
+    attempt = tmp_path / "attempts" / "census-task-census-attempt"
+    writer_info = []
+    fallback_called = []
+    original_snapshot = process_group._process_snapshot
+
+    def fail_first_census(process):
+        assert not hasattr(process, "_astrid_tree_members")
+        deadline = time.monotonic() + 5
+        while not writer_pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert writer_pid_path.exists()
+        pid = int(writer_pid_path.read_text())
+        info = original_snapshot()[pid]
+        assert info.ppid == process.pid
+        assert info.pgid == pid and info.pgid != process.pid
+        writer_info.append(info)
+        if failure in {"pid-reuse", "parent-missing", "signal-error"}:
+            process_group.observe_tree(process)
+        bad = original_snapshot()
+        if failure == "escaped-child":
+            del bad[process.pid]
+            bad[pid] = process_group._ProcessInfo(pid, 1, info.pgid, info.birth)
+        elif failure == "pid-reuse":
+            bad[pid] = process_group._ProcessInfo(pid, info.ppid, info.pgid, "reused-writer")
+        elif failure == "parent-missing":
+            del bad[pid]
+            bad[999999] = process_group._ProcessInfo(999999, pid, 999999, "unverified-child")
+        with monkeypatch.context() as census_patch:
+            def census():
+                if failure == "observation-error":
+                    raise RuntimeError("injected observation failure")
+                if failure == "interrupted-census":
+                    raise KeyboardInterrupt()
+                return {} if failure == "unavailable" else bad
+            census_patch.setattr(process_group, "_process_snapshot", census)
+            if failure == "signal-error":
+                def denied(*_):
+                    raise PermissionError("injected writer signal failure")
+                census_patch.setattr(os, "kill", denied)
+                process_group.terminate_tree(process, grace_seconds=0)
+            else:
+                process_group.observe_tree(process)
+
+    def group_only_fallback(process, **_kwargs):
+        process_group.terminate_group(process, grace_seconds=0.05)
+        assert process.poll() is not None
+        fallback_called.append(process.pid)
+
+    monkeypatch.setattr(generic_host, "observe_tree", fail_first_census)
+    monkeypatch.setattr(generic_host, "_terminate_process_group", group_only_fallback)
+    try:
+        with pytest.raises(HostError, match="owned cleanup incomplete"):
+            host.run_task(task, lease_token="lease-census")
+        assert fallback_called
+        assert host._cleanup_uncertain
+        assert host.last_cleanup_receipt["status"] == "uncertain"
+        assert attempt.is_dir()
+        assert (attempt / "outputs" / "retained.txt").read_text() == "attempt evidence"
+        assert (attempt / "outputs" / "writer.txt").exists()
+        info = writer_info[0]
+        assert original_snapshot()[info.pid].birth == info.birth
+        with pytest.raises(HostError, match="cleanup uncertainty"):
+            host.claim_once()
+        with pytest.raises(HostError, match="cleanup uncertainty"):
+            host.run_task(task, lease_token="later-lease")
+        assert not hasattr(runtime, "claim_payload")
+        assert runtime.uploaded_objects == {} and runtime.settlements == []
+    finally:
+        # Only this test's exact birth-fenced detached writer is signalled.
+        for info in writer_info:
+            current = original_snapshot().get(info.pid)
+            if current is not None and current.birth == info.birth:
+                os.kill(info.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 3
+        while any(original_snapshot().get(info.pid) for info in writer_info):
+            assert time.monotonic() < deadline, "test writer failed to exit"
+            time.sleep(0.02)
+
+
+def test_cancellation_verifies_detached_writer_tree_before_cleanup_and_reuses_host(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "tree-pack"
+    manifest_path = _write_manifest(root, capability_id="test.tree")
+    manifest = json.loads(manifest_path.read_text())
+    registry = tmp_path / "tree-identities"
+    fixture = Path(__file__).parent / "core/rendering/fixtures/owned_tree_backend.py"
+    manifest["command"]["argv"] = ["{python_exec}", str(fixture), "pack", "{out}", str(registry)]
+    manifest_path.write_text(json.dumps(manifest))
+    _write_manifest(tmp_path / "echo")
+    observed = []
+    original_observe = generic_host.observe_tree
+    original_cleanup = generic_host._cleanup_ephemeral_attempt
+    sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"])
+
+    def observe(process):
+        live = original_observe(process)
+        if not observed:
+            observed.append(process)
+        return live
+
+    class CancelWhenOwned(FakeRuntime):
+        def task(self, task_id):
+            result = self.tasks[task_id]
+            if task_id == "tree-task" and (registry / "worker.pid").exists() and observed:
+                identities = {int(path.read_text()) for path in registry.glob("*.pid")}
+                if len(identities) == 5 and identities <= observed[0]._astrid_tree_members.keys():
+                    pids = {path.stem: int(path.read_text()) for path in registry.glob("*.pid")}
+                    census = process_group._process_snapshot()
+                    for parent, child in (("pack", "backend"), ("backend", "node"), ("node", "browser"), ("browser", "worker")):
+                        assert census[pids[child]].ppid == pids[parent]
+                    assert census[pids["backend"]].pgid == pids["backend"] != pids["pack"]
+                    assert census[pids["browser"]].pgid == pids["browser"] != pids["backend"]
+                    result["task"]["status"] = "cancelled"
+            return result
+
+    runtime = CancelWhenOwned()
+    host = GenericPackHost(pack_roots=[root, tmp_path / "echo"], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    task = {"task": {
+        "id": "tree-task", "capability": "test.tree", "project_id": "demo",
+        "attempt_id": "tree-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["tree-task"] = task
+    deleted = []
+
+    def verify_before_delete(attempt):
+        if attempt.name == "tree-task-tree-attempt":
+            assert len(observed[0]._astrid_tree_members) == 5
+            snapshot = process_group._process_snapshot()
+            assert snapshot
+            assert not any(pid in snapshot for pid in observed[0]._astrid_tree_members)
+            assert sibling.poll() is None and os.getpid() in snapshot
+        original_cleanup(attempt)
+        deleted.append(attempt)
+
+    monkeypatch.setattr(generic_host, "observe_tree", observe)
+    monkeypatch.setattr(generic_host, "_cleanup_ephemeral_attempt", verify_before_delete)
+    try:
+        result = host.run_task(task, lease_token="lease-tree")
+        assert result["status"] == "cancelled"
+        assert runtime.tasks["tree-task"]["task"]["status"] == "cancelled"
+        assert runtime.uploaded_objects == {} and runtime.settlements == [] and runtime.failures == []
+        assert host.last_cleanup_receipt["status"] == "deleted"
+        assert not host._cleanup_uncertain and not host._active_processes
+        stopped_write = (registry / "last-write.txt").read_text()
+        time.sleep(0.1)
+        assert (registry / "last-write.txt").read_text() == stopped_write
+        assert not (tmp_path / "attempts" / "tree-task-tree-attempt").exists()
+        later = {"task": {
+            **task["task"], "id": "later-task", "capability": "test.echo",
+            "attempt_id": "later-attempt", "status": "running",
+        }}
+        runtime.tasks["later-task"] = later
+        assert host.run_task(later, lease_token="lease-later")["task"]["status"] == "completed"
+        assert len(runtime.settlements) == 1 and not host._cleanup_uncertain
+        assert len(deleted) == 2 and sibling.poll() is None
+    finally:
+        # All fixture PIDs are descendants captured while ancestry was alive.
+        for process in observed:
+            snapshot = process_group._process_snapshot()
+            for pid, birth in reversed(tuple(getattr(process, "_astrid_tree_members", {}).items())):
+                info = snapshot.get(pid)
+                if info is not None and info.birth == birth:
+                    os.kill(pid, signal.SIGKILL)
+            process.wait(timeout=3)
+        sibling.terminate()
+        sibling.wait(timeout=3)
 
 
 def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_path):
