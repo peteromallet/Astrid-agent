@@ -21,6 +21,7 @@ from banodoco_workspace_client.contract_metadata import (
     PROTOCOL,
     SCHEMA_DIGEST,
     SOURCE_COMMIT,
+    SOURCE_STATE,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,9 +34,9 @@ METADATA_PATH = ROOT / "banodoco_workspace_client" / "contract_metadata.py"
 # silently alter the shipped transport.
 PINNED_PROTOCOL = "workspace.v1"
 PINNED_COMPONENT_MANIFEST_SHA256 = "sha256:fcae767eaba85e406658ac3b14f3c3447e11073dffcb5e1256e223bdb84f51f4"
-PINNED_SCHEMA_DIGEST = "sha256:62da8b1285ba3586b3b9707d4f7ea9b1bd4c31833b7fffc6cbacd2b2a8442f0f"
-PINNED_GENERATED_SHA256 = "2d7f7d48cbbf1505559b55431506f4cc0f5ce808f73f2b92f654f1cb303b04cd"
-PINNED_METADATA_SHA256 = "e1ccb0597707377478f893857a62bd4610062731ce4fca9bd56ecd0d4917ce89"
+PINNED_SCHEMA_DIGEST = "sha256:d2f5a6d546f5220b0e33b52dec114e502d1aa9be58f83a376d6efc9ede8d7860"
+PINNED_GENERATED_SHA256 = "63e5ad02938d01d2366b08bc303f23e5724bf67e19215080e577eebdf33c8330"
+PINNED_METADATA_SHA256 = "6822e981f8fe3a0609072ddcc7edc96ee61c8bf6f6a80a14056c0835157a8b8b"
 
 
 def _camel_to_snake(value: str) -> str:
@@ -44,7 +45,8 @@ def _camel_to_snake(value: str) -> str:
 
 
 def test_vendored_client_is_the_frozen_runtime_artifact() -> None:
-    assert SOURCE_COMMIT == "a278cd460018976940ae21fc2cad563a29a29649"
+    assert SOURCE_COMMIT == "70e269bca3aaafed560289e93f0e30e5927679fb"
+    assert SOURCE_STATE == "source: local Runtime integration commit (not published)"
     assert PROTOCOL == PINNED_PROTOCOL == generated.PROTOCOL
     assert COMPONENT_MANIFEST_SHA256 == PINNED_COMPONENT_MANIFEST_SHA256
     assert SCHEMA_DIGEST == PINNED_SCHEMA_DIGEST == generated.SCHEMA_DIGEST

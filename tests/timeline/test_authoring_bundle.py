@@ -787,6 +787,12 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
             self.timelines = SimpleNamespace(
                 show=lambda _project, _ref: result(timeline),
                 list=lambda _project, **_kwargs: result([[timeline], None]),
+                inspect=lambda _project, _timeline, **_kwargs: result({
+                    "representation": "canonical_head",
+                    "is_current_head": True,
+                    "revision_id": "parent-1",
+                    "timeline_id": "main",
+                }),
             )
 
         def get_project_parent_composition_revision(self, _project, _timeline, revision_id):
@@ -962,6 +968,9 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
             project_id, b"voiceover", media_type="audio/wav", idempotency_key="audio"
         )["data"]["object_id"]
         parent, shots, timelines = _closure(shared=True)
+        # Runtime now requires authored shot text to pin a registered binding;
+        # this atomic compiler fixture is not testing text registration.
+        shots[0]["payload"]["text_bindings"] = []
         replacements = {OLD: old, NEW: new, AUDIO: audio, "project-1": project_id}
         parent = _replace_values(parent, replacements)
         shots = _replace_values(shots, replacements)

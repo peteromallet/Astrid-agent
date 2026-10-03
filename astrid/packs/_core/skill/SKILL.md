@@ -125,8 +125,7 @@ Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
 timeline work. Whole-document timeline saves are retired; edits are published
 through the detached authoring bundle. Read the [timeline editing skill](../../rendering/skill/SKILL.md)
 for the canonical authoring, Remotion, visualization, effects, and playback
-route. Use `tasks` and `runs` to inspect or manage
-admitted work:
+route. Use `tasks` and `runs` to inspect or manage admitted work:
 
 ```bash
 python3 -m astrid tasks list --project demo --json

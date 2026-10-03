@@ -1,6 +1,7 @@
 import {Config} from '@remotion/cli/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import {pcmAacMp4Stitch} from './pcm-aac-stitch';
 
 const projectDir = process.cwd();
 const activeThemeDir = path.resolve(projectDir, '_active_theme');
@@ -48,6 +49,12 @@ for (const rawRoot of (process.env.ASTRID_PACKS_PATH ?? '').split(path.delimiter
 Config.setVideoImageFormat('jpeg');
 Config.setOverwriteOutput(true);
 Config.setChromiumOpenGlRenderer('swangle');
+// Set only by Astrid's invocation-scoped Three.js MP4 capture path. Ordinary
+// Remotion and alpha/ProRes renders retain their existing audio mux behavior.
+const pcmAacOutput = process.env.ASTRID_REMOTION_PCM_AAC_OUTPUT;
+if (pcmAacOutput) {
+  Config.overrideFfmpegCommand(pcmAacMp4Stitch(pcmAacOutput));
+}
 Config.overrideWebpackConfig((currentConfiguration) => ({
   ...currentConfiguration,
   resolve: {

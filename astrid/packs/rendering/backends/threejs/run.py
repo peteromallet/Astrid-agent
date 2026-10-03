@@ -39,6 +39,7 @@ from astrid.core import timeline
 from astrid.core.foundation.atomic_io import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering.artifacts import validate_render_result
+from astrid.core.rendering.assets import AssetMaterializer
 from astrid.core.rendering.contracts import (
     SCHEMA_VERSION,
     AudioOwnership,
@@ -52,6 +53,7 @@ from astrid.core.rendering.errors import (
     make_renderer_error,
     raise_unsupported_error,
 )
+from astrid.core.rendering.service import RenderService
 from astrid.packs.rendering.backends._shared import (
     _alpha_output_name,
     _canonical_profile,
@@ -62,8 +64,9 @@ from astrid.packs.rendering.backends._shared import (
     _profile_mismatches,
     _reject_unknown_config,
     _remotion_mux_profile,
-    _review_output_profile,
     _render_provenance_payload,
+    _resolved_theme_for_render,
+    _review_output_profile,
     _serialize_timeline,
     _timeline_alpha,
 )
@@ -89,7 +92,8 @@ _CONFIG_KEYS = frozenset({"project_dir", "theme_path", "min_free_gb"})
 # params.anchor/offsetX/offsetY/textShadow/maxWidth/weight.
 _TEXT_TEXT_KEYS = frozenset({"content", "fontSize", "color", "align", "bold"})
 _TEXT_PARAM_KEYS = frozenset({"anchor", "offsetX", "offsetY", "textShadow", "maxWidth", "weight"})
-_SUPPORTED_CLIP_TYPES = frozenset({"text"})
+_LIVE_SCENE_CLIP_TYPE = "com.reigh.astrid.liveScene"
+_SUPPORTED_CLIP_TYPES = frozenset({"text", "media", _LIVE_SCENE_CLIP_TYPE})
 
 
 @dataclass(frozen=True)
@@ -104,16 +108,17 @@ class _ThreeSettings:
 # ---------------------------------------------------------------------------
 
 
-def _canvas(timeline: Mapping[str, Any]) -> tuple[int, int, int] | None:
-    overrides = timeline.get("theme_overrides") or {}
-    visual = overrides.get("visual") or {}
-    canvas = visual.get("canvas") or {}
-    width = canvas.get("width")
-    height = canvas.get("height")
-    fps = canvas.get("fps")
-    if not all(isinstance(v, int) and v > 0 for v in (width, height, fps)):
+def _canvas(timeline: Mapping[str, Any], *, theme: Mapping[str, Any] | None = None) -> tuple[int, int, int] | None:
+    from astrid.core.rendering.profile import resolve_render_profile
+
+    try:
+        profile = resolve_render_profile(timeline, theme=theme)
+    except (TypeError, ValueError):
         return None
-    return int(width), int(height), int(fps)
+    numerator, denominator = profile.fps_rational
+    if denominator != 1:
+        return None
+    return profile.width, profile.height, numerator
 
 
 def _effective_gain(clip: Mapping[str, Any], tracks: Sequence[Any]) -> float:
@@ -141,6 +146,8 @@ def _effective_gain(clip: Mapping[str, Any], tracks: Sequence[Any]) -> float:
 def _support_reasons(
     timeline_data: Mapping[str, Any],
     registry: Mapping[str, Any] | None = None,
+    *,
+    theme: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Return stable, clip-specific reasons this serialized timeline is
     unsupported by the Three.js composition (text clips only, visual-only,
@@ -153,10 +160,6 @@ def _support_reasons(
         for track in tracks
         if isinstance(track, dict) and track.get("kind") == "audio"
     ]
-    if audio_tracks:
-        reasons.append(
-            "audio tracks are not supported by the Three.js renderer: " + str(audio_tracks)
-        )
     for index, clip in enumerate(clips):
         if not isinstance(clip, dict):
             reasons.append(f"clip[{index}] is not an object")
@@ -164,10 +167,13 @@ def _support_reasons(
         clip_type = clip.get("clipType", "media")
         if clip_type not in _SUPPORTED_CLIP_TYPES:
             reasons.append(
-                f"clip[{index}] clipType {clip_type!r} is not supported (text clips only)"
+                f"clip[{index}] clipType {clip_type!r} is not supported (text or prepared live-scene clips only)"
             )
-        if clip.get("track") in audio_tracks:
-            reasons.append(f"clip[{index}] sits on an audio track")
+        is_audio = clip.get("track") in audio_tracks
+        if is_audio and clip_type != "media":
+            reasons.append(f"clip[{index}] audio tracks require ordinary media clips")
+        if clip_type == "media" and not is_audio:
+            reasons.append(f"clip[{index}] clipType 'media' is not supported on visual tracks")
         if clip.get("effects"):
             reasons.append(f"clip[{index}] effects are not supported in v1")
         if clip.get("transition"):
@@ -176,11 +182,35 @@ def _support_reasons(
             reasons.append(f"clip[{index}] animation is not supported in v1")
         if clip.get("opacity") not in (None, 1):
             reasons.append(f"clip[{index}] opacity != 1 is not supported in v1")
-        if _effective_gain(clip, tracks) > 0:
+        if not is_audio and _effective_gain(clip, tracks) > 0:
             reasons.append(
                 f"clip[{index}] carries audio; the Three.js renderer is "
                 "visual-only in v1 (set clip/track volume to 0)"
             )
+        if clip_type == _LIVE_SCENE_CLIP_TYPE:
+            package = (clip.get("app") or {}).get("liveScene")
+            try:
+                from astrid.packs.rendering.live_scenes.package import validate_package
+                validate_package(package)
+                # Use the same source bounds/rate algebra as window slicing.
+                RenderService._clip_end(
+                    clip, clip_start=RenderService._timeline_number(clip.get("at", 0), "clip.at")
+                )
+            except (ValueError, TypeError) as exc:
+                reasons.append(f"clip[{index}] invalid live scene: {exc}")
+            continue
+        if is_audio and clip_type == "media":
+            assets = (registry or {}).get("assets", {})
+            entry = assets.get(clip.get("asset")) if isinstance(assets, Mapping) else None
+            if not isinstance(entry, Mapping) or not (entry.get("object_id") or entry.get("media_id")):
+                reasons.append(f"clip[{index}] audio asset is missing from the registry")
+            try:
+                RenderService._clip_end(
+                    clip, clip_start=RenderService._timeline_number(clip.get("at", 0), "clip.at")
+                )
+            except (ValueError, TypeError) as exc:
+                reasons.append(f"clip[{index}] invalid audio timing: {exc}")
+            continue
         text_field = clip.get("text")
         if text_field is not None and not isinstance(text_field, dict):
             reasons.append(f"clip[{index}] text must be an object")
@@ -195,9 +225,22 @@ def _support_reasons(
             unknown_params = sorted(set(params) - _TEXT_PARAM_KEYS)
             if unknown_params:
                 reasons.append(f"clip[{index}] unsupported text params: {unknown_params}")
-    if _canvas(timeline_data) is None:
+    if _canvas(timeline_data, theme=theme) is None:
         reasons.append("canvas width/height/fps must be positive integers")
     return reasons
+
+
+def _window_timeline(timeline_data: dict[str, Any], request: RenderRequest, *, theme: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Materialize only the requested frames with the shared timeline algebra."""
+    window = request.window
+    if window is None:
+        return timeline_data
+    canvas = _canvas(timeline_data, theme=theme)
+    if canvas is None or window.fps_rational != (canvas[2], 1):
+        raise ValueError("frame window FPS must match the authored canvas FPS")
+    if window.source_range is not None or window.speed not in (None, 1):
+        raise ValueError("frame window source_range/speed resampling is not supported; use clip from/to/speed")
+    return RenderService._window_timeline(timeline_data, window)
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +328,7 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
         "effects": False,
         "transitions": False,
         "full_timeline": True,
-        "windows": False,
+        "windows": True,
         "alpha_output": True,
     }
 
@@ -295,9 +338,6 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
         settings = _default_settings()
         reasons.append(str(exc))
 
-    if request.window is not None:
-        reasons.append("rendering.threejs accepts complete timelines, not native frame windows")
-
     timeline_path = _input_path(request.timeline_path, workspace)
     assets_path = (
         _input_path(request.assets_registry_path, workspace)
@@ -306,21 +346,35 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
     )
     timeline_data: dict[str, Any] | None = None
     assets_data: dict[str, Any] | None = None
+    active_theme: Mapping[str, Any] | None = None
     try:
         timeline_data = _serialize_timeline(timeline_path)
+        active_theme = _resolved_theme_for_render(timeline_path, settings.theme_path)
+        timeline_data = _window_timeline(timeline_data, request, theme=active_theme)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         reasons.append(f"timeline is not renderable: {exc}")
     try:
         assets_data = _load_registry_mapping(assets_path)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         reasons.append(f"assets registry is not renderable: {exc}")
+    if assets_path is not None and assets_data is not None:
+        try:
+            with AssetMaterializer(
+                assets_path,
+                materialized_objects=request.materialized_objects,
+                materialized_root=request.materialized_root,
+                allow_derived_files=request.materialized_root is not None,
+            ):
+                pass
+        except (OSError, ValueError, TypeError) as exc:
+            reasons.append(f"local assets are not renderable: {exc}")
 
     if timeline_data is not None:
-        reasons.extend(_support_reasons(timeline_data, assets_data))
+        reasons.extend(_support_reasons(timeline_data, assets_data, theme=active_theme))
 
     if timeline_data is not None and assets_data is not None:
-        # The composition ignores audio content; Remotion still muxes an
-        # (enforced) AAC track, so ownership is always 'rendered'.
+        # Ordinary audio uses TimelineComposition's existing audio tracks.
+        # The live scene remains silent; the capture host always muxes audio.
         features["audio_ownership"] = AudioOwnership.RENDERED.value
         if request.audio is not None and request.audio is not AudioOwnership.RENDERED:
             reasons.append(
@@ -363,12 +417,11 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
 def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult:
     # Render re-validates everything itself; it never trusts a prior support
     # verdict.
-    if request.window is not None:
+    if request.audio not in (None, AudioOwnership.RENDERED):
         raise_unsupported_error(
             backend=BACKEND_ID,
-            message="Three.js renderer does not support native frame windows",
-            recovery_command="render complete timelines only",
-            details={"window": request.window.to_dict()},
+            message="Three.js capture requires rendered audio ownership",
+            recovery_command="request rendered audio ownership",
         )
     # v1 render takes no backend configuration (plan: reject non-empty
     # own-namespace backend_config); unknown keys fail loudly.
@@ -400,6 +453,8 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
 
     try:
         timeline_data = _serialize_timeline(timeline_path)
+        active_theme = _resolved_theme_for_render(timeline_path, settings.theme_path)
+        timeline_data = _window_timeline(timeline_data, request, theme=active_theme)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise_unsupported_error(
             backend=BACKEND_ID,
@@ -407,7 +462,7 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
             recovery_command="resolve the reported timeline problem and retry",
             details={"error": str(exc)},
         )
-    reasons = _support_reasons(timeline_data, None)
+    reasons = _support_reasons(timeline_data, _load_registry_mapping(requested_assets_path), theme=active_theme)
     if reasons:
         raise_unsupported_error(
             backend=BACKEND_ID,
@@ -443,6 +498,12 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
     output_path = outputs_dir / output_name
 
     with ExitStack() as lifecycle:
+        if request.window is not None:
+            window_tmp = lifecycle.enter_context(
+                TemporaryDirectory(prefix=".threejs-window-", dir=str(workspace))
+            )
+            timeline_path = Path(window_tmp) / "timeline.json"
+            write_json_atomic(timeline_path, timeline_data)
         if requested_assets_path is None:
             empty_assets_tmp = lifecycle.enter_context(
                 TemporaryDirectory(prefix=".threejs-empty-assets-", dir=str(workspace))
@@ -497,10 +558,15 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
             provenance_out_path=output_path,
             project_dir=settings.project_dir,
             composition_id=THREE_COMPOSITION_ID,
+            composition_clip_types=_SUPPORTED_CLIP_TYPES,
             theme_path=settings.theme_path,
             min_free_gb=settings.min_free_gb,
             review=review,
             render_scale=render_scale,
+            materialized_root=request.materialized_root,
+            staging_parent=workspace,
+            materialized_objects=request.materialized_objects,
+            encode_aac_at_stitch=True,
         )
         output_path.unlink(missing_ok=True)
         os.replace(staged_video, output_path)
@@ -534,6 +600,17 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                     "composition": THREE_COMPOSITION_ID,
                     **backend_provenance,
                     "review_scale": render_scale,
+                    "source_window": request.window.to_dict() if request.window else None,
+                    "live_scenes": [
+                        {
+                            "clip_id": clip.get("id"),
+                            "revision": clip["app"]["liveScene"]["revision"],
+                            "source": clip["app"]["liveScene"]["source"],
+                            **{key: clip.get(key) for key in ("at", "from", "to", "hold", "speed")},
+                        }
+                        for clip in timeline_data.get("clips", [])
+                        if clip.get("clipType") == _LIVE_SCENE_CLIP_TYPE
+                    ],
                 }
             },
             normalization=[],

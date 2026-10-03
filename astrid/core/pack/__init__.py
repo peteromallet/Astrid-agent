@@ -41,6 +41,14 @@ from astrid.core.pack._common import (
     validate_content_id_in_pack,
     validate_element_pack_id,
 )
+from astrid.core.pack.canonical import (
+    BundledCatalog,
+    CanonicalPackEntry,
+    CanonicalPackValidationError,
+    catalog_from_root,
+    read_normalize_validate,
+    validate_canonical_pack,
+)
 from astrid.core.pack.definition import (
     PackDefinition,
     PackPermission,
@@ -82,6 +90,7 @@ from astrid.core.pack.registry import (
     artifact_type_registry_for_pack,
     element_kind_registry_for_pack,
     pack_artifact_type_descriptors,
+    pack_editor_entry_paths,
     pack_element_kind_descriptors,
     pack_kind_descriptors,
     pack_rendering_manifest_paths,
@@ -97,14 +106,6 @@ from astrid.core.pack.walkers import (
     iter_executor_roots,
     iter_orchestrator_roots,
 )
-from astrid.core.pack.canonical import (
-    BundledCatalog,
-    CanonicalPackEntry,
-    CanonicalPackValidationError,
-    catalog_from_root,
-    read_normalize_validate,
-    validate_canonical_pack,
-)
 
 __all__ = [
     "ElementKindDescriptor",
@@ -118,6 +119,7 @@ __all__ = [
     "iter_executor_roots",
     "iter_orchestrator_roots",
     "load_pack_manifest",
+    "pack_editor_entry_paths",
     "pack_taxonomy_from_manifest",
     "pack_manifest_path",
     "pack_rendering_manifest_paths",

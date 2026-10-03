@@ -1016,15 +1016,16 @@ class RenderService:
     ) -> tuple[RenderRequest, dict[str, str]]:
         """Adapt a planned window for full-timeline-only renderers.
 
-        Window-aware third-party renderers receive the canonical ``window``
-        field unchanged.  A renderer that explicitly declares
+        Unlayered window-aware renderers receive the canonical ``window``
+        field unchanged. LayerRef track isolation and alpha stamps remain
+        host-owned, so layered segments are always materialized. A renderer that explicitly declares
         ``supports_windows: false`` receives an invocation-private sliced
         timeline and a null window, preserving the behavior of Astrid's
         existing full-timeline backends without teaching the service any
         concrete backend identities.
         """
 
-        if candidate.manifest.capabilities.get("supports_windows") is not False:
+        if segment.layer is None and candidate.manifest.capabilities.get("supports_windows") is not False:
             return request, {}
         timeline_path = Path(request.timeline_path)
         try:
@@ -1144,7 +1145,9 @@ class RenderService:
         result["id"] = (
             f"{clip.get('id', 'clip')}_{window.start_frame}_{window.end_frame}"
         )
-        if clip.get("clipType", "media") == "media":
+        if clip.get("clipType", "media") == "media" or (
+            isinstance(clip.get("app"), Mapping) and "liveScene" in clip["app"]
+        ):
             speed = cls._timeline_number(clip.get("speed", 1), "clip.speed")
             if speed <= 0:
                 raise ValueError("clip.speed must be positive")
@@ -1154,6 +1157,8 @@ class RenderService:
             result["to"] = float(
                 source_from + (visible_end - visible_start) * speed
             )
+            if clip.get("clipType", "media") != "media" and "hold" in result:
+                result["hold"] = float((visible_end - visible_start) * speed)
         elif isinstance(clip.get("hold"), (int, float)) and not isinstance(
             clip.get("hold"), bool
         ):
@@ -1164,7 +1169,14 @@ class RenderService:
     def _clip_end(
         cls, clip: Mapping[str, Any], *, clip_start: Fraction
     ) -> Fraction:
-        if clip.get("clipType", "media") == "media":
+        if clip.get("clipType", "media") == "media" or (
+            isinstance(clip.get("app"), Mapping) and "liveScene" in clip["app"]
+        ):
+            if clip.get("clipType", "media") != "media" and isinstance(clip.get("hold"), (int, float)):
+                speed = cls._timeline_number(clip.get("speed", 1), "clip.speed")
+                if speed <= 0:
+                    raise ValueError("clip.speed must be positive")
+                return clip_start + cls._timeline_number(clip["hold"], "clip.hold") / speed
             source_from = cls._timeline_number(clip.get("from", 0), "clip.from")
             if "to" not in clip:
                 raise ValueError("media clip must declare a source to bound")

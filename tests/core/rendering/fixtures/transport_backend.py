@@ -47,6 +47,8 @@ def main() -> int:
     if action == "malformed":
         Path(args.result).write_text("{not-json", encoding="utf-8")
         return 0
+    if action == "delayed-result":
+        time.sleep(float(request.get("delay_seconds", 0.15)))
     if action == "environment":
         payload = request["payload"]
         payload["metadata"] = {
@@ -59,7 +61,7 @@ def main() -> int:
         parent_pid_path = Path(request["parent_pid_path"])
         child_pid_path = Path(request["child_pid_path"])
         ignore_term = bool(request.get("ignore_term", False))
-        child = subprocess.Popen(
+        subprocess.Popen(
             [
                 sys.executable,
                 __file__,

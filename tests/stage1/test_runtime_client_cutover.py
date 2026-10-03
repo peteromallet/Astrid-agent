@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ASTRID_SOURCE = Path(__file__).resolve().parents[2]
-RUNTIME_COMMIT = "8b890b2d81bea0e7c0e9cb66da979177fcd53173"
+RUNTIME_COMMIT = "70e269bca3aaafed560289e93f0e30e5927679fb"
 
 
 def _runtime_archive() -> bytes:
@@ -98,6 +98,49 @@ from astrid.core.gateway import main as gateway_main
 from astrid.sdk.client import AstridClient  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_support_root(tmp_path, monkeypatch):
+    """Never let this acceptance module resolve Astrid's installed support root."""
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str((tmp_path / "runtime-support").resolve()))
+
+
+def _fake_runtime_cli(monkeypatch, *, data, returncode=0):
+    """Inject only the current read-only Runtime observer boundary."""
+    from astrid.runtime_cli import RuntimeResult
+
+    calls = []
+
+    class FakeRuntimeCLI:
+        def observe(self, command, *, support_root, timeout=5.0):
+            calls.append((command, str(support_root), timeout))
+            return RuntimeResult(("fake-banodoco-local", command), returncode, data)
+
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", FakeRuntimeCLI)
+    return calls
+
+
+def _pin_runtime_cli_subprocess(monkeypatch):
+    """Run the operational doctor subprocess from this test's exact archive."""
+    from astrid import runtime_cli
+
+    def runner(argv, **kwargs):
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(RUNTIME) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+        return subprocess.run(argv, cwd=str(RUNTIME), env=env, **kwargs)
+
+    original = runtime_cli.RuntimeCLI
+
+    class PinnedRuntimeCLI(original):
+        def __init__(self):
+            super().__init__(
+                command=[sys.executable, "-B", "-m", "banodoco_local"],
+                runner=runner,
+            )
+
+    monkeypatch.setattr(runtime_cli, "RuntimeCLI", PinnedRuntimeCLI)
+
+
 def _open_client(daemon: RuntimeDaemon) -> AstridClient:
     """Open with the runtime-issued identity and canonical protocol explicitly."""
     return AstridClient.open(
@@ -157,10 +200,8 @@ def test_product_client_crosses_real_daemon_and_returns_stable_envelopes(tmp_pat
         daemon.stop()
 
 
-def test_documented_minimal_timeline_create_defaults_empty_document_on_real_gateway(
-    tmp_path, monkeypatch, capsys
-):
-    """The documented create command reaches the real runtime with defaults."""
+def test_retired_timeline_create_is_absent_from_cli_and_sdk(tmp_path, monkeypatch, capsys):
+    """Timeline documents are created through the canonical composition flow, not the retired route."""
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     _use_explicit_gateway_connection(monkeypatch, daemon)
     try:
@@ -170,7 +211,6 @@ def test_documented_minimal_timeline_create_defaults_empty_document_on_real_gate
         project = json.loads(capsys.readouterr().out)
         assert project["ok"]
 
-        # This is the documented minimal command: no --config or --registry.
         assert gateway_main(
             [
                 "timelines",
@@ -183,39 +223,16 @@ def test_documented_minimal_timeline_create_defaults_empty_document_on_real_gate
                 "--default",
                 "--json",
             ]
-        ) == 0
-        created = json.loads(capsys.readouterr().out)
-        assert set(created) == {"ok", "data", "error", "receipt", "idempotency_key"}
-        assert created["ok"]
-        assert created["data"]["config"] == {}
-        assert created["data"]["registry"] == {"assets": {}}
-        assert created["data"]["config_version"] == 1
+        ) == 2
+        assert "invalid choice: 'create'" in capsys.readouterr().err
 
-        # Explicit JSON remains authoritative, including an explicitly empty
-        # registry rather than being replaced by the default.
-        assert gateway_main(
-            [
-                "timelines",
-                "create",
-                "--project",
-                "demo",
-                "explicit",
-                "--name",
-                "Explicit",
-                "--config",
-                '{"tracks": []}',
-                "--registry",
-                '{"assets": {"clip": {"media_id": "media-1"}}}',
-                "--json",
-            ]
-        ) == 0
-        explicit = json.loads(capsys.readouterr().out)
-        assert set(explicit) == {"ok", "data", "error", "receipt", "idempotency_key"}
-        assert explicit["ok"]
-        assert explicit["data"]["config"] == {"tracks": []}
-        assert explicit["data"]["registry"] == {
-            "assets": {"clip": {"media_id": "media-1"}}
-        }
+        client = _open_client(daemon)
+        retired = client.timelines.create(
+            project="demo", config={}, registry={}, slug="primary", idempotency_key="retired-create"
+        )
+        assert not retired.ok
+        assert retired.error.code == "retired_route"
+        assert retired.error.details["replacement"] == "timelines.inspect/open_composition"
     finally:
         daemon.stop()
 
@@ -518,95 +535,67 @@ def test_retired_public_commands_are_absent():
 def test_doctor_and_backup_never_open_local_storage(capsys, monkeypatch, tmp_path):
     monkeypatch.delenv("BANODOCO_RUNTIME_ENDPOINT", raising=False)
     monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "missing.token"))
+    calls = _fake_runtime_cli(
+        monkeypatch,
+        data={
+            "ok": False,
+            "problem_code": "runtime_unavailable",
+            "error": "runtime unavailable",
+            "next_action": "astrid-runtime up",
+        },
+        returncode=1,
+    )
 
     assert dispatch._dispatch_doctor(["--json"]) == 1
-    assert "banodoco-local up --profile astrid" in capsys.readouterr().out
+    doctor = json.loads(capsys.readouterr().out)
+    assert doctor["next_action"] == "astrid-runtime up"
+    assert len(calls) == 1 and calls[0][0] == "doctor"
     assert dispatch._dispatch_backup(["--json"]) == 1
     assert "banodoco-local up --profile astrid" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_doctor_reports_healthy_when_deep_check_lacks_admin_scope(capsys, monkeypatch, status):
-    """A product credential's admin boundary is not a runtime outage."""
-    from astrid.sdk.workspace_client import WorkspaceClientError
-
-    class ScopedClient:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            return None
-
-        def doctor(self):
-            raise WorkspaceClientError(
-                status,
-                "forbidden",
-                "credential lacks required scope",
-                {"scope": "admin"},
-            )
-
-        def health(self):
-            return {
-                "status": "ok",
-                "protocol": "workspace.v1",
-                "schema_digest": "sha256:test",
-                "runtime_epoch": 4,
-            }
-
+def test_doctor_uses_the_read_only_runtime_observer(capsys, monkeypatch):
+    payload = {
+        "healthy": True,
+        "recovery_action": "No recovery action required.",
+    }
+    calls = _fake_runtime_cli(monkeypatch, data=payload)
     monkeypatch.setattr(
         AstridClient,
         "open_from_launcher",
-        classmethod(lambda cls, **_kwargs: ScopedClient()),
+        classmethod(lambda cls, **_kwargs: pytest.fail("doctor must not open the product client")),
     )
 
     assert dispatch._dispatch_doctor(["--json"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["ok"] is True
-    assert report["state"] == "ready"
-    assert report["health"]["status"] == "ok"
-    assert report["deep_diagnostics"] == {
+    assert report["healthy"] is True
+    assert report["recovery_action"] == payload["recovery_action"]
+    assert report["effects"] == ["observe"]
+    assert report["authorization_required"] is False
+    assert report["diagnostic"]["facts"]["runtime"]["value"] == "ready"
+    assert len(calls) == 1 and calls[0][0] == "doctor"
+
+
+def test_doctor_preserves_observer_failure_and_diagnostic(capsys, monkeypatch):
+    payload = {
         "ok": False,
-        "state": "permission_limited",
-        "required_scope": "admin",
-        "error": "credential lacks required scope",
+        "problem_code": "permission_limited",
+        "error": "runtime observer permission denied",
     }
+    calls = _fake_runtime_cli(monkeypatch, data=payload, returncode=1)
+    monkeypatch.setattr(
+        AstridClient,
+        "open_from_launcher",
+        classmethod(lambda cls, **_kwargs: pytest.fail("doctor must not open the product client")),
+    )
 
-
-@pytest.mark.parametrize("scope", ["projects:read", "objects:read"])
-def test_doctor_does_not_downgrade_non_admin_forbidden(capsys, monkeypatch, scope):
-    from astrid.sdk.workspace_client import WorkspaceClientError
-
-    class ScopedClient:
-        def __enter__(self): return self
-        def __exit__(self, *exc_info): return None
-        def doctor(self):
-            raise WorkspaceClientError(403, "forbidden", "credential lacks required scope", {"scope": scope})
-        def health(self):
-            raise AssertionError("health fallback is only for admin doctor denial")
-
-    monkeypatch.setattr(AstridClient, "open_from_launcher", classmethod(lambda cls, **_kwargs: ScopedClient()))
     assert dispatch._dispatch_doctor(["--json"]) == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert payload["error"] == "credential lacks required scope"
-
-
-def test_doctor_does_not_claim_ready_when_health_is_degraded(capsys, monkeypatch):
-    from astrid.sdk.workspace_client import WorkspaceClientError
-
-    class ScopedClient:
-        def __enter__(self): return self
-        def __exit__(self, *exc_info): return None
-        def doctor(self):
-            raise WorkspaceClientError(403, "forbidden", "credential lacks required scope", {"scope": "admin"})
-        def health(self):
-            return {"status": "degraded"}
-
-    monkeypatch.setattr(AstridClient, "open_from_launcher", classmethod(lambda cls, **_kwargs: ScopedClient()))
-    assert dispatch._dispatch_doctor(["--json"]) == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert payload["error"] == "credential lacks required scope"
+    report = json.loads(capsys.readouterr().out)
+    assert report["problem_code"] == "permission_limited"
+    assert report["error"] == payload["error"]
+    assert report["diagnostic"]["problemCode"] == "permission_limited"
+    assert report["diagnostic"]["failureBoundary"] == "runtime-permission"
+    assert len(calls) == 1 and calls[0][0] == "doctor"
 
 
 def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
@@ -618,11 +607,10 @@ def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
         client = _open_client(daemon)
         project = client.projects.create(slug="journey", name="Journey", idempotency_key="journey-project")
         assert project.ok
-        timeline = client.timelines.create(project="journey", config={}, registry={}, slug="main", idempotency_key="journey-timeline")
-        assert timeline.ok
-        timeline_id = timeline.data["timeline_id"]
-        saved = client.timelines.save("journey", timeline_id, config={}, registry={}, expected_version=1)
-        assert saved.ok
+        retired = client.timelines.create(project="journey", config={}, registry={}, slug="main", idempotency_key="journey-timeline")
+        assert not retired.ok and retired.error.code == "retired_route"
+        listed = client.timelines.list("journey")
+        assert listed.ok and listed.data[0] == []
         task = client.tasks.create(project_id="journey", capability="render.basic", spec={}, idempotency_key="journey-task")
         assert task.ok
         assert client.tasks.show(task.data["task_id"]).ok
@@ -638,7 +626,7 @@ def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
         monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
         reopened = _open_client(daemon)
         assert reopened.projects.show("journey").ok
-        assert reopened.timelines.show("journey", timeline_id).ok
+        assert reopened.timelines.list("journey").ok
     finally:
         daemon.stop()
 
@@ -667,7 +655,6 @@ def test_editor_domain_reads_and_media_relations_use_generated_operations(tmp_pa
         )
         assert relation.ok and client.media.list_relations(project_id).data[0][0]["kind"] == "derived_from"
 
-        timeline = client.timelines.create(project=project_id, config={}, registry={}, slug="main", idempotency_key="timeline").data["timeline_id"]
         shot_result = client.shots.create(project=project_id, name="Shot", idempotency_key="shot")
         reference_result = client.references.create(project=project_id, reference_id="reference", kind="character", name="Reference", media_id=first["object_id"], idempotency_key="reference")
         assert shot_result.ok and reference_result.ok
@@ -689,15 +676,23 @@ def test_editor_domain_reads_and_media_relations_use_generated_operations(tmp_pa
 
 
 def test_operational_gateway_uses_typed_runtime_backup_and_lifecycle(tmp_path, monkeypatch, capsys):
-    daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
+    support = tmp_path / "support" / "runtime"
+    daemon = RuntimeDaemon(
+        tmp_path / "realm",
+        support_root=support,
+        owner_lock=support / "instance.lock",
+    ).start()
     monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str((tmp_path / "support").resolve()))
+    _pin_runtime_cli_subprocess(monkeypatch)
     _use_explicit_gateway_connection(monkeypatch, daemon)
     try:
         assert dispatch._dispatch_doctor(["--json"]) == 0
         doctor = json.loads(capsys.readouterr().out)
-        assert doctor["ok"] is True
-        assert doctor["recovery_action"] == "No recovery action required."
+        assert doctor["healthy"] is True
+        assert doctor["issues"] == []
+        assert doctor["diagnostic"]["facts"]["runtime"]["value"] == "ready"
 
         backup_path = tmp_path / "backup"
         assert dispatch._dispatch_backup(["create", str(backup_path), "--json"]) == 0

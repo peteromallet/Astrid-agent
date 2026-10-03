@@ -11,7 +11,6 @@ import math
 import os
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -21,6 +20,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from astrid.core.execution.process_group import (
+    observe_tree,
+    terminate_group,
+    terminate_tree,
+    verify_tree_absent,
+)
 from astrid.core.subprocess_env import build_child_subprocess_env
 
 from .contracts import RendererError, RenderPlan, RenderResult, SupportReport
@@ -111,11 +116,13 @@ class CommandTransport:
     ) -> CommandResult:
         """Execute a v1 verb and return its validated success DTO.
 
-        Failures raise the matching ``RendererException`` subtype.  A real
-        ``KeyboardInterrupt`` is re-raised after the whole child process group
-        has been terminated and the direct child reaped; the exception carries
-        ``renderer_error``/``error`` attributes with the structured
-        ``kind="interrupted"`` payload.
+        Failures raise the matching ``RendererException`` subtype. A real
+        ``KeyboardInterrupt`` after a successful ownership census is re-raised
+        after the owned child tree has been terminated and the direct child
+        reaped; the exception carries ``renderer_error``/``error`` attributes
+        with the structured ``kind="interrupted"`` payload. If the census
+        itself is interrupted, process ownership becomes uncertain and cleanup
+        fails closed rather than signal an unverified tree.
         """
 
         selected_backend = backend or self.backend
@@ -218,8 +225,36 @@ class CommandTransport:
                 details={"error_type": type(exc).__name__, **self.last_logs},
             )
 
+        # Only a fresh session owns a group. Inherited mode must never signal
+        # the host/sibling group; ancestry-fenced individual cleanup works in
+        # both modes and also covers Remotion's detached browser session.
+        if os.environ.get("ASTRID_RENDER_INHERIT_PROCESS_GROUP") != "1":
+            process._astrid_process_group_id = process.pid
         try:
-            stdout, stderr = process.communicate(timeout=normalized_timeout)
+            deadline = (
+                None
+                if normalized_timeout is None
+                else time.monotonic() + normalized_timeout
+            )
+            while True:
+                observe_tree(process)
+                remaining = (
+                    None if deadline is None else deadline - time.monotonic()
+                )
+                if remaining is not None and remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, normalized_timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=(
+                            0.05
+                            if remaining is None
+                            else min(0.05, remaining)
+                        )
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise
         except subprocess.TimeoutExpired:
             stdout, stderr = _terminate_process_group(
                 process, grace=self.termination_grace
@@ -448,174 +483,26 @@ def _remove_stale_result(result_path: Path, *, backend: str) -> None:
         )
 
 
-def _signal_process_group(process: subprocess.Popen[str], sig: int) -> None:
-    if hasattr(os, "killpg"):
-        try:
-            # The normal transport starts a new session; the contained worker
-            # deliberately inherits its already-scoped process group.
-            os.killpg(process.pid, sig)
-            return
-        except ProcessLookupError:
-            return
-        except (PermissionError, OSError):
-            pass
-    if process.poll() is not None:
-        return
-    try:
-        process.send_signal(sig)
-    except OSError:
-        pass
-
-
-def _process_group_exists(process: subprocess.Popen[str]) -> bool:
-    if hasattr(os, "killpg"):
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return process.poll() is None
-        return True
-    return process.poll() is None
-
-
 def _terminate_process_group(
     process: subprocess.Popen[str], *, grace: float
 ) -> tuple[str, str]:
-    """Terminate the complete child group and reap the direct child."""
-
-    _signal_process_group(process, signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    captured: tuple[str, str] | None = None
+    """Terminate only the remembered renderer tree, then its owned group."""
+    terminate_tree(process, grace_seconds=grace)
+    if hasattr(process, "_astrid_process_group_id"):
+        terminate_group(process, grace_seconds=grace)
+    verify_tree_absent(process)
     try:
-        captured = process.communicate(timeout=grace)
-    except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError):
-        captured = None
-        # Interruption or a communicate failure during the grace window must
-        # not abandon the group: escalate to SIGKILL right away and reap in
-        # the loop below.
-        try:
-            _signal_process_group(process, signal.SIGKILL)
-        except OSError:
-            pass
-
-    while _process_group_exists(process) and time.monotonic() < deadline:
-        try:
-            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-        except KeyboardInterrupt:
-            try:
-                _signal_process_group(process, signal.SIGKILL)
-            except OSError:
-                pass
-            break
-
-    killed_group = _process_group_exists(process)
-    if killed_group:
-        _signal_process_group(process, signal.SIGKILL)
-
-    if process.returncode is None:
-        drain_deadline = time.monotonic() + max(grace, 2.0)
-        while True:
-            try:
-                captured = process.communicate(timeout=max(grace, 2.0))
-                break
-            except (subprocess.TimeoutExpired, OSError):
-                try:
-                    _signal_process_group(process, signal.SIGKILL)
-                except (OSError, PermissionError):
-                    pass
-                if time.monotonic() > drain_deadline:
-                    break
-                continue
-            except KeyboardInterrupt:
-                try:
-                    _signal_process_group(process, signal.SIGKILL)
-                except (OSError, PermissionError):
-                    pass
-                if time.monotonic() > drain_deadline:
-                    break
-                continue
-        # Deadline exit still owes a reap of the direct child.
-        if process.returncode is None:
-            try:
-                process.wait(timeout=max(grace, 1.0))
-            except (subprocess.TimeoutExpired, OSError):
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                process.wait()
-            captured = captured or ("", "")
-    elif captured is None:
-        # ``poll`` may have reaped the child while checking the fallback path.
-        # Its pipes still need to be drained; bound the drain so cleanup can
-        # never block forever on a stuck pipe.
-        try:
-            captured = process.communicate(timeout=max(grace, 2.0))
-        except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError):
-            try:
-                _signal_process_group(process, signal.SIGKILL)
-            except (OSError, PermissionError):
-                pass
-            captured = ("", "")
-
-    if killed_group:
-        _wait_for_group_exit(process, timeout=grace)
-
-    stdout, stderr = captured or ("", "")
+        stdout, stderr = process.communicate(timeout=max(grace, 1.0))
+    except (subprocess.TimeoutExpired, OSError):
+        raise RuntimeError("renderer pipes did not close after owned cleanup")
     return stdout or "", stderr or ""
 
 
 def _terminate_leftover_group(
     process: subprocess.Popen[str], *, grace: float
 ) -> None:
-    """Clean up descendants that outlived an otherwise completed command."""
-
-    if not _process_group_exists(process):
-        return
-    _signal_process_group(process, signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while _process_group_exists(process) and time.monotonic() < deadline:
-        try:
-            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-        except KeyboardInterrupt:
-            try:
-                _signal_process_group(process, signal.SIGKILL)
-            except OSError:
-                pass
-            break
-    if _process_group_exists(process):
-        _signal_process_group(process, signal.SIGKILL)
-        _wait_for_group_exit(process, timeout=grace)
-
-
-def _wait_for_group_exit(
-    process: subprocess.Popen[str], *, timeout: float
-) -> None:
-    deadline = time.monotonic() + timeout
-    while _process_group_exists(process) and time.monotonic() < deadline:
-        try:
-            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-        except KeyboardInterrupt:
-            try:
-                _signal_process_group(process, signal.SIGKILL)
-            except OSError:
-                pass
-            break
-    # Escalate to SIGKILL for the remaining grace window (bounded) so a
-    # SIGTERM-ignoring group cannot survive cleanup.
-    kill_deadline = time.monotonic() + max(timeout, 1.0)
-    while _process_group_exists(process) and time.monotonic() < kill_deadline:
-        try:
-            _signal_process_group(process, signal.SIGKILL)
-        except (OSError, PermissionError):
-            break
-        try:
-            time.sleep(0.01)
-        except KeyboardInterrupt:
-            break
+    """Verify remembered descendants after an otherwise completed command."""
+    _terminate_process_group(process, grace=grace)
 
 
 def _secret_environment_values(

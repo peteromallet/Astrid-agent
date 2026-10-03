@@ -39,6 +39,7 @@ agent:
 content:
   executors: executors
   elements: elements
+  editor: editor
 extensions:
   rendering:
     renderers:
@@ -48,6 +49,9 @@ extensions:
     finalizers:
       - finalizers/ffmpeg/finalizer.yaml
       - finalizers/compositor/finalizer.yaml
+  editor:
+    entries:
+      - editor/live-scenes/extension.tsx
 documentation:
   kind: skill
   path: skill/SKILL.md
