@@ -144,7 +144,7 @@ def _validate_project_dir(project_dir: Path) -> RemotionRuntimeTools:
     node_modules = project_dir / "node_modules"
     if not node_modules.exists():
         raise FileNotFoundError(
-            "Run `npm install` in tools/remotion/ first; "
+            f"Remotion project is missing node_modules: {node_modules}; "
             "see docs/reference/render-adapter.md for @banodoco adapter package install instructions"
         )
 
@@ -161,7 +161,7 @@ def _validate_project_dir(project_dir: Path) -> RemotionRuntimeTools:
     ]
     if missing:
         raise FileNotFoundError(
-            f"Missing @banodoco render package(s): {', '.join(missing)}. "
+            f"Missing @banodoco render package(s) in {node_modules}: {', '.join(missing)}. "
             "These packages are adapter-required and not published to a public npm registry. "
             "See docs/reference/render-adapter.md for adapter install instructions."
         )

@@ -172,17 +172,22 @@ def timeline_requires_remotion(config: Mapping[str, Any]) -> bool:
     )
 
 
-def _configured_project_dir() -> tuple[Path | None, str | None]:
+def resolve_remotion_project_dir() -> Path:
+    """Resolve the server-owned project, with a source-checkout development fallback.
+
+    Only process configuration is consulted; renderer requests cannot select a
+    runtime. Invalid explicit configuration must never fall back to the checkout.
+    """
     raw = os.environ.get(REMOTION_PROJECT_DIR_ENV, "").strip()
     if raw:
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
-            return None, f"{REMOTION_PROJECT_DIR_ENV} must be an absolute path"
-        return candidate.resolve(), None
+            raise ValueError(f"{REMOTION_PROJECT_DIR_ENV} must be an absolute path")
+        return candidate.resolve()
     # Development source checkouts may use the conventional location.  A
     # wheel install has no sibling remotion/ tree, so this correctly fails
     # closed until deployment supplies the trusted runtime configuration.
-    return (REPO_ROOT / "remotion").resolve(), None
+    return (REPO_ROOT / "remotion").resolve()
 
 
 def remotion_runtime_status(
@@ -203,10 +208,10 @@ def remotion_runtime_status(
             f"{REMOTION_PROJECT_DIR_ENV} must point to the server-owned Remotion project",
         )
 
-    project_dir, config_error = _configured_project_dir()
-    if config_error:
-        return RemotionRuntimeStatus(False, None, config_error)
-    assert project_dir is not None
+    try:
+        project_dir = resolve_remotion_project_dir()
+    except ValueError as exc:
+        return RemotionRuntimeStatus(False, None, str(exc))
     if not project_dir.is_dir():
         return RemotionRuntimeStatus(False, project_dir, f"project directory not found: {project_dir}")
     if not (project_dir / "package.json").is_file():
@@ -304,6 +309,7 @@ __all__ = [
     "RemotionRuntimeTools",
     "TIMELINE_SCHEMA_PYTHONPATH_ENV",
     "RemotionRuntimeStatus",
+    "resolve_remotion_project_dir",
     "resolve_remotion_runtime_tools",
     "remotion_runtime_status",
     "timeline_requires_remotion",
