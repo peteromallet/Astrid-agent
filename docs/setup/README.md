@@ -17,16 +17,16 @@ shell that performs the install:
 ```bash
 git --version
 python3.11 --version
-export ASTRID_COMMIT='237d73717f00ebce43ca8ce516b7321c4ebcda7e'
+export ASTRID_COMMIT='9110d143120b5dbbdd2462af06a6c6e88fb64910'
 export RUNTIME_COMMIT='9611a33ded7b3923fa6ff53ae611ffb1910a4f58'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 ```
 
 These are the implementation commits used for the installed qualification:
-Astrid `237d73717f00ebce43ca8ce516b7321c4ebcda7e`, Runtime
+Astrid `9110d143120b5dbbdd2462af06a6c6e88fb64910`, Runtime
 `9611a33ded7b3923fa6ff53ae611ffb1910a4f58`, Worker
-`935efa2f31d92507738901a020274f468ae87f10`, and App
-`9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App commits are
+`8799aea3ce59a5db38324a071f158008c84f1cb4`, and App
+`5c94b19efbf8532b0f64be9f52df256f9fb132d9`. The Worker and App commits are
 recorded for the cross-repository composition. Astrid/Runtime and the Worker use
 separate Python environments; installing Astrid and Runtime alone does not
 configure a local Worker. Documentation-only commits made after this qualification
@@ -68,7 +68,7 @@ Install the pinned Worker distribution in its own Python 3.10 environment:
 cd /absolute/path/to/astrid-local
 python3.10 -m venv .worker-venv
 .worker-venv/bin/python -m pip install \
-  "reigh-worker @ git+https://github.com/banodoco/reigh-worker.git@935efa2f31d92507738901a020274f468ae87f10"
+  "reigh-worker @ git+https://github.com/banodoco/reigh-worker.git@8799aea3ce59a5db38324a071f158008c84f1cb4"
 test "$(.worker-venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = 3.10
 ```
 
