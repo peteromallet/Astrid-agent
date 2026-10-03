@@ -14,13 +14,31 @@
       "name": "port_marker",
       "type": "string",
       "required": true
+    },
+    {
+      "name": "delay_seconds",
+      "type": "string",
+      "required": false,
+      "default": "30"
+    },
+    {
+      "name": "exit_code",
+      "type": "string",
+      "required": false,
+      "default": "0"
+    },
+    {
+      "name": "fail_once_marker",
+      "type": "string",
+      "required": false,
+      "default": ""
     }
   ],
   "command": {
     "argv": [
       "{python_exec}",
       "-c",
-      "import os, socket, time; from pathlib import Path; listener=socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(1); Path('{marker}').write_text(str(os.getpid()), encoding='utf-8'); Path('{port_marker}').write_text(str(listener.getsockname()[1]), encoding='utf-8'); time.sleep(30); Path('{out}/answer.txt').write_text('late-output', encoding='utf-8')"
+      "import os, socket, sys, time; from pathlib import Path; listener=socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(1); Path('{marker}').write_text(str(os.getpid()), encoding='utf-8'); Path('{port_marker}').write_text(str(listener.getsockname()[1]), encoding='utf-8'); fail_once=Path('{fail_once_marker}') if '{fail_once_marker}' else None; should_fail=fail_once is not None and not fail_once.exists(); fail_once.write_text('failed-once', encoding='utf-8') if should_fail else None; time.sleep(float('{delay_seconds}')); sys.exit(int('{exit_code}')) if should_fail else Path('{out}/answer.txt').write_text('late-output', encoding='utf-8')"
     ]
   },
   "outputs": [
