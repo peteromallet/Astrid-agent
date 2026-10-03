@@ -20,7 +20,7 @@ wheel or hosted release artifact:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-export ASTRID_COMMIT='0a8409b859931c0cc35b49eef4dd61522aba0eaa'
+export ASTRID_COMMIT='237d73717f00ebce43ca8ce516b7321c4ebcda7e'
 export RUNTIME_COMMIT='ae7764756be89dd586552e712d1d004648dbab40'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 python -m pip install "Astrid @ git+https://github.com/peteromallet/Astrid.git@${ASTRID_COMMIT}"
@@ -48,7 +48,7 @@ astrid projects list --json
 ```
 
 The qualified cross-repository implementation tuple is Astrid
-`0a8409b859931c0cc35b49eef4dd61522aba0eaa`, Runtime
+`237d73717f00ebce43ca8ce516b7321c4ebcda7e`, Runtime
 `ae7764756be89dd586552e712d1d004648dbab40`, Worker
 `2c5c633b4a40681d25cda19b11043c09548dd13c`, and App
 `9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App identities are
