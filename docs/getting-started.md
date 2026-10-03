@@ -21,7 +21,7 @@ wheel or hosted release artifact:
 python3.11 -m venv .venv
 source .venv/bin/activate
 export ASTRID_COMMIT='237d73717f00ebce43ca8ce516b7321c4ebcda7e'
-export RUNTIME_COMMIT='42fbce0b54025373f00751021944a983c22fd8a8'
+export RUNTIME_COMMIT='aaba25d8c2a15cd0fc49c5665af59fec906acbd9'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 python -m pip install "Astrid @ git+https://github.com/peteromallet/Astrid.git@${ASTRID_COMMIT}"
 python -m pip install "banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@${RUNTIME_COMMIT}"
@@ -49,8 +49,8 @@ astrid projects list --json
 
 The qualified cross-repository implementation tuple is Astrid
 `237d73717f00ebce43ca8ce516b7321c4ebcda7e`, Runtime
-`42fbce0b54025373f00751021944a983c22fd8a8`, Worker
-`2c5c633b4a40681d25cda19b11043c09548dd13c`, and App
+`aaba25d8c2a15cd0fc49c5665af59fec906acbd9`, Worker
+`c09dbe1752ae372b423540a2789ca7424285e74b`, and App
 `9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App identities are
 composition provenance; the first environment installs Astrid and Runtime only.
 Later documentation-only commits are separate from this tested tuple.
