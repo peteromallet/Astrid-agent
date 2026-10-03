@@ -20,15 +20,27 @@ wheel or hosted release artifact:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-export ASTRID_COMMIT='6a3f4d6a65b0668a40e16568d9e240a1708a2642'
-export RUNTIME_COMMIT='9070d90227385eeb8ea1e9ec3d3caf2e379be281'
+export ASTRID_COMMIT='0a8409b859931c0cc35b49eef4dd61522aba0eaa'
+export RUNTIME_COMMIT='ae7764756be89dd586552e712d1d004648dbab40'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 python -m pip install "Astrid @ git+https://github.com/peteromallet/Astrid.git@${ASTRID_COMMIT}"
 python -m pip install "banodoco-workspace-runtime @ git+https://github.com/banodoco/banodoco-workspace-runtime.git@${RUNTIME_COMMIT}"
 export ASTRID_LOCAL_DATA_ROOT="$PWD/.astrid-data"
 astrid-local --provenance
-astrid setup --create --check --json
-astrid setup --create --apply --json
+```
+
+The local Worker is a separate installed composition. Install the pinned Worker
+distribution in an independent Python 3.10 environment, obtain the matching
+installed Worker profile from the installation bundle, and generate an
+installed `SourceProfile` that sets its absolute `worker_profile` path as shown
+in [Set up Astrid](setup/README.md#provide-the-independent-worker-composition-profile).
+The repository does not currently publish a generic Worker-profile generator or
+engine artifact; the qualification fixture profile is not a user setup artifact.
+
+```bash
+export ASTRID_LOCAL_SOURCE_MANIFEST=/absolute/path/to/installed-source-profile.json
+astrid setup --create --check --source-manifest "$ASTRID_LOCAL_SOURCE_MANIFEST" --json
+astrid setup --create --apply --source-manifest "$ASTRID_LOCAL_SOURCE_MANIFEST" --json
 astrid status --json
 astrid doctor --diagnostic --json
 astrid worker start --json
@@ -36,11 +48,11 @@ astrid projects list --json
 ```
 
 The qualified cross-repository implementation tuple is Astrid
-`6a3f4d6a65b0668a40e16568d9e240a1708a2642`, Runtime
-`9070d90227385eeb8ea1e9ec3d3caf2e379be281`, Worker
+`0a8409b859931c0cc35b49eef4dd61522aba0eaa`, Runtime
+`ae7764756be89dd586552e712d1d004648dbab40`, Worker
 `2c5c633b4a40681d25cda19b11043c09548dd13c`, and App
 `9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App identities are
-composition provenance; the commands above install Astrid and Runtime only.
+composition provenance; the first environment installs Astrid and Runtime only.
 Later documentation-only commits are separate from this tested tuple.
 
 The support root contains the launcher catalog, credentials, and runtime realm
@@ -123,9 +135,9 @@ module origin, artifact digest, distribution version, and support root) without
 emitting credentials. Astrid uses the installed Runtime artifact and does not
 require a sibling checkout or `PYTHONPATH`.
 
-For repository development only, an explicit source profile may be supplied with
-`ASTRID_LOCAL_SOURCE_MANIFEST`. It must use absolute, symlink-free checkout
-paths and is retained under the support root. The legacy
+`ASTRID_LOCAL_SOURCE_MANIFEST` also selects the installed Worker profile for the
+supported installed composition. Repository development uses a distinct
+editable source profile with absolute, symlink-free checkout paths. The legacy
 `BANODOCO_LOCAL_SOURCE_MANIFEST` spelling is accepted with a warning; it is not
 the canonical setup path. `banodoco-local` and `astrid-runtime` are also
 deprecated aliases for `astrid-local` and print a warning when invoked; the

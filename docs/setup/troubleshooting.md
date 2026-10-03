@@ -30,18 +30,21 @@ lifecycle commands.
 
 ## Installed provenance or source profile
 
-The installed closeout profile does not require a source manifest. Check the
-bounded installed identity first:
+Runtime-only setup does not require a source manifest. A local Worker does: its
+independent installed composition profile is selected by an installed source
+manifest. Check the bounded installed Runtime identity first:
 
 ```bash
 astrid-local --provenance
 astrid-local workspace inspect --data-root "$ASTRID_LOCAL_DATA_ROOT" --json
 ```
 
-For editable repository development only, set
-`ASTRID_LOCAL_SOURCE_MANIFEST`. The manifest must use absolute paths to the
-actual checkouts and must not be symlinked. If it already exists, inspect its
-paths instead of overwriting it.
+For the installed Worker path, set `ASTRID_LOCAL_SOURCE_MANIFEST` to the
+installed source manifest generated in [Set up Astrid](README.md#provide-the-independent-worker-composition-profile),
+then use that same manifest for setup and Runtime lifecycle commands. For
+editable repository development, use a separate manifest with absolute paths
+to the actual checkouts; it must not be symlinked. If either manifest already
+exists, inspect its paths instead of overwriting it.
 
 ## Runtime cannot connect
 
@@ -65,8 +68,13 @@ The response identifies the Runtime-owned handoff and the next action. Runtime
 owns worker registration, lease/fence state, credentials, task admission, and
 settlement. A direct `run_worker.py`, `worker.py`, or database/task loop is not
 an Astrid route and cannot establish workspace ownership. If the Worker profile
-is unavailable, keep the typed failure and fix the reported installation or
-capability issue before retrying the explicit start command.
+is unavailable, `worker start` must report `No local Worker profile is
+configured; set worker_profile in the Astrid source profile and restart the
+Runtime`. Keep that typed failure. Obtain the profile that matches the
+independent Python 3.10 Worker/engine installation, regenerate the installed
+source manifest, rerun setup with `--source-manifest`, and only then retry the
+explicit start command. Do not copy the qualification fixture profile or make
+up executable/digest fields.
 
 ## Migration or upgrade issue
 

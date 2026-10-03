@@ -17,18 +17,19 @@ shell that performs the install:
 ```bash
 git --version
 python3.11 --version
-export ASTRID_COMMIT='6a3f4d6a65b0668a40e16568d9e240a1708a2642'
-export RUNTIME_COMMIT='9070d90227385eeb8ea1e9ec3d3caf2e379be281'
+export ASTRID_COMMIT='0a8409b859931c0cc35b49eef4dd61522aba0eaa'
+export RUNTIME_COMMIT='ae7764756be89dd586552e712d1d004648dbab40'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 ```
 
 These are the implementation commits used for the installed qualification:
-Astrid `6a3f4d6a65b0668a40e16568d9e240a1708a2642`, Runtime
-`9070d90227385eeb8ea1e9ec3d3caf2e379be281`, Worker
+Astrid `0a8409b859931c0cc35b49eef4dd61522aba0eaa`, Runtime
+`ae7764756be89dd586552e712d1d004648dbab40`, Worker
 `2c5c633b4a40681d25cda19b11043c09548dd13c`, and App
 `9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App commits are
-recorded for the cross-repository composition; the two pip commands below install
-only Astrid and Runtime. Documentation-only commits made after this qualification
+recorded for the cross-repository composition. Astrid/Runtime and the Worker use
+separate Python environments; installing Astrid and Runtime alone does not
+configure a local Worker. Documentation-only commits made after this qualification
 do not change these pins or the tested artifacts.
 
 Use a new folder for this installation. If you already have Astrid, keep that
@@ -52,14 +53,67 @@ these commits with a branch name or mix the installation with unrelated
 development revisions. The installed profile must not depend on a source checkout
 or `PYTHONPATH`.
 
+### Provide the independent Worker composition profile
+
+`astrid worker start` requires an installed Worker composition profile. The
+profile is an identity-bearing installation artifact: it pins the independent
+Python 3.10 Worker executable, the Astrid host and engine executables, their
+digests, the installed pack root, boot manifest, engine endpoint, session
+configuration, and installation-owned roots. A `reigh-worker` install by itself
+does not create this profile.
+
+Install the pinned Worker distribution in its own Python 3.10 environment:
+
+```bash
+cd /absolute/path/to/astrid-local
+python3.10 -m venv .worker-venv
+.worker-venv/bin/python -m pip install \
+  "reigh-worker @ git+https://github.com/banodoco/reigh-worker.git@2c5c633b4a40681d25cda19b11043c09548dd13c"
+test "$(.worker-venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = 3.10
+```
+
+Your installation bundle must also provide an absolute, symlink-free installed
+Worker profile whose `worker_environment` and `worker_executable` select that
+environment and whose remaining artifact, engine, boot-manifest, endpoint, and
+root fields describe the same installed composition. This repository does not
+currently ship a public profile generator or a generic public engine artifact;
+do not reuse the qualification fixture profile or invent digest values.
+
+Given a profile supplied with the installed composition, bind it to the
+installed Runtime with an explicit source manifest:
+
+```bash
+export ASTRID_WORKER_PROFILE=/absolute/path/to/installed-worker-profile.json
+export ASTRID_LOCAL_SOURCE_MANIFEST="$PWD/installed-source-profile.json"
+test -f "$ASTRID_WORKER_PROFILE"
+python - "$ASTRID_WORKER_PROFILE" "$ASTRID_LOCAL_SOURCE_MANIFEST" <<'PY'
+import json
+from pathlib import Path
+import sys
+from banodoco_local.bootstrap import SourceProfile
+
+worker_profile = Path(sys.argv[1]).expanduser().resolve(strict=True)
+destination = Path(sys.argv[2]).expanduser().resolve()
+profile = SourceProfile.installed().as_dict()
+profile["worker_profile"] = str(worker_profile)
+destination.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+```
+
+Use that same manifest for setup and later Runtime lifecycle commands. If no
+installed Worker profile is available, the supported state is Runtime-only:
+setup and diagnostics can run, while `astrid worker start --json` must report
+`No local Worker profile is configured; set worker_profile in the Astrid source
+profile and restart the Runtime`.
+
 ## 2. Preview and apply one workspace
 
 Use the product gateway for setup. Preview and check are nonstarting; apply
 creates or attaches one explicit workspace and starts its selected Runtime:
 
 ```bash
-astrid setup --create --check --json
-astrid setup --create --apply --json
+astrid setup --create --check --source-manifest "$ASTRID_LOCAL_SOURCE_MANIFEST" --json
+astrid setup --create --apply --source-manifest "$ASTRID_LOCAL_SOURCE_MANIFEST" --json
 ```
 
 The guided form asks for the workspace UUID, absolute support root, and
@@ -76,10 +130,10 @@ warning. If canonical and legacy environment values differ, setup fails
 closed; a legacy-only value is accepted with a warning. Use `ASTRID_LOCAL_*`
 names in new configuration.
 
-For editable repository development, create an explicit source profile and set
-`ASTRID_LOCAL_SOURCE_MANIFEST`. Keep that workflow separate from this installed
-closeout path; it requires absolute, symlink-free checkout paths and may use
-`PYTHONPATH` only inside the development environment.
+An explicit installed source profile selects the Worker profile above. Editable
+repository development uses a different source profile with absolute,
+symlink-free checkout paths and may use `PYTHONPATH` only inside the development
+environment.
 
 ## 3. Check workspace, diagnostics, and Worker
 
@@ -91,10 +145,11 @@ astrid projects list --json
 ```
 
 `status` and `doctor` are observation only: they do not start, repair, retry,
-or migrate services. `worker start` is the explicit lifecycle action and
-returns a typed Runtime-owned handoff; it launches the verified local Worker
-and one `GenericPackHost`. The Worker profile uses Python 3.10.21. A new
-workspace may have no projects yet. If a command fails, follow
+or migrate services. With the installed source manifest selected, `worker
+start` is the explicit lifecycle action and returns a typed Runtime-owned
+handoff; it launches the verified local Worker and one `GenericPackHost`. The
+Worker profile uses Python 3.10.21. A new workspace may have no projects yet.
+If a command fails, follow
 [Troubleshooting](troubleshooting.md).
 
 ## 4. Add the default knowledge pack
