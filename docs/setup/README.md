@@ -18,13 +18,13 @@ shell that performs the install:
 git --version
 python3.11 --version
 export ASTRID_COMMIT='237d73717f00ebce43ca8ce516b7321c4ebcda7e'
-export RUNTIME_COMMIT='2cfb894c40d9abc19fc89c46707162386942f74c'
+export RUNTIME_COMMIT='9611a33ded7b3923fa6ff53ae611ffb1910a4f58'
 [[ "$ASTRID_COMMIT" =~ ^[0-9a-f]{40}$ && "$RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 ```
 
 These are the implementation commits used for the installed qualification:
 Astrid `237d73717f00ebce43ca8ce516b7321c4ebcda7e`, Runtime
-`2cfb894c40d9abc19fc89c46707162386942f74c`, Worker
+`9611a33ded7b3923fa6ff53ae611ffb1910a4f58`, Worker
 `935efa2f31d92507738901a020274f468ae87f10`, and App
 `9d1e0b0bb7c9490457943189cf477219224b007c`. The Worker and App commits are
 recorded for the cross-repository composition. Astrid/Runtime and the Worker use
