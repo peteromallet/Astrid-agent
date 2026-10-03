@@ -44,7 +44,7 @@ def _camel_to_snake(value: str) -> str:
 
 
 def test_vendored_client_is_the_frozen_runtime_artifact() -> None:
-    assert SOURCE_COMMIT == "9070d90227385eeb8ea1e9ec3d3caf2e379be281"
+    assert SOURCE_COMMIT == "ae7764756be89dd586552e712d1d004648dbab40"
     assert PROTOCOL == PINNED_PROTOCOL == generated.PROTOCOL
     assert COMPONENT_MANIFEST_SHA256 == PINNED_COMPONENT_MANIFEST_SHA256
     assert SCHEMA_DIGEST == PINNED_SCHEMA_DIGEST == generated.SCHEMA_DIGEST
