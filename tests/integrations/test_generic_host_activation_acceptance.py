@@ -297,8 +297,87 @@ def test_precommit_failure_revokes_before_stopping_exact_host(resident_host, mon
     with pytest.raises(OSError):
         witness.launcher.activate(witness.task, witness.reference, parked)
     assert stopped == [parked.handle]
-    assert witness.launcher.activation_state == ("unknown" if failure == "cleanup" else "inactive")
+    cleanup_uncertain = failure == "cleanup" or parked.handle.cleanup_error is not None
+    assert witness.launcher.activation_state == ("unknown" if cleanup_uncertain else "inactive")
     assert witness.service.task(witness.task_id)["task"]["status"] == "queued"
+
+
+@pytest.mark.parametrize("child_exits", [True, False], ids=["child-exit-race", "unverifiable-live-host"])
+@pytest.mark.parametrize("has_primary", [True, False], ids=["primary-error", "no-primary-error"])
+def test_abort_preserves_primary_failure_without_signaling_after_failed_identity(
+    tmp_path, monkeypatch, child_exits, has_primary,
+):
+    """Failed identity observation retains the original failure and uncertainty."""
+    process = host_bootstrap.popen_owned_group(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    control = SimpleNamespace(close=lambda: None)
+    primary = OSError("original private ACK failed")
+    preparer = host_bootstrap._ParkedPackHostPreparer(lambda reference: None)
+    handle = host_bootstrap._ParkedPackHostHandle(
+        process, control, None,
+        {"pid": process.pid, "process_birth_id": host_bootstrap._host_birth_identity(process.pid),
+         "ready_file": str(tmp_path / "not-ready.json")},
+        "test-operation", "test-channel",
+    )
+    preparer._handle = handle
+    observed = []
+    original_identity = host_bootstrap._host_identity_matches
+    original_kill = os.kill
+
+    def failed_identity(state):
+        assert state["pid"] == process.pid and process.poll() is None
+        observed.append("identity")
+        if child_exits:
+            process.stdin.close()
+            assert process.wait(timeout=3) == 0
+            return original_identity(state)
+        return False
+
+    def forbidden_signal(*args, **kwargs):
+        observed.append("signal")
+        pytest.fail("failed identity observation must not authorize signaling")
+
+    def observe_without_signaling(pid, sig):
+        if sig == 0:
+            return original_kill(pid, sig)
+        forbidden_signal(pid, sig)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(host_bootstrap, "_host_identity_matches", failed_identity)
+            patch.setattr(os, "kill", observe_without_signaling)
+            patch.setattr(os, "killpg", forbidden_signal)
+            if has_primary:
+                with pytest.raises(OSError) as caught:
+                    try:
+                        raise primary
+                    except OSError:
+                        preparer.abort(handle)
+                        raise
+                assert caught.value is primary
+            elif child_exits:
+                preparer.abort(handle)
+            else:
+                with pytest.raises(host_bootstrap.PackHostBootstrapError) as caught:
+                    preparer.abort(handle)
+                assert caught.value is handle.cleanup_error
+        if child_exits:
+            assert handle.cleanup_error is None
+            assert primary.__cause__ is None
+        else:
+            assert isinstance(handle.cleanup_error, host_bootstrap.PackHostBootstrapError)
+            assert "cannot be verified safely" in str(handle.cleanup_error)
+            if has_primary:
+                assert handle.cleanup_error is primary.__cause__
+        assert observed == ["identity"]
+        assert not Path(handle.state["ready_file"]).exists()
+        assert (process.poll() is not None) == child_exits
+    finally:
+        if not process.stdin.closed:
+            process.stdin.close()
+        process.wait(timeout=3)
 
 
 @pytest.mark.parametrize("changed", ["ready_marker", "registration", "provider"])

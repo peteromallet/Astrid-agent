@@ -407,6 +407,7 @@ class _ParkedPackHostHandle:
     channel_id: str
     grant_sent: bool = False
     grant: Mapping[str, Any] | None = None
+    cleanup_error: BaseException | None = None
 
 
 class _ParkedPackHostPreparer:
@@ -585,16 +586,32 @@ class _ParkedPackHostPreparer:
 
     def abort(self, handle: object) -> None:
         handle = self._assert_owned(handle)
-        handle.control.close()
-        if handle.process.poll() is None:
-            _terminate_old_host(handle.state)
-        terminate_group(handle.process)
-        handle.process.wait(timeout=1)
-        ready_path = Path(handle.state["ready_file"])
-        ready = _read_object(ready_path)
-        if ready and (ready.get("pid"), ready.get("process_birth_id")) == (
-                handle.process.pid, handle.state["process_birth_id"]):
-            ready_path.unlink()
+        primary_error = sys.exc_info()[1]
+        try:
+            handle.control.close()
+            if handle.process.poll() is None:
+                try:
+                    _terminate_old_host(handle.state)
+                except PackHostBootstrapError:
+                    # A failed census is not exit proof. Only this owned
+                    # child's waitpid result can reconcile a concurrent exit.
+                    if handle.process.poll() is None:
+                        raise
+            terminate_group(handle.process)
+            handle.process.wait(timeout=1)
+            ready_path = Path(handle.state["ready_file"])
+            ready = _read_object(ready_path)
+            if ready and (ready.get("pid"), ready.get("process_birth_id")) == (
+                    handle.process.pid, handle.state["process_birth_id"]):
+                ready_path.unlink()
+        except BaseException as cleanup_error:
+            handle.cleanup_error = cleanup_error
+            # Runtime must still observe abort failure and retain uncertainty.
+            # Keep the initiating failure primary, with cleanup as its cause;
+            # a failed identity observation grants no signaling authority.
+            if primary_error is not None:
+                raise primary_error.with_traceback(primary_error.__traceback__) from cleanup_error
+            raise
 
 
 def _host_artifact_digest(path: Path) -> str:
