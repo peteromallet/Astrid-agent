@@ -127,6 +127,20 @@ def test_both_api_families_are_exported() -> None:
         assert callable(getattr(WorkspaceClient, name))
 
 
+def test_preferences_and_documents_operations_are_in_the_runtime_contract() -> None:
+    assert "getPreferences" in OPERATIONS
+    assert "updatePreferences" in OPERATIONS
+    assert "listDocuments" in OPERATIONS
+    assert "createDocument" in OPERATIONS
+    assert "getDocument" in OPERATIONS
+    assert "updateDocument" in OPERATIONS
+    for name in (
+        "get_preferences", "update_preferences", "create_document",
+        "list_documents", "get_document", "update_document",
+    ):
+        assert callable(getattr(WorkspaceClient, name))
+
+
 def test_obsolete_generic_client_artifact_is_absent() -> None:
     assert not (ROOT / "generated" / "runtime_client.py").exists()
     assert not (ROOT / "generated" / "runtime_client_metadata.py").exists()

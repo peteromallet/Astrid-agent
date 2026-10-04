@@ -5,9 +5,9 @@ gateway facade focused while preserving the help-printing entrypoint that
 callers rely on via ``astrid.core.gateway._print_entrypoint_help``.
 
 ``_product_help_text`` / ``_print_product_help`` (m4 plan step 24, task
-T26) are the executable help. They document the seven-family core surface
+T26) are the executable help. They document the nine-family core surface
 plus discovered external pack routes: the
-five product families from the explicit registry
+seven product families from the explicit registry
 (``astrid/core/cli/domain_product.py``) with their kernel/pack ownership,
 the two manifest-declared nested mounts, the ``--json`` envelope
 convention, the stable exit codes, and the two operational families
@@ -22,7 +22,7 @@ def _print_entrypoint_help() -> None:
         """Astrid command gateway — Python SDK + CLI
 
 The canonical Python boundary is ``import astrid`` (see docs/reference/sdk.md).
-This gateway is the CLI entry point for the five product families, setup,
+This gateway is the CLI entry point for the seven product families, setup,
 workspace status, operational families (doctor, backup), and external tools.
 
 Usage:
@@ -82,15 +82,14 @@ def _product_help_text() -> str:
 
     The text is generated from the explicit product registry plus the two
     operational families, so the advertised census can never drift from
-    ``astrid/core/cli/domain_product.py``: the five product families (with
+    ``astrid/core/cli/domain_product.py``: the seven product families (with
     their kernel/pack ownership), the two manifest-declared nested mounts,
     the ``--json`` envelope convention, the stable exit codes, and the
     two operational families (``doctor``, ``backup``).
     """
-    families = "projects timelines media tasks runs setup status doctor backup hivemind"
-    return f"""Astrid product commands — runtime families and external tools
+    return """Astrid product commands — runtime families and external tools
 
-The gateway owns five product families, two operational families, two reserved
+The gateway owns seven product families, two operational families, two reserved
 workspace commands, and the external Hivemind tool. ``shots`` mounts beneath ``timelines`` and
 ``references`` mounts beneath ``media``.
 
@@ -98,7 +97,7 @@ Usage:
   python3 -m astrid <family> <command> [options]
   python3 -m astrid <family> --help
 
-Family census (exactly seven families): projects timelines media tasks runs doctor backup
+Family census (exactly nine families): projects timelines media tasks runs preferences documents doctor backup
 
 Reserved workspace commands (outside the family census): setup status
 
@@ -112,6 +111,8 @@ Product families:
 Operational families:
   setup       [runtime] preview/check/apply one explicit Create-or-Attach plan
   status      [runtime] read-only workspace/Runtime/readiness status
+  preferences [runtime] user/project Markdown defaults; checkout/checkin/edit
+  documents   [runtime] reusable project documents; list/create/show/checkout/checkin
   doctor      [runtime] read-only runtime health diagnostics
   backup      [runtime] create/restore/export/tombstone/recover/purge
 

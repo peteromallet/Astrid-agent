@@ -42,7 +42,7 @@ def _dispatch(raw: list[str]) -> int:
 
 
 def _top_level_commands() -> frozenset[str]:
-    """Return the stable seven-family gateway census, excluding pack routes."""
+    """Return the stable nine-family gateway census, excluding pack routes."""
     return _CORE_ROUTE_NAMES
 
 
@@ -413,6 +413,8 @@ def _product_top_level_commands() -> frozenset[str]:
 
 _TOP_LEVEL_HANDLERS = {
     "projects": _dispatch_projects,
+    "documents": lambda args: _dispatch_product(["documents", *args]),
+    "preferences": lambda args: _dispatch_product(["preferences", *args]),
     "timelines": _dispatch_timelines,
     "media": _dispatch_media,
     "tasks": lambda args: _dispatch_product(["tasks", *args]),

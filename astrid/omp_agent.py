@@ -24,7 +24,7 @@ DEFAULT_AGENT = "astrid"
 # time; a pack does not need a second launcher allowlist entry. Reserved
 # conversational/auth words stay blocked so they cannot be claimed by a pack.
 _PRODUCT_TOOLKIT_FAMILIES = frozenset(
-    {"projects", "timelines", "media", "tasks", "runs", "doctor", "backup"}
+    {"projects", "timelines", "media", "tasks", "runs", "documents", "preferences", "doctor", "backup"}
 )
 _PACK_ROUTE_BLOCKLIST = frozenset(
     {"agent", "auth", "help", "login", "status", "logout", "revoke"}

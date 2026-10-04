@@ -29,6 +29,26 @@ On a new machine, complete the [setup checklist](../../../../docs/setup/SKILL.md
 
 ## Start here
 
+## Preferences and project documents
+
+Read the user's preferences at the start of work and the selected project's
+preferences when a project is involved. Current explicit instructions take
+precedence over project preferences, then user preferences, then ordinary
+defaults. Temporary choices stay in the conversation. Save a lasting default
+only when the user asks to remember it; "for this project" means project scope,
+while "remember my default" means user scope.
+
+Use `astrid preferences` for both scopes, `astrid preferences user` for the user
+document, and `astrid preferences project [--project PROJECT]` for project
+preferences. To change lasting guidance, read the correct scope, then use
+`astrid preferences edit --scope user|project [--project PROJECT]` or the
+explicit checkout/edit/check-in flow. Read the [preferences and project
+documents guide](../../../../docs/guides/preferences-and-documents.md) for
+conflict recovery and the full CLI surface. Do not edit Runtime storage directly.
+
+Use `astrid documents` to list, create, show, check out, and check in reusable
+project documents. Generic documents do not enter prompt context automatically.
+
 **Establish the current project when opening or switching project work.**
 Discover the requested project with `projects list`, then persist it with
 `projects select <project>` (workspace scope by default). Commands such as `runs open` use that selection without `--project`. Some
