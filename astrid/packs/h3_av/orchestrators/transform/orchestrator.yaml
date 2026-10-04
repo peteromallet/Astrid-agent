@@ -52,7 +52,7 @@ isolation:
   # before it invokes the child run capability.  Keep the explicitly selected
   # sibling checkout and its import path available to that child; the runner
   # intentionally strips undeclared parent environment variables.
-  env_passthrough: [VIBECOMFY_CHECKOUT, PYTHONPATH, VIBECOMFY_HEADLESS]
+  env_passthrough: [ASTRID_RUNPOD_ACCOUNT_REF, VIBECOMFY_CHECKOUT, PYTHONPATH, VIBECOMFY_HEADLESS]
   requirements: [vibecomfy]
 docs:
   stage: STAGE.md

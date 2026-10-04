@@ -87,6 +87,14 @@ A mismatch must fail before upload. Never “repair” it by silently creating a
 
 ### Wait for the prepared 5090 capacity
 
+Set one stable, non-secret account-profile label that matches the Runtime
+placement configuration. The claim handle records it and resume rejects a
+different label. Do not use or copy the RunPod API key as this value:
+
+```bash
+export ASTRID_RUNPOD_ACCOUNT_REF=runpod-default
+```
+
 Run the canonical claim from the repository root exactly as follows:
 
 ```bash
@@ -104,7 +112,7 @@ current size. It requests `attach_only=True` with `disk_size_gb=0`, so it does
 not create, replace, or resize that persistent storage. The 200 GB value is
 the disposable container disk only. It pins the prepared CUDA-13 image, allows
 CUDA 13.0, uses no generic provider template, waits for readiness and SSH, and
-verifies the mounted H3 release venv with a real Torch/CUDA initialization.
+checks the mounted H3 release paths and Python version. It performs no CUDA initialization.
 It does not call generic `runpod.provision` and does not submit an H3 task.
 
 Before the provider request, the helper exclusively creates a secret-free
@@ -263,12 +271,11 @@ The job script should start or reuse only its owned loopback ComfyUI process,
 wait for `/system_stats` or `/object_info`, run VibeComfy against that server,
 write logs and a result manifest under `out/`, and copy intended media under
 `output/`. Put a process-level deadline inside the script as well as the
-runner timeout. A passing transport result is not an H3 result: the release
-must still pass the CUDA/Torch, custom-node, model, backend and capacity gates
-in [RunPod lifecycle](runpod-lifecycle.md). At the time of this review, the
-candidate venv was missing Torch while the provider Python exposed
-`torch==2.4.1+cu124`; that mismatch is a fail-closed preflight finding, not a
-successful continuation run.
+runner timeout. A passing transport result establishes only
+upload/SSH/remote-execution/download behavior. It is not Runtime task admission,
+managed output settlement, or GPU validation. This project has
+CPU/control-plane-only evidence and makes no claim about CUDA compatibility or
+inference behavior.
 
 ## 4. Canonical Astrid task path on a prepared RunPod pod
 
@@ -287,41 +294,190 @@ delivery, or editorial approval. The helper's successful and
 `lifecycle.mode=leave_running`. It never turns this handle into a generic
 `runpod.exec` provision handle.
 
-### Deployment qualification owns the boundary
+### Prepared-worker ownership and CPU-only readiness
 
-The supported target composition is now:
+The follow-on implementation composes existing P1 claim custody, P2 staging,
+Runtime activation, and the ordinary GenericPackHost task loop:
 
 ```text
-canonical claim helper and durable claim handle
-  -> execution request binds exact pod/account and leave_running policy
-  -> stage + verify release/models; prepare Comfy and parked GenericHost
-  -> real child attachment + exact VibeComfy CPU validation
-  -> activate qualified worker; canonical Astrid task admission
-  -> h3_av.transform children -> managed settlement/pullback -> final receipt
+exact P1 claim + durable handle
+  -> P2 stages and measures the selected release on that exact pod
+  -> prepared-worker adapter binds the ordinary Runtime request to the pod
+  -> Runtime admits one vibecomfy.run task; the owner activates its exact worker
+  -> local h3_av orchestration observes ordinary task settlement/readback
+  -> explicit release drains that worker, terminates that pod, and preserves its volume
 ```
 
-Before claimable readiness, it must independently verify pod/account placement,
-issue scoped placement authority, bind the exact claim selector, attest staged
-source/dependencies, and derive one runtime instance/epoch/schema/realm and
-canonical support root. Launch the host in its own process session, validate real
-PID/birth/PGID/argv, and publish matching state/ready/handoff generations. H3's
-canonical capacity is two lanes: `max_concurrency=2` and
-`astrid-pack-host-orchestration-executor-v1` (one orchestration slot and one
-executor slot), not two concurrent GPU samplers. A generic token, ready marker,
-capability row or successful Torch probe alone is insufficient.
+P2 checks provider custody, staged source/dependency/model identities, the
+selected Python and Comfy configuration, and CPU-side child readiness against
+the bytes actually present on the pod. Runtime readiness is tied to the exact
+claim, task, activation generation, and owned process identity. These checks
+establish preparation and control-plane claimability only; every resulting
+receipt keeps `gpu_qualified: false`. This project does not initialize CUDA,
+run `nvidia-smi`, load a model, or submit an inference as validation.
 
-Generate the managed Comfy session, validator/compiler child configuration and
-effective `extra_model_paths` from one release model inventory. For this release,
-the canonical root is
-`/workspace/h3-golden/releases/h3-cu130-v1-candidate/models`, not the empty
-`runtime/ComfyUI/models` default. Pass the verified root explicitly to production
-validation/compilation; merely setting an Astrid-prefixed variable is not proof
-that the downstream validator consumes it. Verify the exact workflow's full
-model closure, per-file hashes, aliases/search precedence, custom nodes and live
-schemas in the real child before activation. No GPU prompt is submitted by
-qualification.
+The H3 parent stays local and submits the ordinary `vibecomfy.run` task through
+the SDK. Select the prepared-worker adapter with `--prepared-worker
+<selection.json>` (and `--require-worker-qualification` when the selected worker
+is mandatory). The adapter binds the existing exact claim into the request and
+uses the normal Runtime admission, recovery, settlement, and managed-output
+paths; it does not add a remote H3 orchestrator or a second task ledger. Normal
+Comfy execution may use the machine's GPU, but GPU behavior is outside this
+project's validation evidence.
+
+There is one active remote worker generation per Runtime because the shared
+`WORKER_ACTOR` and target-wide process owner represent one machine. Do not run
+two remote worker generations concurrently against the same Runtime. This
+route keeps the ordinary executor identity and resource key; it does not add a
+fleet scheduler or a second task ledger.
+
+### Prepare the three local selection files
+
+The adapter consumes three operator-maintained JSON artifacts plus one local
+journal directory. There is not yet a command that invents these deployment
+facts: derive them from the exact P1 claim, selected P2 release/readiness data,
+and the Runtime deployment already configured for the target. Keep remote
+paths (paths on the RunPod volume) as strings. The three local staging paths
+must be existing canonical absolute paths with no symlinks. Never put an API
+key or token in these files.
+
+`deployment-profile.json` has this top-level shape:
+
+```json
+{
+  "schema": "astrid.runpod.deployment-profile.v1",
+  "session_port": 8188,
+  "activation_ttl_seconds": 300,
+  "reference": {
+    "deployment_id": "<Runtime deployment id>",
+    "revision": "<Runtime deployment revision>",
+    "source_closure_digest": "sha256:<64 lowercase hex>",
+    "data_root": "/workspace/<operation-owned-root>/data",
+    "support_root": "/workspace/<operation-owned-root>/runtime",
+    "runtime_schema_digest": "sha256:<connected Runtime health schema digest>",
+    "model_root": "/workspace/<selected-release-model-root>",
+    "capacity": 1,
+    "session_ref": "<stable safe session id>",
+    "session_config_digest": "sha256:<normalized managed SessionConfig digest>",
+    "output_root": "/workspace/<selected-output-root>",
+    "credential_ref": "/workspace/<operation-owned-root>/runtime/credentials/executor.token",
+    "executor_id": "astrid-pack-host",
+    "boot_manifest_path": "/workspace/<operation-owned-root>/runtime/boot-manifest.json",
+    "boot_manifest_hash": "sha256:<64 lowercase hex>",
+    "readiness_profile_path": "/workspace/<operation-owned-root>/runtime/readiness.json",
+    "readiness_profile_hash": "sha256:<64 lowercase hex>",
+    "source_checkout_digest": "<64 lowercase hex>",
+    "executable": {"name": "python", "path": "/workspace/<release-candidate>/runtime/venv/bin/python", "digest": "sha256:<64 lowercase hex>"},
+    "dependency_closure": [
+      {"name": "python", "path": "/workspace/<release-candidate>/runtime/venv/bin/python", "digest": "sha256:<64 lowercase hex>"}
+    ],
+    "pack_roots": ["astrid/packs"]
+  }
+}
+```
+
+The `reference` keys shown are required. `source_inventory_identity`,
+`capability_matrix`, and `ready_file` are optional. `dependency_closure` and
+`executable` are artifact references: their paths and byte digests must match
+the selected deployment, and `executable.path` must equal P2's selected
+`python_executable`. `source_checkout_digest` is the staged Astrid source tree
+digest without the `sha256:` prefix. The Runtime schema digest comes from the
+connected Runtime health response. The session config digest is computed from
+the normalized managed VibeComfy `SessionConfig` for these selected paths,
+session id and port; do not substitute a digest from another volume or release.
+Use capacity `1` for this shared actor. The deployment source, boot and
+readiness references must identify the exact deployment already installed for
+this Runtime.
+
+`staging-inputs.json` contains the remaining inputs to P2's `prepare_worker`
+operation; claim path, account, journal, transport, and compiled H3 workflow
+are supplied by their owners:
+
+```json
+{
+  "release_manifest_path": "/absolute/local/path/release-manifest.json",
+  "release_manifest_sha256": "sha256:<digest of those exact manifest bytes>",
+  "release_id": "<manifest release_id>",
+  "resolved_compute_profile": {"<selected non-secret profile fields>": "<values>"},
+  "readiness_profile": {
+    "launch": {
+      "model_root": {"schema_version": 1, "path": "/workspace/<model-root>", "inventory": [], "inventory_digest": "sha256:<canonical model inventory digest>", "qualification_identity": null},
+      "output_root": "/workspace/<output-root>"
+    }
+  },
+  "astrid_source": "/absolute/local/path/to/Astrid",
+  "vibecomfy_source": "/absolute/local/path/to/vibecomfy",
+  "comfy_root": "/workspace/<release-candidate>/runtime/ComfyUI",
+  "custom_nodes_lock_path": "/workspace/<release-candidate>/runtime/vibecomfy/custom_nodes.lock",
+  "custom_node_roots": {"h3_custom_node_commit": "/workspace/<release-candidate>/runtime/ComfyUI/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef"},
+  "python_executable": "/workspace/<release-candidate>/runtime/venv/bin/python",
+  "engine_mode": "checkout_server"
+}
+```
+
+The model inventory in `readiness_profile.launch.model_root` must match the
+selected release manifest's model inventory byte-for-byte. The manifest pins
+the claimed volume id, size, mount and datacenter; its `release_id`, candidate
+namespace, Comfy commit, VibeComfy commit, custom-node lock and model hashes
+must describe the selected mounted release. `custom_node_roots` contains
+exactly the checkouts for the pinned custom-node commits in that manifest (it
+may be empty if the release pins none). `engine_mode` is `checkout_server` or
+`pip_embedded`. The readiness profile may include the selected Python, Comfy
+root and launcher in `launch`; when present they must agree with this file.
+All local source/manifest paths are absolute, existing, regular non-symlink
+paths. Remote paths are absolute paths on the exact claimed volume.
+
+Finally, `selection.json` points at the claim, those two files, and a private
+local journal directory. For example:
+
+```json
+{
+  "schema": "astrid.runpod.prepared-worker.v1",
+  "claim_handle_path": "/absolute/local/path/claim-handle.json",
+  "deployment_profile_path": "/absolute/local/path/deployment-profile.json",
+  "staging_inputs_path": "/absolute/local/path/staging-inputs.json",
+  "journal_dir": "/absolute/local/path/prepared-worker-journals"
+}
+```
+
+The claim must be the active `claimed` handle and determines the exact provider
+account, pod and network volume. Validate local path typing and exact claim
+binding before invoking H3:
+
+```bash
+.venv/bin/python -c 'from astrid.packs.runpod.prepared_task import load_prepared_worker_selection; print(load_prepared_worker_selection("/absolute/local/path/selection.json").target)'
+```
+
+This loader validates the selection envelope, claim and local path references.
+When an optional execution request supplies the exact account, pod and volume
+ID but omits the non-authoritative volume label, the adapter checks those
+identities then binds the claim's canonical target, including its label, for
+Runtime admission. A different account, pod or volume still fails closed.
+P2 then validates manifest bytes, mounted release, model inventory, selected
+workflow bundle and readiness profile; Runtime binds the deployment profile to
+the connected Runtime and admitted task. Disagreement fails closed before
+worker activation.
+
+Task completion leaves pod lifetime explicit. The worker owner drains and
+quiesces the exact Runtime generation and removes only its task-scoped
+credential. To end the machine lifetime, use the dedicated release command
+after the corresponding `vibecomfy.run` task settles:
+
+```bash
+.venv/bin/python scripts/release_prepared_runpod_worker.py \
+  --selection /absolute/path/to/prepared-worker-selection.json \
+  --task-id <settled-vibecomfy-run-task-id>
+```
+
+If release was interrupted after its durable receipt was written, resume that
+same exact release with `--resume`. Release targets the claim's exact pod ID
+and preserves its network volume; it cannot be triggered by ordinary H3 task
+completion.
 
 Do not restore the earlier manual serial-host/token-swap launch instructions.
+`scripts/activate_runpod_worker_claim.py` has been retired; its shared enabled
+credential rotation path is removed. Use the claim handle, prepared-worker
+selection and Runtime-owned task activation described above.
 `watch_h3_5090_storage.py` is not an alternative launcher for this procedure;
 the local-only watcher below is the supported observation tool.
 
@@ -374,15 +530,17 @@ provider polling.
 After the claim succeeds, write
 `.otto/runs/h3-av-simplicity-20260924-T2/execution-request.json`. Replace
 `<returned-pod-id>` with the exact `pod_id` in the successful claim handle and
-use the provider account reference returned by the configured/qualified
-target. The current canonical example uses `runpod`:
+use the exact account reference returned by the configured/qualified target.
+The example below uses the same `runpod-default` label as the claim command;
+pin the claimed network volume too:
 
 ```json
 {
   "target": {
     "kind": "runpod",
     "pod_id": "<returned-pod-id>",
-    "provider_account_ref": "runpod"
+    "provider_account_ref": "runpod-default",
+    "storage": {"network_volume_id": "<exact-claimed-volume-id>"}
   },
   "lifecycle": {
     "mode": "leave_running"
@@ -403,7 +561,8 @@ authorization to terminate the pod and are not a provider capacity-wait limit.
 ### Submit through the H3 orchestrator
 
 The canonical SDK dispatch launches the H3 orchestrator with the request,
-asset map, output root, execution request, and project. For the current Matrix
+asset map, output root, execution request, project and prepared-worker
+selection. For the current Matrix
 Minkhole example, its runner-owned command resolves to:
 
 ```bash
@@ -438,10 +597,36 @@ result = sdk.invoke_result(
     out=Path(
         ".otto/runs/h3-av-simplicity-20260924-T2/receipts/h3-transform"
     ),
+    orchestrator_args=(
+        "--prepared-worker",
+        "/absolute/local/path/selection.json",
+        "--require-worker-qualification",
+    ),
 )
 if not result.ok:
     raise RuntimeError(result.error)
 ```
+
+Use the same request, asset map, execution request, project, output directory
+and prepared-worker selection for recovery. The H3 operation journal and its
+per-stage SDK receipts own recovery; retry the public SDK call with the same
+arguments and add `"--resume"` to `orchestrator_args`. Do not create a new
+output directory or change the worker selection on resume. The child
+`vibecomfy.run` task ID is in `<out>/04-run/run-result.json` at
+`result.kernel_task_id`; `<out>/operation-state.json` also records that task
+identity. Release is a distinct exact-task action after H3 result settlement
+and readback:
+
+```bash
+.venv/bin/python scripts/release_prepared_runpod_worker.py \
+  --selection /absolute/local/path/selection.json \
+  --task-id <settled-vibecomfy-run-task-id>
+```
+
+If release is interrupted after its custody receipt is durable, repeat the
+exact command with `--resume`. Do not use H3 orchestrator settlement as
+permission to terminate the worker; release checks exact task settlement and
+drains the owned Runtime generation before deleting only the claimed pod.
 
 The orchestrator owns `request -> prepare -> compile -> validate -> run ->
 compose -> verify -> final receipt`. Only its canonical `vibecomfy.run` child
@@ -557,14 +742,14 @@ It must not launch or stop Comfy, nor infer ownership from an occupied port.
 The run adapter owns session attestation and compilation against fresh schemas
 from the attested target before queueing.
 
-These are three distinct validation boundaries:
+These are three distinct execution boundaries for a real generation run:
 
 1. **Admission:** validate the canonical bundle, staged asset descriptors,
    source audiovisual timing, and delivery-readiness contract before accepting
    the task.
-2. **Worker pre-GPU:** repeat the checks against the bytes staged on the pod,
-   revalidate the owned session and effective output root, then warm the model
-   and queue Comfy.
+2. **Worker execution:** repeat the checks against the bytes staged on the pod,
+   revalidate the owned session and effective output root, then run the workflow
+   through Comfy. This is normal workload execution, not GPU qualification.
 3. **Post-generation:** resolve, decode, custody, hash-check, and settle the
    final media. If delivery fails after generation, keep the attempt failed or
    incomplete; never retroactively mark it successful from a Comfy log alone.
@@ -629,8 +814,7 @@ transport itself is under test.
 For the prepared H3 release, use the repository claim waiter. It is a thin
 operator wrapper around the existing provider substrate: it attaches the
 existing `backup` volume without resize, requests the validated CUDA-13
-image/host profile, waits for SSH readiness, verifies the mounted release venv
-with a real CUDA initialization, and leaves the exact allocated pod running.
+image/host profile, waits for provider and SSH readiness, checks the mounted release paths and Python version, and leaves the exact allocated pod running. It performs no GPU validation.
 It prints a secret-free lifecycle handle only after successful verification.
 
 ```bash
@@ -656,10 +840,10 @@ confirmation that the same pod remained RUNNING on backup. It ran no inference
 and admitted no Astrid task. Evidence:
 [practical-path review](../docs/projects/astrid-unified-execution/runpod-practical-path-review-20260921.md).
 
-That historical transport result does not establish H3 readiness and predates
-the prepared CUDA-13 claim flow. Follow the claim helper's release preflight
-and the H3 orchestrator's target-schema, node/model, backend, input, managed
-delivery, and verification gates. SSH/GPU presence remains insufficient.
+That historical transport result does not establish H3 readiness. The current
+claim helper checks provider/SSH custody and mounted Python paths; prepared-worker
+software checks are CPU/control-plane-only. Live CUDA/GPU qualification is outside
+this project and is not implied by its evidence.
 
 The [remote task-manager build brief](../docs/projects/astrid-unified-execution/runpod-task-execution-build-brief.md)
 is an optional future integration for scheduler-enforced placement and remote

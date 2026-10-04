@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +52,34 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
             continue
         entries[pid] = _ProcessInfo(pid, ppid, pgid, fields[3])
     return entries
+
+
+def process_birth_identity(pid: int | None = None) -> str:
+    """Return the canonical PID-reuse token shared with remote worker ownership.
+
+    Linux exposes a kernel boot ID and process start tick in ``/proc``. Using
+    that pair lets the SSH-side owner and GenericPackHost attest the same
+    incarnation. Other platforms retain the existing ``ps lstart`` token.
+    """
+    process_id = int(pid if pid is not None else os.getpid())
+    if process_id <= 0:
+        return ""
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/%d/stat" % process_id, encoding="ascii") as stream:
+                stat_fields = stream.read().rsplit(")", 1)[1].split()
+            if stat_fields[0] in {"Z", "X"}:
+                return ""
+            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as stream:
+                boot_id = stream.read().strip()
+            start_ticks = stat_fields[19]
+            if not boot_id or not start_ticks.isdigit():
+                return ""
+            return boot_id + ":" + start_ticks
+        except (OSError, IndexError, UnicodeError):
+            return ""
+    info = _process_snapshot().get(process_id)
+    return info.birth if info is not None else ""
 
 
 def popen_owned_group(argv: list[str], **kwargs: Any) -> subprocess.Popen:

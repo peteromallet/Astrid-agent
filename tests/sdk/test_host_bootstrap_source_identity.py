@@ -77,6 +77,39 @@ def test_host_pid_alive_rejects_macos_zombie(monkeypatch) -> None:
     assert host_bootstrap._host_pid_alive(4242) is False
 
 
+def test_selected_python_matches_its_live_process_executable() -> None:
+    """Framework Python re-execs Python.app; the selected launcher stays valid."""
+    import shlex
+    import sys
+
+    selected = Path(sys.executable).resolve()
+    process = subprocess.Popen(
+        [str(selected), "-I", "-S", "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        executable = shlex.split(host_bootstrap._host_command(process.pid))[0]
+        assert host_bootstrap._host_executable_matches(executable, selected)
+        assert not host_bootstrap._host_executable_matches("/unrelated/Python", selected)
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+def test_executable_probe_failure_does_not_accept_another_python(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "darwin")
+
+    def fail_probe(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(host_bootstrap, "subprocess", SimpleNamespace(
+        **{**vars(subprocess), "run": fail_probe},
+    ))
+    assert not host_bootstrap._host_executable_matches("/unrelated/Python", tmp_path / "python")
+
+
 def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch, tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "astrid" / "packs").mkdir(parents=True)

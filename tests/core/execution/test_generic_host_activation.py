@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 import os
-from pathlib import Path
+import secrets
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -173,6 +175,55 @@ def test_parked_host_accepts_one_same_process_grant_before_continuing(monkeypatc
     assert acknowledgement["version"] == "astrid.local-worker-activation-accepted/v1"
     assert acknowledgement["host"] == {"pid": os.getpid(), "birth_id": "birth-1"}
     worker.close()
+
+
+def test_remote_socket_receiver_uses_same_private_activation_frame(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda pid=None: "birth-1")
+    # macOS pytest temp roots exceed Linux's shorter AF_UNIX path limit. The
+    # receiver runs against a short private /tmp path just like the RunPod host.
+    parent = Path("/tmp").resolve(strict=True) / f"astrid-activation-{secrets.token_hex(5)}"
+    path = parent / "s"
+    completed = threading.Event()
+    result: list[dict[str, object]] = []
+
+    def wait() -> None:
+        result.append(generic_host._await_worker_activation_socket(
+            str(path), operation_id="operation-1", channel_id="channel-1",
+            credential_file="/private/worker.token", timeout_seconds=2,
+        ))
+        completed.set()
+
+    thread = threading.Thread(target=wait)
+    thread.start()
+    deadline = time.monotonic() + 2
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert path.exists()
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    worker = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    worker.settimeout(2)
+    with worker:
+        worker.connect(str(path))
+        _send(worker, _grant())
+        acknowledgement = json.loads(worker.makefile("rb").readline())
+    thread.join(timeout=2)
+
+    assert completed.is_set()
+    assert result == [_grant()]
+    assert acknowledgement["version"] == "astrid.local-worker-activation-accepted/v1"
+    assert acknowledgement["host"] == {"pid": os.getpid(), "birth_id": "birth-1"}
+    assert not path.exists()
+    shutil.rmtree(parent)
+
+
+def test_remote_socket_receiver_rejects_overlong_unix_path(tmp_path) -> None:
+    path = tmp_path / ("x" * 120) / "grant.sock"
+    with pytest.raises(generic_host.HostError, match="Unix-socket limit"):
+        generic_host._await_worker_activation_socket(
+            str(path), operation_id="operation-1", channel_id="channel-1",
+            credential_file="/private/worker.token", timeout_seconds=1,
+        )
+    assert not path.parent.exists()
 
 
 @pytest.mark.parametrize(

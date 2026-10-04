@@ -5,11 +5,12 @@ from typing import Any
 
 import jsonschema
 
-from astrid.core.pack.manifest import load_manifest_mapping
 from astrid.core.execution.orchestrator.registry import load_default_registry
+from astrid.core.execution.orchestrator.runner import OrchestratorRunRequest, run_orchestrator
 from astrid.core.execution.orchestrator.schema import load_orchestrator_manifest
-from astrid.core.pack.validate import KNOWN_SCHEMA_VERSIONS, PackValidator
 from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.pack.manifest import load_manifest_mapping
+from astrid.core.pack.validate import KNOWN_SCHEMA_VERSIONS, PackValidator
 
 PACKS_ROOT = REPO_ROOT / "astrid" / "packs"
 PACK_ROOTS = tuple(sorted(path for path in PACKS_ROOT.iterdir() if (path / "pack.yaml").is_file()))
@@ -97,7 +98,75 @@ def test_h3_transform_declares_vibecomfy_import_environment() -> None:
     )
 
     declared = set(payload["isolation"]["env_passthrough"])
-    assert {"VIBECOMFY_CHECKOUT", "PYTHONPATH", "VIBECOMFY_HEADLESS"} <= declared
+    assert {
+        "ASTRID_RUNPOD_ACCOUNT_REF",
+        "VIBECOMFY_CHECKOUT",
+        "PYTHONPATH",
+        "VIBECOMFY_HEADLESS",
+    } <= declared
+
+
+def test_h3_sdk_orchestrator_subprocess_receives_selected_runpod_account_ref(
+    tmp_path, monkeypatch,
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import astrid.core.execution.orchestrator.runner as runner
+
+    request_path = tmp_path / "request.json"
+    request_path.write_text("{}\n", encoding="utf-8")
+    asset_map_path = tmp_path / "asset-map.json"
+    asset_map_path.write_text("{}\n", encoding="utf-8")
+    execution_request_path = tmp_path / "execution-request.json"
+    execution_request_path.write_text(
+        json.dumps({
+            "target": {
+                "kind": "runpod",
+                "pod_id": "pod-fixture",
+                "provider_account_ref": "runpod-default",
+                "storage": {"network_volume_id": "volume-fixture"},
+            },
+            "lifecycle": {"mode": "leave_running"},
+        }),
+        encoding="utf-8",
+    )
+    selection_path = tmp_path / "prepared-worker-selection.json"
+    selection_path.write_text("{}\n", encoding="utf-8")
+    registry = load_default_registry()
+    monkeypatch.setenv("ASTRID_RUNPOD_ACCOUNT_REF", "runpod-default")
+    captured = {}
+
+    def capture_subprocess(argv, *, cwd=None, env=None, check=False):
+        captured.update(env or {})
+        captured["argv"] = list(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", capture_subprocess)
+    result = run_orchestrator(
+        OrchestratorRunRequest(
+            orchestrator_id="h3_av.transform",
+            out=tmp_path / "out",
+            project="prepared-worker-env-test",
+            project_was_auto_resolved=True,
+                inputs={
+                    "request": request_path,
+                    "asset_map": asset_map_path,
+                    "execution_request": execution_request_path,
+                },
+            orchestrator_args=(
+                "--prepared-worker", str(selection_path),
+                "--require-worker-qualification",
+            ),
+        ),
+        registry,
+    )
+
+    assert result.returncode == 0
+    assert captured["ASTRID_RUNPOD_ACCOUNT_REF"] == "runpod-default"
+    assert "--prepared-worker" in captured["argv"]
+    assert str(selection_path) in captured["argv"]
+    assert "RUNPOD_API_KEY" not in captured
 
 
 def test_orchestrator_schema_accepts_legacy_python_cli_runtime_shape() -> None:

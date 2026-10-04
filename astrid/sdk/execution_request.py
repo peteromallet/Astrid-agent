@@ -40,7 +40,7 @@ _TARGET_FIELDS = frozenset(
 )
 _REQUEST_FIELDS = frozenset({
     "schema_version", "workflow", "inputs", "execution", "target",
-    "retry_policy", "lifecycle", "limits", "checks",
+    "retry_policy", "lifecycle", "limits", "checks", "remote_activation_required",
 })
 _WORKFLOW_FIELDS = frozenset({"id", "contract_digest", "required_bindings"})
 _INPUT_FIELDS = frozenset({"name", "object_id", "filename", "required", "digest"})
@@ -344,6 +344,7 @@ class ExecutionRequest:
     checks: ExecutionChecks | None = None
     lifecycle: ExecutionLifecycle = ExecutionLifecycle()
     limits: ExecutionLimits = ExecutionLimits()
+    remote_activation_required: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {"target": self.target.to_dict()}
@@ -365,6 +366,8 @@ class ExecutionRequest:
             value["lifecycle"] = lifecycle
         if limits:
             value["limits"] = limits
+        if self.remote_activation_required is not None:
+            value["remote_activation_required"] = self.remote_activation_required
         return value
 
 
@@ -610,6 +613,15 @@ def normalize_execution_request(value: ExecutionRequest | Mapping[str, Any] | No
             raise ExecutionRequestError("execution_request.schema_version must be 1")
 
     target = _normalize_target(target_value)
+    remote_activation_required = raw.get("remote_activation_required")
+    if remote_activation_required is not None and type(remote_activation_required) is not bool:
+        raise ExecutionRequestError(
+            "execution_request.remote_activation_required must be a boolean"
+        )
+    if remote_activation_required is True and target.kind != "runpod":
+        raise ExecutionRequestError(
+            "execution_request.remote_activation_required requires a RunPod target"
+        )
     workflow = (
         _normalize_workflow(raw["workflow"])
         if "workflow" in raw
@@ -697,6 +709,7 @@ def normalize_execution_request(value: ExecutionRequest | Mapping[str, Any] | No
         checks=checks,
         lifecycle=ExecutionLifecycle(mode=mode, idle_timeout_seconds=idle_timeout),
         limits=limits,
+        remote_activation_required=remote_activation_required,
     ).to_dict()
 
 

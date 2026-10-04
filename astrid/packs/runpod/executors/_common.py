@@ -769,6 +769,45 @@ def _record_allocation_unknown(
     )
 
 
+def _record_nonretryable_launch_failure(
+    handle_path: Path, attempt: dict[str, Any], exc: Any,
+) -> AstridError:
+    """Retain custody when a fatal launch error may have created a known pod."""
+    pod_id = getattr(exc, "pod_id", None)
+    failed_at = _utc_now_iso()
+    attempt.update({
+        "state": "allocated_unverified" if pod_id else "allocation_unknown",
+        "failure_type": type(exc).__name__,
+        "failed_at": failed_at,
+        "reconciliation_required": True,
+    })
+    if pod_id:
+        attempt["pod_id"] = str(pod_id)
+    else:
+        attempt["unresolved_at"] = failed_at
+    _replace_custody_record(
+        handle_path,
+        attempt,
+        operation_id=str(attempt["operation_id"]),
+    )
+    return AstridError(
+        str(exc),
+        recovery_command=(
+            f"reconcile known pod {pod_id} by exact ID and the recorded request before retrying"
+            if pod_id
+            else "reconcile the recorded request with the provider account before retrying"
+        ),
+        code="allocation_known" if pod_id else "allocation_unknown",
+        state_snapshot={
+            "handle_path": str(handle_path),
+            "operation_id": attempt["operation_id"],
+            "request_name": attempt["request_name"],
+            "pod_id": str(pod_id) if pod_id else None,
+            "reconciliation_required": True,
+        },
+    )
+
+
 async def _terminate_pod_id(pod_id: str, config: Any, *, name: str | None = None) -> bool:
     from runpod_lifecycle import get_pod
 
@@ -838,6 +877,23 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
             code="allocation_unknown",
             state_snapshot={"handle_path": str(handle_path), "request_name": handle.get("request_name"), "reconciliation_required": True},
         )
+    if str(handle.get("schema_version", "")).startswith(
+        "astrid.runpod.allocation-attempt."
+    ):
+        raise AstridError(
+            f"RunPod acquisition journal is not an executable pod handle (state={handle.get('state')!r})",
+            recovery_command=(
+                "resume the original claim command to reconcile its exact provider target, "
+                "then pass the resulting claimed handle to RunPod exec/pull"
+            ),
+            code="allocation_journal_not_claimed",
+            state_snapshot={
+                "handle_path": str(handle_path),
+                "operation_id": handle.get("operation_id"),
+                "state": handle.get("state"),
+                "reconciliation_required": True,
+            },
+        )
     if handle.get("schema_version") == "astrid.runpod.claim.v1":
         # Claim waiters deliberately emit an operator/lifecycle handle rather
         # than pretending that a reused pod was provisioned by Astrid.  The
@@ -855,6 +911,44 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
 
         credential = CredentialsScope.resolve_local("runpod", env_var=api_key_ref)
         api_key = credential.value
+        from astrid.packs.runpod.worker_preparation import (
+            RunPodTargetContract,
+            TargetObservationError,
+            observe_target,
+        )
+
+        network_volume_id = str(handle.get("network_volume_id") or "")
+        network_volume_name = str(handle.get("network_volume_name") or "")
+        if (
+            not network_volume_name
+            and str(handle.get("storage_name") or "") != network_volume_id
+        ):
+            network_volume_name = str(handle.get("storage_name") or "")
+
+        try:
+            observe_target(
+                api_key,
+                RunPodTargetContract(
+                    pod_id=pod_id,
+                    expected_pod_name=str(handle.get("name") or "") or None,
+                    gpu_type=str(handle.get("gpu_type") or ""),
+                    worker_image=str(handle.get("worker_image") or ""),
+                    network_volume_id=network_volume_id,
+                    network_volume_name=network_volume_name or None,
+                    network_volume_size_gb=int(handle.get("network_volume_size_gb") or 0),
+                ),
+            )
+        except (TargetObservationError, TypeError, ValueError) as exc:
+            raise AstridError(
+                f"claimed RunPod pod {pod_id} does not match its recorded provider identity: {exc}",
+                recovery_command="verify the provider account and reconcile pod/image/GPU/network-volume identity before continuing",
+                code="provider_target_unverified",
+                state_snapshot={
+                    "pod_id": pod_id,
+                    "handle_path": str(handle_path),
+                    "reconciliation_required": True,
+                },
+            ) from exc
         from runpod_lifecycle.api import get_pod_status
 
         status = get_pod_status(pod_id, api_key)
@@ -1071,6 +1165,8 @@ def cmd_provision(args: argparse.Namespace, produces_dir: Path) -> int:
     except AllocationUnknown as exc:
         raise _record_allocation_unknown(handle_path, attempt, exc) from exc
     except LaunchFailure as exc:
+        if pod_id is None and not getattr(exc, "retryable", True):
+            raise _record_nonretryable_launch_failure(handle_path, attempt, exc) from exc
         if pod_id is None:
             _remove_custody_record(handle_path, operation_id=operation_id)
         else:
@@ -1293,6 +1389,22 @@ def cmd_teardown(args: argparse.Namespace, produces_dir: Path) -> int:
         )
 
     handle, config = _load_handle_and_config(pod_handle_path)
+    if (
+        handle.get("schema_version") == "astrid.runpod.claim.v1"
+        and handle.get("acquisition_mode") == "attach"
+        and handle.get("release_authorized") is not True
+    ):
+        raise AstridError(
+            f"pod {handle.get('pod_id')} was attached without exclusive release authority",
+            recovery_command=(
+                "retain the pod, or create an explicit exclusive-owner claim before requesting release"
+            ),
+            code="release_not_authorized",
+            state_snapshot={
+                "pod_id": handle.get("pod_id"),
+                "handle_path": str(pod_handle_path),
+            },
+        )
     hourly_rate = handle["hourly_rate"]
 
     t0 = time.monotonic()
@@ -1589,21 +1701,50 @@ def cmd_session(args: argparse.Namespace, produces_dir: Path) -> int:
         _write_cost_sidecar(produces_dir, duration_seconds=total_duration, hourly_rate=hourly_rate, basis_prefix="session (allocation unknown)")
         raise _record_allocation_unknown(handle_path, attempt, exc) from exc
     except Exception as exc:
+        known_pod_id = getattr(exc, "pod_id", None) if isinstance(exc, LaunchFailure) else None
+        recorded_launch_error: AstridError | None = None
         if isinstance(exc, LaunchFailure) and pod_id is None:
-            _remove_custody_record(handle_path, operation_id=operation_id)
+            if not getattr(exc, "retryable", True):
+                recorded_launch_error = _record_nonretryable_launch_failure(
+                    handle_path, attempt, exc
+                )
+            else:
+                _remove_custody_record(handle_path, operation_id=operation_id)
         elif pod_id is None:
             attempt.update({"state": "allocation_unknown", "unresolved_at": _utc_now_iso()})
             _replace_custody_record(handle_path, attempt, operation_id=operation_id)
         total_duration = time.monotonic() - t0
         _write_cost_sidecar(produces_dir, duration_seconds=total_duration, hourly_rate=hourly_rate, basis_prefix="session (failed)")
+        if recorded_launch_error is not None:
+            raise recorded_launch_error from exc
         raise AstridError(
             str(exc),
             recovery_command=(
                 "reconcile the request name with the provider account before retrying"
-                if pod_id is None and not isinstance(exc, LaunchFailure)
+                if pod_id is None and (
+                    not isinstance(exc, LaunchFailure)
+                    or not getattr(exc, "retryable", True)
+                )
                 else "check your RunPod API key, GPU availability, and remote script syntax, then retry"
             ),
-            code="allocation_unknown" if pod_id is None and not isinstance(exc, LaunchFailure) else None,
+            code=(
+                "allocation_known" if known_pod_id
+                else "allocation_unknown"
+                if pod_id is None and (
+                    not isinstance(exc, LaunchFailure)
+                    or not getattr(exc, "retryable", True)
+                )
+                else None
+            ),
+            state_snapshot=(
+                {
+                    "pod_id": str(known_pod_id),
+                    "handle_path": str(handle_path),
+                    "reconciliation_required": True,
+                }
+                if known_pod_id
+                else None
+            ),
         ) from exc
 
     finally:

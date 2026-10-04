@@ -7,10 +7,10 @@ the exact GPU/storage request is retried until capacity appears.  The
 network-volume size is discovered and echoed back unchanged; the 200 GB
 request applies only to the pod's disposable container disk.
 
-The defaults target the prepared H3 CUDA-13 release: they request the
-validated image/host profile and verify the mounted release venv before the
-script reports success. Override them only for another explicitly prepared
-runtime profile.
+The defaults target the prepared H3 CUDA-13 release: they request its selected
+image/host profile and verify mounted release paths and Python version before
+the script reports success. They do not probe or qualify the GPU. Override the
+profile only for another explicitly prepared runtime.
 
 Before launch the script exclusively creates a secret-free allocation-attempt
 marker.  On success it atomically replaces that marker with the claimed pod
@@ -29,21 +29,28 @@ import json
 import os
 import shlex
 import sys
-import tempfile
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from runpod_lifecycle import (
-    AllocationUnknown,
-    LaunchFailure,
     RunPodConfig,
-    get_network_volumes,
-    launch_when_available,
 )
 
+from astrid.packs.runpod.worker_preparation import (
+    AcquiredRunPodTarget,
+    acquire_target,
+    reconcile_target,
+    replace_target_record,
+    resolve_existing_volume,
+)
+from astrid.packs.runpod.worker_preparation import (
+    create_target_record_exclusive as _create_json_exclusive,
+)
+from astrid.packs.runpod.worker_preparation import (
+    write_target_record as _write_json,
+)
 
 DEFAULT_GPU = "NVIDIA GeForce RTX 5090"
 DEFAULT_STORAGE = "backup"
@@ -62,7 +69,7 @@ DEFAULT_LIFECYCLE_POLICY = "leave_running"
 
 
 async def _preflight_release(pod: Any, release_root: str) -> dict[str, str]:
-    """Verify the mounted prepared release before keeping a claimed pod."""
+    """Check mounted release paths and interpreter version without GPU probes."""
     python_path = f"{release_root}/runtime/venv/bin/python"
     launcher_path = f"{release_root}/runtime/launch-comfy.sh"
     command = f"""
@@ -70,25 +77,18 @@ set -eu
 test -d /workspace
 test -x {shlex.quote(python_path)}
 test -x {shlex.quote(launcher_path)}
-nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 {shlex.quote(python_path)} -B - <<'PY'
 import sys
-import torch
 
 if sys.version_info[:2] != (3, 12):
     raise SystemExit(f"release requires Python 3.12, got {{sys.version}}")
-if torch.version.cuda != "13.0":
-    raise SystemExit(f"release requires CUDA 13.0 Torch, got {{torch.version.cuda!r}}")
-if not torch.cuda.is_available():
-    raise SystemExit("Torch reports CUDA unavailable")
-torch.cuda.init()
-print(f"python={{sys.version.split()[0]}} torch={{torch.__version__}} torch_cuda={{torch.version.cuda}} gpu={{torch.cuda.get_device_name(0)}}")
+print(f"python={{sys.version.split()[0]}}")
 PY
 """
     exit_code, stdout, stderr = await pod.exec_ssh(command, timeout=120)
     if exit_code != 0:
         detail = (stderr or stdout).strip()[-4000:]
-        raise RuntimeError(f"H3 release preflight failed for {release_root}: {detail}")
+        raise RuntimeError(f"H3 release path check failed for {release_root}: {detail}")
     return {
         "release_root": release_root,
         "release_python": python_path,
@@ -105,41 +105,6 @@ def _log(message: str) -> None:
     print(f"{_utc_now()} {message}", file=sys.stderr, flush=True)
 
 
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    """Atomically replace *path* with a private JSON document."""
-    path = path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _create_json_exclusive(path: Path, value: dict[str, Any]) -> None:
-    """Create the first custody marker without replacing an existing owner."""
-    path = path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-
-
 def _existing_handle_error(path: Path) -> RuntimeError:
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
@@ -151,10 +116,19 @@ def _existing_handle_error(path: Path) -> RuntimeError:
         return RuntimeError(
             f"claim custody already exists at {path} and is not a JSON object"
         )
-    if existing.get("state") in {"allocation_pending", "allocation_unknown"}:
+    if existing.get("state") in {
+        "allocation_ready",
+        "capacity_retry_ready",
+        "capacity_exhausted",
+        "allocation_pending",
+        "allocation_unknown",
+        "allocated_unverified",
+        "attachment_pending",
+        "attached_unverified",
+    }:
         return RuntimeError(
             f"allocation request {existing.get('request_name')!r} at {path} "
-            "requires provider reconciliation before another launch"
+            "requires reconciliation; rerun this command with --resume"
         )
     if existing.get("pod_id"):
         return RuntimeError(
@@ -273,20 +247,29 @@ def _start_allocation_attempt(
     args: argparse.Namespace,
     volume: dict[str, Any],
     rollover: dict[str, str] | None = None,
+    pod_id: str | None = None,
 ) -> dict[str, Any]:
     operation_id = uuid.uuid4().hex
-    request_name = f"{args.name_prefix}-{operation_id[:12]}"
+    request_name = f"{args.name_prefix}-{operation_id}" if pod_id is None else None
     attempt = {
         "schema_version": "astrid.runpod.allocation-attempt.v1",
-        "state": "allocation_pending",
+        "state": "allocation_ready" if pod_id is None else "attachment_pending",
         "operation_id": operation_id,
         "request_name": request_name,
         "requested_at": _utc_now(),
         "reconciliation_required": True,
+        "api_key_ref": "RUNPOD_API_KEY",
+        "provider_account_ref": args.provider_account_ref,
+        "acquisition_mode": "allocate" if pod_id is None else "attach",
+        "release_authorized": (
+            True if pod_id is None else bool(getattr(args, "allow_pod_release", False))
+        ),
         "gpu_type": args.gpu_type,
         "storage_name": args.storage_name,
         "network_volume_id": volume.get("id"),
+        "network_volume_name": volume.get("name") or args.storage_name,
         "network_volume_size_gb": int(volume["size"]),
+        "network_volume_datacenter_id": volume.get("dataCenterId"),
         "attach_only": True,
         "container_disk_gb": args.container_disk_gb,
         "worker_image": args.worker_image,
@@ -298,6 +281,10 @@ def _start_allocation_attempt(
         "poll_seconds": args.poll_seconds,
         "lifecycle": {"mode": args.lifecycle_policy},
     }
+    if pod_id is None:
+        attempt["create_attempts"] = 0
+    if pod_id is not None:
+        attempt["requested_pod_id"] = pod_id
     if rollover is not None:
         archive_path = _archive_path(path, rollover)
         attempt["previous_claim"] = {
@@ -347,47 +334,81 @@ def _start_allocation_attempt(
     return attempt
 
 
+def _read_resumable_attempt(path: Path) -> dict[str, Any]:
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read resumable RunPod custody at {path}: {exc}") from exc
+    if not isinstance(existing, dict) or not str(existing.get("schema_version", "")).startswith(
+        "astrid.runpod.allocation-attempt."
+    ):
+        raise RuntimeError(f"{path} does not contain a resumable RunPod allocation attempt")
+    if not existing.get("operation_id"):
+        raise RuntimeError(f"RunPod allocation attempt at {path} has no operation ID")
+    if existing.get("state") not in {
+        "allocation_ready",
+        "capacity_retry_ready",
+        "capacity_exhausted",
+        "allocation_pending",
+        "allocation_unknown",
+        "allocated_unverified",
+        "attachment_pending",
+        "attached_unverified",
+    }:
+        raise RuntimeError(
+            f"RunPod custody at {path} is not resumable (state={existing.get('state')!r})"
+        )
+    return existing
+
+
+def _validate_resume_request(
+    attempt: Mapping[str, Any],
+    *,
+    args: argparse.Namespace,
+    volume: Mapping[str, Any],
+) -> None:
+    expected = {
+        "provider_account_ref": args.provider_account_ref,
+        "gpu_type": args.gpu_type,
+        "storage_name": args.storage_name,
+        "network_volume_id": volume.get("id"),
+        "network_volume_name": volume.get("name") or args.storage_name,
+        "network_volume_size_gb": int(volume["size"]),
+        "network_volume_datacenter_id": volume.get("dataCenterId"),
+        "container_disk_gb": args.container_disk_gb,
+        "worker_image": args.worker_image,
+        "template_id": args.template_id,
+        "allowed_cuda_versions": [
+            part.strip() for part in args.allowed_cuda_versions.split(",") if part.strip()
+        ],
+    }
+    mismatches = [
+        key for key, value in expected.items()
+        if attempt.get(key) != value
+    ]
+    expected_mode = "attach" if getattr(args, "pod_id", None) is not None else "allocate"
+    if attempt.get("acquisition_mode", "allocate") != expected_mode:
+        mismatches.append("acquisition_mode")
+    if expected_mode == "attach" and attempt.get("requested_pod_id") != args.pod_id:
+        mismatches.append("requested_pod_id")
+    if mismatches:
+        raise RuntimeError(
+            "resume request differs from the original RunPod intent in: "
+            + ", ".join(sorted(set(mismatches)))
+        )
+
+
 def _replace_allocation_attempt(
     path: Path,
     value: dict[str, Any],
     *,
     operation_id: str,
 ) -> None:
-    """Atomically transition only the marker owned by *operation_id*."""
-    try:
-        current = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"cannot verify claim custody at {path}: {exc}") from exc
-    if current.get("operation_id") != operation_id:
-        raise RuntimeError(
-            f"claim custody at {path} belongs to another operation; refusing to overwrite it"
-        )
-    if value.get("operation_id") != operation_id:
-        raise RuntimeError("replacement claim custody changed operation identity")
-    _write_json(path, value)
-
-
-def _volume_by_name_or_id(volumes: list[dict[str, Any]], name_or_id: str) -> dict[str, Any] | None:
-    return next(
-        (
-            volume
-            for volume in volumes
-            if isinstance(volume, dict)
-            and (str(volume.get("name") or "") == name_or_id or str(volume.get("id") or "") == name_or_id)
-        ),
-        None,
-    )
+    replace_target_record(path, value, operation_id=operation_id)
 
 
 async def _require_existing_volume(config: RunPodConfig, name_or_id: str) -> dict[str, Any]:
-    volumes = await asyncio.to_thread(get_network_volumes, config.api_key)
-    volume = _volume_by_name_or_id(volumes, name_or_id)
-    if volume is None:
-        raise RuntimeError(f"RunPod network volume {name_or_id!r} was not found; refusing to create one")
-    size = volume.get("size")
-    if isinstance(size, bool) or not isinstance(size, (int, float)) or int(size) <= 0:
-        raise RuntimeError(f"RunPod network volume {name_or_id!r} has no valid size: {volume!r}")
-    return volume
+    return await resolve_existing_volume(config.api_key, name_or_id)
 
 
 def _handle(
@@ -406,15 +427,19 @@ def _handle(
         "schema_version": "astrid.runpod.claim.v1",
         "state": "claimed",
         "operation_id": attempt["operation_id"],
-        "request_name": attempt["request_name"],
+        "request_name": attempt.get("request_name") or str(pod.name),
         "pod_id": str(pod.id),
         "name": str(pod.name),
         "ssh": f"root@{ssh['ip']} -p {ssh['port']}",
         "claimed_at": claimed_at,
         "gpu_type": selected_gpu,
         "storage_name": selected_storage,
-        "network_volume_id": getattr(pod, "_storage_volume", None) or volume.get("id"),
+        # The exact account inventory check is authoritative for this identity;
+        # SDK-local storage metadata is not a substitute for its pinned ID.
+        "network_volume_id": volume.get("id"),
+        "network_volume_name": str(volume.get("name") or ""),
         "network_volume_size_gb": int(volume["size"]),
+        "network_volume_datacenter_id": volume.get("dataCenterId"),
         "attach_only": True,
         "container_disk_gb": config.container_disk_gb,
         "volume_mount_path": config.volume_mount_path,
@@ -422,6 +447,11 @@ def _handle(
         "worker_image": config.worker_image,
         "template_id": config.template_id,
         "name_prefix": config.name_prefix,
+        "api_key_ref": attempt.get("api_key_ref", "RUNPOD_API_KEY"),
+        "provider_account_ref": attempt.get("provider_account_ref"),
+        "acquisition_mode": attempt.get("acquisition_mode", "allocate"),
+        "release_authorized": attempt.get("release_authorized", False),
+        "provider_observation": attempt.get("provider_observation"),
         "lifecycle": {"mode": DEFAULT_LIFECYCLE_POLICY},
         "reconciliation_required": False,
         "runtime_preflight": preflight,
@@ -433,9 +463,80 @@ def _handle(
     }
 
 
+async def _finish_claim(
+    *,
+    args: argparse.Namespace,
+    handle_path: Path,
+    config: RunPodConfig,
+    acquired: AcquiredRunPodTarget,
+) -> dict[str, Any]:
+    pod = acquired.pod
+    volume = acquired.volume
+    attempt = acquired.attempt
+    operation_id = str(attempt["operation_id"])
+    pod_id = str(pod.id)
+    allocated = dict(attempt)
+    observation = acquired.observation
+
+    failure_phase = "ssh"
+    try:
+        ssh = await pod._ensure_ssh_details()
+        failure_phase = "release_preflight"
+        preflight = await _preflight_release(pod, args.release_root)
+        final_attempt = {
+            **attempt,
+            "acquisition_mode": acquired.acquisition_mode,
+            "provider_observation": observation.to_dict(),
+        }
+        result = _handle(
+            pod=pod,
+            ssh=ssh,
+            config=config,
+            volume=volume,
+            claimed_at=_utc_now(),
+            preflight=preflight,
+            attempt=final_attempt,
+        )
+        result["handle_path"] = str(handle_path)
+        _replace_allocation_attempt(
+            handle_path, result, operation_id=operation_id
+        )
+        return result
+    except BaseException as exc:
+        failed = {
+            **allocated,
+            "state": "allocated_unverified",
+            "failure_phase": failure_phase,
+            "failure_type": type(exc).__name__,
+            "failed_at": _utc_now(),
+            "reconciliation_required": True,
+        }
+        _replace_allocation_attempt(handle_path, failed, operation_id=operation_id)
+        _log(
+            f"pod {pod_id} failed during {failure_phase}: {type(exc).__name__}; "
+            "leave_running keeps the exact pod running"
+        )
+        raise
+
+
 async def _claim(args: argparse.Namespace) -> dict[str, Any]:
+    provider_account_ref = getattr(args, "provider_account_ref", None)
+    if not isinstance(provider_account_ref, str) or not provider_account_ref.strip():
+        raise RuntimeError(
+            "a stable non-secret --provider-account-ref (or ASTRID_RUNPOD_ACCOUNT_REF) is required"
+        )
+    if provider_account_ref.startswith(("rpa_", "sk-")):
+        raise RuntimeError("provider_account_ref must be a non-secret account/profile label")
     handle_path = Path(args.handle_path).expanduser().resolve()
-    rollover = _rollover_candidate(handle_path)
+    resuming = bool(getattr(args, "resume", False))
+    if resuming:
+        if not handle_path.is_file():
+            raise RuntimeError(f"no RunPod custody exists to resume at {handle_path}")
+        rollover = None
+        prior_attempt = _read_resumable_attempt(handle_path)
+    else:
+        rollover = _rollover_candidate(handle_path)
+        prior_attempt = None
 
     # RunPodConfig.from_env() is the shared Astrid credential/config boundary;
     # explicit values below prevent ambient GPU/storage fallbacks from changing
@@ -448,7 +549,7 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         min_memory_gb=args.min_memory_gb,
         name_prefix=args.name_prefix,
         worker_image=args.worker_image,
-        # The validated H3 image is authoritative; do not let the generic
+        # The selected H3 image is authoritative; do not let the generic
         # runpod-torch-v240 template silently replace it.
         template_id=args.template_id,
         allowed_cuda_versions=tuple(args.allowed_cuda_versions.split(",")),
@@ -458,12 +559,21 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         attach_only=True,
     )
     volume = await _require_existing_volume(config, args.storage_name)
-    attempt = _start_allocation_attempt(
-        handle_path, args=args, volume=volume, rollover=rollover
-    )
+    if prior_attempt is not None:
+        _validate_resume_request(prior_attempt, args=args, volume=volume)
+        attempt = prior_attempt
+    else:
+        attempt = _start_allocation_attempt(
+            handle_path,
+            args=args,
+            volume=volume,
+            rollover=rollover,
+            pod_id=getattr(args, "pod_id", None),
+        )
     operation_id = str(attempt["operation_id"])
-    request_name = str(attempt["request_name"])
+    request_name = str(attempt.get("request_name") or "")
     _log(
+        f"operation_id={operation_id} request_name={request_name!r} "
         f"watching gpu={args.gpu_type!r} storage={args.storage_name!r} "
         f"volume_id={volume.get('id')!r} volume_size_gb={int(volume['size'])} "
         f"container_disk_gb={args.container_disk_gb} image={args.worker_image!r} "
@@ -471,116 +581,47 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         f"poll_seconds={args.poll_seconds} max_wait_seconds={args.max_wait_seconds} "
         f"lifecycle={args.lifecycle_policy!r} handle_path={str(handle_path)!r}"
     )
-
-    deadline = (
-        time.monotonic() + args.max_wait_seconds
-        if args.max_wait_seconds > 0
-        else None
+    if resuming and attempt.get("state") not in {
+        "capacity_retry_ready",
+        "capacity_exhausted",
+    }:
+        acquired = await reconcile_target(
+            config,
+            handle_path=handle_path,
+            attempt=attempt,
+            volume=volume,
+            ready_timeout_seconds=args.ready_timeout_seconds,
+        )
+    else:
+        acquired = await acquire_target(
+            config,
+            handle_path=handle_path,
+            attempt=attempt,
+            volume=volume,
+            pod_id=getattr(args, "pod_id", None),
+            max_wait_seconds=args.max_wait_seconds,
+            capacity_window_seconds=args.capacity_window_seconds,
+            retry_interval_seconds=args.poll_seconds,
+            ready_timeout_seconds=args.ready_timeout_seconds,
+            allow_capacity_retry=resuming,
+        )
+    return await _finish_claim(
+        args=args,
+        handle_path=handle_path,
+        config=config,
+        acquired=acquired,
     )
-
-    while True:
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                exhausted = {
-                    **attempt,
-                    "state": "capacity_exhausted",
-                    "reconciliation_required": False,
-                    "completed_at": _utc_now(),
-                }
-                _replace_allocation_attempt(
-                    handle_path, exhausted, operation_id=operation_id
-                )
-                raise TimeoutError(f"capacity did not appear within {args.max_wait_seconds}s")
-            window = min(args.capacity_window_seconds, max(1, int(remaining)))
-        else:
-            window = args.capacity_window_seconds
-
-        _log(f"starting capacity window={window}s")
-        try:
-            pod = await launch_when_available(
-                config,
-                name=request_name,
-                max_wait_sec=window,
-                retry_interval_sec=args.poll_seconds,
-            )
-        except AllocationUnknown as exc:
-            unknown = {
-                **attempt,
-                "state": "allocation_unknown",
-                "reconciliation_required": True,
-                "unresolved_at": _utc_now(),
-                "gpu_type_attempted": exc.gpu_type,
-                "ram_tier_attempted": exc.ram_tier,
-                "storage_name_attempted": exc.storage_name,
-                "storage_volume_id_attempted": exc.storage_volume_id,
-            }
-            _replace_allocation_attempt(handle_path, unknown, operation_id=operation_id)
-            _log(
-                f"allocation outcome unknown for request={request_name!r}; "
-                "provider reconciliation is required before another launch"
-            )
-            raise
-        except LaunchFailure as exc:
-            # The updated lifecycle raises AllocationUnknown separately. A
-            # remaining LaunchFailure is a definite bounded capacity miss, so
-            # another window is safe while the overall deadline remains.
-            _log(f"capacity window exhausted: {exc}")
-            continue
-
-        allocated = {
-            **attempt,
-            "state": "allocated",
-            "pod_id": str(pod.id),
-            "name": str(pod.name),
-            "allocated_at": _utc_now(),
-            "reconciliation_required": False,
-        }
-        _replace_allocation_attempt(handle_path, allocated, operation_id=operation_id)
-
-        failure_phase = "readiness"
-        try:
-            # launch_when_available returns immediately after RunPod allocates
-            # the pod.  Do not report success until the canonical readiness
-            # check and SSH metadata lookup both pass.
-            await pod.wait_ready(timeout=args.ready_timeout_seconds)
-            failure_phase = "ssh"
-            ssh = await pod._ensure_ssh_details()
-            failure_phase = "release_preflight"
-            preflight = await _preflight_release(pod, args.release_root)
-            result = _handle(
-                pod=pod,
-                ssh=ssh,
-                config=config,
-                volume=volume,
-                claimed_at=_utc_now(),
-                preflight=preflight,
-                attempt=attempt,
-            )
-            result["handle_path"] = str(handle_path)
-            _replace_allocation_attempt(handle_path, result, operation_id=operation_id)
-            return result
-        except BaseException as exc:
-            failed = {
-                **allocated,
-                "state": "allocated_unverified",
-                "failure_phase": failure_phase,
-                "failure_type": type(exc).__name__,
-                "failed_at": _utc_now(),
-                "reconciliation_required": True,
-            }
-            _replace_allocation_attempt(handle_path, failed, operation_id=operation_id)
-            _log(
-                f"allocated pod {pod.id} failed during {failure_phase}: "
-                f"{type(exc).__name__}; leave_running keeps the exact pod running"
-            )
-            raise
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpu-type", default=DEFAULT_GPU)
     parser.add_argument("--storage-name", default=DEFAULT_STORAGE)
+    parser.add_argument(
+        "--provider-account-ref",
+        default=os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF"),
+        help="Stable non-secret account/profile label shared with Runtime placement (or set ASTRID_RUNPOD_ACCOUNT_REF).",
+    )
     parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_CONTAINER_DISK_GB)
     parser.add_argument("--image", dest="worker_image", default=DEFAULT_WORKER_IMAGE)
     parser.add_argument(
@@ -591,10 +632,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--template-id",
         default=None,
-        help="Optional provider template; defaults to none so the validated image is authoritative.",
+        help="Optional provider template; defaults to none so the selected image is authoritative.",
     )
     parser.add_argument("--release-root", default=DEFAULT_RELEASE_ROOT)
     parser.add_argument("--min-memory-gb", type=int, default=32)
+    parser.add_argument(
+        "--pod-id",
+        default=None,
+        help="Attach to this exact account-visible pod instead of allocating a new one.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reconcile the existing secret-free custody record; only issue a create when its journal proves no create is in flight.",
+    )
+    parser.add_argument(
+        "--allow-pod-release",
+        action="store_true",
+        help="Record exclusive release authority for an exact attached pod.",
+    )
     parser.add_argument("--poll-seconds", type=int, default=DEFAULT_POLL_SECONDS)
     parser.add_argument(
         "--capacity-window-seconds",
@@ -637,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"--{name.replace('_', '-')} must be positive")
     if args.max_wait_seconds < 0:
         raise SystemExit("--max-wait-seconds must be zero or positive")
+    if args.pod_id is not None and not args.pod_id.strip():
+        raise SystemExit("--pod-id must be nonempty when supplied")
     if not any(part.strip() for part in args.allowed_cuda_versions.split(",")):
         raise SystemExit("--allowed-cuda-versions must contain at least one version")
 

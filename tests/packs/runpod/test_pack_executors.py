@@ -22,8 +22,9 @@ from astrid.core.contracts.errors import AstridError
 def test_outer_adapter_allocation_unknown_keeps_identity_and_blocks_another_launch(
     command: str, produces_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from astrid.packs.runpod.executors import _common
     from runpod_lifecycle import AllocationUnknown
+
+    from astrid.packs.runpod.executors import _common
 
     resolved = {
         **_common._RUNPOD_COMPUTE_DEFAULTS,
@@ -77,6 +78,84 @@ def test_outer_adapter_allocation_unknown_keeps_identity_and_blocks_another_laun
     assert marker["storage_volume_id_attempted"] == "vol-id"
     assert "pod_id" not in marker
     assert "test-key-rpa_" not in (produces_dir / "pod_handle.json").read_text()
+
+
+@pytest.mark.parametrize("command", ["provision", "session"])
+def test_launcher_preserves_known_pod_from_nonretryable_launch_failure(
+    command: str, produces_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runpod_lifecycle import PostCreateHookFailure
+
+    from astrid.packs.runpod.executors import _common
+
+    resolved = {
+        **_common._RUNPOD_COMPUTE_DEFAULTS,
+        "gpu_type": "NVIDIA GeForce RTX 5090",
+        "allowed_cuda_versions": ["13.0"],
+        "image": "runpod/base:cuda1300",
+        "storage_name": None,
+        "volume_in_gb": 0,
+        "require_storage": False,
+        "datacenter_id": None,
+    }
+    launches: list[str] = []
+
+    async def known_pod_failure(config, *, name):
+        launches.append(name)
+        marker = json.loads((produces_dir / "pod_handle.json").read_text(encoding="utf-8"))
+        assert marker["state"] == "allocation_pending"
+        assert marker["request_name"] == name
+        raise PostCreateHookFailure("pod-created-before-hook-error", RuntimeError("state hook failed"))
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key-rpa_0000000000000000000000000000000000000000000000")
+    with patch("runpod_lifecycle.launch", known_pod_failure), \
+         patch.object(_common, "_resolve_compute_profile", return_value=resolved), \
+         patch.object(_common, "_preflight_storage"), \
+         patch.object(_common, "_get_hourly_rate", return_value=0.5), \
+         patch.object(_common, "_terminate_pod_id", new_callable=AsyncMock) as terminate:
+        with pytest.raises(AstridError) as raised:
+            _common.main([command, "--produces-dir", str(produces_dir)])
+
+        assert raised.value.code == "allocation_known"
+        with pytest.raises(AstridError, match="already identifies pod"):
+            _common.main([command, "--produces-dir", str(produces_dir)])
+        terminate.assert_not_awaited()
+
+    marker_text = (produces_dir / "pod_handle.json").read_text(encoding="utf-8")
+    marker = json.loads(marker_text)
+    assert len(launches) == 1
+    assert marker["state"] == "allocated_unverified"
+    assert marker["pod_id"] == "pod-created-before-hook-error"
+    assert marker["request_name"] == launches[0]
+    assert marker["reconciliation_required"] is True
+    assert marker["failure_type"] == "PostCreateHookFailure"
+    assert "test-key-rpa_" not in marker_text
+
+
+def test_attached_claim_without_exclusive_authority_refuses_teardown(
+    produces_dir: Path,
+) -> None:
+    from astrid.packs.runpod.executors import _common
+
+    handle_path = produces_dir / "pod_handle.json"
+    handle_path.write_text("{}", encoding="utf-8")
+    attached_handle = {
+        "schema_version": "astrid.runpod.claim.v1",
+        "state": "claimed",
+        "pod_id": "pod-shared",
+        "acquisition_mode": "attach",
+        "release_authorized": False,
+    }
+
+    class Args:
+        pod_handle = None
+
+    with patch.object(_common, "_load_handle_and_config", return_value=(attached_handle, object())):
+        with pytest.raises(AstridError, match="without exclusive release authority") as raised:
+            _common.cmd_teardown(Args(), produces_dir)
+
+    assert raised.value.code == "release_not_authorized"
+    assert not (produces_dir / "teardown_receipt.json").exists()
 
 
 def test_datacenter_is_forwarded_only_when_lifecycle_config_supports_it() -> None:

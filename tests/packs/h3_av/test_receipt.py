@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from astrid.packs.h3_av.src.receipt import (
     attest_runtime_managed_publication,
     build_final_receipt,
 )
+from astrid.packs.h3_av.orchestrators.transform.run import _observe_legacy_saved_result
 from astrid.sdk.results import InvocationResult
 
 
@@ -566,6 +568,34 @@ def test_publication_requires_digest_verified_local_raw_retrieval() -> None:
 
     assert receipt["states"]["raw_managed_publication"]["status"] == "failed"
     assert "retrieved" in receipt["states"]["raw_managed_publication"]["reason"]
+
+
+def test_legacy_canonical_run_observation_preserves_attestable_settlement_shape() -> None:
+    saved, output = _runtime_result()
+
+    class Tasks:
+        def show(self, task_id):
+            assert task_id == "task-1"
+            return SimpleNamespace(ok=True, data=saved.raw_result["task"])
+
+        def list_managed_outputs(self, task_id):
+            assert task_id == "task-1"
+            return SimpleNamespace(ok=True, data=saved.raw_result["managed_outputs"])
+
+    observed = _observe_legacy_saved_result(
+        SimpleNamespace(tasks=Tasks()), saved, phase="canonical run"
+    )
+
+    assert observed.raw_result["state"] == "completed"
+    assert observed.raw_result["result"] == saved.raw_result["result"]
+    assert observed.raw_result["outputs"]["artifacts"] == [output]
+    publication = attest_runtime_managed_publication(
+        runtime_result=observed,
+        request_digest=_REQUEST_DIGEST,
+        generation_intent=_generation_intent(),
+        retrieved_outputs=[output],
+    )
+    assert publication.status == "passed"
 
 
 def test_task_identity_must_match_runtime_publication() -> None:
