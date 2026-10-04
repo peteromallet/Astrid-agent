@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from astrid.core.pack import discover_packs as _discover_packs
 from astrid.core.rendering import registry as rendering_registry_module
 from astrid.core.rendering.contracts import (
@@ -508,3 +510,18 @@ print(json.dumps({name: (name in sys.modules) for name in heavy}))
     )
     loaded = json.loads(completed.stdout)
     assert loaded == {name: False for name in loaded}
+
+
+def test_render_context_cleanup_retains_scratch_when_custody_is_unknown(tmp_path, monkeypatch):
+    from astrid.core.execution.process_group import CleanupUncertainError
+    context = sdk_rendering.RenderContext(workspace=tmp_path, backend="fixture.renderer")
+    context._child_process = object()
+    retained = tmp_path / "retained.txt"; retained.write_text("owned scratch")
+    context._temp_files.append(retained)
+    def uncertain(_):
+        raise CleanupUncertainError("detached writer registration unknown")
+    monkeypatch.setattr(context, "_kill_process_group", uncertain)
+    with pytest.raises(RuntimeError, match="scratch retained"):
+        context.cleanup()
+    assert retained.exists()
+    assert not context._closed

@@ -442,3 +442,29 @@ def test_real_disabled_bearer_fails_handshake_and_enabled_bearer_becomes_ready(t
         assert rejected.value.status == 401
     finally:
         daemon.stop()
+
+
+def test_local_host_control_is_separate_and_survives_multiple_bounded_requests(monkeypatch):
+    import socket
+    from astrid.core.execution.generic_host import LocalExecutionPreparation, _read_activation_frame, _send_activation_frame
+    control_parent, control_child = socket.socketpair()
+    activation_parent, activation_child = socket.socketpair()
+    service = LocalExecutionPreparation(operation_id="op", channel_id="channel")
+    calls = []
+    def dispatch(frame):
+        calls.append(frame)
+        return {"version": "runtime.local-execution-host/v1", "status": "prepared", "ordinal": len(calls)}
+    monkeypatch.setattr(service, "dispatch", dispatch)
+    thread = service.serve_control(control_child.detach())
+    try:
+        control_parent.settimeout(1)
+        for ordinal in (1, 2):
+            _send_activation_frame(control_parent, {"command": "report_local_execution", "operation_id": "op"})
+            assert _read_activation_frame(control_parent)["ordinal"] == ordinal
+        activation_parent.sendall(b"activation-remains-separate")
+        assert activation_child.recv(100) == b"activation-remains-separate"
+        assert len(calls) == 2
+    finally:
+        control_parent.close(); activation_parent.close(); activation_child.close()
+        thread.join(timeout=1)
+    assert service.control_error is not None  # EOF is uncertainty, never exit proof.

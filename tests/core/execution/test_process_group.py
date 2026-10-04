@@ -9,8 +9,22 @@ import pytest
 from astrid.core.execution import process_group as groups
 
 
+class FakeCustody:
+    def __init__(self):
+        self.registered = {}
+        self.signal_owner = lambda *_: None
+
+    def observe(self, members):
+        self.registered.update(members)
+
+    def signal(self, pid, birth, signum):
+        assert self.registered[pid] == birth
+        self.signal_owner(pid, signum)
+
+
 def _process():
-    return SimpleNamespace(pid=100, _astrid_process_birth="root", poll=lambda: None, wait=lambda **_: 0)
+    return SimpleNamespace(pid=100, _astrid_process_birth="root", poll=lambda: None,
+                           wait=lambda **_: 0, _astrid_custody=FakeCustody())
 
 
 def _snapshot():
@@ -62,7 +76,7 @@ def test_keyboard_interrupt_during_first_census_fails_closed(monkeypatch):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(groups, "_process_snapshot", interrupted_census)
-    monkeypatch.setattr(groups.os, "kill", lambda *args: signals.append(args))
+    process._astrid_custody.signal_owner = lambda *args: signals.append(args)
     with pytest.raises(KeyboardInterrupt):
         groups.observe_tree(process)
     assert process._astrid_tree_uncertain == "KeyboardInterrupt"
@@ -92,7 +106,7 @@ def test_termination_uncertainty_is_persistent(monkeypatch, failure):
         monkeypatch.setattr(groups, "_process_snapshot", lambda: next(snapshots))
     else:
         monkeypatch.setattr(groups, "_process_snapshot", snapshot)
-    monkeypatch.setattr(groups.os, "kill", kill)
+    process._astrid_custody.signal_owner = kill
     ticks = iter(index * 0.2 for index in range(100))
     monkeypatch.setattr(groups.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(groups.time, "sleep", lambda _: None)
@@ -122,7 +136,7 @@ def test_verified_detached_tree_stops_leaves_before_ancestors_and_leader(monkeyp
         calls.append((pid, sig))
         del census[pid]
 
-    monkeypatch.setattr(groups.os, "kill", kill)
+    process._astrid_custody.signal_owner = kill
     groups.terminate_tree(process, grace_seconds=0)
     groups.verify_tree_absent(process)
     assert calls == [(pid, signal.SIGTERM) for pid in (500, 400, 300, 200, 100)]
@@ -143,7 +157,7 @@ def test_previously_observed_detached_child_remains_owned_after_leader_exit(monk
         calls.append((pid, sig))
         del census[pid]
 
-    monkeypatch.setattr(groups.os, "kill", kill)
+    process._astrid_custody.signal_owner = kill
     groups.terminate_tree(process, grace_seconds=0)
     groups.verify_tree_absent(process)
     assert calls == [(200, signal.SIGTERM)]

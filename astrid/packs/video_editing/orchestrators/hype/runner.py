@@ -30,6 +30,8 @@ from astrid.core.foundation.hash import sha256_file
 from astrid.core.execution.process_group import (
     group_exists as _owned_group_exists,
     popen_owned_group,
+    popen_owned_process,
+    observe_tree,
     release_group as _release_owned_group,
     signal_group as _signal_owned_group,
     terminate_tree as _terminate_owned_tree,
@@ -267,7 +269,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
             # callback running inside an admitted GenericPackHost worker must
             # inherit that worker's session: otherwise outer host
             # cancellation cannot reach this detached callback process.
-            launcher = subprocess.Popen if internal_worker else popen_owned_group
+            launcher = popen_owned_process if internal_worker else popen_owned_group
             process = launcher(
                 [sys.executable, "-m", "astrid.packs.video_editing.orchestrators.hype.step_worker", str(request_path)],
                 cwd=str(args.out),
@@ -294,6 +296,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
             cancelled = False
             stream_closed = False
             while process.poll() is None:
+                observe_tree(process)
                 try:
                     while True:
                         line = lines.get_nowait()
@@ -325,6 +328,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                     break
                 time.sleep(0.02)
             returncode = process.wait()
+            _terminate_owned_tree(process)
             reader.join(timeout=1)
             while True:
                 try:
@@ -359,7 +363,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
             # GenericPackHost cancellation group and could leave a render
             # running after the task had been cancelled.
             internal_worker = env.get("ASTRID_INTERNAL_INVOCATION") == "1"
-            launcher = subprocess.Popen if internal_worker else popen_owned_group
+            launcher = popen_owned_process if internal_worker else popen_owned_group
             process = launcher(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -386,6 +390,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
             cancelled = False
             timed_out = False
             while process.poll() is None:
+                observe_tree(process)
                 try:
                     while True:
                         line = lines.get_nowait()
@@ -417,6 +422,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                     break
                 time.sleep(0.02)
             returncode = process.wait()
+            _terminate_owned_tree(process)
             reader.join(timeout=1)
             while True:
                 try:

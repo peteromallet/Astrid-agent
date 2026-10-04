@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -490,3 +491,15 @@ def test_pinned_renderer_runtime_is_propagated_to_protocol_child(
         "secret_value": "/srv/astrid/node",
         "safe_value": "/srv/astrid/remotion",
     }
+
+
+def test_renderer_cleanup_never_substitutes_numeric_group_signal(monkeypatch):
+    calls = []
+    process = SimpleNamespace(_astrid_process_group_id=12, communicate=lambda **_: ("", ""))
+    monkeypatch.setattr(transport_module, "terminate_tree", lambda owned, **_: calls.append(("tree", owned)))
+    monkeypatch.setattr(transport_module, "terminate_group", lambda owned, **_: calls.append(("group", owned)))
+    monkeypatch.setattr(transport_module, "verify_tree_absent", lambda owned: calls.append(("verified", owned)))
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("numeric PID signal"))
+    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("numeric PGID signal"))
+    transport_module._terminate_process_group(process, grace=0)
+    assert calls == [("tree", process), ("group", process), ("verified", process)]

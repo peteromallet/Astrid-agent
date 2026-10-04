@@ -912,7 +912,8 @@ class RenderContext:
             declared_passthrough=tuple(passthrough),
         )
         try:
-            process = subprocess.Popen(
+            from astrid.core.execution.process_group import popen_owned_process
+            process = popen_owned_process(
                 command,
                 shell=False,
                 cwd=str(selected_cwd),
@@ -972,6 +973,8 @@ class RenderContext:
             exc.error = error  # type: ignore[attr-defined]
             raise exc
 
+        self._kill_process_group(process)
+        self._child_process = None
         result = SubprocessResult(
             returncode=process.returncode,
             stdout=self.redact(stdout),
@@ -991,32 +994,10 @@ class RenderContext:
 
     @staticmethod
     def _kill_process_group(process: subprocess.Popen[str]) -> None:
-        """SIGKILL the child's whole process group and reap it bounded.
-
-        ``start_new_session=True`` makes the child's PID its process-group
-        ID; killing the group reaches grandchildren that keep the pipes open
-        (typical FFmpeg pattern), so the subsequent bounded communicate()
-        cannot hang.  Mirrors ``astrid.core.rendering.transport``.
-        """
-        import signal
-
-        if hasattr(os, "killpg"):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except (PermissionError, OSError):
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-        else:
-            try:
-                process.kill()
-            except OSError:
-                pass
-        with contextlib.suppress(Exception):
-            process.communicate(timeout=5)
+        """Clean and verify the retained graph, including detached children."""
+        from astrid.core.execution.process_group import terminate_group
+        terminate_group(process)
+        process.communicate(timeout=5)
 
     def _bounded_logs(
         self,
@@ -1221,13 +1202,12 @@ class RenderContext:
         # Reap any subprocess still owned by this context so __exit__ cannot
         # leave a zombie or a pipe-holding grandchild behind.
         child = self._child_process
-        if child is not None and child.poll() is None:
+        if child is not None:
             try:
-                child.kill()
-            except OSError:
-                pass
-            with contextlib.suppress(Exception):
-                child.communicate(timeout=5)
+                self._kill_process_group(child)
+                self._child_process = None
+            except BaseException as exc:
+                raise RuntimeError("RenderContext custody is uncertain; scratch retained") from exc
         errors: list[BaseException] = []
         for directory in self._temp_dirs:
             try:

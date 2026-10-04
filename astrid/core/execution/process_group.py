@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class CleanupUncertainError(RuntimeError):
-    """Owned process absence could not be proved; retain its attempt."""
+from astrid.core.execution.custody_broker import CustodyError as CleanupUncertainError, ProcessCustody
 
 
 @dataclass(frozen=True)
@@ -50,7 +49,9 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
             pid, ppid, pgid = (int(value) for value in fields[:3])
         except ValueError:
             continue
-        entries[pid] = _ProcessInfo(pid, ppid, pgid, fields[3])
+        birth = process_birth_identity(pid) if sys.platform.startswith("linux") else "ps-lstart:" + fields[3]
+        if birth:
+            entries[pid] = _ProcessInfo(pid, ppid, pgid, birth)
     return entries
 
 
@@ -82,16 +83,44 @@ def process_birth_identity(pid: int | None = None) -> str:
     return info.birth if info is not None else ""
 
 
-def popen_owned_group(argv: list[str], **kwargs: Any) -> subprocess.Popen:
-    """Launch a command as a fresh process-group/session leader."""
+def popen_owned_process(argv: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Launch with retained custody while preserving the requested session."""
     options = dict(kwargs)
-    options["start_new_session"] = True
-    process = subprocess.Popen(argv, **options)
-    process._astrid_process_group_id = process.pid  # type: ignore[attr-defined]
-    info = _process_snapshot().get(process.pid)
-    if info is not None:
-        process._astrid_process_birth = info.birth  # type: ignore[attr-defined]
+    new_session = bool(options.pop("start_new_session", False))
+    custody = ProcessCustody()
+    wrapped, registration_env = custody.prepare_launch(argv, start_new_session=new_session)
+    if registration_env:
+        options["env"] = {**(options.get("env") or os.environ), **registration_env}
+    else:
+        options["start_new_session"] = new_session
+    try:
+        process = subprocess.Popen(wrapped, **options)
+    except BaseException:
+        custody.cleanup_failed_launch(signum=signal.SIGTERM)
+        raise
+    process._astrid_custody = custody
+    if new_session:
+        process._astrid_process_group_id = process.pid
+    try:
+        custody.bind_launch(process)
+        process._astrid_process_birth = custody._handles[process.pid][0]
+        observe_tree(process)
+        custody.start_observer()
+    except BaseException as error:
+        # Keep the initiating error and its retained obligation visible.
+        error.process = process
+        error.custody = custody
+        try:
+            custody.cleanup_failed_launch(signum=signal.SIGTERM)
+        except BaseException as cleanup_error:
+            raise error from cleanup_error
+        raise
     return process
+
+
+def popen_owned_group(argv: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Launch a fresh session with individual incarnation-bound custody."""
+    return popen_owned_process(argv, **{**kwargs, "start_new_session": True})
 
 
 def _group_id(process: subprocess.Popen) -> int:
@@ -164,121 +193,15 @@ def group_exists(process: subprocess.Popen) -> bool:
 
 
 def signal_group(process: subprocess.Popen, sig: int) -> None:
-    """Signal an owned group only while its leader identity is validated."""
-    known: dict[int, str] = {}
-    snapshot = _process_snapshot()
-    members, owned = _group_members_owned(process, known, snapshot)
-    if not owned:
-        return
-    leader = snapshot.get(_group_id(process))
-    if process.poll() is None and leader is not None and hasattr(os, "killpg"):
-        # Re-read the census immediately before signalling.  The first
-        # snapshot establishes ownership, while this one closes the small
-        # PID/PGID reuse window between census and killpg.
-        latest = _process_snapshot()
-        latest_leader = latest.get(_group_id(process))
-        if (
-            latest_leader is None
-            or latest_leader.birth != leader.birth
-            or process.poll() is not None
-        ):
-            return
-        try:
-            os.killpg(_group_id(process), sig)
-            return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    _signal_valid_group_members(process, members, sig, snapshot)
+    """Signal registered incarnations; a PGID is never signal authority."""
+    live = observe_tree(process)
+    _signal_valid_tree_members(process, live, sig, strict=True)
 
 
 def terminate_group(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
-    """Terminate an owned session, repeatedly discovering late descendants."""
-    known: dict[int, str] = {}
-    initial = _process_snapshot()
-    members, owned = _group_members_owned(process, known, initial)
-    if not owned:
-        try:
-            process.wait(timeout=0)
-        except subprocess.TimeoutExpired:
-            pass
-        return
-
-    leader = initial.get(_group_id(process))
-    if process.poll() is None and leader is not None and hasattr(os, "killpg"):
-        # Revalidate the original leader immediately before killpg; an exited
-        # leader's numeric PGID may already belong to another process group.
-        latest = _process_snapshot()
-        signal_snapshot = latest
-        latest_leader = latest.get(_group_id(process))
-        if (
-            latest_leader is None
-            or latest_leader.birth != leader.birth
-            or process.poll() is not None
-        ):
-            latest_leader = None
-        if latest_leader is None:
-            members, owned = _group_members_owned(process, known, latest)
-            if not owned:
-                members = {}
-        else:
-            members = {
-                info.pid: info.birth
-                for info in latest.values()
-                if info.pgid == _group_id(process)
-            }
-        try:
-            if latest_leader is not None:
-                os.killpg(_group_id(process), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        if members:
-            _signal_valid_group_members(process, members, signal.SIGTERM, signal_snapshot)
-    elif members:
-        _signal_valid_group_members(process, members, signal.SIGTERM, initial)
-
-    deadline = time.monotonic() + max(0.0, grace_seconds)
-    while time.monotonic() < deadline:
-        snapshot = _process_snapshot()
-        members, owned = _group_members_owned(process, known, snapshot)
-        if not owned or not members:
-            break
-        time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
-
-    kill_deadline = time.monotonic() + max(1.0, grace_seconds)
-    while time.monotonic() < kill_deadline:
-        snapshot = _process_snapshot()
-        members, owned = _group_members_owned(process, known, snapshot)
-        if not owned or not members:
-            break
-        _signal_valid_group_members(process, known, signal.SIGKILL, snapshot)
-        time.sleep(0.02)
-
-    try:
-        process.wait(timeout=max(1.0, grace_seconds))
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        process.wait()
-
-
-def _signal_valid_group_members(
-    process: subprocess.Popen,
-    members: dict[int, str],
-    sig: int,
-    snapshot: dict[int, _ProcessInfo] | None = None,
-) -> None:
-    snapshot = _process_snapshot() if snapshot is None else snapshot
-    group_id = _group_id(process)
-    for pid, birth in tuple(members.items()):
-        info = snapshot.get(pid)
-        if info is None or info.birth != birth or info.pgid != group_id:
-            continue
-        try:
-            os.kill(pid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    """Clean the retained graph without signalling its numeric group."""
+    terminate_tree(process, grace_seconds=grace_seconds)
+    verify_tree_absent(process)
 
 
 def _tree_members(
@@ -366,6 +289,10 @@ def _observe_tree(process: subprocess.Popen) -> dict[int, str]:
     live = _tree_members(process, known, snapshot)
     if process.pid not in known:
         raise CleanupUncertainError("owned leader identity unavailable")
+    custody = getattr(process, "_astrid_custody", None)
+    if custody is None:
+        raise CleanupUncertainError("owned tree lacks retained cleanup custody")
+    custody.observe(live)
     return live
 
 
@@ -457,12 +384,14 @@ def _signal_valid_tree_members(
                 raise CleanupUncertainError("owned signal identity was reused")
             continue
         try:
-            os.kill(pid, sig)
+            custody = getattr(process, "_astrid_custody", None)
+            if custody is None:
+                raise CleanupUncertainError("owned signal lacks retained cleanup custody")
+            custody.signal(pid, birth, sig)
         except ProcessLookupError:
             pass
-        except OSError as exc:
-            if strict:
-                raise CleanupUncertainError("owned process signal failed") from exc
+        except (OSError, CleanupUncertainError) as exc:
+            raise CleanupUncertainError("owned process signal failed") from exc
 
 
 def release_group(process: subprocess.Popen) -> None:

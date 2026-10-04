@@ -25,6 +25,8 @@ from typing import Any, Callable, Mapping
 
 from astrid.core.execution.process_group import (
     _process_snapshot,
+    CleanupUncertainError,
+    verify_tree_absent,
     popen_owned_group,
     terminate_group,
 )
@@ -308,93 +310,29 @@ def _descendant_snapshot(pid: int) -> dict[int, tuple[str, int]]:
     return descendants
 
 
+_RETAINED_HOSTS: dict[tuple[int, str], Any] = {}
+
+
 def _terminate_descendants(members: Mapping[int, tuple[str, int]]) -> None:
-    """Clean groups/children captured from the verified host, with birth checks."""
-    if not members:
-        return
-    groups: dict[int, str] = {
-        pgid: birth
-        for pid, (birth, pgid) in members.items()
-        if pid == pgid
-    }
-    for sig, seconds in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 1.0)):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            snapshot = _process_snapshot()
-            live = [
-                (pid, birth)
-                for pid, (birth, _pgid) in members.items()
-                if (info := snapshot.get(pid)) is not None and info.birth == birth
-            ]
-            if not live:
-                return
-            # A child launched by GenericPackHost is a fresh session leader.
-            # Kill its whole group only while that leader's birth token still
-            # matches; otherwise fall back to exact individual members so a
-            # reused PGID can never receive the signal.
-            for pgid, birth in groups.items():
-                leader = snapshot.get(pgid)
-                if leader is not None and leader.birth == birth and leader.pgid == pgid:
-                    try:
-                        os.killpg(pgid, sig)
-                    except OSError:
-                        pass
-            # Signal individual birth-verified processes whose group leader is
-            # already gone, including late descendants observed by the group
-            # signal above on the next census.
-            for pid, _birth in live:
-                info = snapshot.get(pid)
-                if info is not None and info.pgid in groups:
-                    leader = snapshot.get(info.pgid)
-                    if leader is not None and leader.birth == groups[info.pgid]:
-                        continue
-                try:
-                    os.kill(pid, sig)
-                except OSError:
-                    pass
-            time.sleep(0.03)
+    """A numeric census carries no destructive cleanup authority."""
+    if members:
+        raise PackHostBootstrapError("prior descendant custody is unresolved; replacement blocked")
 
 
 def _terminate_old_host(state: Mapping[str, Any]) -> None:
-    """TERM, bounded wait, then KILL one exact prior host and its children."""
-    pid_value = state.get("pid")
+    """Stop a retained exact graph; stale marker possession grants no authority."""
     try:
-        pid = int(pid_value)
+        key = (int(state.get("pid")), str(state.get("process_birth_id") or ""))
     except (TypeError, ValueError):
-        return
-    if not _host_pid_alive(pid):
-        return
-    if not _host_identity_matches(state):
-        raise PackHostBootstrapError(
-            "existing generic Astrid host cannot be verified safely; remove its stale marker and retry"
-        )
-    members = _descendant_snapshot(pid)
-
-    def signal_verified(sig: int) -> None:
-        if not _host_pid_alive(pid):
-            return
-        if not _host_identity_matches(state):
-            return
-        try:
-            if os.getpgid(pid) == pid and hasattr(os, "killpg"):
-                os.killpg(pid, sig)
-            else:
-                os.kill(pid, sig)
-        except OSError:
-            pass
-
-    signal_verified(signal.SIGTERM)
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and _host_pid_alive(pid):
-        time.sleep(0.05)
-    if _host_pid_alive(pid):
-        signal_verified(signal.SIGKILL)
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and _host_pid_alive(pid):
-            time.sleep(0.05)
-    _terminate_descendants(members)
-    if _host_pid_alive(pid):
-        raise PackHostBootstrapError("prior generic Astrid host did not terminate")
+        raise PackHostBootstrapError("prior host identity is invalid; replacement blocked")
+    process = _RETAINED_HOSTS.get(key)
+    if process is None:
+        raise PackHostBootstrapError("prior host cleanup custody is unresolved; replacement blocked")
+    try:
+        terminate_group(process)
+        verify_tree_absent(process)
+    except CleanupUncertainError as exc:
+        raise PackHostBootstrapError("prior host graph cleanup is uncertain; replacement blocked") from exc
 
 
 @dataclass
@@ -408,6 +346,7 @@ class _ParkedPackHostHandle:
     grant_sent: bool = False
     grant: Mapping[str, Any] | None = None
     cleanup_error: BaseException | None = None
+    aborted: bool = False
 
 
 class _ParkedPackHostPreparer:
@@ -485,6 +424,7 @@ class _ParkedPackHostPreparer:
             "boot_manifest_path": str(reference.boot_manifest_path),
             "boot_manifest_hash": reference.boot_manifest_hash.removeprefix("sha256:"),
         }
+        _RETAINED_HOSTS[(process.pid, state["process_birth_id"])] = process
         handle = _ParkedPackHostHandle(process, parent, reference, state, operation_id, channel_id)
         self._handle = handle
         if not state["process_birth_id"]:
@@ -586,17 +526,11 @@ class _ParkedPackHostPreparer:
 
     def abort(self, handle: object) -> None:
         handle = self._assert_owned(handle)
+        if handle.aborted:
+            return
         primary_error = sys.exc_info()[1]
         try:
             handle.control.close()
-            if handle.process.poll() is None:
-                try:
-                    _terminate_old_host(handle.state)
-                except PackHostBootstrapError:
-                    # A failed census is not exit proof. Only this owned
-                    # child's waitpid result can reconcile a concurrent exit.
-                    if handle.process.poll() is None:
-                        raise
             terminate_group(handle.process)
             handle.process.wait(timeout=1)
             ready_path = Path(handle.state["ready_file"])
@@ -604,6 +538,7 @@ class _ParkedPackHostPreparer:
             if ready and (ready.get("pid"), ready.get("process_birth_id")) == (
                     handle.process.pid, handle.state["process_birth_id"]):
                 ready_path.unlink()
+            handle.aborted = True
         except BaseException as cleanup_error:
             handle.cleanup_error = cleanup_error
             # Runtime must still observe abort failure and retain uncertainty.
@@ -979,7 +914,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
         _provision_render_runtime_env(source_path, child_env)
         try:
             log = log_path.open("ab")
-            process = subprocess.Popen(
+            process = popen_owned_group(
                 argv,
                 cwd=str(source_path),
                 env=child_env,
@@ -996,6 +931,7 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
                 log.close()
             except UnboundLocalError:
                 pass
+        _RETAINED_HOSTS[(process.pid, _host_birth_identity(process.pid))] = process
         process_state = {
             **expected,
             "version": 2,

@@ -17,6 +17,7 @@ from astrid.core.execution.generic_host import (
     AdapterRegistry,
     GenericPackHost,
     HostCancelled,
+    CleanupUncertainError,
     HostError,
     HostRegistrationError,
     RuntimeProtocolClient,
@@ -2897,3 +2898,287 @@ def test_command_host_rejects_media_receipt_with_wrong_port_name(tmp_path: Path)
     with pytest.raises(HostError, match="undeclared port|declared output port"):
         host.run_task(task, lease_token="lease-1")
     assert runtime.settlements == []
+
+
+def _local_custody_request(tmp_path):
+    import hashlib
+    root = tmp_path / "out" / "sessions" / "selected"
+    config = {"cwd": str(tmp_path), "runtime_root": str(tmp_path), "server_log_path": str(root / "comfy.log"),
+              "port": 8188, "locality": "managed_local_server", "warm_policy": "auto", "ready_timeout_sec": 10}
+    digest = "sha256:" + "a" * 64
+    profile = {"profile_id": "selected", "workspace_uuid": "workspace", "realm_root": str(tmp_path),
+               "support_root": str(tmp_path), "machine_id": "machine", "worker_executable": "/selected/relay",
+               "host_executable": "/selected/python", "engine_executable": "/selected/python",
+               "engine_listener_executable": "/selected/listener", "engine_endpoint": "http://127.0.0.1:8188",
+               "worker_artifact_digest": digest, "host_artifact_digest": digest, "engine_artifact_digest": digest,
+               "engine_listener_artifact_digest": digest, "session_config_digest": "sha256:" + hashlib.sha256(json.dumps(config, indent=2, sort_keys=True).encode()).hexdigest(),
+               "profile_revision": "revision", "profile_digest": digest, "release_digest": digest,
+               "engine_launch": {"module": "vibecomfy.commands.session", "session_root": str(root), "config": config,
+                                 "source_revision": "selected-vibe", "source_content_digest": digest,
+                                 "listener_argv": ["/selected/listener", "serve"],
+                                 "adapter_pins": {key: digest for key in ("session_source_sha256", "spawn_sha256", "cleanup_sha256", "stop_sha256", "adapter_source_sha256")}}}
+    return {"version": "runtime.local-execution-host/v1", "command": "prepare_local_execution",
+            "operation_id": "runtime-op", "channel_id": "private-channel", "owner_epoch": "runtime-A",
+            "runtime_owner": {"pid": 101, "uid": 501, "birth_id": "runtime-birth", "runtime_instance_id": "runtime-A", "coordinator_epoch": "runtime-A"},
+            "profile": profile, "custody_scope": str(tmp_path / "custody")}
+
+
+def test_local_preparation_replay_never_launches_twice_and_is_not_activation(tmp_path):
+    from astrid.core.execution.generic_host import LocalExecutionPreparation
+    calls = []
+    class Graph:
+        def __init__(self, *, request):
+            calls.append(request)
+        def prepare(self):
+            return {"processes": {}, "engine_binding": {}, "session_config_digest": "measured", "custody_capabilities": {}}
+        def abort(self):
+            calls.append("verified-clean")
+    request = _local_custody_request(tmp_path)
+    service = LocalExecutionPreparation(operation_id="runtime-op", channel_id="private-channel", graph_factory=Graph)
+    reply = service.prepare_local_execution(request)
+    assert service.prepare_local_execution(request) == reply
+    assert len(calls) == 1
+    assert not {"credential", "claim", "lease_token", "executor_incarnation"} & set(reply)
+    changed = json.loads(json.dumps(request)); changed["profile"]["profile_digest"] = "sha256:" + "b" * 64
+    with pytest.raises(HostError, match="conflict"):
+        service.prepare_local_execution(changed)
+    assert len(calls) == 1
+    service.abort(); service.abort()
+    assert calls[-1] == "verified-clean"
+    assert len(calls) == 2
+
+
+def test_local_partial_spawn_retains_original_failure_and_cleanup_obligation(tmp_path):
+    from astrid.core.execution.generic_host import LocalExecutionPreparation
+    error = RuntimeError("listener admission failed")
+    graphs = []
+    class Graph:
+        def __init__(self, *, request):
+            graphs.append(self); self.cleanup = 0
+        def prepare(self):
+            raise error
+        def abort(self):
+            self.cleanup += 1
+            raise CleanupUncertainError("unregistered escaped child")
+    request = _local_custody_request(tmp_path)
+    service = LocalExecutionPreparation(operation_id="runtime-op", channel_id="private-channel", graph_factory=Graph)
+    for _ in range(2):
+        with pytest.raises(RuntimeError) as raised:
+            service.prepare_local_execution(request)
+        assert raised.value is error
+    assert len(graphs) == 1
+    with pytest.raises(CleanupUncertainError):
+        service.abort()
+    assert service.error is error
+    assert not service._aborted
+    assert service.graph is graphs[0]
+
+
+@pytest.mark.parametrize("change", ["owner_epoch", "channel_id", "operation_id"])
+def test_local_preparation_rejects_stale_private_binders_before_spawn(tmp_path, change):
+    from astrid.core.execution.generic_host import LocalExecutionPreparation
+    request = _local_custody_request(tmp_path); request[change] = "foreign"
+    service = LocalExecutionPreparation(operation_id="runtime-op", channel_id="private-channel",
+                                        graph_factory=lambda **_: pytest.fail("invalid binding spawned"))
+    with pytest.raises(HostError):
+        service.prepare_local_execution(request)
+
+
+def test_bound_native_abort_clean_ack_requires_verified_graph_and_replays_exactly(tmp_path):
+    from astrid.core.execution.generic_host import LocalExecutionPreparation
+    from astrid.core.execution.custody_broker import _canonical, _digest_bytes
+    request = _local_custody_request(tmp_path)
+    target = {"pid": 201, "uid": 501, "birth_id": "listener", "audit_token_sha256": "sha256:" + "a" * 64, "audit_token_pidversion": 1}
+    refs = {role: {"version": "runtime.role-custody-reference/v1", "scope_root": request["custody_scope"], "role": role, "generation": 1, "target": {**target, "pid": 201 if role == "engine_listener" else 200}} for role in ("engine", "engine_listener")}
+    calls = []
+    class Graph:
+        def __init__(self, *, request): pass
+        def prepare(self): return {"processes": {}, "engine_binding": {}, "session_config_digest": "measured", "custody_capabilities": refs}
+        def known_custody_capabilities(self): return refs
+        def abort(self):
+            calls.append("whole-graph-verified")
+            return {role: {"generation": ref["generation"], "target": ref["target"], "exit_code": 0,
+                           "proof_kind": "retained-child-exit" if role == "engine" else "authenticated-retained-child-exit"} for role, ref in refs.items()}
+    service = LocalExecutionPreparation(operation_id="runtime-op", channel_id="private-channel", graph_factory=Graph)
+    service.prepare_local_execution(request)
+    abort = {"version": request["version"], "command": "abort_local_execution", "operation_id": request["operation_id"],
+             "channel_id": request["channel_id"], "owner_epoch": request["owner_epoch"], "profile_digest": request["profile"]["profile_digest"],
+             "profile_binding_digest": _digest_bytes(_canonical(request["profile"])), "custody_scope": request["custody_scope"], "custody_capabilities": refs}
+    reply = service.dispatch(abort)
+    assert reply["status"] == "cleaned"
+    assert service.dispatch(abort) == reply
+    assert calls == ["whole-graph-verified"]
+    changed = {**abort, "custody_capabilities": {}}
+    with pytest.raises(HostError, match="replay conflicts"):
+        service.dispatch(changed)
+
+
+def test_native_abort_unknown_keeps_all_partial_unreported_obligations(tmp_path):
+    from astrid.core.execution.generic_host import LocalExecutionPreparation
+    from astrid.core.execution.custody_broker import _canonical, _digest_bytes
+    request = _local_custody_request(tmp_path)
+    refs = {"engine": {"pending": "retained-escrow"}}
+    initiating = RuntimeError("partial listener registration failed")
+    class Graph:
+        def __init__(self, *, request): pass
+        def prepare(self): raise initiating
+        def known_custody_capabilities(self): return refs
+        def abort(self): raise CleanupUncertainError("late detached child has no retained wait proof")
+    service = LocalExecutionPreparation(operation_id="runtime-op", channel_id="private-channel", graph_factory=Graph)
+    with pytest.raises(RuntimeError): service.prepare_local_execution(request)
+    abort = {"version": request["version"], "command": "abort_local_execution", "operation_id": request["operation_id"], "channel_id": request["channel_id"],
+             "owner_epoch": request["owner_epoch"], "profile_digest": request["profile"]["profile_digest"], "profile_binding_digest": _digest_bytes(_canonical(request["profile"])),
+             "custody_scope": request["custody_scope"], "custody_capabilities": {}}
+    reply = service.dispatch(abort)
+    assert reply["status"] == "unresolved" and reply["error_code"] == "cleanup_unresolved"
+    assert reply["custody_capabilities"] == refs
+    assert service.error is initiating and not service._aborted
+
+
+def _native_abort_graph(tmp_path, monkeypatch, *, engine_exited=False, engine_timeout=False):
+    """Exercise the real native abort orchestration without launching an engine."""
+    from astrid.core.execution.custody_broker import CustodyError
+
+    calls, delivered = [], []
+    now = [0.0]
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(generic_host.time, "sleep", lambda duration: now.__setitem__(0, now[0] + duration))
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("numeric signal fallback"))
+    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("numeric group signal fallback"))
+
+    class Broker:
+        def __init__(self, role, pid):
+            self.role, self.pid = role, pid
+            self.error, self.state = None, "ready-bound"
+            self._post_exec_authority_validated = True
+            self.authority_error = None
+            identity = {"pid": pid, "uid": 501, "birth_id": role + "-birth"}
+            self.registration = {"pid": pid, "identity": identity}
+            self.observed = identity
+            self.target = {**identity, "audit_token_sha256": "sha256:" + "a" * 64, "audit_token_pidversion": 1}
+            self.role_authority = SimpleNamespace(reference=lambda: {"generation": 1, "target": dict(self.target)})
+            self.channel = None
+
+        def signal(self, signum, *, expected_pid):
+            assert expected_pid == self.pid
+            calls.append((self.role, "ordinary", signum))
+            if self.authority_error is not None:
+                raise self.authority_error
+            delivered.append((self.role, signum))
+
+        def signal_failed_admission(self, signum, *, expected_pid):
+            assert self.error is not None and self._post_exec_authority_validated
+            assert self.registration is not None and expected_pid == self.pid
+            calls.append((self.role, "failed-admission", signum))
+            if self.authority_error is not None:
+                raise self.authority_error
+            delivered.append((self.role, signum))
+
+        def _observe_registered_identity(self, pid):
+            assert pid == self.pid
+            return self.observed
+
+    class Process:
+        pid = 200
+        returncode = 7 if engine_exited else None
+        on_wait = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, *, timeout):
+            calls.append(("engine", "retained-wait", timeout))
+            if engine_timeout:
+                raise subprocess.TimeoutExpired("selected-engine", timeout)
+            if self.on_wait is not None:
+                self.on_wait()
+            self.returncode = 7
+            return self.returncode
+
+    graph = generic_host._NativeEngineGraph(request={"profile": {
+        "engine_launch": {"session_root": str(tmp_path / "out" / "sessions" / "selected")},
+        "engine_endpoint": "http://127.0.0.1:8199",
+    }})
+    graph.engine, graph.listener = Broker("engine", 200), Broker("engine_listener", 201)
+    graph.process = Process()
+    monkeypatch.setattr(generic_host, "verify_tree_absent", lambda process: calls.append(("graph", "verified", process.pid)))
+    monkeypatch.setattr(generic_host.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""))
+    return graph, calls, delivered, CustodyError
+
+
+@pytest.mark.parametrize("state", ["sealed", "ready-bound"])
+def test_native_graph_abort_prepared_engine_uses_ordinary_signal(tmp_path, monkeypatch, state):
+    graph, calls, delivered, _ = _native_abort_graph(tmp_path, monkeypatch)
+    graph.engine.state = state
+    def listener_wait_completed():
+        graph._listener_exit = {"generation": 1, "target": dict(graph.listener.target), "exit_code": 3}
+    graph.process.on_wait = listener_wait_completed
+    cleanup = graph.abort()
+    assert calls[:2] == [("engine", "ordinary", signal.SIGTERM), ("engine", "retained-wait", 5)]
+    assert delivered == [("engine", signal.SIGTERM)]
+    assert cleanup["engine"]["exit_code"] == 7
+    assert cleanup["engine_listener"]["exit_code"] == 3
+    assert cleanup["engine_listener"]["proof_kind"] == "authenticated-retained-child-exit"
+    assert graph.abort() == cleanup
+    assert delivered == [("engine", signal.SIGTERM)]
+
+
+def test_native_graph_abort_exited_engine_cleans_listener_but_stays_unresolved(tmp_path, monkeypatch):
+    graph, calls, delivered, _ = _native_abort_graph(tmp_path, monkeypatch, engine_exited=True)
+    listener = graph.listener
+    with pytest.raises(CleanupUncertainError, match="authenticated retained listener wait proof"):
+        graph.abort()
+    assert delivered == [("engine_listener", signal.SIGTERM), ("engine_listener", signal.SIGKILL)]
+    assert calls[0] == ("engine", "retained-wait", 5)
+    assert not any(call[0] == "graph" for call in calls)
+    assert graph.listener is listener and listener.registration is not None
+    assert graph._listener_exit is None and graph._clean_ack is None
+
+
+@pytest.mark.parametrize("authority", ["missing", "unvalidated", "stale", "transferred"])
+def test_native_graph_abort_missing_or_stale_listener_authority_retains_obligations(tmp_path, monkeypatch, authority):
+    graph, calls, delivered, CustodyError = _native_abort_graph(tmp_path, monkeypatch, engine_exited=True)
+    listener = graph.listener
+    if authority == "missing":
+        graph.listener = None
+    elif authority == "unvalidated":
+        listener.error = RuntimeError("registration failed before postexec validation")
+        listener.state, listener._post_exec_authority_validated = "accepting", False
+    else:
+        listener.authority_error = CustodyError("stale generation" if authority == "stale" else "designated actor transferred")
+    with pytest.raises(CleanupUncertainError, match="listener cleanup unresolved"):
+        graph.abort()
+    assert delivered == []
+    assert not any(call[1] == "failed-admission" for call in calls)
+    assert graph._listener_exit is None and graph._clean_ack is None
+    assert listener.registration is not None and graph.process is not None
+    assert graph._listener_cleanup_error is not None
+
+
+@pytest.mark.parametrize("failed_admission", [False, True])
+def test_native_graph_abort_timeout_selects_current_listener_signal_path(tmp_path, monkeypatch, failed_admission):
+    graph, calls, delivered, _ = _native_abort_graph(tmp_path, monkeypatch, engine_timeout=True)
+    if failed_admission:
+        graph.listener.error, graph.listener.state = RuntimeError("seal persistence failed"), "accepting"
+    with pytest.raises(CleanupUncertainError, match="engine cleanup deadline expired"):
+        graph.abort()
+    assert calls == [("engine", "ordinary", signal.SIGTERM), ("engine", "retained-wait", 5),
+                     ("engine_listener", "failed-admission" if failed_admission else "ordinary", signal.SIGKILL)]
+    assert delivered == [("engine", signal.SIGTERM), ("engine_listener", signal.SIGKILL)]
+    assert graph._clean_ack is None and graph._listener_exit is None
+    assert graph.process.returncode is None and graph.listener.registration is not None
+
+
+def test_native_graph_abort_failed_admission_uses_validated_path(tmp_path, monkeypatch):
+    graph, calls, delivered, _ = _native_abort_graph(tmp_path, monkeypatch)
+    initiating = RuntimeError("final seal failed after postexec custody")
+    for broker in (graph.engine, graph.listener):
+        broker.error, broker.state = initiating, "accepting"
+    graph.listener.observed = None
+    with pytest.raises(CleanupUncertainError, match="authenticated retained listener wait proof"):
+        graph.abort()
+    assert calls == [("engine", "failed-admission", signal.SIGTERM), ("engine", "retained-wait", 5),
+                     ("engine_listener", "failed-admission", signal.SIGTERM)]
+    assert delivered == [("engine", signal.SIGTERM), ("engine_listener", signal.SIGTERM)]
+    assert graph.engine.error is initiating and graph.listener.error is initiating
+    assert graph._clean_ack is None and graph._listener_exit is None

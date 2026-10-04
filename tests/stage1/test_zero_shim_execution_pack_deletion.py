@@ -231,3 +231,17 @@ def test_generic_host_discovers_explicit_astrid_packs_path_without_default_scan(
     records = host.discover()
 
     assert [record.id for record in records] == ["env_pack.demo"]
+
+
+def test_supported_astrid_cleanup_paths_use_kernel_custody_without_numeric_signals():
+    import ast
+    paths = ("astrid/core/execution/process_group.py", "astrid/core/execution/generic_host.py",
+             "astrid/sdk/host_bootstrap.py", "astrid/sdk/rendering.py", "astrid/core/rendering/transport.py",
+             "astrid/packs/video_editing/orchestrators/hype/runner.py")
+    for relative in paths:
+        source = ast.parse((ROOT / relative).read_text())
+        for node in ast.walk(source):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os" and node.func.attr in {"kill", "killpg"}:
+                assert node.func.attr == "kill" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0, relative

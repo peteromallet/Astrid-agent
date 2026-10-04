@@ -343,8 +343,9 @@ class _ManagedTaskAdapter:
 class _ManagedVibeSessionAdapter:
     """Bridge the manager lifecycle to the reviewed checkout adapter."""
 
-    def __init__(self, backend: Any) -> None:
+    def __init__(self, backend: Any, native_graph: Any = None) -> None:
         self.backend = backend
+        self.native_graph = native_graph
 
     @staticmethod
     def _native_evidence(
@@ -385,6 +386,8 @@ class _ManagedVibeSessionAdapter:
         )
 
     def release(self, *, reason: str) -> dict[str, Any]:
+        if reason == "capacity_replacement" and self.native_graph is not None:
+            raise HostError("native engine replacement requires a fresh Runtime-selected preparation; custody retained")
         evidence = self.backend.release(reason=reason)
         return self._native_evidence(
             evidence, kind="released", native_key="released", reason=reason
@@ -817,17 +820,8 @@ def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float 
     ``waitpid``-reaped here; killing the owned session is the relevant
     containment guarantee.
     """
-    if hasattr(process, "_astrid_tree_members") or hasattr(process, "_astrid_tree_uncertain"):
-        try:
-            terminate_tree(process, grace_seconds=grace_seconds)
-        except BaseException:
-            # Best-effort cleanup of the private group cannot certify absence
-            # of detached writers, nor erase a failed earlier tree census.
-            _terminate_owned_group(process, grace_seconds=grace_seconds)
-            raise
-    _terminate_owned_group(process, grace_seconds=grace_seconds)
-    if hasattr(process, "_astrid_tree_members"):
-        verify_tree_absent(process)
+    terminate_tree(process, grace_seconds=grace_seconds)
+    verify_tree_absent(process)
 
 
 def _confined_cwd(
@@ -2619,16 +2613,28 @@ class GenericPackHost:
     def shutdown(self) -> None:
         """Stop the host and every currently owned capability process."""
         self._shutdown.set()
-        self.managed_tool_session.close(reason="host_shutdown")
+        errors: list[BaseException] = []
+        try:
+            self.managed_tool_session.close(reason="host_shutdown")
+        except BaseException as exc:
+            errors.append(exc)
         with self._process_lock:
             active = tuple(self._active_processes)
         for process in active:
             try:
                 _terminate_process_group(process, grace_seconds=1.0)
-            except (OSError, subprocess.SubprocessError):
-                # The process may have exited between the census and cleanup;
-                # the group helper is deliberately best effort at shutdown.
-                pass
+            except BaseException as exc:
+                errors.append(exc)
+        graph = getattr(self, "_native_engine_graph", None)
+        if graph is not None:
+            try:
+                graph.abort()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            self._cleanup_uncertain = True
+            raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
+
     def boot_manifest_provenance(self) -> dict[str, str] | None:
         """Return completion provenance for the root-owned manifest stamp."""
         if self.boot_manifest_path is None:
@@ -5477,7 +5483,7 @@ class GenericPackHost:
                     launch_generation=str(vibe_session.get("launch_generation") or session_birth),
                     engine_birth_id=str(vibe_session.get("comfy_process_birth_id") or session_birth),
                 )
-                managed_adapter = _ManagedVibeSessionAdapter(checkout_adapter)
+                managed_adapter = _ManagedVibeSessionAdapter(checkout_adapter, getattr(self, "_native_engine_graph", None))
                 from astrid.core.generation.backends.vibecomfy import vibecomfy_warmth_hint
 
                 current_warmth_hint = vibecomfy_warmth_hint(
@@ -6372,15 +6378,544 @@ def _write_ready_marker(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _read_activation_frame(control: socket.socket) -> dict[str, Any]:
+_LOCAL_PREPARATION_VERSION = "runtime.local-execution-host/v1"
+_LOCAL_PROFILE_REQUIRED = {
+    "profile_id", "workspace_uuid", "realm_root", "support_root", "machine_id",
+    "worker_executable", "host_executable", "engine_executable", "engine_listener_executable",
+    "engine_endpoint", "worker_artifact_digest", "host_artifact_digest", "engine_artifact_digest",
+    "engine_listener_artifact_digest", "session_config_digest", "profile_revision", "profile_digest",
+    "release_digest", "engine_launch",
+}
+
+
+def _validate_local_engine_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
+    if not _LOCAL_PROFILE_REQUIRED <= set(profile):
+        raise HostError("local preparation lacks an explicitly selected profile")
+    for name in ("workspace_uuid", "profile_id", "profile_revision", "machine_id"):
+        if not isinstance(profile[name], str) or not profile[name]:
+            raise HostError("selected local profile identity is invalid")
+    for name in ("profile_digest", "release_digest", "session_config_digest", "engine_artifact_digest", "engine_listener_artifact_digest"):
+        if not isinstance(profile[name], str) or not _ACTIVATION_DIGEST.fullmatch(profile[name]):
+            raise HostError("selected local profile digest is invalid")
+    launch = profile.get("engine_launch")
+    fields = {"module", "session_root", "config", "source_revision", "source_content_digest", "listener_argv", "adapter_pins"}
+    if not isinstance(launch, Mapping) or set(launch) != fields or launch.get("module") != "vibecomfy.commands.session":
+        raise HostError("selected engine launch contract is invalid")
+    root = Path(str(launch["session_root"]))
+    if (not root.is_absolute() or root.is_symlink() or root.parent.name != "sessions" or root.parent.parent.name != "out"
+            or any(part.is_symlink() for part in root.parents)):
+        raise HostError("selected engine session root is invalid")
+    config = launch["config"]
+    endpoint = urlsplit(str(profile["engine_endpoint"]))
+    if (not isinstance(config, Mapping) or endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1"
+            or endpoint.port != config.get("port") or config.get("locality") != "managed_local_server"
+            or config.get("warm_policy") != "auto" or config.get("cwd") != str(root.parents[2])
+            or config.get("runtime_root") != str(root.parents[2]) or config.get("server_log_path") != str(root / "comfy.log")
+            or not isinstance(config.get("ready_timeout_sec"), (int, float))
+            or isinstance(config.get("ready_timeout_sec"), bool) or not 0 < config["ready_timeout_sec"] <= 900):
+        raise HostError("selected engine configuration is invalid")
+    config_bytes = json.dumps(dict(config), indent=2, sort_keys=True, allow_nan=False).encode("utf-8")
+    if "sha256:" + hashlib.sha256(config_bytes).hexdigest() != profile["session_config_digest"]:
+        raise HostError("selected engine configuration digest differs")
+    pins = launch["adapter_pins"]
+    if (not isinstance(pins, Mapping) or set(pins) != {"session_source_sha256", "spawn_sha256", "cleanup_sha256", "stop_sha256", "adapter_source_sha256"}
+            or any(not isinstance(value, str) or not _ACTIVATION_DIGEST.fullmatch(value) for value in pins.values())):
+        raise HostError("selected engine launch/cleanup artifact pins are incomplete")
+    argv = launch["listener_argv"]
+    if (not isinstance(argv, list) or not argv or any(not isinstance(value, str) or not value or "\0" in value for value in argv)
+            or argv[0] != profile["engine_listener_executable"] or not Path(argv[0]).is_absolute()
+            or not isinstance(launch["source_revision"], str) or not launch["source_revision"]
+            or not _ACTIVATION_DIGEST.fullmatch(str(launch["source_content_digest"]))):
+        raise HostError("selected listener argv or Vibe source pins are invalid")
+    return json.loads(json.dumps(dict(profile), sort_keys=True, allow_nan=False))
+
+
+class LocalExecutionPreparation:
+    """Private preparation state; no client, claims or credential consumption."""
+
+    def __init__(self, *, operation_id: str, channel_id: str, graph_factory: Callable | None = None):
+        self.operation_id, self.channel_id = operation_id, channel_id
+        self.graph_factory = graph_factory or _NativeEngineGraph
+        self._intent: str | None = None
+        self.graph: Any = None
+        self.result: dict[str, Any] | None = None
+        self.error: BaseException | None = None
+        self._aborted = False
+        self._request: dict[str, Any] | None = None
+        self._abort_intent: str | None = None
+        self._abort_ack: dict[str, Any] | None = None
+        self.control_error: BaseException | None = None
+        self._lock = threading.RLock()
+        self._prepare_done = threading.Event()
+        self._prepare_done.set()
+
+    def prepare_local_execution(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        required = {"version", "command", "operation_id", "channel_id", "owner_epoch", "runtime_owner", "profile", "custody_scope"}
+        if (set(request) != required or request.get("version") != _LOCAL_PREPARATION_VERSION
+                or request.get("command") != "prepare_local_execution"
+                or request.get("operation_id") != self.operation_id or request.get("channel_id") != self.channel_id):
+            raise HostError("local preparation came from the wrong private channel")
+        owner, epoch = request["runtime_owner"], request["owner_epoch"]
+        if (not isinstance(owner, Mapping) or set(owner) != {"pid", "uid", "birth_id", "runtime_instance_id", "coordinator_epoch"}
+                or not isinstance(epoch, str) or not epoch or len(epoch) > 256
+                or owner["runtime_instance_id"] != epoch or owner["coordinator_epoch"] != epoch
+                or isinstance(owner["pid"], bool) or not isinstance(owner["pid"], int) or owner["pid"] <= 0
+                or isinstance(owner["uid"], bool) or not isinstance(owner["uid"], int) or owner["uid"] < 0
+                or not isinstance(owner["birth_id"], str) or not owner["birth_id"]):
+            raise HostError("local preparation has a stale or invalid Runtime owner epoch")
+        if not isinstance(request["profile"], Mapping):
+            raise HostError("local preparation profile must be an object")
+        profile = _validate_local_engine_profile(request["profile"])
+        scope = Path(str(request["custody_scope"]))
+        if not scope.is_absolute() or scope.is_symlink():
+            raise HostError("local preparation custody scope is invalid")
+        intent = _canonical_digest(dict(request))
+        with self._lock:
+            if self._aborted:
+                raise HostError("local preparation has been aborted")
+            if self._intent is not None:
+                if self._intent != intent:
+                    raise HostError("local preparation replay conflicts with retained input")
+                if self._aborted:
+                    raise HostError("local preparation has been aborted")
+                if self.error is not None:
+                    raise self.error
+                if self.result is None:
+                    raise HostError("local preparation remains unresolved")
+                return json.loads(json.dumps(self.result))
+            self._intent = intent  # Before spawn; partial failures retain this obligation.
+            self._request = json.loads(json.dumps(dict(request)))
+            self._prepare_done.clear()
+        try:
+            graph = self.graph_factory(request={**dict(request), "profile": profile})
+            with self._lock:
+                self.graph = graph
+            measured = graph.prepare()
+            result = {"version": _LOCAL_PREPARATION_VERSION, "status": "prepared",
+                      "operation_id": self.operation_id, "channel_id": self.channel_id,
+                      "owner_epoch": epoch, **measured}
+            with self._lock:
+                self.result = result
+            return json.loads(json.dumps(result))
+        except BaseException as exc:
+            with self._lock:
+                self.error = exc
+            raise
+        finally:
+            self._prepare_done.set()
+
+    def abort(self) -> None:
+        if not self._prepare_done.wait(timeout=5):
+            raise CleanupUncertainError("native preparation is still active; custody retained")
+        with self._lock:
+            if self._aborted:
+                return
+            graph = self.graph
+        # Kernel/process waits and native RPCs never occur under the replay lock.
+        if graph is not None:
+            graph.abort()
+        with self._lock:
+            self._aborted = True
+
+    def known_custody_capabilities(self) -> dict[str, Any]:
+        if self.graph is None:
+            return {}
+        if hasattr(self.graph, "known_custody_capabilities"):
+            return self.graph.known_custody_capabilities()
+        return dict((self.result or {}).get("custody_capabilities") or {})
+
+    def dispatch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from astrid.core.execution.custody_broker import _canonical, _digest_bytes
+        command = request.get("command")
+        if command == "prepare_local_execution":
+            return self.prepare_local_execution(request)
+        if self._request is None:
+            raise HostError("local execution control has no retained preparation")
+        bound = {"version": _LOCAL_PREPARATION_VERSION, "operation_id": self.operation_id,
+                 "channel_id": self.channel_id, "owner_epoch": self._request["owner_epoch"]}
+        if any(request.get(k) != v for k, v in bound.items()):
+            raise HostError("local execution control binder conflicts with retained preparation")
+        if command == "report_local_execution":
+            if set(request) != {*bound, "command"} or self._aborted or self.graph is None or self.result is None:
+                raise HostError("local execution report is not available")
+            measured = self.graph.report()
+            reported = {**bound, "status": "prepared", **measured}
+            if reported != self.result:
+                raise HostError("local execution report differs from retained prepared graph")
+            return reported
+        if command != "abort_local_execution":
+            raise HostError("unknown local execution control command")
+        selected = self._request["profile"]
+        abort_bound = {**bound, "profile_digest": selected["profile_digest"],
+                       "profile_binding_digest": _digest_bytes(_canonical(selected)),
+                       "custody_scope": self._request["custody_scope"]}
+        if (set(request) != {*abort_bound, "command", "custody_capabilities"}
+                or any(request.get(k) != v for k, v in abort_bound.items())
+                or not isinstance(request["custody_capabilities"], Mapping)):
+            raise HostError("local execution abort differs from selected profile or custody scope")
+        intent = _digest_bytes(_canonical(dict(request)))
+        with self._lock:
+            if self._abort_intent is not None and self._abort_intent != intent:
+                raise HostError("local execution abort replay conflicts")
+            self._abort_intent = intent
+            if self._abort_ack is not None:
+                return json.loads(json.dumps(self._abort_ack))
+        known = self.known_custody_capabilities()
+        for role, reference in request["custody_capabilities"].items():
+            if role not in known or reference != known[role]:
+                raise HostError("local execution abort has foreign or stale role custody")
+        try:
+            if self.graph is None:
+                raise CleanupUncertainError("local graph preparation is unresolved")
+            cleanup = self.graph.abort()
+            if not isinstance(cleanup, Mapping) or set(cleanup) != {"engine", "engine_listener"}:
+                raise CleanupUncertainError("whole required native graph cleanup is unproved")
+            reply = {**abort_bound, "status": "cleaned", "custody_capabilities": known, "cleanup": dict(cleanup)}
+            with self._lock:
+                self._aborted, self._abort_ack = True, reply
+            return json.loads(json.dumps(reply))
+        except BaseException as exc:
+            # A response preserves every actual obligation, including ones the
+            # relay had not yet received. It makes no exit or cleanup claim.
+            self.control_error = exc
+            return {**abort_bound, "status": "unresolved", "custody_capabilities": self.known_custody_capabilities(),
+                    "error_code": "cleanup_unresolved"}
+
+    def serve_control(self, descriptor: int) -> threading.Thread:
+        if descriptor < 3:
+            raise HostError("local host-control descriptor is invalid")
+        def serve():
+            control = socket.socket(fileno=descriptor)
+            try:
+                while True:
+                    frame = _read_activation_frame(control, limit=1024 * 1024)
+                    try:
+                        reply = self.dispatch(frame)
+                    except BaseException as exc:
+                        self.control_error = exc
+                        command = frame.get("command")
+                        if command not in {"prepare_local_execution", "report_local_execution"}:
+                            raise
+                        reply = {"version": _LOCAL_PREPARATION_VERSION, "status": "unresolved",
+                                 "operation_id": self.operation_id, "channel_id": self.channel_id,
+                                 "owner_epoch": (self._request or frame).get("owner_epoch"),
+                                 "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
+                                 "custody_capabilities": self.known_custody_capabilities()}
+                    _send_activation_frame(control, reply)
+            except BaseException as exc:
+                self.control_error = exc
+            finally:
+                control.close()
+        thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
+        thread.start()
+        return thread
+
+
+
+class _NativeEngineGraph:
+    """Host-owned engine adapter; required role custody precedes prepared reply."""
+
+    def __init__(self, *, request: Mapping[str, Any]):
+        self.request = dict(request)
+        self.profile = dict(request["profile"])
+        self.process: subprocess.Popen | None = None
+        self.engine = self.listener = self.custody = None
+        self._native_error: BaseException | None = None
+        self._clean_ack = None
+        self._listener_exit = None
+        self._engine_spawn_started = False
+        self.readiness_profile: dict[str, Any] | None = None
+
+    def prepare(self) -> dict[str, Any]:
+        from astrid.core.execution import custody_broker as custody_module
+        from astrid.core.execution import vibecomfy_engine_adapter as engine_adapter
+        profile, request = self.profile, self.request
+        launch = profile["engine_launch"]
+        root = Path(launch["session_root"])
+        for role in ("engine", "engine_listener"):
+            executable = Path(profile[role + "_executable"])
+            if (not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK)
+                    or "sha256:" + hashlib.sha256(executable.read_bytes()).hexdigest() != profile[role + "_artifact_digest"]):
+                raise HostError("selected engine executable artifact differs")
+        adapter_path = Path(engine_adapter.__file__).absolute()
+        if "sha256:" + hashlib.sha256(adapter_path.read_bytes()).hexdigest() != launch["adapter_pins"]["adapter_source_sha256"]:
+            raise HostError("selected engine adapter artifact differs")
+        registry_names = ("pid", "comfy_pid", "comfy_process_start_identity", "url", "config.json", "source_revision", "source_content_digest", "launch.json", "daemon.log")
+        if any((root / name).exists() or (root / name).is_symlink() for name in registry_names):
+            raise HostError("pre-existing engine session registry cannot be adopted")
+        root.mkdir(parents=True, exist_ok=True)
+        scope = Path(request["custody_scope"])
+        self.custody = custody_module.ProcessCustody(scope_root=scope, owner_epoch=request["owner_epoch"])
+        self.engine = custody_module.RoleBoundCustodyBroker(
+            role="engine", identity_provider=custody_module.default_process_identity, ledger_root=scope / "engine-ledger",
+            authority_scope_root=scope, authority_journal=scope / "custody.journal.jsonl",
+            owner_epoch=request["owner_epoch"], retain_channel=True,
+        )
+        engine = self.engine
+
+        class EngineParent:
+            actor = None
+            def verify(inner):
+                if engine.channel is None:
+                    raise custody_module.CustodyError("engine private parent channel is unavailable")
+                if inner.actor is None:
+                    inner.actor = custody_module.AuthenticatedCleanupActor.private_peer(engine.channel)
+                return inner.actor.verify()
+
+        self._engine_parent = EngineParent()
+        self.listener = custody_module.RoleBoundCustodyBroker(
+            role="engine_listener", identity_provider=custody_module.default_process_identity,
+            ledger_root=scope / "engine_listener-ledger", authority_scope_root=scope,
+            authority_journal=scope / "custody.journal.jsonl", owner_epoch=request["owner_epoch"],
+            launch_parent=self._engine_parent,
+        )
+        nonce = secrets_module.token_hex(16)
+        self._launch_nonce = nonce
+        self._listener_exit = None
+        self._clean_ack = None
+        payload = {"engine_launch": launch, "launch_token": nonce,
+                   "operation_id": request["operation_id"], "channel_id": request["channel_id"],
+                   "owner_epoch": request["owner_epoch"], "custody_scope": str(scope),
+                   "listener_wrapper_executable": profile["engine_executable"],
+                   "listener_registration": self.listener.child_environment(launch["listener_argv"], start_new_session=False)}
+        argv = [profile["engine_executable"], str(adapter_path), json.dumps(payload, sort_keys=True, separators=(",", ":"))]
+        env = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "PYTHONPATH", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "COMFYUI_PATH"}}
+        env.update(self.engine.child_environment(argv, start_new_session=True))
+        with (root / "daemon.log").open("xb") as log:
+            self._engine_spawn_started = True
+            self.process = subprocess.Popen(custody_module.custody_wrapper_argv(profile["engine_executable"]),
+                                            cwd=str(root.parents[2]), env=env, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL, stderr=log, close_fds=True)
+        self.process._astrid_custody = self.custody
+        self.process._astrid_process_group_id = self.process.pid
+        self.custody._launch_broker = self.engine
+        self.custody.bind_launch(self.process)
+        self.process._astrid_process_birth = self.custody._handles[self.process.pid][0]
+        self._start_native_control()
+        self.listener.wait_until_sealed()
+        registration = self.listener.registration
+        if registration is None:
+            raise HostError("required listener registration is unresolved")
+        listener_pid = int(registration["pid"])
+        self.custody._handles[listener_pid] = (str(registration["identity"]["birth_id"]), self.listener)
+        deadline = time.monotonic() + launch["config"]["ready_timeout_sec"]
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise HostError("owned engine exited before readiness")
+            if self._native_error is not None:
+                raise HostError("native listener custody channel is uncertain") from self._native_error
+            observe_tree(self.process)
+            if set(self.process._astrid_tree_members) != {self.process.pid, listener_pid}:
+                raise HostError("engine graph has an unregistered required descendant")
+            measured = self._measure_registry(root, nonce, listener_pid)
+            if measured is not None:
+                self.readiness_profile = {"vibecomfy_session": measured}
+                self.custody.start_observer()
+                return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
+                                      "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
+                                      "engine_listener": {"pid": listener_pid, "birth_id": registration["identity"]["birth_id"]}},
+                        "engine_binding": {"supervisor_pid": self.process.pid, "listener_pid": listener_pid,
+                                           "listener_parent_pid": self.process.pid, "socket_owner_pid": listener_pid},
+                        "session_config_digest": profile["session_config_digest"],
+                        "custody_capabilities": {"engine": self.engine.role_authority.reference(), "engine_listener": self.listener.role_authority.reference()}}
+            time.sleep(0.02)
+        raise HostError("owned engine did not become ready; custody retained")
+
+    def _start_native_control(self) -> None:
+        from astrid.core.execution import custody_broker as module
+        def serve():
+            try:
+                channel = self.engine.channel
+                if channel is None:
+                    raise HostError("retained native engine channel is unavailable")
+                channel.settimeout(None)
+                actor = module.AuthenticatedCleanupActor.private_peer(channel)
+                while True:
+                    frame = module._read_frame(channel)
+                    if frame.get("command") == "observe_owned_listener_exit":
+                        reply = self._record_listener_exit(frame, actor)
+                        module._send_frame(channel, reply)
+                        continue
+                    reply = module.signal_owned_listener(frame, engine_actor=actor, launch_parent=self._engine_parent,
+                                                         listener=self.listener, operation_id=self.request["operation_id"],
+                                                         channel_id=self.request["channel_id"], owner_epoch=self.request["owner_epoch"])
+                    module._send_frame(channel, reply)
+            except BaseException as exc:
+                self._native_error = exc
+        self._native_thread = threading.Thread(target=serve, name="astrid-native-engine-control", daemon=True)
+        self._native_thread.start()
+
+    def known_custody_capabilities(self) -> dict[str, Any]:
+        result = {}
+        for role, broker in (("engine", self.engine), ("engine_listener", self.listener)):
+            if broker is not None:
+                result[role] = broker.role_authority.reference()
+        return result
+
+    def _record_listener_exit(self, frame: Mapping[str, Any], actor: Any) -> dict[str, Any]:
+        from astrid.core.execution import custody_broker as module
+        required = {"version", "command", "operation_id", "channel_id", "owner_epoch", "role", "generation", "target", "exit_code"}
+        if (set(frame) != required or frame.get("version") != module.ENGINE_CONTROL_VERSION
+                or frame.get("command") != "observe_owned_listener_exit" or frame.get("role") != "engine_listener"
+                or any(frame.get(k) != self.request[k] for k in ("operation_id", "channel_id", "owner_epoch"))
+                or isinstance(frame.get("exit_code"), bool) or not isinstance(frame.get("exit_code"), int)
+                or actor.verify() != self._engine_parent.verify()):
+            raise HostError("native listener exit evidence has an invalid binding")
+        reference = self.listener.role_authority.reference()
+        if frame["generation"] != reference["generation"] or frame["target"] != reference["target"]:
+            raise HostError("native listener exit evidence has stale custody")
+        ack = {**{k: v for k, v in frame.items() if k != "command"}, "status": "exit_recorded"}
+        if self._listener_exit is not None:
+            if self._listener_exit != ack:
+                raise HostError("native listener exit evidence replay conflicts")
+            return dict(ack)
+        self.listener.registration["exit_evidence"] = ack
+        self.listener._persist("listener_exit_observed")  # fsynced before ACK
+        self._listener_exit = ack
+        return dict(ack)
+
+    def report(self) -> dict[str, Any]:
+        if self.process is None or self.process.poll() is not None or self._native_error is not None:
+            raise HostError("prepared native graph is no longer observable")
+        observe_tree(self.process)
+        listener_pid = int(self.listener.registration["pid"])
+        measured = self._measure_registry(Path(self.profile["engine_launch"]["session_root"]), self._launch_nonce, listener_pid)
+        if measured is None:
+            raise HostError("prepared engine readiness registry is incomplete")
+        return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
+                              "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
+                              "engine_listener": {"pid": listener_pid, "birth_id": self.listener.registration["identity"]["birth_id"]}},
+                "engine_binding": {"supervisor_pid": self.process.pid, "listener_pid": listener_pid, "listener_parent_pid": self.process.pid, "socket_owner_pid": listener_pid},
+                "session_config_digest": self.profile["session_config_digest"],
+                "custody_capabilities": {"engine": self.engine.role_authority.reference(), "engine_listener": self.listener.role_authority.reference()}}
+
+    def _measure_registry(self, root: Path, nonce: str, listener_pid: int) -> dict[str, Any] | None:
+        from astrid.core.execution.custody_broker import default_process_identity
+        required = ("pid", "comfy_pid", "comfy_process_start_identity", "url", "config.json", "source_revision", "source_content_digest", "launch.json")
+        if any(not (root / name).is_file() or (root / name).is_symlink() for name in required):
+            return None
+        data = {name: (root / name).read_text(encoding="utf-8").strip() for name in required if name not in {"launch.json", "config.json"}}
+        marker = json.loads((root / "launch.json").read_text(encoding="utf-8"))
+        launch = self.profile["engine_launch"]
+        listener_identity = default_process_identity(listener_pid)
+        if (data["pid"] != str(self.process.pid) or data["comfy_pid"] != str(listener_pid)
+                or data["url"] != self.profile["engine_endpoint"] or marker.get("launch_token") != nonce
+                or marker.get("pid") != self.process.pid or marker.get("url") != data["url"]
+                or marker.get("process_start_identity") != self.process._astrid_process_birth
+                or data["comfy_process_start_identity"] != self.custody._handles[listener_pid][0]
+                or data["source_revision"] != launch["source_revision"] or data["source_content_digest"] != launch["source_content_digest"]
+                or listener_identity is None or listener_identity.get("parent_pid") != self.process.pid
+                or "sha256:" + hashlib.sha256((root / "config.json").read_bytes()).hexdigest() != self.profile["session_config_digest"]):
+            raise HostError("owned engine readiness registry differs from selected launch")
+        endpoint = urlsplit(self.profile["engine_endpoint"])
+        observation = subprocess.run(["lsof", "-nP", "-a", "-p", str(listener_pid), "-iTCP:" + str(endpoint.port), "-sTCP:LISTEN"], capture_output=True, text=True, timeout=2, check=False)
+        if observation.returncode != 0 or f":{endpoint.port} (LISTEN)" not in observation.stdout:
+            raise HostError("selected listener socket ownership is uncertain")
+        for broker in (self.engine, self.listener):
+            if broker.state == "sealed":
+                broker.bind_ready_token(expected_pid=int(broker.registration["pid"]), expected_identity=broker.registration["identity"])
+        return {"session_dir": str(root), "server_url": data["url"], "pid": self.process.pid,
+                "comfy_pid": listener_pid, "comfy_process_birth_id": data["comfy_process_start_identity"],
+                "launch_token": nonce, "process_birth_id": self.process._astrid_process_birth,
+                "source_revision": data["source_revision"], "source_content_digest": data["source_content_digest"],
+                "config_digest": self.profile["session_config_digest"]}
+
+    def abort(self) -> dict[str, Any]:
+        if self._clean_ack is not None:
+            return json.loads(json.dumps(self._clean_ack))
+        if self.process is None:
+            if self._engine_spawn_started or self.engine is None or self.listener is None:
+                raise CleanupUncertainError("required engine graph never sealed; no clean proof")
+            cleanup = {}
+            for broker in (self.listener, self.engine):
+                reference = broker.role_authority.reference()
+                if set(reference["target"]) != {"admission_id"}:
+                    raise CleanupUncertainError("unbound launch has an unresolved process registration")
+                broker.abort_before_spawn()
+                broker.state = "never-spawned"
+                broker._persist("launch_never_spawned")
+                cleanup[broker.role] = {"generation": reference["generation"], "target": reference["target"],
+                                        "exit_code": None, "proof_kind": "never-spawned"}
+            self._clean_ack = cleanup
+            return json.loads(json.dumps(cleanup))
+        # Let the selected daemon execute its original listener cleanup and
+        # positively await/reap that exact child before the engine exits.
+        if self.process.poll() is None:
+            self._signal_owned_role(self.engine, signal.SIGTERM, expected_pid=self.process.pid)
+        try:
+            exit_code = self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            if self.listener is not None and self.listener._post_exec_authority_validated:
+                self._signal_owned_role(self.listener, signal.SIGKILL, expected_pid=int(self.listener.registration["pid"]))
+            raise CleanupUncertainError("engine cleanup deadline expired; obligations retained") from exc
+        if self._listener_exit is None:
+            try:
+                self._cleanup_listener_without_wait_proof()
+            except BaseException as exc:
+                self._listener_cleanup_error = exc
+                raise CleanupUncertainError("engine exited without authenticated retained listener wait proof; listener cleanup unresolved") from exc
+            raise CleanupUncertainError("engine exited without authenticated retained listener wait proof")
+        verify_tree_absent(self.process)
+        root = Path(self.profile["engine_launch"]["session_root"])
+        endpoint = urlsplit(self.profile["engine_endpoint"])
+        observation = subprocess.run(["lsof", "-nP", "-t", "-iTCP:" + str(endpoint.port), "-sTCP:LISTEN"], capture_output=True, text=True, timeout=2, check=False)
+        if observation.returncode != 1 or observation.stdout.strip() or observation.stderr.strip():
+            raise CleanupUncertainError("engine endpoint cleanup is not verified")
+        # Registry files are historical evidence only; successful census and
+        # retained child wait proofs reconcile the exact recorded incarnations.
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            raise CleanupUncertainError("retained engine exit code is unavailable")
+        engine_reference = self.engine.role_authority.reference()
+        self._clean_ack = {"engine": {"generation": engine_reference["generation"], "target": engine_reference["target"],
+                                      "exit_code": exit_code, "proof_kind": "retained-child-exit"},
+                           "engine_listener": {"generation": self._listener_exit["generation"], "target": self._listener_exit["target"],
+                                               "exit_code": self._listener_exit["exit_code"], "proof_kind": "authenticated-retained-child-exit"}}
+        if self.engine.channel is not None:
+            self.engine.channel.close()
+        return json.loads(json.dumps(self._clean_ack))
+
+    @staticmethod
+    def _signal_owned_role(broker: Any, signum: int, *, expected_pid: int) -> None:
+        # These helpers both enforce the current actor, target and generation
+        # through the kernel call. Healthy custody is not failed admission.
+        if broker is None:
+            raise CleanupUncertainError("native role cleanup authority is unavailable")
+        if broker.error is None and broker.state in {"sealed", "ready-bound"}:
+            broker.signal(signum, expected_pid=expected_pid)
+        elif broker.error is not None and broker._post_exec_authority_validated and broker.registration is not None:
+            broker.signal_failed_admission(signum, expected_pid=expected_pid)
+        else:
+            raise CleanupUncertainError("native role cleanup has no validated current authority")
+
+    def _cleanup_listener_without_wait_proof(self) -> None:
+        listener = self.listener
+        if listener is None or listener.registration is None:
+            raise CleanupUncertainError("listener cleanup lacks retained registration")
+        pid = int(listener.registration["pid"])
+        expected = listener.registration["identity"]
+        self._signal_owned_role(listener, signal.SIGTERM, expected_pid=pid)
+        deadline = time.monotonic() + 1.0  # Existing descendant TERM grace.
+        while time.monotonic() < deadline:
+            # Observation and waits grant no authority and occur outside the
+            # signal guard. Absence still cannot supply a retained wait proof.
+            observed = listener._observe_registered_identity(pid)
+            if observed is None:
+                return
+            if any(observed.get(key) != expected.get(key) for key in ("pid", "uid", "birth_id")):
+                raise CleanupUncertainError("listener incarnation changed during cleanup")
+            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+        self._signal_owned_role(listener, signal.SIGKILL, expected_pid=pid)
+
+
+def _read_activation_frame(control: socket.socket, *, limit: int = _ACTIVATION_FRAME_LIMIT) -> dict[str, Any]:
     """Read one bounded private frame; never consume a second frame silently."""
     frame = bytearray()
     while b"\n" not in frame:
-        chunk = control.recv(min(4096, _ACTIVATION_FRAME_LIMIT + 1 - len(frame)))
+        chunk = control.recv(min(4096, limit + 1 - len(frame)))
         if not chunk:
             raise HostError("parked activation channel closed before a frame")
         frame.extend(chunk)
-        if len(frame) > _ACTIVATION_FRAME_LIMIT:
+        if len(frame) > limit:
             raise HostError("parked activation frame is too large")
     encoded, remainder = bytes(frame).split(b"\n", 1)
     if remainder:
@@ -6391,6 +6926,7 @@ def _read_activation_frame(control: socket.socket) -> dict[str, Any]:
         raise HostError("parked activation frame is malformed") from exc
     if not isinstance(value, dict):
         raise HostError("parked activation frame must be an object")
+    json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     return value
 
 
@@ -6639,6 +7175,7 @@ def _cli() -> int:
         action="store_true",
         help="fail startup unless an exact execution target is configured",
     )
+    parser.add_argument("--host-control-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--activation-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--activation-socket", help=argparse.SUPPRESS)
     parser.add_argument("--activation-operation-id", help=argparse.SUPPRESS)
@@ -6663,6 +7200,21 @@ def _cli() -> int:
     )
     if target_requested and not has_activation_transport:
         parser.error("targeted execution requires Worker-supervised activation")
+    preparation = None
+    if args.host_control_fd is not None:
+        if not has_activation_transport or args.host_control_fd < 3 or args.host_control_fd == args.activation_fd:
+            parser.error("local host-control requires a distinct parked activation transport")
+        preparation = LocalExecutionPreparation(operation_id=args.activation_operation_id, channel_id=args.activation_channel_id)
+        preparation.serve_control(args.host_control_fd)
+        def parked_shutdown(signum, _frame):
+            try:
+                preparation.abort()
+            except BaseException as exc:
+                preparation.control_error = exc
+                return  # Unresolved custody keeps this designated owner alive.
+            raise SystemExit(128 + signum)
+        signal.signal(signal.SIGTERM, parked_shutdown)
+        signal.signal(signal.SIGINT, parked_shutdown)
     activation = None
     if has_activation_transport:
         if not args.credential_file:
@@ -6685,8 +7237,30 @@ def _cli() -> int:
                 activation = _await_worker_activation_socket(
                     args.activation_socket, **activation_args
                 )
+            if preparation is not None and (preparation.result is None or preparation._aborted):
+                raise HostError("local activation arrived before verified preparation")
         except (HostError, json.JSONDecodeError) as exc:
+            if preparation is not None:
+                try:
+                    preparation.abort()
+                except BaseException as cleanup_error:
+                    raise exc from cleanup_error
             parser.error(str(exc))
+    if preparation is not None and preparation.graph is not None:
+        base_profile = {}
+        if args.readiness_profile_path:
+            original = Path(args.readiness_profile_path)
+            if original.is_symlink() or not original.is_file():
+                parser.error("selected base readiness profile is unavailable")
+            raw = original.read_bytes()
+            if "sha256:" + hashlib.sha256(raw).hexdigest() != args.readiness_profile_hash:
+                parser.error("selected base readiness profile hash differs")
+            base_profile = json.loads(raw)
+        base_profile.update(preparation.graph.readiness_profile or {})
+        generated = Path(preparation._request["custody_scope"]) / "host-readiness-profile.json"
+        _write_ready_marker(generated, base_profile)
+        args.readiness_profile_path = str(generated)
+        args.readiness_profile_hash = "sha256:" + hashlib.sha256(generated.read_bytes()).hexdigest()
     verified_model_root: ModelRootBinding | None = None
     if args.readiness_profile_path is not None:
         readiness_path = Path(args.readiness_profile_path).expanduser()
@@ -6827,6 +7401,7 @@ def _cli() -> int:
         boot_manifest_path=boot_manifest,
         boot_manifest_hash=boot_manifest_hash,
     )
+    host._native_engine_graph = preparation.graph if preparation is not None else None
     host.discover()
     host.preflight()
 

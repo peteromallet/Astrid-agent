@@ -22,6 +22,7 @@ from typing import Any, Literal, TypeAlias
 
 from astrid.core.execution.process_group import (
     observe_tree,
+    popen_owned_process,
     terminate_group,
     terminate_tree,
     verify_tree_absent,
@@ -190,7 +191,7 @@ class CommandTransport:
         secret_values = _secret_environment_values(os.environ, env)
 
         try:
-            process = subprocess.Popen(
+            process = popen_owned_process(
                 argv,
                 shell=False,
                 cwd=str(cwd_path),

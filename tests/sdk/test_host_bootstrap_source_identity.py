@@ -19,11 +19,8 @@ from astrid.core._shared.boot_manifest import load_boot_manifest_hash
 def _mock_host_launch(monkeypatch, fake_popen) -> None:
     # Keep the fake launch local to bootstrap.  Patching the shared subprocess
     # module would also intercept VibeComfy's real git identity probes.
-    monkeypatch.setattr(
-        host_bootstrap,
-        "subprocess",
-        SimpleNamespace(**{**vars(subprocess), "Popen": fake_popen}),
-    )
+    monkeypatch.setattr(host_bootstrap, "popen_owned_group", lambda argv, **kwargs: fake_popen(argv, **{**kwargs, "start_new_session": True}))
+
 
 
 def _materialize_source_closure(source: Path) -> None:
@@ -377,3 +374,28 @@ def test_bootstrap_refuses_runtime_health_without_ok_status(
 
     assert caught.value.code == "runtime_not_ready"
     assert caught.value.terminal is True
+
+
+def test_foreign_prior_host_marker_never_grants_numeric_cleanup_authority(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.os, "kill", lambda *_: pytest.fail("numeric PID signal"))
+    monkeypatch.setattr(host_bootstrap.os, "killpg", lambda *_: pytest.fail("numeric PGID signal"))
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="custody.*unresolved"):
+        host_bootstrap._terminate_old_host({"pid": 7654321, "process_birth_id": "foreign"})
+
+
+def test_old_host_replacement_requires_verified_whole_retained_graph(monkeypatch):
+    owned = SimpleNamespace(pid=4321)
+    key = (4321, "retained-birth")
+    host_bootstrap._RETAINED_HOSTS[key] = owned
+    calls = []
+    monkeypatch.setattr(host_bootstrap, "terminate_group", lambda process: calls.append(process))
+    def uncertain(_):
+        raise host_bootstrap.CleanupUncertainError("detached writer observation failed")
+    monkeypatch.setattr(host_bootstrap, "verify_tree_absent", uncertain)
+    try:
+        with pytest.raises(host_bootstrap.PackHostBootstrapError, match="cleanup is uncertain"):
+            host_bootstrap._terminate_old_host({"pid": key[0], "process_birth_id": key[1]})
+        assert calls == [owned]
+        assert host_bootstrap._RETAINED_HOSTS[key] is owned
+    finally:
+        del host_bootstrap._RETAINED_HOSTS[key]
