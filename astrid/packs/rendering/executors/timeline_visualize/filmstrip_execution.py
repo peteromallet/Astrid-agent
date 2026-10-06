@@ -600,12 +600,17 @@ def _filmstrip_managed_coverage(frame_index: Mapping[str, object]) -> dict[str, 
     mode = sampling.get("mode")
     if mode == "overview":
         mode = "interval"
+    exact_frame = sampling.get("requested_frame") if mode == "exact_frame" else None
+    if mode == "exact_frame":
+        mode = "interval"
     if mode not in {"interval", "clips", "cuts", "shots"}:
         raise ValueError("filmstrip sampling mode is not managed-output compatible")
     managed_sampling: dict[str, object] = {
         "mode": mode,
         "range": {"start": start, "end": end},
     }
+    if isinstance(exact_frame, int) and exact_frame >= 0:
+        managed_sampling["frame"] = exact_frame
     raw_step = sampling.get("step_frames_rational")
     if (
         isinstance(raw_step, (list, tuple))
@@ -701,12 +706,15 @@ def _filmstrip_output_contract(
 ) -> dict[str, object]:
     """Return explicit lifecycle metadata for one derived filmstrip result."""
 
+    capture_mode = (snapshot.get('metadata') or {}).get('selection') == 'composed_frame_capture'
     exact_inputs = {
         "render_run_id": snapshot["render_run_id"],
         "timeline_id": snapshot["timeline_id"],
         "video_digest": video_digest,
         "options": dict(options),
     }
+    if capture_mode:
+        exact_inputs["evidence_source"] = "composed_frame_capture"
     recipe = {
         "capability_id": _FILMSTRIP_CAPABILITY_ID,
         "view": "filmstrip",
@@ -717,17 +725,20 @@ def _filmstrip_output_contract(
             "utf-8"
         )
     ).hexdigest()
+    provenance = {
+        "render_run_id": snapshot["render_run_id"],
+        "timeline_id": snapshot["timeline_id"],
+        "video_digest": video_digest,
+    }
+    if capture_mode:
+        provenance["evidence_source"] = "composed_frame_capture"
     return {
         "producer": {"capability_id": _FILMSTRIP_CAPABILITY_ID, "view": "filmstrip"},
-        "provenance": {
-            "render_run_id": snapshot["render_run_id"],
-            "timeline_id": snapshot["timeline_id"],
-            "video_digest": video_digest,
-        },
+        "provenance": provenance,
         "regeneration": {
             "available": True,
             "capability_id": _FILMSTRIP_CAPABILITY_ID,
-            "source_refs": [video_digest],
+            "source_refs": [] if capture_mode else [video_digest],
             "recipe_digest": recipe_digest,
             "exact_inputs": exact_inputs,
         },
@@ -1591,40 +1602,65 @@ def execute_filmstrip(args, *, authority=None):
             except (OSError, json.JSONDecodeError) as exc:
                 raise ValueError("filmstrip authority handoff is not valid JSON") from exc
         authority = parsed_authority
-    if not isinstance(authority, dict) or authority.get('mode') not in {'filmstrip', 'input_only'}:
+    if not isinstance(authority, dict) or authority.get('mode') not in {'filmstrip', 'input_only', 'composed_capture'}:
         raise ValueError('Rendered filmstrips require managed SDK admission.')
     if authority.get('mode') == 'input_only':
         return execute_input_only(args, authority)
-    snapshot = authority.get('filmstrip_snapshot')
+    capture_mode = authority.get('mode') == 'composed_capture'
+    snapshot = authority.get('capture_snapshot' if capture_mode else 'filmstrip_snapshot')
     if not isinstance(snapshot, dict) or snapshot.get('project_slug') != args.project_slug:
         raise ValueError('Filmstrip authority does not match the project.')
-    video = args.rendered_video
-    if video is None or not video.is_file():
-        raise ValueError('Admitted rendered video was not materialized.')
-    with video.open('rb') as stream:
-        digest = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
-    if digest != authority.get('video_digest') or digest != snapshot.get('video_digest'):
-        from .inspection_contract import render_status
-        status = render_status(
-            lifecycle='succeeded',
-            output={'available': True, 'digest': digest, 'run_id': snapshot.get('render_run_id')},
-            expected_digest=str(authority.get('video_digest') or snapshot.get('video_digest') or ''),
-            project=args.project_slug,
-        )
-        error = ValueError('Materialized rendered video does not match admitted digest.')
-        # Preserve a typed status payload for the generic host while retaining
-        # ValueError compatibility for standalone executor callers.
-        error.details = {'inspection_status': status, 'next_actions': status.get('next_actions', [])}
-        raise error
+    video = None if capture_mode else args.rendered_video
+    if capture_mode:
+        digest = str(authority.get('capture_identity') or snapshot.get('video_digest') or '')
+        if not digest:
+            raise ValueError('Composed frame capture authority has no composition identity.')
+    else:
+        if video is None or not video.is_file():
+            raise ValueError('Admitted rendered video was not materialized.')
+        with video.open('rb') as stream:
+            digest = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+        if digest != authority.get('video_digest') or digest != snapshot.get('video_digest'):
+            from .inspection_contract import render_status
+            status = render_status(
+                lifecycle='succeeded',
+                output={'available': True, 'digest': digest, 'run_id': snapshot.get('render_run_id')},
+                expected_digest=str(authority.get('video_digest') or snapshot.get('video_digest') or ''),
+                project=args.project_slug,
+            )
+            error = ValueError('Materialized rendered video does not match admitted digest.')
+            # Preserve a typed status payload for the generic host while retaining
+            # ValueError compatibility for standalone executor callers.
+            error.details = {'inspection_status': status, 'next_actions': status.get('next_actions', [])}
+            raise error
     values = vars(args).copy()
     values['range'] = args.range_value
     options = filmstrip_options(values)
     snapshot = deepcopy(snapshot)
     options["shot"] = resolve_shot_selector(options.get("shot"), snapshot)
+    frame_provider = None
+    if capture_mode:
+        if options.get('include_media'):
+            raise ValueError('include_media is unavailable for composed frame capture; use an exact render run.')
+        options['frame_extension'] = 'png'
+        from astrid.core.foundation.paths import REPO_ROOT
+        from .composed_frame import RemotionFrameProvider
+        timeline_path = getattr(args, 'timeline', None)
+        assets_path = getattr(args, 'assets_registry', None)
+        if timeline_path is None or assets_path is None:
+            raise ValueError('Composed frame capture did not receive the materialized timeline and registry.')
+        frame_provider = RemotionFrameProvider(
+            snapshot,
+            timeline_path=timeline_path,
+            assets_path=assets_path,
+            project_dir=Path(os.environ.get('ASTRID_REMOTION_PROJECT_DIR') or (REPO_ROOT / 'remotion')),
+            materialized_root=getattr(args, 'materialized_root', None),
+            materialized_objects=getattr(args, 'materialized_objects', None),
+        )
     # Older/unit-test authorities may omit the timing envelope.  Real managed
     # renders always carry it; leave incomplete test authorities untouched so
     # their admission checks remain focused on digest verification.
-    if snapshot.get("fps_rational") and snapshot.get("duration_frames"):
+    if not capture_mode and snapshot.get("fps_rational") and snapshot.get("duration_frames"):
         _align_snapshot_to_render(snapshot, video)
     # The frozen authority intentionally omits filesystem locators. The host
     # hands this subprocess the verified, attempt-local object map separately;
@@ -1636,27 +1672,37 @@ def execute_filmstrip(args, *, authority=None):
             materialized_objects=getattr(args, "materialized_objects", None),
             materialized_root=getattr(args, "materialized_root", None),
         )
-    analysis_settings = authority.get('audio_analysis_settings')
     out_root = args.out.expanduser().resolve()
-    analysis = _cached_audio(out_root.parent, digest, analysis_settings)
-    if analysis is None:
-        try:
-            analysis = analyze_audio(video, render_digest=digest, settings=analysis_settings)
-            _store_audio_cache(out_root.parent, digest, analysis_settings, analysis)
-        except AudioAnalysisError as exc:
-            # A malformed/unsupported stream is useful evidence, not permission to
-            # invent a waveform.  Keep the filmstrip itself usable and make the
-            # failure visible in the sidecar/index.
-            analysis = {
-                'schema_version': 1, 'analysis_version': 'astrid.audio-analysis.v1',
-                'analysis_identity': audio_analysis_identity(
-                    digest, None, analysis_settings, status='analysis_error'
-                ),
-                'status': 'analysis_error', 'render_digest': digest,
-                'error': str(exc), 'waveform': {'levels': []}, 'quiet_gaps': [],
-                'speech': {'status': 'no_transcript', 'phrases': []},
-                'coverage': {'state': 'analysis_error'},
-            }
+    if capture_mode:
+        analysis = {
+            'schema_version': 1, 'analysis_version': 'astrid.audio-analysis.v1',
+            'analysis_identity': audio_analysis_identity(digest, None, None, status='not_analyzed'),
+            'status': 'not_analyzed', 'render_digest': digest,
+            'waveform': {'levels': []}, 'quiet_gaps': [],
+            'speech': {'status': 'no_transcript', 'phrases': []},
+            'coverage': {'state': 'not_analyzed', 'reason': 'composed frame capture has no audio render'},
+        }
+    else:
+        analysis_settings = authority.get('audio_analysis_settings')
+        analysis = _cached_audio(out_root.parent, digest, analysis_settings)
+        if analysis is None:
+            try:
+                analysis = analyze_audio(video, render_digest=digest, settings=analysis_settings)
+                _store_audio_cache(out_root.parent, digest, analysis_settings, analysis)
+            except AudioAnalysisError as exc:
+                # A malformed/unsupported stream is useful evidence, not permission to
+                # invent a waveform.  Keep the filmstrip itself usable and make the
+                # failure visible in the sidecar/index.
+                analysis = {
+                    'schema_version': 1, 'analysis_version': 'astrid.audio-analysis.v1',
+                    'analysis_identity': audio_analysis_identity(
+                        digest, None, analysis_settings, status='analysis_error'
+                    ),
+                    'status': 'analysis_error', 'render_digest': digest,
+                    'error': str(exc), 'waveform': {'levels': []}, 'quiet_gaps': [],
+                    'speech': {'status': 'no_transcript', 'phrases': []},
+                    'coverage': {'state': 'analysis_error'},
+                }
     existing_audio = snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else {}
     if isinstance(existing_audio.get('speech'), dict):
         analysis['speech'] = existing_audio['speech']
@@ -1666,7 +1712,8 @@ def execute_filmstrip(args, *, authority=None):
     if pack_root.exists() and any(pack_root.iterdir()):
         raise ValueError(f'evidence pack output is not empty: {pack_root}')
     result = build_filmstrip_pack(out_root=pack_root, video_path=video,
-                                  snapshot=snapshot, options=options)
+                                  snapshot=snapshot, options=options,
+                                  frame_provider=frame_provider)
     # Keep optional input evidence as synchronized, full-width timeline panels
     # in the static delivery too.  When output and inputs are both selected,
     # compose those panels onto the same public PNG surface while retaining
@@ -1815,10 +1862,11 @@ def execute_filmstrip(args, *, authority=None):
         "bundle": {"content_hash": bundle_digest},
     }
     cas = {
-        "rendered_video": digest,
         "filmstrip_manifest": manifest_digest,
         "filmstrip_bundle": bundle_digest,
     }
+    if not capture_mode:
+        cas["rendered_video"] = digest
     entrypoints = {
         "manifest": "filmstrip-view/manifest.json",
         "frame_index": "filmstrip-view/frame-index.json",

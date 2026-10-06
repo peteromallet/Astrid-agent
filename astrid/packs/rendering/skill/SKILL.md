@@ -81,11 +81,10 @@ typed authoring-bundle opener) is the bounded structural/text view;
 `timelines inspect --manifest` is a bounded read-only view of an already
 published evidence pack. These are sister commands over the same identity and
 time model in the single `timelines` product family. The default `auto` mode
-shows declared inputs and includes composed output only when a fresh matching
-render already exists; it never starts a render. Explicit `--mode inputs` never
-looks up renders. `--mode composed` inspects an exact matching output or returns
-`render_required`; render the selected saved state or candidate explicitly and
-retry with its returned run ID. Source decoding, waveforms, and rendered-output
+reuses a fresh matching render or captures bounded composed frames from the
+pinned composition when no render exists. Explicit `--mode inputs` never
+looks up renders and remains renderer-free. `--mode composed` uses the same
+capture route; `--frame N` requests one exact rendered frame. Source decoding, waveforms, and rendered-output
 filmstrips are private implementation details of the same operation. Never invent a
 second text-only timeline, treat a filmstrip as a new source of truth, or
 switch to a mutable child document because it is easier to read.
@@ -144,8 +143,9 @@ For discovery, `timelines show` answers structural/text questions, and
 share the explicit project/timeline, pinned head, and exact
 `occurrence_id`; carry that identity between calls rather than using a shot
 name, ordinal, or fixture alias. Input mode is not a render or source-pixel
-proof. Composed mode can inspect only an existing exact render/run and never
-starts rendering itself.
+proof. Composed mode reports whether pixels came from an exact render, a fresh
+bounded capture, or the frame cache; it never publishes a full render as a
+side effect.
 
 Workers must treat live Runtime responses and the artifacts returned by those
 calls as authoritative. Fixture/evaluator JSON, seed maps, baseline exports,
@@ -302,9 +302,10 @@ Keep the returned `head`, parent/revision identity, candidate digest, and
 render identity together. A cursor is valid only for that complete scope;
 reopen the composition after a head change instead of continuing an old page.
 
-For visual continuity review, use the rendered filmstrip. It samples the exact
-successful render into chronological PNG contact sheets, with Markdown and
-a machine-readable frame index. Omit `--out`; Astrid
+For visual continuity review, use the rendered filmstrip. It samples an exact
+successful render when available, otherwise captures only the requested
+chronological frames through the server-owned Remotion composition. The result
+is a PNG contact sheet, Markdown, and machine-readable frame index. Omit `--out`; Astrid
 owns the run and returns local delivery paths for verified copies of the
 published evidence objects. The durable authority is the managed run's
 digest-verified bundle/manifest, not those disposable local paths.
@@ -335,9 +336,10 @@ Python environment for these commands; in a checkout, activate `.venv` or use
 `.venv/bin/python -m astrid` so declared dependencies are available.
 
 To compare against composed pixels, pin the exact successful
-render run with `--render-run <exact-run-id>`; that view is scoped to that
-frozen render and its captured frames. A current-input view and an exact-run
-view answer different questions, so retain their scope with any conclusion.
+render run with `--render-run <exact-run-id>` when one exists, or pin
+`--revision-id <revision-id>` for a bounded current/historical capture. A
+current-input view, a fresh composition capture, and an exact-run view answer
+different questions, so retain their scope with any conclusion.
 
 When `output` and `inputs` are both shown, the primary page uses a paired-row
 layout: five (or the requested `--columns`) output samples per row with the

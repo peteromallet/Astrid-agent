@@ -111,7 +111,12 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         if type(n) is not int or not 1 <= n <= maximum:
             raise ValueError(f'{name} must be an integer between 1 and {maximum}')
         result[name] = n
-    window, at = values.get('range'), values.get('at')
+    window, at, frame = values.get('range'), values.get('at'), values.get('frame')
+    if frame is not None:
+        if type(frame) is not int or frame < 0:
+            raise ValueError('frame must be a non-negative integer')
+        if window is not None or at is not None:
+            raise ValueError('choose frame, range, or at, not more than one')
     if window is not None and at is not None:
         raise ValueError('choose range or at, not both')
     if window is not None:
@@ -125,6 +130,7 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         result['range'] = [start, end]
     if at is not None:
         result['at'] = seconds(at)
+    result['frame'] = frame
     result.setdefault('range', None)
     result.setdefault('at', None)
     result['resolution'] = resolution(values.get('resolution'))
@@ -134,6 +140,8 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         'density': density,
         'resolution': result['resolution'],
     }
+    if result['frame'] is not None:
+        result['request']['frame'] = result['frame']
     if result['occurrence'] is not None:
         result['request']['occurrence'] = result['occurrence']
     context = values.get('context', 3.0)

@@ -188,12 +188,12 @@ occurrence. The input view describes declared placement and timing; it does
 not prove source pixels or a composited render.
 
 `timelines visualize` is the one visual-inspection operation. Its default
-`auto` mode shows declared inputs and includes composed output only when a fresh
-matching render already exists; it never starts a render. Use `--mode inputs`
-for declared inputs without looking up renders. For actual composed pixels or
-sound, render the exact saved state or candidate, then pass the returned run
-with `--mode composed --render-run <ID>`. The supplied run may represent a
-historical revision or candidate preview. Agent conclusions must come from live
+`auto` mode reuses a fresh matching render or captures the requested composed
+frames from the pinned composition when no render exists. Use `--mode inputs`
+for declared inputs without any renderer work. `--mode composed` requests
+composed pixels; `--frame N` selects one exact frame, and `--revision-id ID`
+keeps historical/current authority explicit. The returned evidence reports
+whether frames were reused, freshly captured, or served from cache. Agent conclusions must come from live
 Runtime responses and returned artifacts, never from fixture/evaluator JSON,
 baseline exports, or prior result files.
 

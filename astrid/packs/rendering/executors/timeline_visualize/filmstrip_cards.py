@@ -429,9 +429,13 @@ def _navigation_usage(snapshot: Mapping[str, object], options: Mapping[str, obje
         'python3', '-m', 'astrid', 'timelines', 'visualize',
         '--project', str(snapshot.get('project_slug') or '<project>'),
         '--timeline-slug', str(snapshot.get('timeline_id') or '<timeline>'),
-        '--render-run', str(snapshot.get('render_run_id') or '<render-run>'),
         '--view', 'filmstrip',
     ]
+    metadata = snapshot.get('metadata') if isinstance(snapshot.get('metadata'), Mapping) else {}
+    if metadata.get('selection') == 'composed_frame_capture':
+        base += ['--revision-id', str(metadata.get('requested_revision_id') or '<revision-id>')]
+    else:
+        base += ['--render-run', str(snapshot.get('render_run_id') or '<render-run>')]
     components = options.get('components') or ('output', 'text', 'audio')
     if isinstance(components, (list, tuple, set)):
         component_tokens = [str(item) for item in components]
@@ -445,9 +449,12 @@ def _navigation_usage(snapshot: Mapping[str, object], options: Mapping[str, obje
         'python3', '-m', 'astrid', 'timelines', 'visualize',
         '--project', str(snapshot.get('project_slug') or '<project>'),
         '--timeline-slug', str(snapshot.get('timeline_id') or '<timeline>'),
-        '--render-run', str(snapshot.get('render_run_id') or '<render-run>'),
         '--view', 'filmstrip', '--show', 'inputs', '--hide', 'output',
     ]
+    if metadata.get('selection') == 'composed_frame_capture':
+        input_only += ['--revision-id', str(metadata.get('requested_revision_id') or '<revision-id>')]
+    else:
+        input_only += ['--render-run', str(snapshot.get('render_run_id') or '<render-run>')]
     if options.get('occurrence') not in (None, ''):
         input_only += ['--occurrence', str(options['occurrence'])]
     paired = 'output' in component_tokens and 'inputs' in component_tokens
@@ -681,11 +688,18 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     if mode not in ('interval', 'clips', 'cuts', 'shots'):
         raise ValueError(f'Unknown sampling mode: {mode}')
     lo, hi = Fraction(0), duration
+    requested_frame = options.get('frame')
+    if requested_frame is not None:
+        if type(requested_frame) is not int or requested_frame < 0 or requested_frame >= total:
+            raise ValueError(f'Requested frame {requested_frame!r} is outside the rendered extent 0..{total - 1}.')
+        lo, hi = Fraction(requested_frame, 1) / fps, Fraction(requested_frame + 1, 1) / fps
     if options.get('range') is not None:
+        if requested_frame is not None:
+            raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
     if options.get('at') is not None:
-        if options.get('range') is not None:
-            raise ValueError('Choose range or at/context, not both.')
+        if options.get('range') is not None or requested_frame is not None:
+            raise ValueError('Choose frame, range, or at/context, not more than one.')
         at, context = _q(options['at']), _q(options.get('context', 2))
         if context <= 0:
             raise ValueError('Context must be positive.')
@@ -751,7 +765,9 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     include_cuts = bool(options.get('include_cuts'))
     is_full_overview = (mode == 'interval' and not filtered and options.get('range') is None
                         and options.get('at') is None and not explicit_interval)
-    if is_full_overview:
+    if requested_frame is not None:
+        add(requested_frame, 'exact_frame')
+    elif is_full_overview:
         overview_limit = min(limit, OVERVIEW_MAX_CARDS)
         reasons, boundary_index, coverage = _full_overview(snapshot, clips, spans, total, fps, overview_limit)
     elif mode == 'interval':
@@ -775,7 +791,7 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                     raise ValueError(f'Filmstrip exceeds {limit} sample candidates; use a coarser --every or a narrower --range.')
                 add(frame, 'interval')
                 k += 1
-    if not is_full_overview:
+    if requested_frame is None and not is_full_overview:
         seen_shots = set()
         for clip in selected:
             start, end = spans[id(clip)]
@@ -834,7 +850,8 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         captions = _speech_caption_records(snapshot, time)
         caption_status = 'timed caption' if captions else 'no timed text available'
         target = f"frame-{frame:09d}"
-        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.jpg', 'actions': {'target': '#' + target}})
+        extension = str(options.get('frame_extension') or 'jpg').lstrip('.')
+        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.{extension}', 'actions': {'target': '#' + target}})
     _project_display_scripts(cards)
     navigation = build_inspector_navigation(snapshot, cards)
     for card, target in zip(cards, navigation['frames']):
@@ -850,9 +867,15 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
             'audio': snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else navigation['audio'],
             'boundary_index': boundary_index,
             'coverage': coverage,
-            'sampling': {'mode': 'overview' if is_full_overview else mode, 'overview': is_full_overview,
+            'sampling': {'mode': 'exact_frame' if requested_frame is not None else 'overview' if is_full_overview else mode, 'overview': is_full_overview,
                          'range': [float(lo), float(hi)], 'effective_range': [float(lo), float(hi)],
                          'requested_range': options.get('range'), 'requested_at': options.get('at'),
+                         'requested_frame': requested_frame,
+                         'resolved_at_frame': (
+                             int((_q(options['at']) * fps + Fraction(1, 2)).numerator //
+                                 (_q(options['at']) * fps + Fraction(1, 2)).denominator)
+                             if options.get('at') is not None else None
+                         ),
                          'occurrence': options.get('occurrence'),
                          'density': options.get('density'), 'resolution': options.get('resolution'),
                          'step_frames_rational': [step.numerator, step.denominator],
@@ -1398,7 +1421,7 @@ def _static(cards, out_root, columns, page_size, timeline_name, render_run_id, r
     return {'png': png_paths}
 
 
-def build_filmstrip_pack(*, out_root: Path, video_path: Path, snapshot: dict, options: dict) -> dict:
+def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None) -> dict:
     index = plan_filmstrip(snapshot, options)
     # Keep the resolved component contract in the frame index itself; the
     # The static surface must not infer visibility from whether optional lanes happen to
@@ -1444,9 +1467,19 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path, snapshot: dict, op
     (out_root / 'render-snapshot.json').write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False), encoding='utf-8')
     cards = index['cards']
-    _extract(video_path, cards, out_root, options.get('resolution'))
+    capture_info = None
+    if frame_provider is None:
+        if video_path is None:
+            raise ValueError('filmstrip requires either an admitted video or a frame provider')
+        _extract(video_path, cards, out_root, options.get('resolution'))
+    else:
+        capture_info = frame_provider.capture(cards, out_root, options.get('resolution'))
+        index['frame_capture'] = capture_info
+        index['provenance']['frame_capture'] = capture_info
     media_record = None
     if options.get('include_media'):
+        if video_path is None:
+            raise ValueError('include_media requires an admitted rendered video')
         media_root = out_root / 'media'
         media_root.mkdir(parents=True, exist_ok=True)
         suffix = video_path.suffix.lower() if video_path.suffix.lower() in {'.mp4', '.mov', '.webm', '.mkv'} else '.mp4'

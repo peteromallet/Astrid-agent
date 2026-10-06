@@ -272,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--range", dest="range_value")
     parser.add_argument("--at")
+    parser.add_argument("--frame", type=int, help="Capture one exact rendered frame number.")
     parser.add_argument("--clip")
     parser.add_argument("--occurrence", help="Focus an exact authored shot occurrence id.")
     parser.add_argument("--asset")
@@ -303,6 +304,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--materialized-root", type=Path)
     parser.add_argument("--materialized-objects")
+    parser.add_argument("--timeline", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--assets-registry", dest="assets_registry", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--transcript-file", type=Path)
     return parser
 

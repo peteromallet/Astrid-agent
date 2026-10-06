@@ -717,12 +717,12 @@ class RemoteTimelines(_RemoteFamily):
         formats=("md", "png"),
         out=None,
     ):
-        """Render-free input view or an exactly matched composed filmstrip.
+        """Render-free input view or an exact/current composed filmstrip.
 
         ``inputs`` never reads render history. ``auto`` pairs a fresh composed
         output only when the bounded Runtime lookup proves an exact match for
-        the current timeline head; otherwise it falls back to declared inputs.
-        ``composed`` returns ``render_required`` when that proof is absent.
+        the current timeline head; otherwise it captures the requested frames
+        from the pinned composition. ``composed`` uses the same capture route.
         An explicit run instead uses that run's immutable candidate or
         historical authority after exact-run admission verifies it.
         """
@@ -787,21 +787,47 @@ class RemoteTimelines(_RemoteFamily):
         else:
             exact_render = None
             project_id = str(project_ref)
-        if selected_mode == "composed" and exact_render is None:
-            return DomainResult.failure(
-                ErrorObject(
-                    "render_required",
-                    "No successful composed output matches the current timeline state.",
-                    {
-                        "project_id": project_id,
-                        "timeline_id": timeline_id,
-                        "next_actions": [
-                            {"label": "Render this timeline", "command": f"astrid timelines render --project {project_ref} {timeline_ref}"},
-                            {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project_ref} {timeline_ref} --mode inputs"},
-                        ],
-                    },
+        if selected_mode != "inputs" and exact_render is None:
+            if self._invoker is None:
+                if selected_mode == "auto":
+                    # Lightweight/native transports do not own the executor
+                    # route. Preserve their bounded input projection; a
+                    # composed-only request still fails closed below.
+                    pass
+                else:
+                    return DomainResult.failure(
+                        ErrorObject(
+                            "render_required",
+                            "composed frame capture requires the canonical invocation route",
+                            {
+                                "project_id": project_id,
+                                "timeline_id": timeline_id,
+                                "next_actions": [
+                                    {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project_ref} {timeline_ref} --mode inputs"},
+                                ],
+                            },
+                        )
+                    )
+            else:
+                executor_inputs: dict[str, Any] = {
+                    "timeline_slug": timeline_ref,
+                    "view": "filmstrip",
+                    "formats": list(formats or ("md", "png")),
+                    "composed_capture": True,
+                    "revision_id": pinned_revision,
+                }
+                executor_inputs.update(view_options)
+                executor_inputs["composed_capture"] = True
+                executor_inputs["revision_id"] = pinned_revision
+                executor_inputs.setdefault("show", ["output", "inputs", "text", "audio"])
+                return self._invoker(
+                    "rendering.timeline_visualize",
+                    kind="executor",
+                    project=project_ref,
+                    inputs=executor_inputs,
+                    out=None,
+                    wait=True,
                 )
-            )
         if exact_render is not None:
             if self._invoker is None:
                 return DomainResult.failure(
@@ -932,6 +958,7 @@ class RemoteTimelines(_RemoteFamily):
         project,
         ref,
         *,
+        revision_id=None,
         limit=50,
         cursor=None,
         clip=None,
@@ -966,6 +993,7 @@ class RemoteTimelines(_RemoteFamily):
         inspected = self.inspect(
             resolved_project,
             resolved_ref,
+            revision_id=revision_id,
             limit=limit,
             clip=clip,
             occurrence=occurrence,

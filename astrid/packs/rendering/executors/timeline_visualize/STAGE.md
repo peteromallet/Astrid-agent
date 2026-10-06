@@ -1,10 +1,10 @@
 # Timeline Visualize
 
 This is the private backend for the canonical `timelines visualize`
-operation. It produces deterministic, render-scoped evidence for a matching
-managed render; it is not a public capability and must not be invoked
-directly. The operation may use this backend for composed views, while its
-input-only mode uses native Runtime discovery. Slug, UUID, and ULID selectors
+operation. It produces deterministic, render-scoped evidence by reusing a
+matching managed render or capturing bounded frames from the exact admitted
+composition; it is not a public capability and must not be invoked directly.
+The operation's input-only mode uses native Runtime discovery. Slug, UUID, and ULID selectors
 resolve the runtime timeline; the admitted render snapshot and immutable
 stream head/version/hash pin provenance. The output is evidence, not a second
 timeline authority.
@@ -31,7 +31,7 @@ The rendered paired filmstrip/storyboard is the only continuity-review
 view. Filmstrip inputs are
 `sample` (`interval`, `clips`, `cuts`, `shots`), `every` (seconds, default 0.5)
 or `every_frames` (positive integer, mutually exclusive with `every`),
-`render_run` (exact successful run id or `latest`), `columns` (default 5),
+`render_run` (exact successful run id or `latest`), `frame` (one exact non-negative rendered frame), `columns` (default 5),
 `page_size` (default 50 for standalone views; paired output+inputs pages show
 one row by default, normally five cards across), the opt-in `include_media` flag, and optional exact
 `resolution` (`WIDTHxHEIGHT`) applied by the frame extractor. Range, density,
@@ -84,14 +84,20 @@ wanted; those extra frames are never inserted implicitly.
 python3 -m astrid timelines visualize main --project demo --mode auto
 python3 -m astrid timelines visualize main --project demo --mode composed \
   --range 10..20 --every-frames 6
+python3 -m astrid timelines visualize main --project demo --frame 120
 ```
 
-The executor samples presentation frame numbers from the actual managed
-render video with ffmpeg and rational frame timing. It uses the render's
-frozen timeline snapshot for clip and script annotations; current edits do
-not silently annotate an older render. Missing render provenance fails with
-an actionable error. SDK-injected `filmstrip_authority` is internal handoff
-data, never a public caller override.
+When an exact managed render is available, the executor samples presentation
+frame numbers from that video with ffmpeg. Otherwise `auto` and `composed`
+capture only the planned frames through the same server-owned Remotion
+composition, media registry, fonts, effects, and rational frame clock; they do
+not create a full video. Capture uses a bounded content-addressed PNG cache,
+one serialized lazy worker, and a 45-second idle expiry (set
+`ASTRID_TIMELINE_FRAME_IDLE_SECONDS=0` to disable the timer). The frame index
+records `evidence_source` (`fresh_capture`, `cache`, or `mixed`), requested and
+resolved frame/time, revision/candidate identity, renderer, and resolution.
+`--mode inputs` remains renderer-free. SDK-injected `filmstrip_authority` is
+internal handoff data, never a public caller override.
 
 The frame index records integer frames, rational times, active clips, complete
 shot-script context, timed caption projections, sample reasons, render

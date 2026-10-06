@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from fractions import Fraction
@@ -643,6 +644,72 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
                 },
             },
         }
+    if inputs.get('composed_capture') and timeline_row is not None and not exact:
+        requested_revision = inputs.get('revision_id')
+        capture_row = dict(timeline_row)
+        if requested_revision not in (None, ''):
+            capture_row['head_revision_id'] = str(requested_revision)
+            capture_row['parent_revision_id'] = str(requested_revision)
+        if not (capture_row.get('head_revision_id') or capture_row.get('parent_revision_id')):
+            _fail('Composed frame capture requires an immutable parent revision.')
+        config, registry, closure = _open_current_input_closure(
+            client, project_id=project_id, timeline_row=capture_row,
+            config={}, registry={'assets': {}},
+        )
+        parent_revision = (
+            closure.get('parent_revision_id')
+            or capture_row.get('head_revision_id')
+            or capture_row.get('parent_revision_id')
+        )
+        authority = {
+            key: capture_row.get(key)
+            for key in _AUTHORITY_IDENTITY_FIELDS
+            if capture_row.get(key) is not None
+        }
+        authority['timeline_id'] = _identifier(capture_row, 'timeline_id', 'id')
+        authority['parent_revision_id'] = parent_revision
+        authority['expansion'] = deepcopy(closure)
+        canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
+        fps_value = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
+        try:
+            fps = Fraction(str(fps_value))
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps = Fraction(30, 1)
+        capture_identity = 'sha256:' + hashlib.sha256(
+            json.dumps(
+                {'authority': authority, 'config': config, 'registry': registry},
+                sort_keys=True, separators=(',', ':'), default=str,
+            ).encode('utf-8')
+        ).hexdigest()
+        capture_id = f"composed-capture:{authority['timeline_id']}:{parent_revision}"
+        envelope = {
+            'inputs': {
+                'timeline_snapshot': {'config': config, 'registry': registry},
+                'profile': {'fps_rational': [fps.numerator, fps.denominator]},
+                'timeline_authority': authority,
+            },
+        }
+        snapshot = build_filmstrip_snapshot(
+            envelope, client=client, project=canonical_project,
+            run_id=capture_id, video_digest=capture_identity,
+        )
+        snapshot['config'] = deepcopy(config)
+        snapshot['registry'] = deepcopy(registry)
+        snapshot['metadata']['selection'] = 'composed_frame_capture'
+        snapshot['metadata']['capture_authority'] = deepcopy(authority)
+        snapshot['metadata']['capture_identity'] = capture_identity
+        snapshot['metadata']['requested_revision_id'] = requested_revision or parent_revision
+        return {
+            'mode': 'composed_capture',
+            'project_id': project_id,
+            'timeline_id': authority['timeline_id'],
+            'timeline_slug': _identifier(capture_row, 'slug', 'timeline_id', 'id'),
+            'revision_id': requested_revision or parent_revision,
+            'capture_snapshot': snapshot,
+            'capture_identity': capture_identity,
+            'component_request': components,
+            'include_media': bool(inputs.get('include_media', False)),
+        }
     if exact:
         candidates = [client.get_run(exact)]
     else:
@@ -767,6 +834,25 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         current_rows = paged_rows(client.list_timelines, project_id, limit=50) or []
         for pin in pins:
             current = next((row for row in current_rows if isinstance(row, Mapping) and str(row.get("timeline_id")) == str(pin.get("timeline_id"))), None)
+            # Some transports expose the authoritative row only through
+            # get_timeline, while others include it in list_timelines. Merge
+            # both read surfaces before comparing the frozen version/head.
+            live_reader = getattr(client, "get_timeline", None)
+            if callable(live_reader):
+                try:
+                    live = live_reader(str(pin.get("timeline_id")))
+                except Exception:
+                    live = None
+                if isinstance(live, Mapping):
+                    current = {**(dict(current) if isinstance(current, Mapping) else {}), **dict(live)}
+            current_version = current.get("config_version") if isinstance(current, Mapping) else None
+            pinned_version = pin.get("config_version")
+            if pinned_version is not None and current_version is not None and str(current_version) != str(pinned_version):
+                _status_failure(render_status(
+                    lifecycle="succeeded",
+                    output={"available": True, "run_id": _identifier(run, "id", "run_id"), "timeline": selector},
+                    fresh=False, project=project,
+                ))
             current_head = current.get("head_revision_id") if isinstance(current, Mapping) else None
             pinned_head = pin.get("revision_id") or pin.get("head_revision_id")
             if pinned_head and current_head and str(current_head) != str(pinned_head):

@@ -3286,7 +3286,7 @@ class GenericPackHost:
                 candidate = spec.get("authority_context")
                 authority_context = candidate if isinstance(candidate, Mapping) else None
             if isinstance(authority_context, Mapping):
-                for key in ("filmstrip_snapshot", "input_snapshot"):
+                for key in ("filmstrip_snapshot", "input_snapshot", "capture_snapshot"):
                     candidate = authority_context.get(key)
                     if isinstance(candidate, Mapping):
                         snapshot = candidate

@@ -190,7 +190,7 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
     from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import inspection_options
     values = {
         name: getattr(parsed, name, None)
-        for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor")
+        for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor", "revision_id")
     }
     normalized = inspection_options(values)
     opener = getattr(parsed.client.timelines, "open_composition", None)
@@ -220,6 +220,7 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
             asset=normalized["asset"],
             range_value=values.get("range"),
             detail=normalized["detail"],
+            revision_id=values.get("revision_id"),
         )
     return print_result(result, as_json=parsed.json)
 
@@ -418,8 +419,8 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     for name in (
         "shot", "view", "sample", "every", "every_frames", "include_cuts",
         "render_run", "columns", "page_size", "resolution", "include_media",
-        "range", "at", "clip", "asset", "context", "neighbors", "show", "hide",
-        "track", "detail", "occurrence",
+        "range", "at", "frame", "clip", "asset", "context", "neighbors", "show", "hide",
+        "track", "detail", "occurrence", "revision_id",
     ):
         value = getattr(parsed, name, None)
         if value not in (None, "", []):
@@ -443,6 +444,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         timeline_slug,
         mode=mode,
         options=inputs,
+        revision_id=getattr(parsed, "revision_id", None),
         out=getattr(parsed, "out", None),
     )
     if isinstance(result, DomainResult):
@@ -538,6 +540,9 @@ def _visualization_navigation_help(
     render_run = inputs.get("render_run")
     if render_run not in (None, ""):
         identity += ["--render-run", str(render_run)]
+    revision_id = inputs.get("revision_id")
+    if revision_id not in (None, ""):
+        identity += ["--revision-id", str(revision_id)]
 
     def tokens(value: Any) -> list[str]:
         if isinstance(value, (list, tuple)):
@@ -577,6 +582,8 @@ def _visualization_navigation_help(
                 argv += ["--range", str(range_value)]
             if inputs.get("at") not in (None, ""):
                 argv += ["--at", str(inputs["at"])]
+            if inputs.get("frame") not in (None, ""):
+                argv += ["--frame", str(inputs["frame"])]
             if inputs.get("every") not in (None, ""):
                 argv += ["--every", str(inputs["every"])]
             if inputs.get("every_frames") not in (None, ""):
@@ -622,6 +629,7 @@ def _visualization_navigation_help(
             "zoom": shlex.join(clean + ["--range", "START..END", "--every", "0.25", *zoom_detail]),
             "interval_seconds": shlex.join(clean + ["--every", "1"]),
             "interval_frames": shlex.join(clean + ["--every-frames", "12"]),
+            "exact_frame": shlex.join(clean + ["--frame", "FRAME"]),
             "resolution": shlex.join(base(resolution=False) + ["--resolution", "960x540"]),
             "inputs_only": shlex.join(input_only),
             "pages": shlex.join(clean + ["--columns", "5", "--page-size", "10"]),
@@ -864,6 +872,7 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--range", dest="range", default=None, help="Half-open START..END seconds window.")
     subparser.add_argument("--limit", type=int, default=50, help="Maximum bounded inspection rows (1–100).")
     subparser.add_argument("--cursor", default=None, help="Continue a bounded inspection page from its cursor.")
+    subparser.add_argument("--revision-id", default=None, help="Inspect an exact immutable timeline revision.")
     subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_show)
@@ -938,6 +947,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
     subparser.add_argument("--at", default=None, help="Focus a timestamp.")
+    subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
+    subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
     subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
     subparser.add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
     subparser.add_argument("--asset", default=None, help="Focus a canonical asset key.")
@@ -973,8 +984,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         choices=("auto", "inputs", "composed"),
         default="auto",
         help=(
-            "auto pairs a fresh exact composed output with inputs, falling back to inputs; "
-            "inputs is render-free; composed requires a matching current render."
+            "auto reuses an exact composed output or captures the pinned composition; "
+            "inputs is render-free; composed always requests composed frames."
         ),
     )
     subparser.add_argument(

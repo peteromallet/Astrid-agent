@@ -678,6 +678,9 @@ def _execute_remotion(
     materialized_objects: Mapping[str, str] | None = None,
     composition_clip_types: frozenset[str] = frozenset(),
     encode_aac_at_stitch: bool = False,
+    frame_numbers: Sequence[int] | None = None,
+    frame_output_dir: Path | None = None,
+    frame_resolution: tuple[int, int] | None = None,
 ) -> _ExecutionDetails:
     """Render one private video and return the data needed for provenance."""
 
@@ -701,6 +704,9 @@ def _execute_remotion(
                 materialized_objects=materialized_objects,
                 composition_clip_types=composition_clip_types,
                 encode_aac_at_stitch=encode_aac_at_stitch,
+                frame_numbers=frame_numbers,
+                frame_output_dir=frame_output_dir,
+                frame_resolution=frame_resolution,
             )
 
     # Direct backend callers may pass the final output as the staging path.
@@ -735,6 +741,9 @@ def _execute_remotion(
                 materialized_objects=materialized_objects,
                 composition_clip_types=composition_clip_types,
                 encode_aac_at_stitch=encode_aac_at_stitch,
+                frame_numbers=frame_numbers,
+                frame_output_dir=frame_output_dir,
+                frame_resolution=frame_resolution,
             )
         os.replace(isolated_stage, final_path)
         return details
@@ -759,6 +768,9 @@ def _execute_remotion_locked(
     materialized_objects: Mapping[str, str] | None = None,
     composition_clip_types: frozenset[str] = frozenset(),
     encode_aac_at_stitch: bool = False,
+    frame_numbers: Sequence[int] | None = None,
+    frame_output_dir: Path | None = None,
+    frame_resolution: tuple[int, int] | None = None,
 ) -> _ExecutionDetails:
     """Execute one render while the caller owns the non-recursive outer lock."""
 
@@ -840,12 +852,24 @@ def _execute_remotion_locked(
             # PCM requires a .mov/.mkv CLI name; the Astrid config hook writes
             # MP4 bytes to this invocation-private .mov, then we stage them at
             # the original path without changing the published output profile.
+            frame_mode = frame_numbers is not None
+            if frame_mode:
+                if not frame_numbers or any(
+                    type(frame) is not int or frame < 0 for frame in frame_numbers
+                ):
+                    raise ValueError("frame capture requires non-negative integer frames")
+                if frame_output_dir is None:
+                    raise ValueError("frame capture requires an output directory")
+                frame_output_dir = frame_output_dir.resolve()
+                frame_output_dir.mkdir(parents=True, exist_ok=True)
             pcm_aac_mp4 = (
                 encode_aac_at_stitch
+                and not frame_mode
                 and not alpha
                 and staged_video.suffix.lower() == ".mp4"
             )
             cli_video = (
+                frame_output_dir if frame_mode else
                 remotion_temp_root / "capture.mov" if pcm_aac_mp4 else staged_video
             )
             if alpha:
@@ -896,7 +920,6 @@ def _execute_remotion_locked(
                 "--output",
                 str(cli_video),
                 "--allow-html-in-canvas",
-                "--enforce-audio-track",
                 f"--port={remotion_port}",
                 # Remotion otherwise starts multiple Chromium workers, each
                 # requesting the full managed registry at once.  The media
@@ -905,18 +928,30 @@ def _execute_remotion_locked(
                 # timelines while preserving the same renderer and output.
                 "--concurrency=1",
             ]
-            if alpha:
+            if frame_mode:
+                remotion_args += [
+                    "--sequence",
+                    "--image-format=png",
+                    "--image-sequence-pattern=frame-[frame].[ext]",
+                    "--frames=" + ",".join(str(frame) for frame in frame_numbers),
+                ]
+                if frame_resolution is not None:
+                    width, height = frame_resolution
+                    remotion_args += [f"--width={width}", f"--height={height}"]
+            elif alpha:
                 # ProRes 4444 is the only engine-native alpha mux in remotion
                 # 4.0.509: vp9/webm emits plain yuv420p (probed, dead path).
                 # The CLI pixel-format is yuva444p10le; the muxed artifact is
                 # probed as yuva444p12le (see _remotion_mux_profile).
                 remotion_args += [
+                    "--enforce-audio-track",
                     "--image-format=png",
                     "--pixel-format=yuva444p10le",
                     "--codec=prores",
                     "--prores-profile=4444",
                 ]
             else:
+                remotion_args.append("--enforce-audio-track")
                 profile = _canonical_profile(
                     timeline_path,
                     _load_registry_mapping(assets_path),
@@ -969,6 +1004,21 @@ def _execute_remotion_locked(
                 if stderr_tail:
                     message = f"{message}\n{stderr_tail}"
                 raise RuntimeError(message)
+            if frame_mode:
+                produced = sorted(frame_output_dir.glob("frame-*.png"))
+                if not produced:
+                    raise RuntimeError("Remotion frame capture did not produce PNG frames")
+                return _ExecutionDetails(
+                    active_theme=theme_for_props,
+                    registry_state=registry_state,
+                    stage_summary=stage_summary,
+                    runtime={
+                        "node_executable": str(runtime_tools.node_executable),
+                        "node_version": runtime_tools.node_version,
+                        "remotion_cli": str(runtime_tools.remotion_cli),
+                        "mode": "image_sequence",
+                    },
+                )
             if not cli_video.is_file() or cli_video.stat().st_size <= 0:
                 raise RuntimeError("Remotion render did not produce a non-empty video")
             if pcm_aac_mp4:
@@ -986,6 +1036,65 @@ def _execute_remotion_locked(
         finally:
             props_path.unlink(missing_ok=True)
             shutil.rmtree(staged_public_root, ignore_errors=True)
+
+
+def capture_remotion_frames(
+    timeline_path: Path,
+    assets_path: Path,
+    output_dir: Path,
+    frame_numbers: Sequence[int],
+    *,
+    project_dir: Path,
+    composition_id: str = DEFAULT_COMPOSITION_ID,
+    theme_path: Path | None = None,
+    materialized_root: Path | None = None,
+    materialized_objects: Mapping[str, str] | None = None,
+    staging_parent: Path | None = None,
+    frame_resolution: tuple[int, int] | None = None,
+) -> dict[int, Path]:
+    """Capture selected composition frames through the trusted Remotion path.
+
+    This is deliberately a batch API: the caller supplies the exact frame set
+    and Remotion renders one image sequence, avoiding a full video and keeping
+    all media/effect/font staging on the existing renderer authority path.
+    """
+    numbers = tuple(sorted(set(frame_numbers)))
+    if not numbers:
+        raise ValueError("frame capture requires at least one frame")
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for stale in output_dir.glob("frame-*.png"):
+        stale.unlink(missing_ok=True)
+    marker = output_dir / ".capture-placeholder.mp4"
+    try:
+        with remotion_lock.remotion_render_lock():
+            _execute_remotion_locked(
+                Path(timeline_path),
+                Path(assets_path),
+                marker,
+                provenance_out_path=marker,
+                project_dir=Path(project_dir),
+                composition_id=composition_id,
+                theme_path=theme_path,
+                min_free_gb=None,
+                materialized_root=materialized_root,
+                staging_parent=staging_parent,
+                materialized_objects=materialized_objects,
+                frame_numbers=numbers,
+                frame_output_dir=output_dir,
+                frame_resolution=frame_resolution,
+            )
+    finally:
+        marker.unlink(missing_ok=True)
+    result: dict[int, Path] = {}
+    for path in output_dir.glob("frame-*.png"):
+        match = re.search(r"frame-(\d+)\.png$", path.name)
+        if match:
+            result[int(match.group(1))] = path
+    missing = [frame for frame in numbers if frame not in result]
+    if missing:
+        raise RuntimeError(f"Remotion frame capture omitted requested frames: {missing}")
+    return result
 
 
 def _settings_from_request(request: RenderRequest, workspace: Path) -> _RenderSettings:
