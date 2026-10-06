@@ -45,12 +45,6 @@ export default function TextCard(
     return null;
   }
   const align: 'left' | 'center' | 'right' = params.align ?? 'center';
-  const horizontal =
-    align === 'left'
-      ? 'flex-start'
-      : align === 'right'
-        ? 'flex-end'
-        : 'center';
   const clip = props.clip as {
     x?: unknown;
     y?: unknown;
@@ -199,24 +193,25 @@ export default function TextCard(
   return (
     <AbsoluteFill
       style={{
+        left: x ?? 120,
+        top: y ?? 120,
+        width: width ?? 640,
+        height: height ?? 180,
+        position: 'absolute',
         justifyContent: 'center',
-        alignItems: horizontal,
-        padding: '6%',
+        color,
+        fontFamily,
+        fontSize,
+        fontWeight: params.bold ? 700 : 400,
+        fontStyle: 'normal',
+        textAlign: align,
+        whiteSpace: 'pre-wrap',
+        lineHeight: 1.1,
+        textShadow: '0 2px 4px rgba(0, 0, 0, 0.95), 0 2px 18px rgba(0, 0, 0, 0.8)',
+        opacity: props.clip.opacity ?? 1,
       }}
     >
-      <div
-        style={{
-          color,
-          fontFamily,
-          fontSize,
-          fontWeight: params.bold ? 700 : 400,
-          lineHeight: 1.1,
-          textAlign: align,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {content}
-      </div>
+      {content}
     </AbsoluteFill>
   );
 }

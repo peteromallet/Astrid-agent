@@ -337,6 +337,155 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
+    "componentPath": "packs/local/elements/effects/animated-media-transform/component.tsx",
+    "defaults": {
+      "fit": "contain",
+      "keyframes": [
+        {
+          "at": 0,
+          "height": 1080,
+          "opacity": 1,
+          "width": 1920,
+          "x": 0,
+          "y": 0
+        }
+      ]
+    },
+    "description": "Clip-local transform keyframes interpolate in authored canvas pixels. Optional source playback segments independently preserve trims, speed changes and deliberate source resets inside one timeline clip. Uses the same component in live preview and Remotion rendering.",
+    "id": "animated-media-transform",
+    "keywords": [
+      "media",
+      "video",
+      "image",
+      "zoom",
+      "pan",
+      "fade",
+      "keyframes"
+    ],
+    "kind": "effect",
+    "label": "Animated Media Transform",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "contain",
+        "description": "",
+        "label": "Fit",
+        "name": "fit",
+        "options": [
+          {
+            "label": "Contain",
+            "value": "contain"
+          },
+          {
+            "label": "Cover",
+            "value": "cover"
+          },
+          {
+            "label": "Fill",
+            "value": "fill"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:1a77ddcc6debb85f665e3655d4a23aaad8e57d57540754d6883ca4b04aa32f39",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "enum": [
+            "contain",
+            "cover",
+            "fill"
+          ],
+          "type": "string"
+        },
+        "keyframes": {
+          "description": "Increasing clip-local seconds with x/y/width/height in canvas pixels. Values interpolate linearly and clamp outside the range.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "height": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "opacity": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "width": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "x",
+              "y",
+              "width",
+              "height",
+              "opacity"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "sourceSegments": {
+          "description": "Video playback sections starting at clip-local seconds; first at 0. Rounded frame boundaries must be distinct.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "sourceStart": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "speed": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "sourceStart",
+              "speed"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "keyframes"
+      ],
+      "type": "object"
+    },
+    "shortDescription": "Animate one managed image or video through editable position, size and opacity keyframes.",
+    "source": "pack:local"
+  },
+  {
     "componentPath": "packs/rendering/elements/effects/audio-reactive-colour/component.tsx",
     "defaults": {
       "events": [],
@@ -596,7 +745,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:f769f6f4e7e871ccb3cb93850d8c5e3690f4877f51bdd98b097ef5dc15844264",
+    "revision": "sha256:414fdb61e457bf2710008986740dfc692468782b57d01b3830c70e48322fa29c",
     "runtime": {},
     "schema": {
       "additionalProperties": true,

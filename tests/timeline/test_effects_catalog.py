@@ -65,7 +65,7 @@ class EffectsCatalogTest(unittest.TestCase):
         self.assertEqual(meta["id"], "text-card")
 
     def test_generator_outputs_package_owned_registries(self) -> None:
-        self._run_generator()
+        self._run_generator("--bundled-only")
         effects = gen_effect_registry.OUTPUTS["effects"].read_text(encoding="utf-8")
         animations = gen_effect_registry.OUTPUTS["animations"].read_text(encoding="utf-8")
         transitions = gen_effect_registry.OUTPUTS["transitions"].read_text(encoding="utf-8")
