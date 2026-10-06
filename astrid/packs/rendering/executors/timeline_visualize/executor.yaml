@@ -447,7 +447,13 @@
     "binaries": [
       "ffmpeg"
     ],
-    "requirements": []
+    "requirements": [],
+    "env_passthrough": [
+      "ASTRID_NODE_EXECUTABLE",
+      "ASTRID_REMOTION_PROJECT_DIR",
+      "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
+      "PYTHONPATH"
+    ]
   },
   "metadata": {
     "visibility": "internal",

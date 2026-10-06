@@ -601,7 +601,6 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
             config={}, registry={'assets': {}},
         )
         from astrid.core.timeline.duration import timeline_duration_frames
-        from fractions import Fraction
         canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
         fps = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
         try:
@@ -655,6 +654,19 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         config, registry, closure = _open_current_input_closure(
             client, project_id=project_id, timeline_row=capture_row,
             config={}, registry={'assets': {}},
+        )
+        # The parent projection carries canonical media identities, but the
+        # generic host only accepts a runtime-admitted registry snapshot. Keep
+        # this composed-capture path aligned with managed render admission so
+        # every asset is authorized and materializable before Remotion runs.
+        from astrid.packs.rendering.executors.render.managed_timeline import (
+            _runtime_snapshot_registry,
+        )
+        registry_client = remote if callable(
+            getattr(getattr(remote, 'media', None), 'list', None)
+        ) else client
+        registry = _runtime_snapshot_registry(
+            registry, project_ref=canonical_project, client=registry_client
         )
         parent_revision = (
             closure.get('parent_revision_id')
@@ -791,7 +803,6 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
             _fail('Render has no immutable canonical input snapshot.')
         config, registry = _expand_input_snapshot(client, config, registry, authority)
         from astrid.core.timeline.duration import timeline_duration_frames
-        from fractions import Fraction
         canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
         fps = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
         try:

@@ -115,6 +115,25 @@ def test_managed_coverage_projects_actual_overview_source_pack():
     }
 
 
+def test_managed_coverage_keeps_exact_frame_in_frozen_range(tmp_path):
+    source = plan_filmstrip(
+        {
+            'fps_rational': [24, 1],
+            'duration_frames': 48,
+            'clips': [],
+            'occurrences': [],
+            'scripts': [],
+            'metadata': {},
+        },
+        filmstrip_options({'frame': 7}),
+    )
+
+    managed = execution._filmstrip_managed_coverage(source)
+
+    assert managed['sampling']['range'] == {'start': 7, 'end': 8}
+    assert 'frame' not in managed['sampling']
+
+
 def test_input_projection_filters_pinned_shot_alias_membership():
     projection = project_input_window(
         [

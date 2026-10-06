@@ -926,6 +926,56 @@ def _projection(record: Mapping, keys: Iterable[str]) -> dict:
     return {key: _small_scalar(record[key]) for key in keys if key in record}
 
 
+def _bounded_pair(value: Any) -> list[Any] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        return None
+    if any(isinstance(item, float) and not math.isfinite(item) for item in value):
+        return None
+    return list(value)
+
+
+def _capture_projection(value: Any) -> dict[str, Any] | None:
+    """Persist bounded fresh/cache and renderer identity evidence."""
+    if not isinstance(value, Mapping):
+        return None
+    result = _projection(value, (
+        "evidence_source", "renderer", "cache_root",
+        "cached_frames", "fresh_frames",
+    ))
+    environment = value.get("renderer_environment")
+    if isinstance(environment, str) and environment:
+        bounded: dict[str, Any] = {
+            "digest": "sha256:" + hashlib.sha256(environment.encode("utf-8")).hexdigest(),
+        }
+        try:
+            parsed = json.loads(environment)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            for key in ("renderer", "sources", "project_dir", "node"):
+                item = parsed.get(key)
+                if isinstance(item, str) and item and len(item) <= 128 and "data:" not in item.lower():
+                    bounded[key] = item
+        result["renderer_environment"] = bounded
+    elif isinstance(environment, Mapping):
+        result["renderer_environment"] = _projection(environment, ("digest", "renderer", "sources"))
+    for key in ("resolution",):
+        pair = _bounded_pair(value.get(key))
+        if pair is not None:
+            result[key] = pair
+    requested = value.get("requested_frames")
+    if isinstance(requested, (list, tuple)):
+        result["requested_frame_count"] = len(requested)
+        if requested and all(isinstance(item, int) and not isinstance(item, bool) for item in requested):
+            result["requested_frame_bounds"] = [min(requested), max(requested)]
+    worker = value.get("worker")
+    if isinstance(worker, Mapping):
+        result["worker"] = _projection(worker, ("batches", "idle_seconds", "serialized", "owner"))
+    return result
+
+
 def _relative_path(value: Any) -> str:
     if not isinstance(value, str) or not value or len(value) > 512 or any(ord(c) < 32 for c in value):
         raise ValueError("unsafe_member")
@@ -970,10 +1020,26 @@ def compact_render_receipt(index: Mapping, snapshot: Mapping, root: Path) -> dic
         cards.append(card)
     receipt = {"schema": "astrid.filmstrip.v2", "provenance": provenance,
                "canonical_timeline": timeline, "cards": cards,
-               "sampling": _projection(index.get("sampling", {}), ("mode", "overview", "explicit_interval", "include_cuts")),
+               "sampling": _projection(index.get("sampling", {}), (
+                   "mode", "overview", "explicit_interval", "include_cuts",
+                   "requested_at", "requested_frame", "resolved_at_frame",
+                   "resolved_at_time", "rounding_rule",
+               )),
                "coverage": _projection(index.get("coverage", {}), ("full_duration", "selected_frame_count", "page_count", "page_size", "all_boundaries_sampled")),
                "inspection": {"command": "python3 -m astrid timelines inspect --manifest MANIFEST --section summary",
                               "sections": list(INSPECTION_SECTIONS)}}
+    sampling = index.get("sampling")
+    if isinstance(sampling, Mapping):
+        for key in ("range", "effective_range", "requested_range"):
+            pair = _bounded_pair(sampling.get(key))
+            if pair is not None:
+                receipt["sampling"][key] = pair
+        density = sampling.get("density")
+        if isinstance(density, Mapping):
+            receipt["sampling"]["density"] = _projection(density, ("mode", "value"))
+    capture = _capture_projection(index.get("frame_capture"))
+    if capture is not None:
+        receipt["provenance"]["frame_capture"] = capture
     if isinstance(index.get("inspection"), Mapping):
         receipt["scope"] = _projection(index["inspection"].get("scope", {}), ("timeline_id", "render_run_id", "occurrence_id"))
         receipt["target"] = _projection(index["inspection"].get("target", {}), ("kind", "timeline_id", "occurrence_id", "clip_id", "shot_id", "asset_key"))

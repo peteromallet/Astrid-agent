@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import plan_filmstrip
-from astrid.packs.rendering.executors.timeline_visualize.inspector_navigation import build_range_target
+from astrid.packs.rendering.executors.timeline_visualize.inspector_navigation import (
+    build_inspector_navigation,
+    build_range_target,
+)
 
 
 def test_audio_targets_are_unique_and_render_scoped():
@@ -42,3 +45,30 @@ def test_stateless_range_target_does_not_fabricate_render_parent():
 def test_partial_render_identity_is_rejected_in_navigation():
     with pytest.raises(ValueError, match="identity must be complete"):
         build_range_target({"project_slug": "demo", "fps_rational": [24, 1], "duration_frames": 240}, 0, 24)
+
+
+def test_composed_capture_navigation_pins_revision_not_synthetic_render_run():
+    snapshot = {
+        "project_slug": "demo", "timeline_id": "tl", "render_run_id": "capture-id",
+        "video_digest": "sha256:" + "a" * 64, "fps_rational": [24, 1],
+        "duration_frames": 48,
+        "metadata": {"selection": "composed_frame_capture", "requested_revision_id": "rev-17"},
+    }
+    navigation = build_inspector_navigation(snapshot, [{"id": "frame-000000010", "frame": 10}])
+    command = navigation["frames"][0]["actions"]["focus_command"]
+    assert "--revision-id rev-17" in command
+    assert "--frame 10" in command
+    assert "--at" not in command
+    assert "--render-run" not in command
+
+
+def test_frame_focus_command_preserves_exact_integer_frame():
+    snapshot = {
+        "project_slug": "demo", "timeline_id": "tl", "render_run_id": "run",
+        "video_digest": "sha256:" + "a" * 64, "fps_rational": [30, 1],
+        "duration_frames": 2799,
+    }
+    navigation = build_inspector_navigation(snapshot, [{"id": "frame-000002500", "frame": 2500}])
+    command = navigation["frames"][0]["actions"]["focus_command"]
+    assert "--frame 2500" in command
+    assert "--at" not in command

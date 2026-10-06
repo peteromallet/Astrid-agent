@@ -2178,10 +2178,11 @@ def _kernel_invoke(
     # renders source previews.
     if (str(capability.id) == "rendering.timeline_visualize"
             and isinstance(idempotency_context, Mapping)
-            and idempotency_context.get("mode") in {"filmstrip", "input_only"}):
+            and idempotency_context.get("mode") in {"filmstrip", "input_only", "composed_capture"}):
         authority_snapshot = (
             idempotency_context.get("filmstrip_snapshot")
             or idempotency_context.get("input_snapshot")
+            or idempotency_context.get("capture_snapshot")
         )
         authority_registry = (
             authority_snapshot.get("registry")

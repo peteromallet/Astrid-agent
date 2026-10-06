@@ -408,8 +408,12 @@ same absolute time axis as the cards and input placements. In input lanes, each
 rail is centered vertically inside its source clip and its label gets a dark
 backing chip for legibility.
 
-Filmstrips require a successful render with its frozen timeline snapshot and
-managed video. They do not substitute source asset thumbnails. PNG cards show
+The default filmstrip route uses a matching successful render when one is
+available, otherwise it captures the bounded requested frames through the
+canonical Remotion compositor against the pinned timeline snapshot. The
+explicit render-free `--mode inputs` route is the only route that does not
+produce composed pixels. Filmstrips do not substitute source asset thumbnails.
+PNG cards show
 spoken text in quotes and a prominent local waveform/cursor when the admitted
 render has audio. Script captions
 remain authored segment text, not word-aligned transcription. Missing or
@@ -425,9 +429,10 @@ For rendered-output inspection, the rendered paired filmstrip/storyboard is
 the canonical visual surface. It is not the only way to inspect a timeline:
 the render-free `--mode inputs` route above exposes declared placements and
 source media without pretending they are rendered pixels. There is no separate
-structural diagram or frozen-object navigation route.
-Use the managed filmstrip commands above with `--render-run`; do not supply a
-caller-owned `--rendered-video` path. The frame index's render-scoped
+structural diagram or frozen-object navigation route. Use `--render-run` when
+the review must reuse a particular managed render; otherwise the default route
+may perform a bounded composed-frame capture. Never supply a caller-owned
+`--rendered-video` path. The frame index's render-scoped
 range/shot/clip/track targets are the canonical navigation surface.
 
 Use a coarse `--every 5` pass to locate a transition, then rerun the exact

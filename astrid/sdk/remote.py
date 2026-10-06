@@ -789,25 +789,25 @@ class RemoteTimelines(_RemoteFamily):
             project_id = str(project_ref)
         if selected_mode != "inputs" and exact_render is None:
             if self._invoker is None:
-                if selected_mode == "auto":
-                    # Lightweight/native transports do not own the executor
-                    # route. Preserve their bounded input projection; a
-                    # composed-only request still fails closed below.
-                    pass
-                else:
-                    return DomainResult.failure(
-                        ErrorObject(
-                            "render_required",
-                            "composed frame capture requires the canonical invocation route",
-                            {
-                                "project_id": project_id,
-                                "timeline_id": timeline_id,
-                                "next_actions": [
-                                    {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project_ref} {timeline_ref} --mode inputs"},
-                                ],
-                            },
-                        )
+                # The default/auto path is composed evidence first. A native
+                # transport may expose the cheap declared-input projection,
+                # but it cannot silently return that projection as a
+                # successful visualization when composed evidence was
+                # requested. Keep the recovery action explicit and truthful.
+                return DomainResult.failure(
+                    ErrorObject(
+                        "render_required",
+                        "composed frame capture requires the canonical invocation route",
+                        {
+                            "project_id": project_id,
+                            "timeline_id": timeline_id,
+                            "input_only_available": True,
+                            "next_actions": [
+                                {"label": "Inspect declared inputs", "command": f"astrid timelines visualize --project {project_ref} {timeline_ref} --mode inputs"},
+                            ],
+                        },
                     )
+                )
             else:
                 executor_inputs: dict[str, Any] = {
                     "timeline_slug": timeline_ref,

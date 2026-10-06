@@ -1,10 +1,12 @@
 # Offline filmstrip inspection
 
 For render-free current-input inspection, use
-`python3 -m astrid timelines visualize <timeline> --project <project> --show inputs --hide output`.
+`python3 -m astrid timelines visualize <timeline> --project <project> --mode inputs`.
 It projects declared placements without decoding rendered pixels or starting a
-provider call. A rendered view requires a successful render and its exact
-`--render-run <run-id>`; its conclusions are scoped to that frozen run.
+provider call. The default/`--mode auto` rendered view reuses a matching
+successful render when available and otherwise captures bounded composed frames
+from the pinned timeline snapshot. Use the exact `--render-run <run-id>` when
+the conclusions must remain scoped to a particular frozen run.
 
 Use the materialized bundle's returned inspection command to query evidence without starting the workspace runtime or regenerating frames:
 

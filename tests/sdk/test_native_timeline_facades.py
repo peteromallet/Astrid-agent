@@ -163,14 +163,12 @@ def test_remote_visualize_creates_runtime_owned_view_without_executor() -> None:
     result = RemoteTimelines(transport).visualize(
         "project-1", "main", occurrence="occ-1", neighbors=1, formats=("md", "png")
     )
-    assert result.ok
-    assert result.data["evidence_kind"] == "declared_inputs"
-    assert transport.view_calls[0] == (
-        "project-1", "tl-1", {
-            "limit": 50, "detail": False, "neighbors": 1, "revision_id": "rev-7",
-            "occurrence": "occ-1", "formats": ["md", "png"],
-        }
-    )
+    assert isinstance(result, DomainResult)
+    assert not result.ok
+    assert result.error.code == "render_required"
+    assert result.error.details["input_only_available"] is True
+    assert result.error.details["next_actions"]
+    assert transport.view_calls == []
 
 
 def test_native_visualize_rejects_arbitrary_output_path() -> None:

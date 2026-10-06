@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from astrid.packs.timeline.cli import _cmd_show, _cmd_visualize, build_parser
+from astrid.packs.timeline.cli import (
+    _cmd_show,
+    _cmd_visualize,
+    _visualization_show_range,
+    build_parser,
+)
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.results import InvocationResult
 
@@ -88,13 +93,70 @@ def test_show_and_visualize_preserve_one_normalized_occurrence_target(capsys) ->
             "addressable": True,
         }
     ]
+    show_to_visualize = shown["navigation"]["commands"]["visualize"]
+    assert "timelines visualize" in show_to_visualize
+    assert "--revision-id head-1" in show_to_visualize
+    assert "--occurrence occ-b" in show_to_visualize
 
     visualize_args = parser.parse_args(
         ["visualize", "main", "--project", "demo", "--occurrence", "occ-b"]
     )
     assert _cmd_visualize(visualize_args) == 0
-    capsys.readouterr()
+    visualized = json.loads(capsys.readouterr().out)["data"]["outputs"]
     assert client.visualize_inputs["occurrence"] == shown["query"]["occurrence"]
+    assert "timelines show" in visualized["navigation"]["commands"]["show"]
+    assert "--revision-id head-1" in visualized["navigation"]["commands"]["show"]
+
+
+def test_show_visualize_round_trip_keeps_saved_revision_after_newer_head(capsys) -> None:
+    client = _Client()
+    parser = build_parser(client)
+
+    show_args = parser.parse_args(
+        ["show", "--project", "demo", "main", "--revision-id", "saved-revision", "--range", "2..4"]
+    )
+    assert _cmd_show(show_args) == 0
+    shown = json.loads(capsys.readouterr().out)["data"]
+    assert "--revision-id saved-revision" in shown["navigation"]["commands"]["visualize"]
+    assert "--range 2..4" in shown["navigation"]["commands"]["visualize"]
+
+    visualize_args = parser.parse_args(
+        ["visualize", "main", "--project", "demo", "--revision-id", "saved-revision", "--range", "2..4"]
+    )
+    assert _cmd_visualize(visualize_args) == 0
+    visualized = json.loads(capsys.readouterr().out)["data"]["outputs"]
+    assert "--revision-id saved-revision" in visualized["navigation"]["commands"]["show"]
+    assert "--range 2..4" in visualized["navigation"]["commands"]["show"]
+
+
+def test_visualize_show_navigation_projects_frame_and_timestamp_to_ranges(capsys) -> None:
+    client = _Client()
+    parser = build_parser(client)
+
+    frame_args = parser.parse_args(
+        ["visualize", "main", "--project", "demo", "--frame", "1"]
+    )
+    assert _cmd_visualize(frame_args) == 0
+    frame_outputs = json.loads(capsys.readouterr().out)["data"]["outputs"]
+    assert "--range 1/30..1/15" in frame_outputs["navigation"]["commands"]["show"]
+
+    at_args = parser.parse_args(
+        ["visualize", "main", "--project", "demo", "--at", "4", "--context", "1"]
+    )
+    assert _cmd_visualize(at_args) == 0
+    at_outputs = json.loads(capsys.readouterr().out)["data"]["outputs"]
+    assert "--range 3..5" in at_outputs["navigation"]["commands"]["show"]
+
+
+def test_visualize_show_navigation_reads_fps_from_frame_index(tmp_path) -> None:
+    frame_index = tmp_path / "frame-index.json"
+    frame_index.write_text(
+        json.dumps({"provenance": {"fps_rational": [24, 1]}}),
+        encoding="utf-8",
+    )
+    assert _visualization_show_range(
+        {"frame": 1}, outputs={"frame_index": str(frame_index)}
+    ) == "1/24..1/12"
 
 
 def test_plain_show_returns_the_canonical_inspection_shape(capsys) -> None:

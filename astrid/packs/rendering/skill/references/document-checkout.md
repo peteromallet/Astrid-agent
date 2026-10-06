@@ -105,9 +105,10 @@ later parent CAS fails. Re-check out if the parent head advanced.
 
 - **No render needed for saving:** refresh/open the same project and timeline in
   Reigh after publication. `timelines visualize --mode inputs` gives declared
-  placement evidence without rendering. `--mode auto` only adds composed output
-  if a matching render already exists. Render only when the requested review
-  needs it; a frozen candidate JSON is not a visual preview.
+  placement evidence without rendering. The default/`--mode auto` route uses a
+  matching render when available and otherwise captures bounded composed frames
+  through the canonical Remotion route. Use `--mode inputs` for render-free
+  evidence; a frozen candidate JSON is not a visual preview.
 - **Empty or wrong project list:** check the launcher/runtime selection before
   creating a new project or importing data.
 - **Stale head:** check out a new file and reapply the intended edits. Do not

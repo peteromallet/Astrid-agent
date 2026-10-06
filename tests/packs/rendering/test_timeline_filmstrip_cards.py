@@ -113,6 +113,25 @@ def test_filters_and_bounds_are_enforced():
         plan_filmstrip(snapshot(), {'every_frames': 1.5})
 
 
+def test_timestamp_is_one_exact_authored_frame_with_explicit_floor_rule():
+    index = plan_filmstrip(
+        snapshot(fps_rational=[24, 1], duration_frames=48),
+        filmstrip_options({'at': '0.13', 'context': 3}),
+    )
+    assert [card['frame'] for card in index['cards']] == [3]
+    assert float(index['sampling']['requested_at']) == pytest.approx(0.13)
+    assert index['sampling']['resolved_at_frame'] == 3
+    assert index['sampling']['resolved_at_time'] == 0.125
+    assert index['sampling']['rounding_rule'] == 'floor_at_authored_fps'
+    assert index['sampling']['range'] == [0.125, 1 / 6]
+
+    with pytest.raises(ValueError, match='outside the rendered extent'):
+        plan_filmstrip(
+            snapshot(fps_rational=[24, 1], duration_frames=48),
+            filmstrip_options({'at': '2.1'}),
+        )
+
+
 def test_canonical_occurrence_filter_wins_over_legacy_alias():
     snap = snapshot(clips=[dict(
         id='canonical', kind='video', asset='one', at=0, duration=2,

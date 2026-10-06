@@ -697,13 +697,23 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
+    resolved_at_frame = None
     if options.get('at') is not None:
         if options.get('range') is not None or requested_frame is not None:
             raise ValueError('Choose frame, range, or at/context, not more than one.')
-        at, context = _q(options['at']), _q(options.get('context', 2))
-        if context <= 0:
-            raise ValueError('Context must be positive.')
-        lo, hi = at - context, at + context
+        at = _q(options['at'])
+        if at < 0 or at >= duration:
+            raise ValueError(
+                f'Requested timestamp {float(at):.6f}s is outside the rendered extent '
+                f'0..{float(duration):.6f}s.'
+            )
+        # A timestamp is an exact visual request, not a context window.  Use
+        # the authored frame clock's floor rule so every in-range timestamp
+        # resolves to one and only one frame without clamping an out-of-range
+        # request to a nearby sample.
+        resolved_at_frame = int(at * fps)
+        lo = Fraction(resolved_at_frame, 1) / fps
+        hi = Fraction(resolved_at_frame + 1, 1) / fps
     lo, hi = max(lo, Fraction(0)), min(hi, duration)
     if hi <= lo:
         raise ValueError('Requested window contains no rendered frames.')
@@ -767,6 +777,8 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                         and options.get('at') is None and not explicit_interval)
     if requested_frame is not None:
         add(requested_frame, 'exact_frame')
+    elif resolved_at_frame is not None:
+        add(resolved_at_frame, 'exact_time')
     elif is_full_overview:
         overview_limit = min(limit, OVERVIEW_MAX_CARDS)
         reasons, boundary_index, coverage = _full_overview(snapshot, clips, spans, total, fps, overview_limit)
@@ -791,7 +803,7 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                     raise ValueError(f'Filmstrip exceeds {limit} sample candidates; use a coarser --every or a narrower --range.')
                 add(frame, 'interval')
                 k += 1
-    if requested_frame is None and not is_full_overview:
+    if requested_frame is None and resolved_at_frame is None and not is_full_overview:
         seen_shots = set()
         for clip in selected:
             start, end = spans[id(clip)]
@@ -867,15 +879,14 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
             'audio': snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else navigation['audio'],
             'boundary_index': boundary_index,
             'coverage': coverage,
-            'sampling': {'mode': 'exact_frame' if requested_frame is not None else 'overview' if is_full_overview else mode, 'overview': is_full_overview,
+            'sampling': {'mode': 'exact_frame' if requested_frame is not None or resolved_at_frame is not None else 'overview' if is_full_overview else mode, 'overview': is_full_overview,
                          'range': [float(lo), float(hi)], 'effective_range': [float(lo), float(hi)],
                          'requested_range': options.get('range'), 'requested_at': options.get('at'),
                          'requested_frame': requested_frame,
-                         'resolved_at_frame': (
-                             int((_q(options['at']) * fps + Fraction(1, 2)).numerator //
-                                 (_q(options['at']) * fps + Fraction(1, 2)).denominator)
-                             if options.get('at') is not None else None
-                         ),
+                         'resolved_at_frame': resolved_at_frame,
+                         'resolved_at_time': (float(Fraction(resolved_at_frame, 1) / fps)
+                                              if resolved_at_frame is not None else None),
+                         'rounding_rule': 'floor_at_authored_fps' if resolved_at_frame is not None else None,
                          'occurrence': options.get('occurrence'),
                          'density': options.get('density'), 'resolution': options.get('resolution'),
                          'step_frames_rational': [step.numerator, step.denominator],

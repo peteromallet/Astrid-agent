@@ -59,6 +59,37 @@ def test_new_receipt_is_small_and_points_to_verified_snapshot(tmp_path):
     assert inspect_filmstrip(manifest)["ok"]
 
 
+def test_receipt_persists_capture_provenance_and_exact_sampling(tmp_path):
+    snapshot = {"project_slug": "demo", "timeline_id": "main", "render_run_id": "run",
+                "video_digest": "sha256:video", "fps_rational": [24, 1], "duration_frames": 48}
+    index = {
+        "cards": [],
+        "sampling": {
+            "mode": "exact_frame", "range": [0.125, 1 / 6],
+            "requested_at": 0.13, "resolved_at_frame": 3,
+            "resolved_at_time": 0.125, "rounding_rule": "floor_at_authored_fps",
+            "density": {"mode": "every_frames", "value": 1},
+        },
+        "coverage": {},
+        "frame_capture": {
+            "evidence_source": "fresh_capture", "renderer": "renderer-v1",
+            "renderer_environment": "{\"sources\":\"digest\"}",
+            "fresh_frames": 1, "cached_frames": 0, "requested_frames": [3],
+            "resolution": [320, 180],
+            "worker": {"batches": 1, "idle_seconds": 45.0, "serialized": True},
+        },
+    }
+    receipt = compact_render_receipt(index, snapshot, tmp_path)
+    assert receipt["sampling"]["resolved_at_frame"] == 3
+    assert receipt["sampling"]["rounding_rule"] == "floor_at_authored_fps"
+    assert receipt["provenance"]["frame_capture"]["evidence_source"] == "fresh_capture"
+    assert receipt["provenance"]["frame_capture"]["requested_frame_bounds"] == [3, 3]
+    environment = receipt["provenance"]["frame_capture"]["renderer_environment"]
+    assert environment["digest"].startswith("sha256:")
+    assert environment["sources"] == "digest"
+    assert len(environment["digest"]) == 71
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_pagination_and_exact_selectors_read_without_mutation(tmp_path, legacy):
     manifest, _ = make_bundle(tmp_path, legacy=legacy)

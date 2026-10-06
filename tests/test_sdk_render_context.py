@@ -250,7 +250,7 @@ def test_paths_allocated_inside_workspace_and_outside_rejected(tmp_path: Path) -
 def test_asset_descriptor_resolves_to_absolute_file_and_server_url(
     tmp_path: Path,
 ) -> None:
-    payload = b"local asset bytes"
+    payload = b"\x89PNG\r\n\x1a\nlocal asset bytes"
     digest = hashlib.sha256(payload).hexdigest()
     registry_path = tmp_path / "hype.assets.json"
     registry_path.write_text(
@@ -260,7 +260,7 @@ def test_asset_descriptor_resolves_to_absolute_file_and_server_url(
                     "main": {
                         "object_id": "object-main",
                         "digest": digest,
-                        "type": "application/octet-stream",
+                        "type": "image",
                     }
                 }
             }
@@ -282,12 +282,14 @@ def test_asset_descriptor_resolves_to_absolute_file_and_server_url(
                 staged = ctx.asset_path("main")
                 assert staged.is_absolute()
                 assert staged.parent == materializer.staging_dir
+                assert staged.suffix == ".png"
                 assert staged.read_bytes() == payload
 
                 url = ctx.asset_url("main")
                 assert url.startswith("http://127.0.0.1:")
                 with urllib.request.urlopen(url, timeout=5) as response:
                     assert response.read() == payload
+                    assert response.headers["Content-Type"] == "image/png"
 
                 resolved = ctx.resolved_registry()
                 assert resolved["assets"]["main"]["file"] == url
@@ -303,6 +305,16 @@ def test_asset_descriptor_resolves_to_absolute_file_and_server_url(
             ctx.asset_path("main")
         with pytest.raises(ValueError):
             ctx.resolved_registry()
+
+
+def test_asset_server_sniffs_extensionless_png_mime_type(tmp_path: Path) -> None:
+    payload = b"\x89PNG\r\n\x1a\nextensionless"
+    staged = tmp_path / "managed-object-without-extension"
+    staged.write_bytes(payload)
+    with InvocationAssetServer(tmp_path) as server:
+        with urllib.request.urlopen(server.local_url(staged), timeout=5) as response:
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read() == payload
 
 
 # ---------------------------------------------------------------------------

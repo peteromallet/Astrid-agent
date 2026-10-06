@@ -64,7 +64,10 @@ def _base(snapshot: Mapping) -> list[str]:
         args += ['--timeline-slug', snapshot['timeline_id']]
     args += ['--view', 'filmstrip']
     exact_keys = ('project_slug', 'timeline_id', 'render_run_id', 'video_digest')
-    if all(isinstance(snapshot.get(key), str) and snapshot[key] for key in exact_keys):
+    metadata = snapshot.get('metadata') if isinstance(snapshot.get('metadata'), Mapping) else {}
+    if metadata.get('selection') == 'composed_frame_capture':
+        args += ['--revision-id', str(metadata.get('requested_revision_id') or '<revision-id>')]
+    elif all(isinstance(snapshot.get(key), str) and snapshot[key] for key in exact_keys):
         args += ['--render-run', snapshot['render_run_id']]
     return args
 
@@ -86,7 +89,10 @@ def _time_command(snapshot: Mapping, start: Fraction, end: Fraction) -> str:
 
 
 def _frame_command(snapshot: Mapping, frame: int, *, clip_id: str | None = None) -> str:
-    args = _base(snapshot) + ['--at', _seconds(snapshot, frame), '--context', '1', '--every-frames', '1']
+    # ``--at`` is a timestamp selector and can floor a binary float back to
+    # the preceding frame. Inspector frame targets are already exact integer
+    # coordinates, so preserve them with the public exact-frame selector.
+    args = _base(snapshot) + ['--frame', str(frame), '--context', '1', '--every-frames', '1']
     if clip_id is not None:
         args += ['--clip', clip_id]
     return shlex.join(args)

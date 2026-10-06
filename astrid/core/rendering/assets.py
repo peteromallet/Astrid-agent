@@ -12,6 +12,7 @@ import contextlib
 import copy
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -53,11 +54,63 @@ def _contained(path: Path, root: Path) -> bool:
     return True
 
 
-def _safe_staging_name(key: str, object_id: str, index: int) -> str:
+_MEDIA_SUFFIXES = {
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/svg+xml": ".svg",
+    "image/webp": ".webp",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+
+
+def _media_suffix(entry: Mapping[str, Any], value: str | Path | bytes) -> str:
+    """Return a safe extension so the loopback server emits a useful MIME type."""
+
+    declared = entry.get("mime_type") or entry.get("media_type") or entry.get("content_type")
+    if isinstance(declared, str):
+        suffix = _MEDIA_SUFFIXES.get(declared.split(";", 1)[0].strip().lower())
+        if suffix is not None:
+            return suffix
+    kind = entry.get("type")
+    if isinstance(kind, str):
+        suffix = _MEDIA_SUFFIXES.get(kind.strip().lower())
+        if suffix is not None:
+            return suffix
+
+    payload: bytes
+    if isinstance(value, bytes):
+        payload = value[:16]
+    else:
+        try:
+            with Path(value).open("rb") as source:
+                payload = source.read(16)
+        except OSError:
+            payload = b""
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if payload.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return ".webp"
+    if len(payload) >= 8 and payload[4:8] == b"ftyp":
+        return ".mp4"
+    return ""
+
+
+def _safe_staging_name(key: str, object_id: str, index: int, suffix: str = "") -> str:
     candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", object_id).strip("._-") or "object"
     candidate = candidate[-120:]
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
-    return f"{index:04d}-{digest}-{candidate}"
+    return f"{index:04d}-{digest}-{candidate}{suffix}"
 
 
 class AssetMaterializer:
@@ -127,6 +180,7 @@ class AssetMaterializer:
         digest: str,
         value: str | Path | bytes,
         index: int,
+        suffix: str = "",
     ) -> Path:
         """Verify and stage bytes already materialized by the runtime host."""
 
@@ -134,7 +188,7 @@ class AssetMaterializer:
             digest = validate_digest(digest.removeprefix("sha256:"))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Asset {key!r} has an invalid managed digest") from exc
-        destination = self.staging_dir / _safe_staging_name(key, reference, index)
+        destination = self.staging_dir / _safe_staging_name(key, reference, index, suffix)
         if isinstance(value, bytes):
             payload = value
             if hashlib.sha256(payload).hexdigest() != digest:
@@ -206,7 +260,9 @@ class AssetMaterializer:
                     raise FileNotFoundError(f"Asset {key!r} derived file is unavailable") from exc
                 if source.is_symlink() or not _contained(resolved, self.materialized_root) or not resolved.is_file():
                     raise ValueError(f"Asset {key!r} derived file is outside the materialized root")
-                staged_path = self._materialize_managed_object(key, object_id, raw_digest, resolved, index)
+                staged_path = self._materialize_managed_object(
+                    key, object_id, raw_digest, resolved, index, _media_suffix(entry, resolved)
+                )
                 self.assets[key] = MaterializedAsset(
                     key=key, kind="managed", metadata=copy.deepcopy(dict(entry)), local_path=staged_path
                 )
@@ -215,7 +271,9 @@ class AssetMaterializer:
             materialized = next((self.materialized_objects[candidate] for candidate in candidates if candidate in self.materialized_objects), None)
             if materialized is None:
                 raise FileNotFoundError(f"Asset {key!r} has no runtime materialized object")
-            staged_path = self._materialize_managed_object(key, object_id, raw_digest, materialized, index)
+            staged_path = self._materialize_managed_object(
+                key, object_id, raw_digest, materialized, index, _media_suffix(entry, materialized)
+            )
             self.assets[key] = MaterializedAsset(
                 key=key,
                 kind="managed",
@@ -370,6 +428,32 @@ class RangeHTTPRequestHandler(SimpleHTTPRequestHandler):
             return None
         return start, end
 
+    @staticmethod
+    def _content_type(path: Path) -> str:
+        """Infer media MIME types for immutable extensionless runtime objects."""
+
+        guessed, _encoding = mimetypes.guess_type(str(path))
+        if guessed and guessed != "application/octet-stream":
+            return guessed
+        try:
+            with path.open("rb") as source:
+                payload = source.read(16)
+        except OSError:
+            payload = b""
+        if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if payload.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if payload.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+            return "image/webp"
+        if len(payload) >= 8 and payload[4:8] == b"ftyp":
+            return "video/mp4"
+        if payload.startswith(b"\x1a\x45\xdf\xa3"):
+            return "video/webm"
+        return guessed or "application/octet-stream"
+
     def send_head(self):
         path = self._resolved_file()
         if path is None:
@@ -398,7 +482,7 @@ class RangeHTTPRequestHandler(SimpleHTTPRequestHandler):
             source.seek(start)
             self._range_limit = length
             self.send_response(206)
-            self.send_header("Content-Type", self.guess_type(str(path)))
+            self.send_header("Content-Type", self._content_type(path))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Content-Length", str(length))
@@ -408,7 +492,7 @@ class RangeHTTPRequestHandler(SimpleHTTPRequestHandler):
 
         self._range_limit = None
         self.send_response(200)
-        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Type", self._content_type(path))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(size))
         self._send_renderer_cors_headers()

@@ -594,13 +594,28 @@ def _filmstrip_managed_coverage(frame_index: Mapping[str, object]) -> dict[str, 
         value = Fraction(str(seconds)) * fps
         return (value.numerator + value.denominator - 1) // value.denominator
 
-    start, end = (frame_boundary(value) for value in raw_window)
+    raw_mode = sampling.get("mode")
+    requested_frame = sampling.get("requested_frame")
+    resolved_at_frame = sampling.get("resolved_at_frame")
+    exact_frame = (
+        requested_frame
+        if raw_mode == "exact_frame" and isinstance(requested_frame, int) and requested_frame >= 0
+        else resolved_at_frame
+        if raw_mode == "exact_frame" and isinstance(resolved_at_frame, int) and resolved_at_frame >= 0
+        else None
+    )
+    if exact_frame is not None:
+        # Do not round-trip an exact frame through decimal seconds: values such
+        # as 428/30 can stringify just above the integer boundary and make
+        # ceil(start) equal ceil(end).
+        start, end = exact_frame, exact_frame + 1
+    else:
+        start, end = (frame_boundary(value) for value in raw_window)
     if start < 0 or end <= start:
         raise ValueError("filmstrip coverage has an empty rendered window")
     mode = sampling.get("mode")
     if mode == "overview":
         mode = "interval"
-    exact_frame = sampling.get("requested_frame") if mode == "exact_frame" else None
     if mode == "exact_frame":
         mode = "interval"
     if mode not in {"interval", "clips", "cuts", "shots"}:
@@ -609,8 +624,10 @@ def _filmstrip_managed_coverage(frame_index: Mapping[str, object]) -> dict[str, 
         "mode": mode,
         "range": {"start": start, "end": end},
     }
-    if isinstance(exact_frame, int) and exact_frame >= 0:
-        managed_sampling["frame"] = exact_frame
+    # Exact-frame identity remains in the frozen frame-index/cards. The
+    # managed-output V1 coverage envelope intentionally stays compatible with
+    # Runtime's stable sampling schema, where the one-frame range is the
+    # machine-readable exact-frame witness.
     raw_step = sampling.get("step_frames_rational")
     if (
         isinstance(raw_step, (list, tuple))
@@ -1711,9 +1728,19 @@ def execute_filmstrip(args, *, authority=None):
     pack_root = out_root / 'filmstrip-view'
     if pack_root.exists() and any(pack_root.iterdir()):
         raise ValueError(f'evidence pack output is not empty: {pack_root}')
-    result = build_filmstrip_pack(out_root=pack_root, video_path=video,
-                                  snapshot=snapshot, options=options,
-                                  frame_provider=frame_provider)
+    try:
+        result = build_filmstrip_pack(out_root=pack_root, video_path=video,
+                                      snapshot=snapshot, options=options,
+                                      frame_provider=frame_provider)
+    except BaseException:
+        if frame_provider is not None:
+            frame_provider.close(force=True)
+        raise
+    else:
+        if frame_provider is not None:
+            # Release the provider's lease while the shared owner remains
+            # paused behind its bounded idle-expiry timer.
+            frame_provider.close()
     # Keep optional input evidence as synchronized, full-width timeline panels
     # in the static delivery too.  When output and inputs are both selected,
     # compose those panels onto the same public PNG surface while retaining
