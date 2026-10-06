@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -51,6 +51,11 @@ async function startSession(request) {
 async function bundleProject(request) {
   if (bundleDir) rmSync(bundleDir, { recursive: true, force: true });
   const workerRoot = resolve(process.env.ASTRID_FRAME_WORKER_ROOT ?? tmpdir());
+  // The owner is deliberately process-independent from GenericPackHost.  The
+  // host may therefore clean up a root it created after launching us while we
+  // are still retained for the next request; recreate the bounded root at the
+  // point of use rather than assuming the launcher's directory still exists.
+  mkdirSync(workerRoot, { recursive: true, mode: 0o700 });
   bundleDir = mkdtempSync(join(workerRoot, 'astrid-remotion-frame-bundle-'));
   const environment = { ...process.env, ...(request.environment ?? {}) };
   const bundled = spawnSync(
