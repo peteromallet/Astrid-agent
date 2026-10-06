@@ -927,6 +927,14 @@ def _execute_remotion_locked(
                 # one worker keeps the request burst bounded for large
                 # timelines while preserving the same renderer and output.
                 "--concurrency=1",
+                # The generated package registry is part of the renderer
+                # source closure. Remotion's filesystem cache is keyed by
+                # the entry/config bundle rather than generated registry
+                # contents, so reusing it can silently omit a newly admitted
+                # effect (for example the canonical end-spanning layer).
+                # Disable only this bundle cache; media and frame caches stay
+                # invocation-scoped and bounded by the existing lifecycle.
+                "--bundle-cache=false",
             ]
             if frame_mode:
                 remotion_args += [

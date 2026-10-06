@@ -1577,6 +1577,8 @@ def test_alpha_stamp_appends_transparent_flags_to_remotion_cli(
     assert sum(part.startswith("--port=") for part in alpha_cmd) == 1
     assert "--port=3001" in opaque_cmd
     assert "--port=3001" in alpha_cmd
+    assert "--bundle-cache=false" in opaque_cmd
+    assert "--bundle-cache=false" in alpha_cmd
     # Stamped renders are remapped to the ProRes .mov container name.
     alpha_output = Path(alpha_cmd[alpha_cmd.index("--output") + 1])
     assert alpha_output.suffix == ".mov"
