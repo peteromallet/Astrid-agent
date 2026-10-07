@@ -102,7 +102,7 @@ def test_youtube_provider_delegates_download_scene_split_and_internal_clip_extra
         if "astrid.packs.youtube.executors.youtube_audio.run" in cmd:
             out_base = Path(cmd[cmd.index("--out") + 1])
             out_base.with_suffix(".mp4").write_bytes(b"video")
-        elif "astrid.packs.editorial.executors.scenes.run" in cmd:
+        elif "astrid.packs.editorial.actions.scenes.run" in cmd:
             out_path = Path(cmd[cmd.index("--out") + 1])
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(
@@ -136,7 +136,7 @@ def test_youtube_provider_delegates_download_scene_split_and_internal_clip_extra
     assert candidates[0]["clip_start_s"] == 1.0
     assert candidates[0]["clip_end_s"] == 4.0
     assert any("astrid.packs.youtube.executors.youtube_audio.run" in cmd for cmd in calls)
-    assert any("astrid.packs.editorial.executors.scenes.run" in cmd for cmd in calls)
+    assert any("astrid.packs.editorial.actions.scenes.run" in cmd for cmd in calls)
     assert any(cmd and cmd[0] == "ffmpeg" for cmd in calls)
     assert not any(cmd and cmd[0] == "yt-dlp" for cmd in calls)
 
@@ -148,7 +148,7 @@ def test_youtube_provider_uses_bucket_search_queries_from_config(tmp_path: Path)
         calls.append(cmd)
         if "astrid.packs.youtube.executors.youtube_audio.run" in cmd:
             Path(cmd[cmd.index("--out") + 1]).with_suffix(".mp4").write_bytes(b"video")
-        elif "astrid.packs.editorial.executors.scenes.run" in cmd:
+        elif "astrid.packs.editorial.actions.scenes.run" in cmd:
             Path(cmd[cmd.index("--out") + 1]).write_text(json.dumps([{"start": 0.0, "end": 3.0}]), encoding="utf-8")
         elif cmd and cmd[0] == "ffmpeg":
             Path(cmd[-1]).write_bytes(b"clip")

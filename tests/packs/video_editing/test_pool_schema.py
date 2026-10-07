@@ -2,12 +2,53 @@ import json
 import shutil
 import tempfile
 import unittest
+from dataclasses import fields
 from pathlib import Path
 
 from astrid.core import timeline
+from astrid.packs.video_editing.actions.hype import config as action_config
+from astrid.packs.video_editing.actions.hype import run as hype_callbacks
+from astrid.packs.video_editing.actions.hype import steps as action_steps
+from astrid.packs.video_editing.orchestrators.hype import config as legacy_config
+from astrid.packs.video_editing.orchestrators.hype import steps as legacy_steps
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class PoolCallbackSchemaTests(unittest.TestCase):
+    def test_step_order_export_preserves_legacy_order_and_verdict_boundary(self) -> None:
+        self.assertIs(hype_callbacks.STEP_ORDER, action_config.STEP_ORDER)
+        self.assertIs(action_steps.STEP_ORDER, hype_callbacks.STEP_ORDER)
+        self.assertEqual(hype_callbacks.STEP_ORDER, legacy_config.STEP_ORDER)
+        self.assertEqual(hype_callbacks.STEP_ORDER, (
+            "transcribe", "scenes", "quality_zones", "shots", "triage",
+            "scene_describe", "quote_scout", "pool_build", "pool_merge",
+            "arrange", "cut", "refine", "render", "editor_review", "validate",
+        ))
+        self.assertEqual(
+            tuple(step.name for step in hype_callbacks.build_pool_steps()),
+            hype_callbacks.STEP_ORDER + ("verdict",),
+        )
+
+    def test_step_shape_and_metadata_preserve_legacy_callback_contract(self) -> None:
+        self.assertEqual(
+            [(field.name, field.type, field.default) for field in fields(action_steps.Step)],
+            [(field.name, field.type, field.default) for field in fields(legacy_steps.Step)],
+        )
+        self.assertTrue(action_steps.Step.__dataclass_params__.frozen)
+        current = hype_callbacks.build_pool_steps()
+        legacy = legacy_steps.build_pool_steps()
+        self.assertIsInstance(current, list)
+        self.assertEqual(len(current), len(legacy))
+        for old, new in zip(legacy, current):
+            with self.subTest(step=old.name):
+                self.assertIsInstance(new, action_steps.Step)
+                self.assertEqual(
+                    (new.name, new.sentinels, new.per_brief, new.always_run, new.invoke),
+                    (old.name, old.sentinels, old.per_brief, old.always_run, old.invoke),
+                )
+                self.assertTrue(callable(new.build_cmd))
 
 
 def _synthetic_scenes() -> list[dict]:

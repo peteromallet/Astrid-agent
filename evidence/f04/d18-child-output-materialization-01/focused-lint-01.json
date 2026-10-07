@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+    "-B",
+    "-m",
+    "ruff",
+    "check",
+    "--no-cache",
+    "--output-format",
+    "json",
+    "astrid/sdk/_child_bridge.py",
+    "astrid/sdk/invocation.py",
+    "astrid/sdk/results.py",
+    "astrid/sdk/__init__.py",
+    "tests/sdk/test_child_bridge_d18.py"
+  ],
+  "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "exit_code": 1,
+  "elapsed_seconds": 0.1307070255279541
+}

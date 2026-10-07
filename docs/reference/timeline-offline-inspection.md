@@ -28,4 +28,4 @@ pinned `timelines visualize --render-run RUN --range START..END --every-frames 1
 refinement. Low energy is a measurement, not perceptual silence. Shot scripts
 do not establish word-aligned speech.
 
-Python callers can use `inspect_filmstrip(manifest, section='cards', frame=120)` from `astrid.packs.rendering.executors.timeline_visualize.inspection_contract`; it returns the same bounded five-key envelope without a runtime client. SDK visualization results include `outputs.inspection` with a copyable local command.
+Python callers can use `inspect_filmstrip(manifest, section='cards', frame=120)` from `astrid.packs.rendering.actions.timeline_visualize.inspection_contract`; it returns the same bounded five-key envelope without a runtime client. SDK visualization results include `outputs.inspection` with a copyable local command.

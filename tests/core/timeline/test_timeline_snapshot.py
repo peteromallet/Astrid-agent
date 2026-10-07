@@ -16,6 +16,13 @@ from astrid.core.timeline.snapshot import (
     snapshot_from_runtime,
     verify_frozen,
 )
+from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
+    SNS_SCHEMA_VERSION,
+    canonical_json_bytes,
+    sha256_bytes,
+    sns_digest,
+)
+from astrid.packs.rendering.actions.timeline_visualize.validate import validate_structural
 
 TIMELINE_ID = "ed70ef66-43da-4182-9f14-69361c6c5e10"
 TIMELINE_ULID = "01KYPVKMW5STB4W6FE05ED8242"
@@ -32,6 +39,35 @@ def test_empty_runtime_materialization_is_deterministic_and_verifiable() -> None
     assert snapshot.assembly == {"clips": [], "tracks": []}
     assert snapshot.registry == {"assets": {}}
     assert snapshot.head_version == 0
+    assert verify_frozen(snapshot) == list(snapshot.diagnostics)
+
+
+def test_snapshot_digest_and_structural_validation_match_action_contract() -> None:
+    snapshot = snapshot_from_runtime(
+        timeline_id=TIMELINE_ID,
+        timeline_ulid=TIMELINE_ULID,
+        slug="main",
+        project_slug="demo",
+        events=[],
+    )
+
+    assert validate_structural(snapshot.assembly) == []
+    assert snapshot.assembly_sha256 == sha256_bytes(canonical_json_bytes(snapshot.assembly))
+    assert snapshot.registry_sha256 == sha256_bytes(canonical_json_bytes(snapshot.registry))
+    assert snapshot.sns() == sns_digest(
+        {
+            "schema_version": SNS_SCHEMA_VERSION,
+            "project_slug": snapshot.project_slug,
+            "timeline_uuid": snapshot.timeline_id,
+            "timeline_ulid": snapshot.timeline_ulid,
+            "head_version": snapshot.head_version,
+            "head_last_event_id": snapshot.last_event_id,
+            "head_last_hash": snapshot.last_hash,
+            "assembly_sha256": snapshot.assembly_sha256,
+            "registry_sha256": snapshot.registry_sha256,
+            "media_hashes": snapshot.media_hashes,
+        }
+    )
     assert verify_frozen(snapshot) == list(snapshot.diagnostics)
 
 

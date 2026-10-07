@@ -3,22 +3,38 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from astrid.packs.rendering.executors.assemble_timeline.run import build_authoring_proposal
-from astrid.packs.rendering.finalizers.runtime_stitch import publish_authoring_proposal
+from astrid.packs.rendering.actions.assemble_timeline.run import build_authoring_proposal
+from astrid.packs.rendering.shared.runtime_stitch import publish_authoring_proposal
 from astrid.sdk.client import AstridClient
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.execution.generic_host import RuntimeProtocolClient
 
-RUNTIME_CHECKOUT = Path(__file__).resolve().parents[3].parent / "banodoco-workspace-runtime-execution-20260909"
-if str(RUNTIME_CHECKOUT) not in sys.path:
+_runtime_checkout_override = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+RUNTIME_CHECKOUT = None
+if _runtime_checkout_override:
+    RUNTIME_CHECKOUT = Path(_runtime_checkout_override).expanduser().resolve()
+    if not RUNTIME_CHECKOUT.is_dir():
+        raise RuntimeError(f"BANODOCO_RUNTIME_CHECKOUT is not a directory: {RUNTIME_CHECKOUT}")
     sys.path.insert(0, str(RUNTIME_CHECKOUT))
 
-from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
+from runtime_protocol import daemon as _runtime_daemon_module  # noqa: E402
+
+if RUNTIME_CHECKOUT is not None:
+    _runtime_daemon_path = Path(_runtime_daemon_module.__file__).resolve()
+    try:
+        _runtime_daemon_path.relative_to(RUNTIME_CHECKOUT)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"runtime_protocol.daemon loaded outside BANODOCO_RUNTIME_CHECKOUT: {_runtime_daemon_path}"
+        ) from exc
+
+RuntimeDaemon = _runtime_daemon_module.RuntimeDaemon
 from tests.helpers.runtime import initialize_runtime_realm
 
 
@@ -110,8 +126,9 @@ def test_daemon_backed_authoring_proposal_publishes_one_canonical_render_task(tm
         _settle_child(service, by_task[child_ids[1]], index=1, value=b"child-one", digest=outputs[1])
         _settle_child(service, by_task[child_ids[0]], index=0, value=b"child-zero", digest=outputs[0])
 
-        author_claim = service.claim_next(
-            {"executor_id": "chain-worker", "capability_ids": [author_cap], "runtime_epoch": service.health()["runtime_epoch"]},
+        runtime_client = RuntimeProtocolClient(daemon.endpoint, daemon.worker_token)
+        author_claim = runtime_client.claim_next(
+            executor_id="chain-worker", capability_ids=[author_cap],
             idempotency_key="chain-claim-author",
         )
         author_row = service.store.conn.execute("SELECT * FROM attempts WHERE task_id=?", (author_claim["task_id"],)).fetchone()
@@ -143,8 +160,8 @@ def test_daemon_backed_authoring_proposal_publishes_one_canonical_render_task(tm
         assert render["spec"]["spec"]["inputs"]["expected_version"] == 2
         # The checkpoint admits the ordinary public renderer; the next worker
         # claim therefore sees rendering.render without a stitch-specific task.
-        render_claim = service.claim_next(
-            {"executor_id": "chain-worker", "capability_ids": [render_cap], "runtime_epoch": service.health()["runtime_epoch"]},
+        render_claim = runtime_client.claim_next(
+            executor_id="chain-worker", capability_ids=[render_cap],
             idempotency_key="chain-claim-render",
         )
         assert render_claim["task_id"] == result["render_task_id"]
@@ -335,24 +352,23 @@ def test_daemon_backed_host_executes_authoring_and_final_render(tmp_path, monkey
                 "idempotency_key": "host-chain-author",
             }
         )["task"]["id"]
-        author_claim = service.claim_next(
-            {
-                "executor_id": "astrid-pack-host",
-                "capability_ids": ["rendering.assemble_timeline"],
-                "runtime_epoch": service.health()["runtime_epoch"],
-            },
+        author_claim = host.client.claim_next(
+            executor_id=host.executor_id,
+            capability_ids=["rendering.assemble_timeline"],
             idempotency_key="host-chain-claim-author",
         )
         host.run_task(
             {
                 "task": {
                     "id": author_claim["task_id"],
+                    "run_id": author_claim["run_id"],
                     "capability": "rendering.assemble_timeline",
                     "spec": author_claim["spec"],
                     "input_object_ids": author_claim["input_object_ids"],
                     "project_id": author_claim["project_id"],
                     "attempt_id": author_claim["attempt_id"],
                     "fence": author_claim["fence"],
+                    "runtime_epoch": author_claim["runtime_epoch"],
                 }
             },
             lease_token=author_claim["lease_id"],
@@ -363,24 +379,23 @@ def test_daemon_backed_host_executes_authoring_and_final_render(tmp_path, monkey
         author_result = service.task(author)["task"]["result"]
         publication = author_result["timeline_render_publication"]
         render_task_id = publication["render_task_id"]
-        render_claim = service.claim_next(
-            {
-                "executor_id": "astrid-pack-host",
-                "capability_ids": ["rendering.render"],
-                "runtime_epoch": service.health()["runtime_epoch"],
-            },
+        render_claim = host.client.claim_next(
+            executor_id=host.executor_id,
+            capability_ids=["rendering.render"],
             idempotency_key="host-chain-claim-render",
         )
         host.run_task(
             {
                 "task": {
                     "id": render_claim["task_id"],
+                    "run_id": render_claim["run_id"],
                     "capability": "rendering.render",
                     "spec": render_claim["spec"],
                     "input_object_ids": render_claim["input_object_ids"],
                     "project_id": render_claim["project_id"],
                     "attempt_id": render_claim["attempt_id"],
                     "fence": render_claim["fence"],
+                    "runtime_epoch": render_claim["runtime_epoch"],
                 }
             },
             lease_token=render_claim["lease_id"],

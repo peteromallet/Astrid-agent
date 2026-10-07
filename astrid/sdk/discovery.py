@@ -727,6 +727,13 @@ def _resolve_capability(
     orchestrator_registry: Any,
     element_registry: Any | None,
 ) -> Capability:
+    if kind == "action":
+        return _resolve_capability_kindless(
+            capability_id,
+            executor_registry=executor_registry,
+            orchestrator_registry=orchestrator_registry,
+            element_registry=None,
+        )
     if kind == "executor":
         try:
             return _resolve_typed_capability(

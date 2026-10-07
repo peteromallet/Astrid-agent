@@ -27,25 +27,36 @@ def _write(path: Path, body: str) -> None:
 
 
 def test_builtin_generation_taxonomy_preserves_existing_constants() -> None:
-    assert GENERATION_TAXONOMY.feature_ids() == VIDEO_FEATURES
+    feature_ids = GENERATION_TAXONOMY.feature_ids()
+    assert feature_ids[: len(VIDEO_FEATURES)] == VIDEO_FEATURES
+    assert feature_ids.count("mask_ref") == 1
     assert GENERATION_TAXONOMY.mode_ids("image") == CANONICAL_IMAGE_MODES
     assert GENERATION_TAXONOMY.mode_ids("video") == CANONICAL_VIDEO_MODES
     assert GENERATION_TAXONOMY.backend_ids() == BUILTIN_GENERATION_BACKEND_IDS
     assert set(IMAGE_FEATURES).issubset(set(GENERATION_TAXONOMY.feature_ids()))
+    descriptor = next(
+        descriptor
+        for descriptor in GENERATION_TAXONOMY.feature_descriptors()
+        if descriptor.id == "mask_ref"
+    )
+    assert descriptor.label == "Mask reference"
+    assert descriptor.description == (
+        "Typed CAS-backed image mask used by bounded image inpainting."
+    )
 
 
 def test_registry_accepts_pack_like_feature_mode_and_backend_ids() -> None:
     registry = GenerationTaxonomyRegistry(
-        feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),),
+        feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),),
         mode_descriptors=(GenerationModeDescriptor(id="storyboard"),),
         backend_descriptors=(GenerationBackendIdDescriptor(id="studio"),),
     )
 
-    assert "mask_ref" in registry.feature_ids()
+    assert "vendor_mask_ref" in registry.feature_ids()
     assert "storyboard" in registry.mode_ids("image")
     assert "storyboard" in registry.mode_ids("video")
     assert "studio" in registry.backend_ids()
-    assert registry.require_feature("mask_ref", path="supports[0]") == "mask_ref"
+    assert registry.require_feature("vendor_mask_ref", path="supports[0]") == "vendor_mask_ref"
     assert registry.require_mode("image", "storyboard", path="modes['storyboard']") == "storyboard"
 
 
@@ -66,7 +77,15 @@ def test_registry_rejects_duplicate_ids_within_each_taxonomy() -> None:
 
 def test_load_default_generation_taxonomy_registry_adds_pack_declared_ids(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Keep this synthetic extension test isolated from the still-v2 Generation
+    # pack, whose real mask_ref declaration is intentionally pending M07's
+    # paired removal.
+    monkeypatch.setattr(
+        "astrid.core.generation.features.discover_packs",
+        lambda root=None: (),
+    )
     extra_root = tmp_path / "extra-packs"
     pack_root = extra_root / "vendor_pack"
     _write(
@@ -78,7 +97,7 @@ version: 0.1.0
 extensions:
   generation:
     features:
-      - id: mask_ref
+      - id: vendor_mask_ref
     modes:
       - id: storyboard
     backends:
@@ -93,7 +112,7 @@ extensions:
         extra_pack_roots=(str(extra_root),),
     )
 
-    assert "mask_ref" in registry.feature_ids()
+    assert "vendor_mask_ref" in registry.feature_ids()
     assert "storyboard" in registry.mode_ids("image")
     assert "storyboard" in registry.mode_ids("video")
     assert "studio" in registry.backend_ids()

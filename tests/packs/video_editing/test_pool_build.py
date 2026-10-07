@@ -1,13 +1,121 @@
+import argparse
 import contextlib
+import inspect
 import io
 import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from astrid.core import timeline
-from astrid.packs.training.executors.pool_build import run as pool_build
+from astrid.packs.training.actions.pool_build import run as pool_build
+from astrid.packs.video_editing.actions.hype import run as hype_callbacks
+from astrid.packs.video_editing.actions.hype import steps as action_steps
+from astrid.packs.video_editing.orchestrators.hype import steps as legacy_steps
+
+
+class PoolCommandBuilderFacadeTests(unittest.TestCase):
+    def test_callback_export_identity_and_signature(self) -> None:
+        self.assertIs(hype_callbacks.build_pool_steps, action_steps.build_pool_steps)
+        self.assertEqual(
+            hype_callbacks.build_pool_steps.__module__,
+            "astrid.packs.video_editing.actions.hype.steps",
+        )
+        self.assertEqual(
+            inspect.signature(hype_callbacks.build_pool_steps),
+            inspect.signature(legacy_steps.build_pool_steps),
+        )
+        self.assertEqual(hype_callbacks.__all__, ["build_pool_steps", "STEP_ORDER"])
+
+    def test_generated_commands_preserve_source_audio_and_generative_options(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="pool-callback-parity-") as temp:
+            out = Path(temp) / "pool"
+            out.mkdir()
+            cases = (
+                ("source_defaults", {}),
+                ("source_options", {
+                    "env_file": Path(temp) / "env file",
+                    "theme_explicit": True,
+                    "theme": "bright",
+                    "primary_asset": "main",
+                    "editor_iteration": 3,
+                    "allow_generative_effects": True,
+                    "sidecars": True,
+                }),
+                ("source_skip_shots", {"skip": ["shots"], "sidecars": True}),
+                ("implicit_theme", {"theme": "bright"}),
+                ("audio_only", {"video": None}),
+                ("generative", {"video": None, "audio": None}),
+                ("brief_generative_visuals", {"brief_allow_generative_visuals": True}),
+            )
+            for case, overrides in cases:
+                with self.subTest(case=case):
+                    for filename in ("scenes.json", "transcript.json", "shots.json"):
+                        path = out / filename
+                        if overrides.get("sidecars"):
+                            path.write_text("{}\n", encoding="utf-8")
+                        elif path.exists():
+                            path.unlink()
+                    values = dict(
+                        python_exec="/python with spaces",
+                        out=out,
+                        brief_out=out / "brief with spaces",
+                        brief_copy=Path(temp) / "brief.md",
+                        audio=Path(temp) / "audio.wav",
+                        video=Path(temp) / "video.mp4",
+                        env_file=None,
+                        source_slug="source",
+                        brief_slug="brief",
+                        asset_pairs=[("logo", Path(temp) / "logo with spaces.png")],
+                        primary_asset=None,
+                        skip=[],
+                        theme_explicit=False,
+                        theme=None,
+                        target_duration=81.5,
+                        allow_generative_effects=False,
+                        brief_allow_generative_visuals=False,
+                        editor_iteration=1,
+                        extra_args={
+                            step.name: ["--fixture-extra", step.name]
+                            for step in legacy_steps.build_pool_steps()
+                        },
+                    )
+                    values.update({key: value for key, value in overrides.items() if key != "sidecars"})
+                    args = argparse.Namespace(**values)
+
+                    def resolved_argv(executor_id: str, python_exec: str) -> list[str]:
+                        return [python_exec, "-m", "fixture." + executor_id]
+
+                    with (
+                        patch.object(legacy_steps, "executor_argv", side_effect=resolved_argv) as legacy_resolve,
+                        patch.object(action_steps, "executor_argv", side_effect=resolved_argv) as action_resolve,
+                        patch.object(legacy_steps, "probe_audio_duration", return_value=12.345678) as legacy_probe,
+                        patch.object(action_steps, "probe_audio_duration", return_value=12.345678) as action_probe,
+                    ):
+                        legacy = legacy_steps.build_pool_steps()
+                        current = hype_callbacks.build_pool_steps()
+                        self.assertEqual(len(current), len(legacy))
+                        for old, new in zip(legacy, current):
+                            with self.subTest(step=new.name):
+                                if old.name == "verdict":
+                                    with self.assertRaises(NotImplementedError) as old_error:
+                                        old.build_cmd(args)
+                                    with self.assertRaises(NotImplementedError) as new_error:
+                                        new.build_cmd(args)
+                                    self.assertEqual(str(new_error.exception), str(old_error.exception))
+                                    continue
+                                expected = old.build_cmd(args)
+                                actual = new.build_cmd(args)
+                                self.assertEqual(actual, expected)
+                                self.assertEqual(actual[-2:], ["--fixture-extra", new.name])
+                        self.assertEqual(action_resolve.call_args_list, legacy_resolve.call_args_list)
+                        self.assertEqual(action_probe.call_args_list, legacy_probe.call_args_list)
+                        if case == "audio_only":
+                            action_probe.assert_called_once_with(args.audio)
+                        else:
+                            action_probe.assert_not_called()
 
 
 class PoolBuildMainTests(unittest.TestCase):

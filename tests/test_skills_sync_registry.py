@@ -198,7 +198,7 @@ class SyncGatewayTest(unittest.TestCase):
             for route in (
                 video_skill,
                 view / "packs" / "rendering" / "SKILL.md",
-                view / "packs" / "references" / "SKILL.md",
+                view / "packs" / "media" / "references.md",
                 view / "creative-work" / "../packs" / "generation" / "SKILL.md",
                 view / "creative-work" / "../packs" / "rendering" / "SKILL.md",
                 view / "pack-builder" / "SKILL.md",

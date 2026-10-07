@@ -1,0 +1,27 @@
+{
+  "schema": "m16-composition-attempt-02-guard/v1",
+  "started_at_utc": "2026-10-03T22:16:27.674428+00:00",
+  "ended_at_utc": "2026-10-03T22:18:27.685252+00:00",
+  "duration_seconds": 120.011,
+  "wall_limit_seconds": 120.0,
+  "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "command": [
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+    "evidence/m16/composition-01/attempt-02/composition-proof.py"
+  ],
+  "exit_code": -15,
+  "capacity_guard_triggered": "wall_clock_timeout",
+  "baseline_free_kib": 15814996,
+  "final_free_kib": 15806380,
+  "minimum_observed_free_kib": 15806348,
+  "maximum_net_decline_kib": 8648,
+  "absolute_free_stop_kib": 1048576,
+  "net_decline_stop_kib": 1048576,
+  "fixture_root": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02",
+  "fixture_footprint_limit_bytes": 134217728,
+  "peak_fixture_footprint_bytes": 7994845,
+  "sample_interval_seconds": 0.25,
+  "sample_count": 463,
+  "log": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/composition-proof-07.log",
+  "samples": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/capacity-samples-07.csv"
+}

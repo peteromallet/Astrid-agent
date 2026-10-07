@@ -238,9 +238,9 @@ mistakes do not consume a failed attempt.
 
 - **SDK tutorial** — Walk through the full discover → inspect → invoke →
   read-events loop: [Build Your First Agentic UX](guides/build-your-first-agentic-ux.md).
-- **Pack authoring** — Build your own executors, orchestrators, and
-  elements: start with [Pack Documentation](packs/) and
-  [Creating Packs](packs/creating-packs.md).
+- **Pack authoring** — Build a pack with declared actions, UI, rendering, and
+  shared support: start with [When and how to create a pack](guides/create-a-pack.md).
+  Use [Pack Documentation](packs/) for the contract and legacy references.
 - **Contracts index** — Normative contracts that define the SDK surface,
   CLI behavior, error model, output format, and run ledger:
   [Contracts Index](contracts/README.md).

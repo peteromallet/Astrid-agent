@@ -2,16 +2,15 @@
 
 Render 3D scenes with Blender, **locally** or on a **remote cloud render host** —
 either the always-on Hetzner box (CPU) or an on-demand **RunPod GPU pod**. The
-executor works the same way in both modes; only the transport differs.
+action works the same way in both modes; only the transport differs.
 
 ## Pieces
 
 ```
 astrid/packs/blender/
   render_core.py                    # stdlib-only scene→Blender-script builder (shared)
-  executors/render/
-    executor.yaml                   # blender.render executor declaration
-    run.py                          # executor: --execution local|cloud
+  actions/render/
+    run.py                          # blender.render action: --execution local|cloud
   server/
     blender_render_server.py        # stdlib HTTP render API (deployed to a host)
     blender-render-api.service      # systemd unit
@@ -21,7 +20,7 @@ astrid/packs/blender/
 The render server and `render_core.py` are dependency-free (stdlib only) so they
 run on a host **without an Astrid install** — `deploy.py` copies them over.
 
-## Run a render (the Astrid executor)
+## Run a render (the Astrid action)
 
 ```python
 import astrid.sdk as sdk
@@ -43,7 +42,7 @@ result = sdk.invoke("blender.render", out="./out", inputs={
 
 Inputs: `scene` (declarative spec JSON; a pleasant default scene is used if
 omitted) or `blend` (an existing `.blend` file). `frames=1` → still PNG;
-`frames=N>1` → mp4 animation. See `executor.yaml` for the full list.
+`frames=N>1` → mp4 animation. See `pack.yaml` for the full action declaration.
 
 ## Provision a render host
 

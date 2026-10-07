@@ -12,6 +12,7 @@ migrated are listed under ``_EXPECTED_FUTURE`` with a feasibility note.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import unittest
 
 from astrid.core.cli.registration import CommandSpec, register_commands
@@ -41,9 +42,9 @@ _ALLOWLISTED: tuple[str, ...] = (
     "astrid.core.cli.domain_media",
     "astrid.core.cli.domain_tasks",
     "astrid.core.cli.domain_runs",
-    "astrid.packs.timeline.cli",
-    "astrid.packs.shots.cli",
-    "astrid.packs.references.cli",
+    "astrid.core.cli.domain_timelines",
+    "astrid.core.cli.domain_shots",
+    "astrid.core.cli.domain_references",
 )
 
 # Fully decomposed during M4 — below the 1,200-line threshold and using
@@ -188,9 +189,22 @@ class PhasedAllowlistTest(unittest.TestCase):
                 )
                 commands = getattr(mod, "COMMANDS")
                 self.assertIsInstance(commands, (list, tuple))
+
                 for spec in commands:
                     with self.subTest(command=spec.name):
                         self.assertIsInstance(spec, CommandSpec)
+
+    def test_timelines_parser_is_core_owned_without_legacy_mount_alias(self) -> None:
+        from astrid.core.cli.domain_product import FAMILY_PARSER_MODULES
+
+        self.assertEqual(
+            FAMILY_PARSER_MODULES["timelines"],
+            "astrid.core.cli.domain_timelines",
+        )
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.util.find_spec("astrid.packs.timeline.cli")
+        self.assertIsNone(importlib.util.find_spec("astrid.packs.shots.cli"))
+        self.assertIsNone(importlib.util.find_spec("astrid.packs.references.cli"))
 
     def test_expected_future_has_feasibility_note(self) -> None:
         """Every expected-future entry must document why migration is feasible."""

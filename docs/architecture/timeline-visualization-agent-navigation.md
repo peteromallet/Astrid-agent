@@ -6,7 +6,7 @@
 > filmstrip; use `astrid/packs/rendering/skill/SKILL.md` for its commands.
 
 *Status: M1 and M2 complete. Schema versions cited from
-`astrid/packs/rendering/executors/timeline_visualize/schemas/` — every claim
+`astrid/packs/rendering/actions/timeline_visualize/schemas/` — every claim
 below is grounded in the shipped code and release evidence, not the historical
 plan.*
 *Source of truth: this document + the schemas + the emitted artifacts of a
@@ -57,7 +57,7 @@ TL01.AS03.inspect_original (verified_original) → TL01.parent_view
 
 ## 2. Implemented schemas (all `schema_version: 1`)
 
-Location: `astrid/packs/rendering/executors/timeline_visualize/schemas/`.
+Location: `astrid/packs/rendering/actions/timeline_visualize/schemas/`.
 `_defs.json` is shared infrastructure (not an emitted artifact).
 
 | Schema | File | Top-level fields |

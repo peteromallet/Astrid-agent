@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from astrid.packs.video_editing.orchestrators.runtime_orchestration import (
+from astrid.packs.video_editing.shared.runtime_orchestration import (
     CHILD_CAPABILITIES,
     CapabilityIdentity,
     ChildSpec,
@@ -195,7 +195,7 @@ def test_runtime_adapter_admits_root_and_children_and_reads_events():
 
 
 def test_publish_stitched_render_requires_fenced_runtime_publication_context():
-    from astrid.packs.video_editing.orchestrators.runtime_orchestration import publish_stitched_render
+    from astrid.packs.video_editing.shared.runtime_orchestration import publish_stitched_render
     calls = []
     class Timelines:
         def save(self, *args, **kwargs):

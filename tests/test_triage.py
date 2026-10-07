@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from astrid.packs.editorial.executors.triage import run as triage
+from astrid.packs.editorial.actions.triage import run as triage
 
 
 def has_forbidden_time_keys(value, forbidden) -> bool:

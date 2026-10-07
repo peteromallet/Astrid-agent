@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import urllib.error
@@ -11,8 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 PROTOCOL = "workspace.v1"
-SCHEMA_DIGEST = "sha256:62da8b1285ba3586b3b9707d4f7ea9b1bd4c31833b7fffc6cbacd2b2a8442f0f"
-OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+SCHEMA_DIGEST = "sha256:af4962b0139cbc54b27831922486d33855fbf2fd98cf79087353bc1e7ea73df7"
+OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
 @dataclass(frozen=True)
@@ -320,10 +321,12 @@ class Task:
     execution_binding: Mapping[str, Any] | None = None
     storage_estimate: Mapping[str, int] | None = None
     required_facts: Mapping[str, Any] | None = None
+    lease_fence: int | None = None
+    lease_expires_at: str | None = None
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> "Task":
-        return cls(task_id=value["task_id"], run_id=value["run_id"], state=value["state"], version=int(value["version"]), capability_id=value["capability_id"], capability_digest=value["capability_digest"], idempotency_key=value["idempotency_key"], created_at=value["created_at"], updated_at=value["updated_at"], input_object_ids=list(value.get("input_object_ids") or []), spec=dict(value.get("spec") or {}), generation_intent=dict(value["generation_intent"]) if value.get("generation_intent") is not None else None, project_id=value.get("project_id"), attempt_id=value.get("attempt_id"), runtime_epoch=int(value["runtime_epoch"]), result=value.get("result"), execution_request=dict(value["execution_request"]) if value.get("execution_request") is not None else None, execution_binding=dict(value["execution_binding"]) if value.get("execution_binding") is not None else None, storage_estimate=dict(value["storage_estimate"]) if value.get("storage_estimate") is not None else None, required_facts=dict(value["required_facts"]) if value.get("required_facts") is not None else None)
+        return cls(task_id=value["task_id"], run_id=value["run_id"], state=value["state"], version=int(value["version"]), capability_id=value["capability_id"], capability_digest=value["capability_digest"], idempotency_key=value["idempotency_key"], created_at=value["created_at"], updated_at=value["updated_at"], input_object_ids=list(value.get("input_object_ids") or []), spec=dict(value.get("spec") or {}), generation_intent=dict(value["generation_intent"]) if value.get("generation_intent") is not None else None, project_id=value.get("project_id"), attempt_id=value.get("attempt_id"), lease_fence=int(value["lease_fence"]) if value.get("lease_fence") is not None else None, lease_expires_at=value.get("lease_expires_at"), runtime_epoch=int(value["runtime_epoch"]), result=value.get("result"), execution_request=dict(value["execution_request"]) if value.get("execution_request") is not None else None, execution_binding=dict(value["execution_binding"]) if value.get("execution_binding") is not None else None, storage_estimate=dict(value["storage_estimate"]) if value.get("storage_estimate") is not None else None, required_facts=dict(value["required_facts"]) if value.get("required_facts") is not None else None)
 
 
 @dataclass(frozen=True)
@@ -529,21 +532,40 @@ class WorkspaceClient:
             raise ValueError("timeout must be finite and positive")
         self.handshake_info: Handshake | None = None
 
-    def _request(self, method: str, path: str, *, body: bytes | None = None, headers: Mapping[str, str] | None = None, expected: tuple[int, ...] = (200,)) -> tuple[int, Mapping[str, str], bytes]:
+    def _request(self, method: str, path: str, *, body: bytes | None = None, headers: Mapping[str, str] | None = None, expected: tuple[int, ...] = (200,), response_reader: Callable[[Any], bytes] | None = None) -> tuple[int, Mapping[str, str], bytes]:
         request_headers = {"Accept": "application/json", **dict(headers or {})}
         request_id = request_headers.setdefault("X-Request-ID", f"request-{uuid.uuid4().hex}")
         if self.token:
             request_headers.setdefault("Authorization", f"Bearer {self.token}")
+        reading_response = False
         try:
             if self._transport:
                 status, response_headers, response_body = self._transport(method, path, request_headers, body)
+                if response_reader is not None:
+                    reading_response = True
+                    with io.BytesIO(response_body) as response:
+                        response_body = response_reader(response)
+                    reading_response = False
             else:
                 request = urllib.request.Request(self.base_url + path, data=body, headers=request_headers, method=method)
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310 - endpoint is caller-configured
-                    status, response_headers, response_body = response.status, dict(response.headers), response.read()
+                    status, response_headers = response.status, dict(response.headers)
+                    reading_response = response_reader is not None
+                    response_body = response.read() if response_reader is None else response_reader(response)
+                    reading_response = False
         except urllib.error.HTTPError as error:
-            raise _decode_error(error.code, error.read(), request_id=request_id) from error
+            if reading_response:
+                raise
+            if response_reader is None:
+                raise _decode_error(error.code, error.read(), request_id=request_id) from error
+            try:
+                response_body = response_reader(error)
+                raise _decode_error(error.code, response_body, request_id=request_id) from error
+            finally:
+                error.close()
         except (TimeoutError, urllib.error.URLError) as error:
+            if reading_response:
+                raise
             reason = getattr(error, "reason", error)
             code = "transport_timeout" if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError) else "transport_error"
             message = "runtime request timed out" if code == "transport_timeout" else str(reason)
@@ -1107,9 +1129,18 @@ class WorkspaceClient:
         _, _, body = self._request("POST", f"/v1/attempts/{_path_part(attempt_id)}/heartbeat", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})
         return self._mutation_json(body)
 
-    def issue_child_authority(self, attempt_id: str, *, lease_id: str, fence: int, runtime_epoch: int) -> Mapping[str, Any]:
+    def issue_child_authority(self, attempt_id: str, *, lease_id: str, fence: int, runtime_epoch: int, child: Mapping[str, str] | None = None, derived_inputs: list[Mapping[str, Any]] | None = None) -> Mapping[str, Any]:
         payload = {"lease_id": lease_id, "fence": fence, "runtime_epoch": runtime_epoch}
+        if child is not None:
+            payload["child"] = dict(child)
+        if derived_inputs is not None:
+            payload["derived_inputs"] = [dict(item) for item in derived_inputs]
         return self._json(self._request("POST", f"/v1/attempts/{_path_part(attempt_id)}/child-authority", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"})[2])
+
+    def publish_recoverable_snapshot(self, attempt_id: str, *, lease_id: str, fence: int, runtime_epoch: int, revision: int, output: Mapping[str, Any], idempotency_key: str) -> MutationResult:
+        payload = {"lease_id": lease_id, "fence": fence, "runtime_epoch": runtime_epoch, "revision": revision, "output": dict(output)}
+        _, _, body = self._request("POST", f"/v1/attempts/{_path_part(attempt_id)}/recoverable-snapshots", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})
+        return self._mutation_json(body)
 
     def admit_delegated_task(self, *, authority: str, task: Mapping[str, Any], idempotency_key: str) -> MutationResult:
         payload = {"authority": authority, "task": dict(task)}

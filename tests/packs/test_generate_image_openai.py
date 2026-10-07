@@ -12,7 +12,7 @@ from astrid.core.contracts.errors import AstridError
 from astrid.core.execution.executor.schema import load_executor_manifest
 from astrid.core.util.llm_clients import _load_api_key
 from astrid.core.util.secrets import load_api_key
-from astrid.packs.editorial.executors.transcribe.run import load_api_key as load_transcribe_api_key
+from astrid.packs.editorial.actions.transcribe.run import load_api_key as load_transcribe_api_key
 from astrid.packs.generation.executors.generate_image_openai.run import (
     _build_openai_manifest,
     build_parser,

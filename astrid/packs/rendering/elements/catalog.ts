@@ -45,7 +45,7 @@ export type AstridRenderingElementDescriptor = {
 export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[] = Object.freeze(
 [
   {
-    "componentPath": "packs/rendering/elements/animations/fade/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/fade/component.tsx",
     "defaults": {
       "durationFrames": 12
     },
@@ -76,7 +76,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:4e2ec24b03dd3876df06427705d78470a9ddb74656ba264027dcb1df84f57c58",
+    "revision": "sha256:392bd8a2cf1fb10e0eaf8163569d89696a060b957ae25e7c53512c08abea289a",
     "runtime": {
       "adapter": "remotion"
     },
@@ -93,7 +93,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/animations/fade-up/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/fade-up/component.tsx",
     "defaults": {
       "durationFrames": 18
     },
@@ -124,7 +124,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:099f3fc94833353d2efd1c4b36d8b80c5a2752372597e30fcc4751711482768e",
+    "revision": "sha256:0e1821a352245673fac560d060e3db041ef071657a0fdf45b135fc84acca8880",
     "runtime": {
       "adapter": "remotion"
     },
@@ -141,7 +141,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/animations/scale-in/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/scale-in/component.tsx",
     "defaults": {
       "durationFrames": 18
     },
@@ -172,7 +172,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:080a88d13277c0916d7ce31c5e386d4d2b58827a2cf33febcb337ea83465649c",
+    "revision": "sha256:8677312659c9d5d06b0e1ea9f6f98755ce94d1318658a934cc1c9e1db2256afd",
     "runtime": {
       "adapter": "remotion"
     },
@@ -189,7 +189,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/animations/slide-left/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/slide-left/component.tsx",
     "defaults": {
       "durationFrames": 18
     },
@@ -220,7 +220,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:fe6e126904f16a02d38df9a87d0b344a74c69aa398747740440c5c5d15897d20",
+    "revision": "sha256:27b05279d0d40c04f786051db8ac37d451b4ec323d6fb0dc3a4d8d9caaa31027",
     "runtime": {
       "adapter": "remotion"
     },
@@ -237,7 +237,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/animations/slide-up/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/slide-up/component.tsx",
     "defaults": {
       "durationFrames": 12
     },
@@ -268,7 +268,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:3da761065dc77ebd05f6e4fbf980181d9b37394d4d3980be546ba45471eb5433",
+    "revision": "sha256:6cacd405b0627f048fbb16f7026980c9cb8845e6365c4e1aeca382974dc5bd0d",
     "runtime": {
       "adapter": "remotion"
     },
@@ -285,7 +285,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/animations/type-on/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/animations/type-on/component.tsx",
     "defaults": {
       "durationFraction": 0.55,
       "durationFrames": 120,
@@ -320,7 +320,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:a172cb3e67560604f014ec114d50da08fd4979d36119adb94b6a9ba7c3bd420c",
+    "revision": "sha256:55d0df45529f868db17db0e4270d0129e07a1a22543403e7cf6e281dc05ed9d1",
     "runtime": {
       "adapter": "remotion"
     },
@@ -337,7 +337,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/effects/audio-reactive-colour/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/effects/audio-reactive-colour/component.tsx",
     "defaults": {
       "events": [],
       "initialColor": "#000000",
@@ -377,7 +377,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:b05ba83a03c60c94acfbde56d04b8b46d76b4e7c6982612c5c9b7a5e9ccd23f1",
+    "revision": "sha256:2a9b21e82fc08b9222d553e680883c190dc0e9d7751e46b3fd5320c54841ac4e",
     "runtime": {
       "adapter": "remotion"
     },
@@ -430,7 +430,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/local/elements/effects/end-codex-transform/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/end-codex-transform/component.tsx",
     "defaults": {
       "duration": 6.383
     },
@@ -451,7 +451,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:b9158b705cc0f0799561832a87c52b2136af7904227e41c42e2ef2d4de0456ff",
+    "revision": "sha256:6b6a4f23b0dbe8c107a3aa95abbbab94dcde81f635e9df6515a3e2d336a242a1",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -462,7 +462,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/end-mid-combined/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/end-mid-combined/component.tsx",
     "defaults": {
       "duration": 14.464
     },
@@ -483,7 +483,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:31bc798b142d8bd9029d49f5d4f33479813394ec37873c8d081571f9d3930b0e",
+    "revision": "sha256:94f03e6cd78273afd33a34357ac86827951c09e682e11d9605919d0bfb840ee2",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -494,7 +494,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/end-minimax-animate/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/end-minimax-animate/component.tsx",
     "defaults": {
       "duration": 8.081
     },
@@ -515,7 +515,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:52fc67d8ce10a3b9a17027532836909cd23f2721dda9fd0c0fba02617e9d7d88",
+    "revision": "sha256:2b69cb8e427ffa89d781684516db7c89d0c266eae7602ec58f1accc92db2a86f",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -526,7 +526,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/end-spanning-layer/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/end-spanning-layer/component.tsx",
     "defaults": {},
     "description": "Transparent Remotion overlay for the ending workflow. The clip-local sequence adapts to caller supplied phase durations for material preparation, PowerPoint words and timing, separate anchor/keyframe references, and a live workflow review. It reorders the supplied timeline cards, highlights the selected segment, and plays the managed source video for that segment. Phase timing and timeline data are supplied through clip params so narration revisions do not require a component change.",
     "id": "end-spanning-layer",
@@ -596,7 +596,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:f769f6f4e7e871ccb3cb93850d8c5e3690f4877f51bdd98b097ef5dc15844264",
+    "revision": "sha256:40f64817d75eb752d80e08dadd1888ea5ab5158683625c36ecaf5120850db03f",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -727,7 +727,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/ending-carousel/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/ending-carousel/component.tsx",
     "defaults": {
       "duration": 9.193
     },
@@ -748,7 +748,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:f250e02ea437f7698b23dc495071a45a7716aeb6b97282c12c8e9fae3f7efa6a",
+    "revision": "sha256:ff72957df8de60aa4bd16226de4dbc692d6993ecf1f0e7ac37fdc3c511bef2f0",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -759,7 +759,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/event-card/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/event-card/component.tsx",
     "defaults": {
       "content": "Event Card",
       "height": 520,
@@ -825,7 +825,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:980d5df6673695c5eced22ce6054372465f6d46b856b062b03ea1438e082399d",
+    "revision": "sha256:038a8d18b3bfe16128a85dd5e7d2e261e0c7f489ffddabe38868bde7b0f62e39",
     "runtime": {},
     "schema": {
       "properties": {
@@ -866,7 +866,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/frame-overlay/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/frame-overlay/component.tsx",
     "defaults": {
       "duration": 115.699
     },
@@ -887,7 +887,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:e22e45f1c65f92721cfc3b9d84ed2a137b50e9b2e3552ae9c176aa385ab9fb18",
+    "revision": "sha256:a4d929a4c325886fe0abac9ca152ef73f942983bb93404211fb3eb2e0398ad9b",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -898,7 +898,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/model-trends/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/model-trends/component.tsx",
     "defaults": {
       "accent": "#9F1C1C",
       "anchor": "top-right",
@@ -1003,7 +1003,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:0b8e68d6613333e55c8f000f471335a385d66e30d26bef8bbf4f9a31f1be5c67",
+    "revision": "sha256:4cb6ddb72a3c7e1589b75444c41e0b3de47138e195796ecb4e0d2403367d0209",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -1068,7 +1068,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/neon-orbit-card/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/neon-orbit-card/component.tsx",
     "defaults": {
       "content": "Neon Orbit",
       "height": 520,
@@ -1134,7 +1134,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:371aa948d5ea501781a64fe1b9ab3a907f214db2420158be6cb2dad4d19c0d82",
+    "revision": "sha256:6bdb2d12cf2675e30c7cecd2cbe1e32b850d37d4b50f44196a52fa0c17c4dbcb",
     "runtime": {},
     "schema": {
       "properties": {
@@ -1175,7 +1175,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/scrolling-guide/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/scrolling-guide/component.tsx",
     "defaults": {
       "heading": "MAKING VIDEOS",
       "scrollEnd": 440,
@@ -1236,7 +1236,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:b40b6b45ed2586a47cb0814cdcd0e75d6013e79562af4dabfc17645700ca3369",
+    "revision": "sha256:3b78fbf90fdd13dba266a06b03d210b39704587334ac75182b3a6bac4168ae42",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -1295,7 +1295,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/sliding-media/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/sliding-media/component.tsx",
     "defaults": {
       "duration": 2
     },
@@ -1332,7 +1332,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:c20c84d94202f45e81e3439ab4b57cd163120c140e2373c379c3e3be9cba49e2",
+    "revision": "sha256:fede33b134e6b021eba1ef5db846e7e1feb844dc13c2efa012105abcf60ed11c",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -1351,7 +1351,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/rendering/elements/effects/text-card/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/effects/text-card/component.tsx",
     "defaults": {
       "align": "center",
       "content": ""
@@ -1396,7 +1396,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:1a8d3503519268a95429781ad77094dd402b76bb334e7ffe47e73920742233bf",
+    "revision": "sha256:ea7cf7286e0d00298d250193912ccffe82893b9abd93c1ca24024e9e881de63b",
     "runtime": {
       "adapter": "remotion"
     },
@@ -1423,7 +1423,206 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/local/elements/effects/vibe-comfy-asset-overlay/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/text-card/component.tsx",
+    "defaults": {
+      "align": "center",
+      "content": ""
+    },
+    "description": "Local-pack TextCard with anchor positioning, fade in/out, and styling overrides.",
+    "id": "text-card",
+    "keywords": [
+      "text",
+      "card",
+      "effect",
+      "caption",
+      "title",
+      "overlay"
+    ],
+    "kind": "effect",
+    "label": "Text Card",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "center",
+        "description": "",
+        "label": "Align",
+        "name": "align",
+        "options": [
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Center",
+            "value": "center"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "",
+        "label": "Anchor",
+        "name": "anchor",
+        "options": [
+          {
+            "label": "Top Left",
+            "value": "top-left"
+          },
+          {
+            "label": "Top",
+            "value": "top"
+          },
+          {
+            "label": "Top Right",
+            "value": "top-right"
+          },
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Center",
+            "value": "center"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          },
+          {
+            "label": "Bottom Left",
+            "value": "bottom-left"
+          },
+          {
+            "label": "Bottom",
+            "value": "bottom"
+          },
+          {
+            "label": "Bottom Right",
+            "value": "bottom-right"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "",
+        "label": "Border Radius",
+        "name": "borderRadius",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Line Height",
+        "name": "lineHeight",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Max Width",
+        "name": "maxWidth",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Offset X",
+        "name": "offsetX",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Offset Y",
+        "name": "offsetY",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Weight",
+        "name": "weight",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:937bc4a7f73d3b76f9e313ce8d33be3341cfb719d8d20cc205898d83d4ff761f",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "align": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "type": "string"
+        },
+        "anchor": {
+          "enum": [
+            "top-left",
+            "top",
+            "top-right",
+            "left",
+            "center",
+            "right",
+            "bottom-left",
+            "bottom",
+            "bottom-right"
+          ],
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "borderRadius": {
+          "type": "number"
+        },
+        "content": {
+          "type": "string"
+        },
+        "letterSpacing": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "lineHeight": {
+          "type": "number"
+        },
+        "maxWidth": {
+          "type": "number"
+        },
+        "offsetX": {
+          "type": "number"
+        },
+        "offsetY": {
+          "type": "number"
+        },
+        "padding": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "textShadow": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Anchored text card overlay with built-in fade in/out.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/vibe-comfy-asset-overlay/component.tsx",
     "defaults": {
       "duration": 10
     },
@@ -1463,7 +1662,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/local/elements/effects/vibe-comfy-bumper/component.tsx",
+    "componentPath": "packs/local/rendering/elements/effects/vibe-comfy-bumper/component.tsx",
     "defaults": {
       "duration": 10,
       "title": "VIBE COMFY"
@@ -1510,7 +1709,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:local"
   },
   {
-    "componentPath": "packs/rendering/elements/transitions/cross-fade/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/transitions/cross-fade/component.tsx",
     "defaults": {
       "durationFrames": 8
     },
@@ -1540,7 +1739,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:4a778cae5c12cadc88d08f3907f34b3312cff97c3acaae884fc095db88c0bd82",
+    "revision": "sha256:26d57910390f092f34efab8d311dcb86d5dc30124f992109798fd91de51633dc",
     "runtime": {
       "adapter": "remotion"
     },
@@ -1557,7 +1756,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
-    "componentPath": "packs/rendering/elements/transitions/fade/component.tsx",
+    "componentPath": "packs/rendering/rendering/elements/transitions/fade/component.tsx",
     "defaults": {
       "durationFrames": 8
     },
@@ -1586,7 +1785,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:2826b5183c88f6161b7f59a4ab686637ad29eff5f86f843968b6850c977d204a",
+    "revision": "sha256:61044f45e395db18b5ca8b75451ddd78a0435a7f9cad9a2d1cb969e0f1a631a3",
     "runtime": {
       "adapter": "remotion"
     },

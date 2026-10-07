@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from astrid.packs.rendering.executors.timeline_visualize.speech_projection import (
+from astrid.packs.rendering.actions.timeline_visualize.speech_projection import (
     project_speech_annotations,
     speech_annotation_identity,
 )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import plan_filmstrip
-from astrid.packs.rendering.executors.timeline_visualize.inspector_navigation import build_range_target
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import plan_filmstrip
+from astrid.packs.rendering.actions.timeline_visualize.inspector_navigation import build_range_target
 
 
 def test_audio_targets_are_unique_and_render_scoped():

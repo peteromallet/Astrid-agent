@@ -6,11 +6,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.editorial.executors.arrange import run as arrange
-from astrid.packs.editorial.executors.editor_review import run as editor_review
-from astrid.packs.editorial.executors.human_notes import run as human_notes
+from astrid.packs.editorial.actions.arrange import run as arrange
+from astrid.packs.editorial.actions.editor_review import run as editor_review
+from astrid.packs.editorial.actions.human_notes import run as human_notes
 from astrid.core import timeline
+
+
+@pytest.fixture(autouse=True)
+def isolated_pack_sources(tmp_path, monkeypatch):
+    # This suite mocks subprocess.run; it must not intercept managed-source
+    # git verification performed while resolving child executor commands.
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(tmp_path / "absent-source-state.json"))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
 
 
 class FakeClaudeClient:
@@ -412,9 +422,9 @@ class HumanNotesTest(unittest.TestCase):
         self.assertEqual(
             [call[0][2] for call in calls],
             [
-                "astrid.packs.editorial.executors.arrange.run",
-                "astrid.packs.video_editing.executors.cut.run",
-                "astrid.packs.editorial.executors.refine.run",
+                "astrid.packs.editorial.actions.arrange.run",
+                "astrid.packs.video_editing.actions.cut.run",
+                "astrid.packs.editorial.actions.refine.run",
             ],
         )
         for _, kwargs in calls:

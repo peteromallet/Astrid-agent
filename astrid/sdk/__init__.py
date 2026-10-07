@@ -20,6 +20,7 @@ _EXPORTS = {
     "EventStreamRecord": ("dto", "EventStreamRecord"),
     "ExecError": ("dto", "ExecError"),
     "InvocationResult": ("dto", "InvocationResult"),
+    "MaterializedChildOutput": ("results", "MaterializedChildOutput"),
     "Output": ("dto", "Output"),
     "Port": ("dto", "Port"),
     "Provenance": ("dto", "Provenance"),

@@ -1,0 +1,59 @@
+astrid/sdk/invocation.py:531: error: Argument 1 to "Path" has incompatible type
+"Path | str | None"; expected "str | PathLike[str]"  [arg-type]
+            run_root=str(Path(out).expanduser().resolve()) if out not in (...
+                              ^~~
+astrid/sdk/invocation.py:1026: error: Incompatible types in assignment
+(expression has type "Any | None", variable has type "str")  [assignment]
+                    shot_id = occurrence.get("shot_id")
+                              ^~~~~~~~~~~~~~~~~~~~~~~~~
+astrid/sdk/invocation.py:1090: error: Unsupported target for indexed assignment
+("Mapping[Any, Any]")  [index]
+                flat_clip["shot_name"] = occurrence_names[occurrence_id]
+                ^~~~~~~~~~~~~~~~~~~~~~
+astrid/sdk/invocation.py:1304: error: Incompatible types in assignment
+(expression has type "Path", variable has type "PurePosixPath")  [assignment]
+                path = staging.joinpath(*member_path.parts)
+                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+astrid/sdk/invocation.py:1305: error: "PurePosixPath" has no attribute
+"is_file"  [attr-defined]
+                if not path.is_file():
+                       ^~~~~~~~~~~~
+astrid/sdk/invocation.py:1307: error: "PurePosixPath" has no attribute "open" 
+[attr-defined]
+                with path.open("rb") as stream:
+                     ^~~~~~~~~
+astrid/sdk/invocation.py:1309: error: "PurePosixPath" has no attribute "stat" 
+[attr-defined]
+    ...f member_digest != member.get("content_hash") or path.stat().st_size !...
+                                                        ^~~~~~~~~
+astrid/sdk/invocation.py:2314: error: Incompatible types in assignment
+(expression has type "Mapping[str, Any]", target has type
+"bool | list[str] | dict[str, Any] | str | dict[str, int] | None")  [assignment]
+            admission["generation_intent"] = generation_intent
+                                             ^~~~~~~~~~~~~~~~~
+astrid/sdk/invocation.py:2333: error: Item "None" of "Any | None" has no
+attribute "as_dict"  [union-attr]
+                error = error.as_dict()
+                        ^~~~~~~~~~~~~
+astrid/sdk/invocation.py:2389: error: Item "None" of "Any | None" has no
+attribute "as_dict"  [union-attr]
+                    error = error.as_dict()
+                            ^~~~~~~~~~~~~
+astrid/sdk/invocation.py:2436: error: Item "None" of "Any | None" has no
+attribute "as_dict"  [union-attr]
+                    error = error.as_dict()
+                            ^~~~~~~~~~~~~
+astrid/sdk/invocation.py:2591: error: Incompatible types in assignment
+(expression has type "Any | None", variable has type "dict[str, Any]") 
+[assignment]
+        error = raw.get("error")
+                ^~~~~~~~~~~~~~~~
+astrid/sdk/invocation.py:2890: error: Item "None" of "Any | None" has no
+attribute "media"  [union-attr]
+                media_rows = paged_rows(_client.media.list, str(project), ...
+                                        ^~~~~~~~~~~~~
+astrid/sdk/invocation.py:3127: error: Argument 1 to "dict" has incompatible
+type "Any | None"; expected "SupportsKeysAndGetItem[str, Any]"  [arg-type]
+                        **dict(raw_result.get("error")),
+                               ^~~~~~~~~~~~~~~~~~~~~~~
+Found 14 errors in 1 file (checked 4 source files)

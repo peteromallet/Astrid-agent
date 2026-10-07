@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -12,8 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.execution import process_group
-from astrid.core.execution.guards import ExecutionGuardPolicy
+from astrid.core.execution import generic_host, process_group
 from astrid.core.execution.generic_host import (
     AdapterRegistry,
     GenericPackHost,
@@ -21,6 +20,7 @@ from astrid.core.execution.generic_host import (
     HostError,
     HostRegistrationError,
     RuntimeProtocolClient,
+    _DiscoveryCollection,
     _assert_live_storage_envelope,
     _attempt_tree_bytes,
     _completed_process_evidence,
@@ -28,6 +28,7 @@ from astrid.core.execution.generic_host import (
     _task_storage_envelope,
     _terminate_process_group,
 )
+from astrid.core.execution.guards import ExecutionGuardPolicy
 
 
 class FakeRuntime:
@@ -780,6 +781,210 @@ def test_cancellation_terminates_descendant_process_group(tmp_path):
         pytest.fail("descendant survived cancellation")
 
 
+@pytest.mark.parametrize("failure", [
+    "unavailable", "observation-error", "interrupted-census", "escaped-child",
+    "pid-reuse", "parent-missing", "signal-error",
+])
+def test_tree_uncertainty_retains_attempt_and_blocks_claim_after_group_cleanup(
+    tmp_path, monkeypatch, failure,
+):
+    """A successful group fallback cannot certify an unseen detached writer."""
+    root = tmp_path / "writer-pack"
+    manifest_path = _write_manifest(root)
+    manifest = json.loads(manifest_path.read_text())
+    writer_pid_path = tmp_path / "writer.pid"
+    writer_code = (
+        "import os,time; from pathlib import Path; "
+        "Path('{out}/retained.txt').write_text('attempt evidence'); "
+        f"Path({str(writer_pid_path)!r}).write_text(str(os.getpid())); "
+        "target=Path('{out}/writer.txt')\n"
+        "while True:\n    target.write_text('still owned'); time.sleep(0.02)\n"
+    )
+    manifest["command"]["argv"] = [
+        "{python_exec}", "-c",
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable,'-c',{writer_code!r}], start_new_session=True); "
+        "time.sleep(30)",
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[root], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    task = {"task": {
+        "id": "census-task", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "census-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["census-task"] = task
+    attempt = tmp_path / "attempts" / "census-task-census-attempt"
+    writer_info = []
+    fallback_called = []
+    original_snapshot = process_group._process_snapshot
+
+    def fail_first_census(process):
+        assert not hasattr(process, "_astrid_tree_members")
+        deadline = time.monotonic() + 5
+        while not writer_pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert writer_pid_path.exists()
+        pid = int(writer_pid_path.read_text())
+        info = original_snapshot()[pid]
+        assert info.ppid == process.pid
+        assert info.pgid == pid and info.pgid != process.pid
+        writer_info.append(info)
+        if failure in {"pid-reuse", "parent-missing", "signal-error"}:
+            process_group.observe_tree(process)
+        bad = original_snapshot()
+        if failure == "escaped-child":
+            del bad[process.pid]
+            bad[pid] = process_group._ProcessInfo(pid, 1, info.pgid, info.birth)
+        elif failure == "pid-reuse":
+            bad[pid] = process_group._ProcessInfo(pid, info.ppid, info.pgid, "reused-writer")
+        elif failure == "parent-missing":
+            del bad[pid]
+            bad[999999] = process_group._ProcessInfo(999999, pid, 999999, "unverified-child")
+        with monkeypatch.context() as census_patch:
+            def census():
+                if failure == "observation-error":
+                    raise RuntimeError("injected observation failure")
+                if failure == "interrupted-census":
+                    raise KeyboardInterrupt()
+                return {} if failure == "unavailable" else bad
+            census_patch.setattr(process_group, "_process_snapshot", census)
+            if failure == "signal-error":
+                def denied(*_):
+                    raise PermissionError("injected writer signal failure")
+                census_patch.setattr(os, "kill", denied)
+                process_group.terminate_tree(process, grace_seconds=0)
+            else:
+                process_group.observe_tree(process)
+
+    def group_only_fallback(process, **_kwargs):
+        process_group.terminate_group(process, grace_seconds=0.05)
+        assert process.poll() is not None
+        fallback_called.append(process.pid)
+
+    monkeypatch.setattr(generic_host, "observe_tree", fail_first_census)
+    monkeypatch.setattr(generic_host, "_terminate_process_group", group_only_fallback)
+    try:
+        with pytest.raises(HostError, match="owned cleanup incomplete"):
+            host.run_task(task, lease_token="lease-census")
+        assert fallback_called
+        assert host._cleanup_uncertain
+        assert host.last_cleanup_receipt["status"] == "uncertain"
+        assert attempt.is_dir()
+        assert (attempt / "outputs" / "retained.txt").read_text() == "attempt evidence"
+        assert (attempt / "outputs" / "writer.txt").exists()
+        info = writer_info[0]
+        assert original_snapshot()[info.pid].birth == info.birth
+        with pytest.raises(HostError, match="cleanup uncertainty"):
+            host.claim_once()
+        with pytest.raises(HostError, match="cleanup uncertainty"):
+            host.run_task(task, lease_token="later-lease")
+        assert not hasattr(runtime, "claim_payload")
+        assert runtime.uploaded_objects == {} and runtime.settlements == []
+    finally:
+        # Only this test's exact birth-fenced detached writer is signalled.
+        for info in writer_info:
+            current = original_snapshot().get(info.pid)
+            if current is not None and current.birth == info.birth:
+                os.kill(info.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 3
+        while any(original_snapshot().get(info.pid) for info in writer_info):
+            assert time.monotonic() < deadline, "test writer failed to exit"
+            time.sleep(0.02)
+
+
+def test_cancellation_verifies_detached_writer_tree_before_cleanup_and_reuses_host(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "tree-pack"
+    manifest_path = _write_manifest(root, capability_id="test.tree")
+    manifest = json.loads(manifest_path.read_text())
+    registry = tmp_path / "tree-identities"
+    fixture = Path(__file__).parent / "core/rendering/fixtures/owned_tree_backend.py"
+    manifest["command"]["argv"] = ["{python_exec}", str(fixture), "pack", "{out}", str(registry)]
+    manifest_path.write_text(json.dumps(manifest))
+    _write_manifest(tmp_path / "echo")
+    observed = []
+    original_observe = generic_host.observe_tree
+    original_cleanup = generic_host._cleanup_ephemeral_attempt
+    sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"])
+
+    def observe(process):
+        live = original_observe(process)
+        if not observed:
+            observed.append(process)
+        return live
+
+    class CancelWhenOwned(FakeRuntime):
+        def task(self, task_id):
+            result = self.tasks[task_id]
+            if task_id == "tree-task" and (registry / "worker.pid").exists() and observed:
+                identities = {int(path.read_text()) for path in registry.glob("*.pid")}
+                if len(identities) == 5 and identities <= observed[0]._astrid_tree_members.keys():
+                    pids = {path.stem: int(path.read_text()) for path in registry.glob("*.pid")}
+                    census = process_group._process_snapshot()
+                    for parent, child in (("pack", "backend"), ("backend", "node"), ("node", "browser"), ("browser", "worker")):
+                        assert census[pids[child]].ppid == pids[parent]
+                    assert census[pids["backend"]].pgid == pids["backend"] != pids["pack"]
+                    assert census[pids["browser"]].pgid == pids["browser"] != pids["backend"]
+                    result["task"]["status"] = "cancelled"
+            return result
+
+    runtime = CancelWhenOwned()
+    host = GenericPackHost(pack_roots=[root, tmp_path / "echo"], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    task = {"task": {
+        "id": "tree-task", "capability": "test.tree", "project_id": "demo",
+        "attempt_id": "tree-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["tree-task"] = task
+    deleted = []
+
+    def verify_before_delete(attempt):
+        if attempt.name == "tree-task-tree-attempt":
+            assert len(observed[0]._astrid_tree_members) == 5
+            snapshot = process_group._process_snapshot()
+            assert snapshot
+            assert not any(pid in snapshot for pid in observed[0]._astrid_tree_members)
+            assert sibling.poll() is None and os.getpid() in snapshot
+        original_cleanup(attempt)
+        deleted.append(attempt)
+
+    monkeypatch.setattr(generic_host, "observe_tree", observe)
+    monkeypatch.setattr(generic_host, "_cleanup_ephemeral_attempt", verify_before_delete)
+    try:
+        result = host.run_task(task, lease_token="lease-tree")
+        assert result["status"] == "cancelled"
+        assert runtime.tasks["tree-task"]["task"]["status"] == "cancelled"
+        assert runtime.uploaded_objects == {} and runtime.settlements == [] and runtime.failures == []
+        assert host.last_cleanup_receipt["status"] == "deleted"
+        assert not host._cleanup_uncertain and not host._active_processes
+        stopped_write = (registry / "last-write.txt").read_text()
+        time.sleep(0.1)
+        assert (registry / "last-write.txt").read_text() == stopped_write
+        assert not (tmp_path / "attempts" / "tree-task-tree-attempt").exists()
+        later = {"task": {
+            **task["task"], "id": "later-task", "capability": "test.echo",
+            "attempt_id": "later-attempt", "status": "running",
+        }}
+        runtime.tasks["later-task"] = later
+        assert host.run_task(later, lease_token="lease-later")["task"]["status"] == "completed"
+        assert len(runtime.settlements) == 1 and not host._cleanup_uncertain
+        assert len(deleted) == 2 and sibling.poll() is None
+    finally:
+        # All fixture PIDs are descendants captured while ancestry was alive.
+        for process in observed:
+            snapshot = process_group._process_snapshot()
+            for pid, birth in reversed(tuple(getattr(process, "_astrid_tree_members", {}).items())):
+                info = snapshot.get(pid)
+                if info is not None and info.birth == birth:
+                    os.kill(pid, signal.SIGKILL)
+            process.wait(timeout=3)
+        sibling.terminate()
+        sibling.wait(timeout=3)
+
+
 def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_path):
     """A leader that exits on TERM must not let its stubborn child escape."""
     root = tmp_path / "leader-exits"
@@ -1301,6 +1506,7 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
         "handshake",
         "worker:register",
         "worker:execute",
+        "projects:read",
         "tasks:read",
         "objects:read",
         "objects:write",
@@ -1687,9 +1893,10 @@ def test_register_and_run_uses_attempt_local_typed_output_and_cleanup(tmp_path):
     assert evidence["returncode"] == 0
     assert isinstance(evidence["process_id"], int) and evidence["process_id"] > 0
     assert outputs[0]["name"] == "answer"
+    assert outputs[0]["ordinal"] == 0
     assert set(outputs[0]) <= {
         "name", "filename", "kind", "digest", "media_type", "size", "data_base64",
-        "role", "is_primary",
+        "role", "is_primary", "ordinal",
     }
     assert "path" not in outputs[0]
     assert "artifact_type" not in outputs[0]
@@ -2359,15 +2566,15 @@ def test_long_running_claim_loop_survives_and_backs_off_after_runtime_failure(
 
 
 def test_adapter_registry_classifies_provider_local_generation_and_render():
-    provider = GenericPackHost(pack_roots=[Path("astrid/packs/generation/executors")])
+    provider = GenericPackHost(pack_roots=[Path("astrid/packs/generation")])
     provider.discover()
     assert AdapterRegistry.resolve(provider.capabilities["generation.generate_image_openai"].definition).family == "provider"
-    local = GenericPackHost(pack_roots=[Path("astrid/packs/vibecomfy/executors")])
+    local = GenericPackHost(pack_roots=[Path("astrid/packs/vibecomfy")])
     local.discover()
     assert AdapterRegistry.resolve(local.capabilities["vibecomfy.run"].definition).family == "local_generation"
     local.preflight("vibecomfy.run")
     assert local.capabilities["vibecomfy.run"].resource_keys == ("gpu",)
-    render = GenericPackHost(pack_roots=[Path("astrid/packs/rendering/executors/render")])
+    render = GenericPackHost(pack_roots=[Path("astrid/packs/rendering")])
     render.discover()
     assert AdapterRegistry.resolve(render.capabilities["rendering.render"].definition).family == "render"
     render.preflight("rendering.render")
@@ -2384,7 +2591,7 @@ def test_render_preflight_requires_the_explicit_execution_runtime(monkeypatch):
     monkeypatch.delenv("ASTRID_NODE_EXECUTABLE", raising=False)
     monkeypatch.delenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", raising=False)
     host = GenericPackHost(
-        pack_roots=[Path("astrid/packs/rendering/executors/render")]
+        pack_roots=[Path("astrid/packs/rendering")]
     )
     host.discover()
 
@@ -2578,11 +2785,12 @@ def test_command_host_harvests_result_manifest_media(tmp_path: Path) -> None:
         set(item)
         <= {
             "name", "kind", "filename", "digest", "media_type", "size", "data_base64",
-            "role", "is_primary",
+            "role", "is_primary", "ordinal",
         }
         for item in settled
     )
     assert [item["filename"] for item in settled] == ["a.mp4", "b.mp4"]
+    assert [item["ordinal"] for item in settled] == [0, 1]
     assert all("path" not in item and "artifact_type" not in item for item in settled)
 
 
@@ -2693,3 +2901,477 @@ def test_command_host_rejects_media_receipt_with_wrong_port_name(tmp_path: Path)
     with pytest.raises(HostError, match="undeclared port|declared output port"):
         host.run_task(task, lease_token="lease-1")
     assert runtime.settlements == []
+
+
+def _f05_bound_task(capability="test.echo", *, executor="worker", suffix="one"):
+    """A public Runtime task shape with a credential-verified machine binding."""
+    from astrid.sdk.execution_request import normalize_execution_request
+    request = normalize_execution_request({"schema_version": 1, "target": {"kind": "machine", "id": "machine"},
+                                          "limits": {"max_runtime_seconds": 7200}})
+    binding = {"binding_id": "binding-" + suffix, "session_id": "session", "status": "claimed",
+               "task_id": "task-" + suffix, "run_id": "run-" + suffix, "attempt_id": "attempt-" + suffix,
+               "lease_id": "lease-" + suffix, "fence": 1, "runtime_epoch": 1, "executor_id": executor,
+               "capability_id": capability, "resolved_target": request["target"], "effective_target": request["target"],
+               "actual_target": {"kind": "machine", "id": "machine"}, "machine_id": "machine", "target_id": "machine",
+               "target_kind": "machine", "placement_version": 0, "executor_incarnation": executor + "/birth",
+               "verification": {"method": "credential_claim", "verified": True, "evidence_digest": "sha256:" + "3" * 64}}
+    return {"task_id": binding["task_id"], "run_id": binding["run_id"], "attempt_id": binding["attempt_id"],
+            "capability_id": capability, "capability_digest": "sha256:" + "4" * 64,
+            "state": "running", "version": 1, "runtime_epoch": 1, "project_id": "project", "input_object_ids": [],
+            "spec": {"capability_digest": "sha256:" + "4" * 64, "spec": {"inputs": {}}},
+            "execution_request": request, "execution_binding": binding, "lease_fence": 1,
+            "lease_expires_at": "2999-01-01T00:00:00+00:00", "idempotency_key": "task", "created_at": "", "updated_at": ""}
+
+
+def _f05_claim_fixture(monkeypatch, *, typed, discovery=False):
+    import copy
+    from banodoco_workspace_client.generated import Task, AttemptFence
+    task = _f05_bound_task()
+    claim = {"task_id": task["task_id"], "run_id": task["run_id"], "attempt_id": task["attempt_id"],
+             "lease_id": task["execution_binding"]["lease_id"], "fence": 1, "runtime_epoch": 1,
+             "lease_expires_at": task["lease_expires_at"], "input_object_ids": [], "project_id": "project",
+             "spec": copy.deepcopy(task["spec"]), "execution_request": copy.deepcopy(task["execution_request"]),
+             "execution_binding": copy.deepcopy(task["execution_binding"])}
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, executor_id="worker")
+    record = SimpleNamespace(id="test.echo", ready=True, matrix={},
+                             adapter=SimpleNamespace(family="command"),
+                             definition=SimpleNamespace(isolation=SimpleNamespace(network=False)))
+    host.capabilities = {record.id: record}
+    monkeypatch.setattr(host, "preflight", lambda: [record])
+    monkeypatch.setattr(generic_host, "_configured_claim_target", lambda: None)
+    runtime.claim_next = lambda **kw: AttemptFence.from_json(claim) if typed else copy.deepcopy(claim)
+    runtime.task = lambda tid: Task.from_json(task) if typed else copy.deepcopy(task)
+    if discovery:
+        grant = {
+            "project_id": "project", "run_id": "historical-run", "task_id": "historical-task",
+            "attempt_id": "historical-attempt", "capability_id": "test.echo",
+            "capability_digest": task["capability_digest"],
+            "limits": {
+                "max_discovery_rows": 750, "max_discovery_metadata_bytes": 67108864,
+                "max_selected_output_objects": 2, "max_selected_output_bytes": 16777216,
+                "max_child_media_bindings": 1, "max_child_media_bytes": 16777216,
+            },
+        }
+        policy = {
+            "capabilities": [{"capability_id": "rendering.render", "capability_digest": "sha256:" + "5" * 64}],
+            "targets": [{"kind": "default"}], "input_object_ids": [],
+            "limits": {"max_children": 1}, "discovery_grant": grant,
+        }
+        task["spec"]["child_delegation"] = copy.deepcopy(policy)
+        claim["spec"]["child_delegation"] = copy.deepcopy(policy)
+    captured = []
+    monkeypatch.setattr(host, "run_task", lambda value, **kwargs: captured.append((value, kwargs)) or value)
+    return host, runtime, task, claim, captured
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_f05_first_class_request_survives_claim_handoff(monkeypatch, typed, legacy):
+    import copy
+    host, runtime, task, claim, captured = _f05_claim_fixture(monkeypatch, typed=typed)
+    if legacy:
+        for value in (task, claim):
+            value["spec"]["execution_request"] = copy.deepcopy(value["execution_request"])
+            value["spec"]["spec"]["execution_request"] = copy.deepcopy(value["execution_request"])
+    # A convenience read must never replace admitted action inputs.
+    task["spec"]["spec"]["inputs"] = {"read_only_extra": "not-claimed"}
+    host.claim_once()
+    assert len(captured) == 1
+    handed = captured[0][0]["task"]
+    assert handed["execution_request"] == claim["execution_request"]
+    assert handed["spec"] == claim["spec"]
+    assert handed["capability"] == "test.echo"
+    assert handed["capability_id"] == task["capability_id"]
+    assert handed["capability_digest"] == task["capability_digest"]
+    assert runtime.heartbeats
+    assert not runtime.failures
+
+
+@pytest.mark.parametrize("mismatch", [None, "capability_id", "capability_digest", "binding", "spec"])
+def test_f05_typed_claim_handoff_survives_discovery_authority_reread(monkeypatch, mismatch):
+    import copy
+    host, _runtime, task_wire, _claim, captured = _f05_claim_fixture(
+        monkeypatch, typed=True, discovery=True
+    )
+    host.claim_once()
+    parent = copy.deepcopy(captured[0][0]["task"])
+    current = copy.deepcopy(task_wire)
+    if mismatch == "capability_id":
+        current["capability_id"] = "other.echo"
+    elif mismatch == "capability_digest":
+        current["capability_digest"] = "sha256:" + "6" * 64
+    elif mismatch == "binding":
+        current["execution_binding"]["lease_id"] = "replacement-lease"
+    elif mismatch == "spec":
+        current["spec"]["changed"] = True
+
+    class Generated:
+        def _request(self, method, path, **_kwargs):
+            body = json.dumps(current).encode()
+            reader = _kwargs.get("response_reader")
+            if reader is not None:
+                reader(__import__("io").BytesIO(body))
+            return 200, {}, body
+
+        def get_task(self, _task_id):
+            response = self._request("GET", "/v1/tasks/current")
+            return json.loads(response[2])
+
+    client = SimpleNamespace(generated=Generated())
+    reader = _DiscoveryCollection(
+        client, parent, attempt_id=parent["attempt_id"], lease_id=parent["lease_id"],
+        fence=parent["fence"], runtime_epoch=parent["runtime_epoch"], cancelled=lambda: False,
+    )
+    if mismatch is None:
+        reader._parent_authority()
+    else:
+        with pytest.raises(HostError, match="discovery parent authority changed"):
+            reader._parent_authority()
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("side", ["claim", "read"])
+@pytest.mark.parametrize("bad", ["top_conflict", "legacy_conflict", "empty_request", "missing_spec", "bad_spec", "bad_nested", "read_disagreement", "unverified"])
+def test_f05_request_handoff_rejects_invalid_envelopes(monkeypatch, typed, side, bad):
+    import copy
+    host, runtime, task, claim, captured = _f05_claim_fixture(monkeypatch, typed=typed)
+    value = claim if side == "claim" else task
+    if bad in {"top_conflict", "legacy_conflict"}:
+        value["spec"]["execution_request"] = copy.deepcopy(value["execution_request"])
+        changed = copy.deepcopy(value["execution_request"])
+        changed["limits"]["max_runtime_seconds"] = 9999
+        if bad == "top_conflict": value["execution_request"] = changed
+        else: value["spec"]["spec"]["execution_request"] = changed
+    elif bad == "empty_request": value["execution_request"] = {}
+    elif bad == "missing_spec": value.pop("spec")
+    elif bad == "bad_spec":
+        # DTOs require an object; use the mapping route for malformed wire data.
+        if typed: value["spec"] = {"spec": []}
+        else: value["spec"] = []
+    elif bad == "bad_nested": value["spec"]["spec"] = []
+    elif bad == "read_disagreement": value["execution_request"]["limits"]["max_runtime_seconds"] = 9999
+    elif bad == "unverified": value["execution_binding"]["verification"]["verified"] = False
+    with pytest.raises(HostError):
+        host.claim_once()
+    assert not captured
+    assert runtime.failures
+
+
+@pytest.mark.parametrize("bad", [{}, [], False, 0, "request"])
+def test_f05_present_request_without_spec_fails_closed(bad):
+    with pytest.raises(HostError, match="spec envelope"):
+        generic_host._execution_contract({"execution_request": bad})
+    assert generic_host._execution_contract({}) is None
+
+
+def test_f05_lifetime_repeated_checks_absolute_caps_and_bounded_phases(monkeypatch):
+    from astrid.core.execution.guards import ExecutionDeadlineError
+    now = [10.0]
+    checks = []
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    lifetime = generic_host._AttemptLifetime(ExecutionGuardPolicy(), now[0], None, lambda: checks.append(now[0]))
+    lifetime.begin_execution()
+    for elapsed in (3601, 7201, 10801):
+        now[0] = 10 + elapsed
+        lifetime.assert_deadline()
+        assert not lifetime.expired()
+    assert len(checks) == 4
+    assert lifetime.receipt()["deadline_seconds"] is None
+    lifetime.begin_collection(2)
+    assert lifetime.deadline() == now[0] + 2
+    now[0] += 3
+    with pytest.raises(ExecutionDeadlineError): lifetime.assert_deadline()
+    # Default collection and setup are finite even for qualifying sessions.
+    now[0] = 10
+    setup = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 10, None, lambda: None)
+    now[0] = 3610
+    with pytest.raises(ExecutionDeadlineError): setup.begin_execution()
+    now[0] = 10
+    capped = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 10, 7200, lambda: None)
+    capped.begin_execution()
+    now[0] = 3611
+    capped.assert_deadline()
+    assert capped.deadline() == 7210
+    now[0] = 7210
+    with pytest.raises(ExecutionDeadlineError): capped.assert_deadline()
+    for authority in (None, lambda: None):
+        now[0] = 10
+        finite = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 10, 2, authority)
+        finite.begin_execution()
+        now[0] = 12
+        assert finite.expired()
+    now[0] = 10
+    bounded = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 10, None)
+    bounded.begin_execution()
+    now[0] = 3610
+    with pytest.raises(ExecutionDeadlineError): bounded.assert_deadline()
+
+
+def test_f05_admission_spec_projection_excludes_only_top_level_registry():
+    original = {"child_delegation": {"limits": {"max_children": 2}},
+                "delegated_parent": {"policy_digest": "pinned"},
+                "spec": {"inputs": {"timeout": 0}, "derived_input_registry": {"nested": "immutable"}}}
+    projected = generic_host._interactive_admission_spec(original)
+    for registry in ({}, {"sha256:object": {"association_id": "runtime-owned"}}):
+        carried = {**original, "derived_input_registry": registry}
+        assert generic_host._interactive_admission_spec(carried) == projected
+        assert carried["derived_input_registry"] is registry
+    assert projected["spec"]["derived_input_registry"] == {"nested": "immutable"}
+    changed = {**original, "delegation_closed_attempt_id": "attempt"}
+    assert generic_host._interactive_admission_spec(changed) != projected
+    with pytest.raises(HostError): generic_host._interactive_admission_spec(None)
+
+
+def test_f05_training_review_credit_charges_verification_and_uncertain_tails(monkeypatch):
+    now = [100.0]
+    claims = [frozenset({("round-1", "claim")})]
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        now[0] += 2  # Both Runtime calls and local verification consume time.
+        return claims[0]
+    review = generic_host._ReviewIntervalAccounting(verify)
+    lifetime = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 100, None, review=review)
+    lifetime.begin_execution()
+    assert review.credited_seconds == 0
+    now[0] = 110
+    lifetime.assert_deadline()  # First complete running observation, ending 112.
+    now[0] = 4000
+    lifetime.assert_deadline()
+    assert review.credited_seconds == 3888
+    assert not lifetime.expired()
+    assert lifetime.deadline() == 7588
+    claims[0] = frozenset()  # Completion at an uncertain time; charge the whole tail.
+    now[0] = 4100
+    lifetime.assert_deadline()
+    assert review.credited_seconds == 3888
+    now[0] = 4200
+    claims[0] = frozenset({("round-2", "claim")})
+    lifetime.assert_deadline()  # New round cannot credit its initial interval.
+    now[0] = 4300
+    lifetime.assert_deadline()
+    assert review.credited_seconds == 3986
+    assert lifetime.started_at == 100
+    claims[0] = frozenset()
+    lifetime.begin_collection(10)
+    collection_deadline = lifetime.collection_deadline
+    now[0] += 1
+    lifetime.assert_deadline()
+    assert lifetime.collection_deadline == collection_deadline
+    assert review.credited_seconds == 3986
+
+
+def test_f05_training_overlapping_reviews_credit_union_and_never_project(monkeypatch):
+    now = [0.0]
+    claims = [frozenset({("a",), ("b",)})]
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    review = generic_host._ReviewIntervalAccounting(lambda: claims[0])
+    review.sample(executing=True)
+    now[0] = 10
+    review.sample(executing=True)
+    assert review.credited_seconds == 10  # Two overlapping children count once.
+    now[0] = 20
+    assert review.credited_seconds == 10  # A prior read never projects forward.
+    claims[0] = frozenset({("b",), ("c",)})
+    review.sample(executing=True)
+    assert review.credited_seconds == 20
+    now[0] = 30
+    claims[0] = frozenset({("d",)})
+    review.sample(executing=True)
+    assert review.credited_seconds == 20  # No identical continuous claim.
+    now[0] = 40
+    review.sample(executing=True)
+    assert review.credited_seconds == 30
+
+
+def test_f05_training_review_absolute_cap_setup_and_authority_loss(monkeypatch):
+    from astrid.core.execution.guards import ExecutionDeadlineError
+    now = [100.0]
+    lost = [False]
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        if lost[0]: raise HostError("authority lost")
+        return frozenset({("exact", "claim")})
+    review = generic_host._ReviewIntervalAccounting(verify)
+    lifetime = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 100, 7200, review=review)
+    lifetime.begin_execution()
+    lifetime.assert_deadline()
+    now[0] = 3701
+    lifetime.assert_deadline()
+    assert not lifetime.expired()
+    now[0] = 7300
+    with pytest.raises(ExecutionDeadlineError): lifetime.assert_deadline()
+    assert lifetime.deadline() == 7300
+    before = review.credited_seconds
+    lost[0] = True
+    now[0] = 7400
+    with pytest.raises(HostError, match="authority lost"): lifetime.assert_authority()
+    assert review.credited_seconds == before
+    lost[0] = False
+    setup = generic_host._AttemptLifetime(ExecutionGuardPolicy(), 100, None,
+                                         review=generic_host._ReviewIntervalAccounting(verify))
+    with pytest.raises(ExecutionDeadlineError): setup.begin_execution()
+
+
+def test_f05_training_plain_media_paths_and_same_machine_are_insufficient():
+    parent = _f05_bound_task("training.dataset_build")
+    child = _f05_bound_task("editorial.human_review", suffix="child")
+    parent["spec"]["spec"]["inputs"] = {"config": "/dataset/config.json", "out": "/dataset/run"}
+    child["spec"]["spec"]["inputs"] = {"timeout": 0, "serve": "/media=/dataset/run/clips"}
+    child["execution_request"]["target"]["mounts"] = [{"source": "/dataset/run/clips", "target": "/media", "read_only": True}]
+    assert generic_host._training_review_media_scope(parent, child, object(), object(), ()) is None
+
+
+def test_f05_training_accounting_verification_can_reenter_without_lock_or_credit(monkeypatch):
+    now = [0.0]
+    reenter = [False]
+    claims = frozenset({("same", "claim")})
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        assert review._lock.acquire(blocking=False)
+        review._lock.release()
+        if reenter[0]:
+            reenter[0] = False
+            now[0] = 20
+            review.sample(executing=True)
+            assert review.previous_claims == frozenset()
+            now[0] = 30
+        return claims
+    review = generic_host._ReviewIntervalAccounting(verify)
+    review.sample(executing=True)
+    now[0] = 10
+    reenter[0] = True
+    review.sample(executing=True)
+    assert review.credited_seconds == 0
+    assert review.previous_claims == frozenset()
+    assert review.previous_end is None
+    assert review._inflight == 0
+    now[0] = 40
+    review.sample(executing=True)
+    assert review.credited_seconds == 0
+    now[0] = 50
+    review.sample(executing=True)
+    assert review.credited_seconds == 10
+
+
+@pytest.mark.parametrize("completion_order", [("older", "newer"), ("newer", "older")])
+def test_f05_training_accounting_overlapping_results_cannot_revive_baseline(monkeypatch, completion_order):
+    import threading
+    now = [0.0]
+    claims = frozenset({("same", "claim")})
+    entered = {name: threading.Event() for name in ("older", "newer")}
+    release = {name: threading.Event() for name in entered}
+    errors = []
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        assert review._lock.acquire(blocking=False)
+        review._lock.release()
+        name = threading.current_thread().name
+        if name in entered:
+            entered[name].set()
+            assert release[name].wait(2.0), "verification release exceeded bound"
+        return claims
+    review = generic_host._ReviewIntervalAccounting(verify)
+    review.sample(executing=True)
+    def sample():
+        try: review.sample(executing=True)
+        except BaseException as exc: errors.append(exc)
+    threads = {name: threading.Thread(target=sample, name=name, daemon=True) for name in entered}
+    try:
+        now[0] = 10
+        threads["older"].start()
+        assert entered["older"].wait(1.0)
+        now[0] = 20
+        threads["newer"].start()
+        assert entered["newer"].wait(1.0), "second verification blocked behind the first"
+        assert review.previous_claims == frozenset()
+        for end, name in zip((30, 40), completion_order):
+            now[0] = end
+            release[name].set()
+            threads[name].join(timeout=1.0)
+            assert not threads[name].is_alive()
+            assert review.credited_seconds == 0
+            assert review.previous_end is None
+            assert review.previous_claims == frozenset()
+    finally:
+        for event in release.values(): event.set()
+        for thread in threads.values():
+            if thread.ident is not None: thread.join(timeout=1.0)
+    assert not errors
+    assert review._inflight == 0
+    now[0] = 50
+    review.sample(executing=True)
+    assert review.credited_seconds == 0
+    now[0] = 60
+    review.sample(executing=True)
+    assert review.credited_seconds == 10
+
+
+def test_f05_training_accounting_failure_propagates_unlocked_and_requires_fresh_baseline(monkeypatch):
+    now = [0.0]
+    failure = [None]
+    claims = frozenset({("same", "claim")})
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        assert review._lock.acquire(blocking=False)
+        review._lock.release()
+        if failure[0] is not None: raise failure[0]
+        return claims
+    review = generic_host._ReviewIntervalAccounting(verify)
+    review.sample(executing=True)
+    now[0] = 10
+    review.sample(executing=True)
+    assert review.credited_seconds == 10
+    failure[0] = HostError("authority read failed")
+    now[0] = 20
+    with pytest.raises(HostError, match="authority read failed") as caught:
+        review.sample(executing=True)
+    assert caught.value is failure[0]
+    assert review._lock.acquire(blocking=False)
+    review._lock.release()
+    assert review.previous_claims == frozenset()
+    assert review.previous_end is None
+    assert review._inflight == 0
+    assert review.credited_seconds == 10
+    failure[0] = None
+    now[0] = 30
+    review.sample(executing=True)
+    assert review.credited_seconds == 10
+    now[0] = 40
+    review.sample(executing=True)
+    assert review.credited_seconds == 20
+
+
+def test_f05_training_accounting_stale_success_cannot_restore_failed_authority(monkeypatch):
+    now = [0.0]
+    fail_nested = [False]
+    failure = HostError("nested authority loss")
+    claims = frozenset({("same", "claim")})
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    def verify():
+        assert review._lock.acquire(blocking=False)
+        review._lock.release()
+        if fail_nested[0]:
+            fail_nested[0] = False
+            review.verify = lambda: (_ for _ in ()).throw(failure)
+            try:
+                with pytest.raises(HostError, match="nested authority loss"):
+                    review.sample(executing=True)
+            finally:
+                review.verify = verify
+        return claims
+    review = generic_host._ReviewIntervalAccounting(verify)
+    review.sample(executing=True)
+    now[0] = 10
+    fail_nested[0] = True
+    review.sample(executing=True)
+    assert review.credited_seconds == 0
+    assert review.previous_end is None
+    assert review.previous_claims == frozenset()
+    assert review._inflight == 0
+    now[0] = 20
+    review.sample(executing=True)
+    assert review.credited_seconds == 0
+    now[0] = 30
+    review.sample(executing=True)
+    assert review.credited_seconds == 10

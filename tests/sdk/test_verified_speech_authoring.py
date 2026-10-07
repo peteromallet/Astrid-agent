@@ -4,7 +4,7 @@ import hashlib
 
 from astrid.sdk.verified_speech_authoring import build_verified_speech_materialization
 from astrid.sdk.managed_transcript import transcript_input_from_snapshot
-from astrid.packs.rendering.executors.timeline_visualize.speech_projection import project_speech_annotations
+from astrid.packs.rendering.actions.timeline_visualize.speech_projection import project_speech_annotations
 
 
 def test_authoring_materialization_uses_explicit_fixture_bytes_and_projects_shotless_line() -> None:

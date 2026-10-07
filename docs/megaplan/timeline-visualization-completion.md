@@ -61,7 +61,7 @@ compatibility mode; frozen navigation reads only the prior hash-ledgered pack.
 
 | Intended capability | Current authority |
 |---|---|
-| Managed command and executor | `astrid/packs/timeline/cli.py`, `astrid/core/gateway/project.py`, `astrid/packs/rendering/executors/timeline_visualize/` |
+| Managed command and executor | `astrid/core/cli/domain_timelines.py`, `astrid/core/gateway/project.py`, `astrid/packs/rendering/actions/timeline_visualize/` |
 | Event-log replay and immutable snapshots | `frozen.py`, `snapshot_digest.py`, kernel timeline repositories and authority tests |
 | Qualified IDs and navigation actions | `ids.py`, `navigation.py`, `schemas/action-index.json` |
 | Shared model and deterministic PNG/SVG | `model.py`, `layout.py`, `render_png.py`, `render_svg.py` |

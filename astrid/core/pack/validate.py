@@ -19,8 +19,10 @@ import logging
 import re as _re
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 import jsonschema
+import yaml
 from referencing import Registry, Resource
 
 from astrid.core.pack import (
@@ -45,11 +47,16 @@ from astrid.core.pack.alias_resolver import AliasResolutionError, AliasResolver
 from astrid.core.pack.manifest import (
     ManifestParseError,
     load_manifest_mapping,
+    load_manifest_payload,
     reconcile_runtime_module,
 )
 from astrid.core.pack.validate_first_party import (
+    PackRootValidation,
+    PackValidationReport,
     is_first_party_packs_root_candidate,
     validate_first_party_packs_root,
+    validate_first_party_packs_root_report,
+    validate_pack_roots,
 )
 from astrid.core.pack.validate_layout import (
     CANONICAL_PACK_LAYOUT_RULES,
@@ -103,6 +110,9 @@ KNOWN_SCHEMA_VERSIONS: dict[int, dict[str, Path]] = {
     },
     2: {
         "pack": _SCHEMAS_ROOT / "v2" / "pack.json",
+    },
+    3: {
+        "pack": _SCHEMAS_ROOT / "v3" / "pack.json",
     },
 }
 
@@ -288,6 +298,29 @@ class PackValidator:
                 self.errors.append(str(exc))
                 return self.errors
 
+        if version == 3:
+            # Canonical v3 admission is the shared source of truth for the
+            # closed manifest, role paths, containment, declared resources,
+            # symlink rejection, and rendering descriptor identity.  Keep the
+            # author-facing validator as a thin diagnostic wrapper around that
+            # admission path; it never imports or executes pack code.
+            from astrid.core.pack.canonical import (
+                CanonicalPackValidationError,
+                validate_canonical_pack,
+            )
+
+            try:
+                validate_canonical_pack(self.pack_root)
+            except CanonicalPackValidationError as exc:
+                self.errors.append(str(exc))
+                return self.errors
+
+            self._validate_v3_documentation()
+            self._validate_v3_contract_schemas()
+            self._validate_layout_contract(version=version)
+            self._flush_layout_issues()
+            return self.errors
+
         self._validate_pack_taxonomy()
 
         # Validate content roots exist
@@ -366,9 +399,9 @@ class PackValidator:
             except ValidationError as e:
                 self.errors.append(str(e))
                 return None
-        if manifest_kind == "pack" and version != 2:
+        if manifest_kind == "pack" and version not in {2, 3}:
             self.errors.append(
-                f"{relpath}: pack schema_version must be exactly integer 2"
+                f"{relpath}: pack schema_version must be exactly integer 2 or 3"
             )
             return None
 
@@ -935,15 +968,287 @@ class PackValidator:
                 )
 
     # -----------------------------------------------------------------------
+    # Canonical v3 author checks
+    # -----------------------------------------------------------------------
+
+    def _validate_v3_documentation(self) -> None:
+        """Validate the authored metadata of the one declared pack skill."""
+        if self._pack_data is None:
+            return
+        documentation = self._pack_data.get("documentation")
+        if not isinstance(documentation, dict) or documentation.get("kind") != "skill":
+            return
+
+        path_value = documentation.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            return
+        skill_path = self.pack_root / path_value
+        rel = self._rel(skill_path)
+        try:
+            text = skill_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Canonical admission normally reports this first. Keep this
+            # branch useful for callers that invoke the helper directly.
+            self.errors.append(f"{rel}: cannot read authored skill: {exc}")
+            return
+
+        frontmatter, parse_error = self._parse_skill_frontmatter(text)
+        if parse_error is not None:
+            self.errors.append(f"{rel}: {parse_error}")
+            return
+        for field in ("name", "description"):
+            value = frontmatter.get(field)
+            if not isinstance(value, str) or not value.strip():
+                self.errors.append(
+                    f"{rel}: frontmatter {field} must be a non-empty string"
+                )
+
+    @staticmethod
+    def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str | None]:
+        """Parse the small YAML frontmatter contract used by skill bundles."""
+        if not text.startswith("---"):
+            return {}, "missing YAML frontmatter opening delimiter '---'"
+        lines = text.splitlines()
+        end_index: int | None = None
+        for index in range(1, len(lines)):
+            if lines[index].strip() == "---":
+                end_index = index
+                break
+        if end_index is None:
+            return {}, "missing YAML frontmatter closing delimiter '---'"
+        try:
+            payload = yaml.safe_load("\n".join(lines[1:end_index]))
+        except yaml.YAMLError as exc:
+            return {}, f"invalid YAML frontmatter: {exc}"
+        if not isinstance(payload, dict):
+            return {}, "YAML frontmatter must be a mapping"
+        return payload, None
+
+    def _validate_v3_contract_schemas(self) -> None:
+        """Check inline and local JSON Schema contracts without resolving imports."""
+        if self._pack_data is None:
+            return
+
+        for key, action in self._mapping_items("actions"):
+            for slot in ("inputs", "outputs"):
+                value = action.get(slot)
+                self._validate_contract_schema_value(
+                    value,
+                    location=f"actions.{key}.{slot}",
+                )
+
+        for key, document in self._mapping_items("documents"):
+            self._validate_contract_schema_value(
+                document.get("schema"),
+                location=f"documents.{key}.schema",
+            )
+
+    def _mapping_items(self, section: str) -> list[tuple[str, dict[str, Any]]]:
+        if self._pack_data is None:
+            return []
+        value = self._pack_data.get(section, {})
+        if not isinstance(value, dict):
+            return []
+        return [
+            (str(key), item)
+            for key, item in value.items()
+            if isinstance(item, dict)
+        ]
+
+    def _validate_contract_schema_value(self, value: Any, *, location: str) -> None:
+        if isinstance(value, str):
+            path = self.pack_root / value
+            try:
+                payload = load_manifest_payload(path, manifest_kind="JSON Schema")
+            except ManifestParseError as exc:
+                self.errors.append(f"{location}: {exc}")
+                return
+            if not isinstance(payload, (dict, bool)):
+                self.errors.append(
+                    f"{self._rel(path)}: JSON Schema must be an object or boolean"
+                )
+                return
+            self._check_json_schema(
+                payload,
+                location=f"{location} ({self._rel(path)})",
+                source_path=path,
+                seen_paths=set(),
+            )
+            return
+
+        if isinstance(value, dict):
+            self._check_json_schema(
+                value,
+                location=location,
+                source_path=None,
+                seen_paths=set(),
+            )
+        # Booleans are valid JSON Schema values. Port arrays are validated by
+        # the v3 manifest schema and are intentionally not interpreted here.
+
+    def _check_json_schema(
+        self,
+        schema: dict[str, Any] | bool,
+        *,
+        location: str,
+        source_path: Path | None,
+        seen_paths: set[Path],
+    ) -> None:
+        try:
+            validator_cls = jsonschema.validators.validator_for(schema)
+            validator_cls.check_schema(schema)
+        except jsonschema.exceptions.SchemaError as exc:
+            message = getattr(exc, "message", str(exc))
+            self.errors.append(f"{location}: invalid JSON Schema: {message}")
+            return
+
+        self._check_schema_references(
+            schema,
+            location=location,
+            source_path=source_path,
+            seen_paths=seen_paths,
+            root_schema=schema,
+        )
+
+    def _check_schema_references(
+        self,
+        schema: Any,
+        *,
+        location: str,
+        source_path: Path | None,
+        seen_paths: set[Path],
+        root_schema: dict[str, Any] | bool,
+    ) -> None:
+        if isinstance(schema, dict):
+            ref = schema.get("$ref")
+            if ref is not None:
+                if not isinstance(ref, str) or not ref:
+                    self.errors.append(f"{location}: $ref must be a non-empty string")
+                else:
+                    self._check_schema_reference(
+                        ref,
+                        location=f"{location}.$ref",
+                        source_path=source_path,
+                        root_schema=root_schema,
+                        seen_paths=seen_paths,
+                    )
+            for key, child in schema.items():
+                if key != "$ref":
+                    self._check_schema_references(
+                        child,
+                        location=f"{location}.{key}",
+                        source_path=source_path,
+                        seen_paths=seen_paths,
+                        root_schema=root_schema,
+                    )
+        elif isinstance(schema, list):
+            for index, child in enumerate(schema):
+                self._check_schema_references(
+                    child,
+                    location=f"{location}[{index}]",
+                    source_path=source_path,
+                    seen_paths=seen_paths,
+                    root_schema=root_schema,
+                )
+
+    def _check_schema_reference(
+        self,
+        reference: str,
+        *,
+        location: str,
+        source_path: Path | None,
+        root_schema: dict[str, Any] | bool,
+        seen_paths: set[Path],
+    ) -> None:
+        parsed = urlsplit(reference)
+        if parsed.scheme or parsed.netloc:
+            self.errors.append(
+                f"{location}: external JSON Schema references are not resolved by static validation"
+            )
+            return
+
+        fragment = parsed.fragment
+        if not parsed.path:
+            if fragment and not self._schema_pointer_exists(root_schema, fragment):
+                self.errors.append(f"{location}: local JSON Schema reference {reference!r} not found")
+            return
+
+        if source_path is None:
+            self.errors.append(
+                f"{location}: inline JSON Schema cannot resolve local file reference {reference!r}"
+            )
+            return
+
+        candidate = (source_path.parent / unquote(parsed.path)).resolve(strict=False)
+        try:
+            relative = candidate.relative_to(self.pack_root)
+        except ValueError:
+            self.errors.append(f"{location}: JSON Schema reference escapes the pack root")
+            return
+        if not candidate.is_file():
+            self.errors.append(
+                f"{location}: referenced JSON Schema file not found: {relative.as_posix()}"
+            )
+            return
+
+        try:
+            payload = load_manifest_payload(candidate, manifest_kind="JSON Schema")
+        except ManifestParseError as exc:
+            self.errors.append(f"{location}: {exc}")
+            return
+        if not isinstance(payload, (dict, bool)):
+            self.errors.append(
+                f"{relative.as_posix()}: referenced JSON Schema must be an object or boolean"
+            )
+            return
+        if fragment and not self._schema_pointer_exists(payload, fragment):
+            self.errors.append(
+                f"{location}: JSON Schema reference {reference!r} not found in {relative.as_posix()}"
+            )
+            return
+        if candidate in seen_paths:
+            return
+        seen_paths.add(candidate)
+        self._check_json_schema(
+            payload,
+            location=f"{location} ({relative.as_posix()})",
+            source_path=candidate,
+            seen_paths=seen_paths,
+        )
+
+    @staticmethod
+    def _schema_pointer_exists(document: Any, fragment: str) -> bool:
+        if not fragment:
+            return True
+        if not fragment.startswith("/"):
+            return False
+        current = document
+        for token in fragment[1:].split("/"):
+            token = token.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, dict) and token in current:
+                current = current[token]
+            elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+                current = current[int(token)]
+            else:
+                return False
+        return True
+
+    # -----------------------------------------------------------------------
     # Layout contract validation (delegates to validate_layout module)
     # -----------------------------------------------------------------------
 
-    def _validate_layout_contract(self) -> None:
+    def _validate_layout_contract(self, *, version: int | None = None) -> None:
         """Validate the pack directory layout against the canonical contract."""
         if self._pack_data is None:
             return
         self._layout_exceptions, issues = parse_layout_exceptions(self._pack_data)
         self._layout_issues.extend(issues)
+        if version == 3:
+            from astrid.core.pack.validate_layout import validate_pack_layout
+
+            self._layout_issues.extend(
+                validate_pack_layout(self.pack_root, self._pack_data)
+            )
 
     def _flush_layout_issues(self) -> None:
         """Surface any collected layout validation issues as errors."""
@@ -1189,10 +1494,14 @@ __all__ = [
     "V1_TRUST_BLOCK",
     "ValidationError",
     "extract_trust_summary",
+    "PackRootValidation",
+    "PackValidationReport",
     "is_first_party_packs_root_candidate",
     "json_loads",
     "validate_first_party_packs_root",
+    "validate_first_party_packs_root_report",
     "validate_pack",
+    "validate_pack_roots",
     # Re-exported — used by tests that mock through astrid.core.pack.validate.
     "iter_executor_roots",
     "iter_orchestrator_roots",

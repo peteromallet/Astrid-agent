@@ -380,7 +380,9 @@ that a pack behaves safely or only does what its declarations describe.
 
 - [SECURITY.md](../../SECURITY.md) — user-facing security posture
 - [docs/sdk.md](../reference/sdk.md) — SDK walkthrough and examples
-- [docs/packs/creating-packs.md](../packs/creating-packs.md) — pack authoring reference
+- [docs/guides/create-a-pack.md](../guides/create-a-pack.md) — current pack
+  authoring route; [the legacy pack protocol reference](../packs/creating-packs.md)
+  retains historical manifest details
 - `astrid/__init__.py` — top-level public export list
 - `astrid/sdk/` — public SDK DTOs and function entrypoints
 - `astrid/core/contracts/schema.py` — shared DTO field types

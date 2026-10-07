@@ -11,24 +11,24 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from astrid.core.execution.executor.schema import load_executor_manifest
 from astrid.core.gateway.dispatch import _top_level_commands
-from astrid.packs.vibecomfy.executors._bundle_inputs import (
+from astrid.core.pack.loader import load_pack_manifest
+from astrid.packs.vibecomfy.shared.bundle_inputs import (
     CanonicalBundleInputError,
     staged_workflow_path,
 )
-from astrid.packs.vibecomfy.executors._workflow_ir import (
+from astrid.packs.vibecomfy.shared.workflow_ir import (
     WorkflowIrBridgeError,
     _diagnostic_payload,
     edit_workflow,
     inspect_canonical_bundle,
     inspect_workflow,
 )
+from astrid.sdk.actions import action_executor_definition
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "vibecomfy_ir" / "flat.json"
-EXECUTORS = ROOT / "astrid" / "packs" / "vibecomfy" / "executors"
-IMPORT_EXECUTOR = EXECUTORS / "import" / "executor.yaml"
+PACK = ROOT / "astrid" / "packs" / "vibecomfy"
 
 
 def _require_vibecomfy() -> None:
@@ -123,12 +123,17 @@ def test_diagnostic_payload_serializes_frozen_mapping_details() -> None:
     assert json.loads(json.dumps(payload)) == payload
 
 
-def test_ir_executors_are_manifested_without_growing_the_gateway() -> None:
-    inspect_manifest = load_executor_manifest(EXECUTORS / "inspect" / "executor.yaml")
-    edit_manifest = load_executor_manifest(EXECUTORS / "edit" / "executor.yaml")
-    import_manifest = load_executor_manifest(IMPORT_EXECUTOR)
-    validate_manifest = load_executor_manifest(EXECUTORS / "validate" / "executor.yaml")
-    run_manifest = load_executor_manifest(EXECUTORS / "run" / "executor.yaml")
+def test_ir_actions_are_manifested_without_growing_the_gateway() -> None:
+    pack = load_pack_manifest(PACK / "pack.yaml")
+    inspect_manifest = action_executor_definition(
+        pack, "inspect", pack.actions["inspect"]
+    )
+    edit_manifest = action_executor_definition(pack, "edit", pack.actions["edit"])
+    import_manifest = action_executor_definition(pack, "import", pack.actions["import"])
+    validate_manifest = action_executor_definition(
+        pack, "validate", pack.actions["validate"]
+    )
+    run_manifest = action_executor_definition(pack, "run", pack.actions["run"])
 
     assert inspect_manifest.id == "vibecomfy.inspect"
     assert edit_manifest.id == "vibecomfy.edit"
@@ -282,7 +287,7 @@ def test_canonical_validate_and_run_stage_bundle_for_package_loader(
     inputs["companion"].write_bytes(b'{"revision_id":"rev-origin"}\n')
     inputs["source"].write_bytes(source_bytes)
 
-    validate = importlib.import_module("astrid.packs.vibecomfy.executors.validate.run")
+    validate = importlib.import_module("astrid.packs.vibecomfy.actions.validate.run")
     staged_validate_members = {}
 
     security = ModuleType("vibecomfy.security")
@@ -346,7 +351,7 @@ def test_canonical_validate_and_run_stage_bundle_for_package_loader(
         "source": source_bytes,
     }
 
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     staged_run_members = {}
 
     def capture_run(workflow_path, _output, **identity):
@@ -384,7 +389,7 @@ def test_ui_json_validation_is_static_and_requires_no_python_consent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    validate = importlib.import_module("astrid.packs.vibecomfy.executors.validate.run")
+    validate = importlib.import_module("astrid.packs.vibecomfy.actions.validate.run")
     ui_path = tmp_path / "ui.json"
     ui_path.write_text('{"nodes":[],"links":[]}', encoding="utf-8")
     workflow = SimpleNamespace(
@@ -422,7 +427,7 @@ def test_canonical_run_uses_managed_production_engine_without_gpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     python_path = tmp_path / "workflow.py"
     python_path.write_bytes(b"workflow = VibeWorkflow(id='portrait')\n")
     python_path.with_name("workflow.vibe.json").write_text("{}", encoding="utf-8")
@@ -456,7 +461,7 @@ def test_canonical_run_uses_managed_production_engine_without_gpu(
 
 def _load_import_runner(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    return importlib.import_module("astrid.packs.vibecomfy.executors.import.run")
+    return importlib.import_module("astrid.packs.vibecomfy.actions.import.run")
 
 
 def _fake_import_service_modules(service: Mock) -> dict[str, ModuleType]:
@@ -604,7 +609,7 @@ def test_canonical_edit_emits_parent_linked_successor_and_exact_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    runner = importlib.import_module("astrid.packs.vibecomfy.executors.edit.run")
+    runner = importlib.import_module("astrid.packs.vibecomfy.actions.edit.run")
     members = {
         "workflow.py": b"workflow = load('parent')\n",
         "workflow.vibe.json": b'{"revision_id":"rev-origin"}\n',
@@ -719,7 +724,7 @@ def test_canonical_edit_failure_does_not_publish_partial_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    runner = importlib.import_module("astrid.packs.vibecomfy.executors.edit.run")
+    runner = importlib.import_module("astrid.packs.vibecomfy.actions.edit.run")
     members = {
         "workflow.py": b"workflow = load('parent')\n",
         "workflow.vibe.json": b'{"revision_id":"rev-origin"}\n',
@@ -777,7 +782,7 @@ def test_canonical_edit_rejects_missing_or_nonexact_python_execution_consent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    runner = importlib.import_module("astrid.packs.vibecomfy.executors.edit.run")
+    runner = importlib.import_module("astrid.packs.vibecomfy.actions.edit.run")
     path = tmp_path / "unused.py"
     with pytest.raises(runner.WorkflowTransitionError, match="python_execution_consent.*confirmed"):
         runner.edit_workflow(
@@ -802,7 +807,7 @@ def test_manual_python_capture_keeps_parent_and_candidate_separate_with_gate_aud
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    runner = importlib.import_module("astrid.packs.vibecomfy.executors.edit.run")
+    runner = importlib.import_module("astrid.packs.vibecomfy.actions.edit.run")
     parent = {
         "workflow.py": b"workflow = load('parent')\n",
         "workflow.vibe.json": b'{"revision_id":"rev-origin"}\n',
@@ -1007,7 +1012,7 @@ def test_canonical_inspect_projects_bundle_without_mutating_any_member(
 def test_canonical_inspect_rejects_missing_consent_before_loading_python(
     tmp_path: Path,
 ) -> None:
-    from astrid.packs.vibecomfy.executors._python_execution_consent import (
+    from astrid.packs.vibecomfy.shared.python_execution_consent import (
         PythonExecutionConsentError,
     )
 

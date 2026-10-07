@@ -41,6 +41,13 @@ def iter_element_roots(
     element_kind_registry: ElementKindRegistry | None = None,
 ) -> tuple[tuple[ElementKind, Path], ...]:
     registry = element_kind_registry or element_kind_registry_for_pack(pack)
+    if str(pack.schema_version) == "3":
+        return tuple(
+            (element_kind, manifest.parent)
+            for element_kind, manifest in iter_element_manifest_paths(
+                pack, kind=kind, element_kind_registry=registry,
+            )
+        )
     roots: list[tuple[ElementKind, Path]] = []
     elements_root = _declared_content_root(pack, "elements") or (pack.root / "elements")
     kind_roots = _iter_element_kind_dirs(elements_root, registry=registry)
@@ -54,6 +61,45 @@ def iter_element_roots(
     for element_kind, kind_root in kind_roots:
         roots.extend((element_kind, child) for child in sorted(kind_root.iterdir()) if child.is_dir())
     return tuple(roots)
+
+
+def iter_element_manifest_paths(
+    pack: PackDefinition,
+    *,
+    kind: str | None = None,
+    element_kind_registry: ElementKindRegistry | None = None,
+) -> tuple[tuple[ElementKind, Path], ...]:
+    """Project exact declared v3 descriptors, retaining v2 root discovery."""
+    registry = element_kind_registry or element_kind_registry_for_pack(pack)
+    if str(pack.schema_version) != "3":
+        from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
+
+        return tuple(
+            (element_kind, manifest)
+            for element_kind, root in iter_element_roots(
+                pack, kind=kind, element_kind_registry=registry,
+            )
+            if (manifest := next(
+                (root / name for name in ELEMENT_MANIFEST_NAMES if (root / name).is_file()),
+                None,
+            )) is not None
+        )
+    requested_kind = registry.normalize(kind, error_cls=PackValidationError) if kind is not None else None
+    pack_root = pack.root.resolve()
+    paths: list[tuple[ElementKind, Path]] = []
+    for key, item in pack.rendering.items():
+        if item["type"] != "element":
+            continue
+        element_kind = registry.normalize(key.split("/", 1)[0], error_cls=PackValidationError)
+        relative = Path(item["path"])
+        manifest = (pack_root / relative).resolve()
+        if relative.is_absolute() or not manifest.is_relative_to(pack_root):
+            raise PackValidationError(f"pack.rendering.{key}.path must stay within the pack root")
+        if not manifest.is_file():
+            raise PackValidationError(f"pack.rendering.{key}.path must name a regular file: {relative}")
+        if requested_kind is None or element_kind == requested_kind:
+            paths.append((element_kind, manifest))
+    return tuple(paths)
 
 
 def _iter_element_kind_dirs(

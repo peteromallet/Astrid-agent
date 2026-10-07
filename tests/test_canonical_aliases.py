@@ -66,7 +66,7 @@ class TimelineProductParserAliasTest(unittest.TestCase):
     def _choices():
         import argparse
 
-        from astrid.packs.timeline.cli import build_parser
+        from astrid.core.cli.domain_timelines import build_parser
 
         parser = build_parser(client=object())
         for action in parser._actions:
@@ -75,20 +75,20 @@ class TimelineProductParserAliasTest(unittest.TestCase):
         raise AssertionError("timelines product parser has no subparsers")
 
     def test_product_timeline_parser_has_no_obsolete_aliases(self) -> None:
-        from astrid.packs.timeline.cli import COMMANDS
+        from astrid.core.cli.domain_timelines import COMMANDS
 
         self.assertEqual(
             tuple(spec.name for spec in COMMANDS),
             (
-                "create",
                 "list",
                 "show",
-                "save",
+                "replace-parent-media",
                 "archive",
                 "recover",
                 "history",
                 "diff",
                 "visualize",
+                "inspect",
                 "render",
             ),
         )
@@ -104,15 +104,15 @@ class TimelineProductParserAliasTest(unittest.TestCase):
         self.assertEqual(
             self._choices(),
             {
-                "create",
                 "list",
                 "show",
-                "save",
+                "replace-parent-media",
                 "archive",
                 "recover",
                 "history",
                 "diff",
                 "visualize",
+                "inspect",
                 "render",
                 "shots",
             },
@@ -144,7 +144,7 @@ class TimelineProductParserAliasTest(unittest.TestCase):
         # Save-as-copy is reserved contractually (plan step 2) and
         # implemented in m6; the CLI verb must never be registered.
         self.assertNotIn("copy", self._choices())
-        from astrid.packs.timeline.cli import build_parser
+        from astrid.core.cli.domain_timelines import build_parser
 
         parser = build_parser(client=object())
         with self.assertRaises(SystemExit) as raised:

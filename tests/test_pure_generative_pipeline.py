@@ -7,10 +7,10 @@ from pathlib import Path
 
 from astrid.core import timeline
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.editorial.executors.arrange import run as arrange
-from astrid.packs.training.executors.pool_merge import run as pool_merge
-from astrid.packs.video_editing.executors.cut import run as cut
-from astrid.packs.video_editing.orchestrators.hype import run as pipeline
+from astrid.packs.editorial.actions.arrange import run as arrange
+from astrid.packs.training.actions.pool_merge import run as pool_merge
+from astrid.packs.video_editing.actions.cut import run as cut
+from astrid.packs.video_editing.actions.hype import entrypoint as pipeline
 
 
 class PureGenerativePipelineTest(unittest.TestCase):

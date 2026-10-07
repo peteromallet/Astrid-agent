@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from astrid.packs.understanding.executors.understand import run as understand
-from astrid.packs.understanding.executors.video_understand.run import main
+from astrid.packs.understanding.actions.understand import run as understand
+from astrid.packs.understanding.actions.video_understand.run import main
 
 
 def _write_test_video(path: Path, *, duration: float = 1.2) -> None:
@@ -108,7 +108,7 @@ def test_video_understand_writes_universal_result_manifest(capsys, tmp_path):
             }
 
     with patch(
-        "astrid.packs.understanding.executors.video_understand.run.build_gemini_client",
+        "astrid.packs.understanding.actions.video_understand.run.build_gemini_client",
         return_value=_FakeGeminiClient(),
     ):
         code = main(
@@ -136,7 +136,26 @@ def test_video_understand_writes_universal_result_manifest(capsys, tmp_path):
     assert payload["kind"] == "understanding.video_understand"
     assert manifest["kind"] == "understanding.video_understand"
     assert manifest["inputs"]["video"] == str(video)
-    assert manifest["outputs"][-1]["path"] == str(out_path)
-    assert manifest["outputs"][-1]["type"] == "file"
-    assert "content_hash" in manifest["outputs"][-1]
-    assert any(Path(item["path"]).suffix == ".mp4" for item in manifest["outputs"])
+    result_output = next(
+        item for item in manifest["outputs"] if item["output_port"] == "result" and item["name"] == "result"
+    )
+    window_output = next(
+        item
+        for item in manifest["outputs"]
+        if item["output_port"] == "windows"
+        and item["name"] == "windows"
+        and Path(item["path"]).suffix == ".mp4"
+    )
+    assert result_output["path"] == "result.json"
+    assert result_output["type"] == "file"
+    assert result_output["role"] == "result"
+    assert result_output["is_primary"] is True
+    assert "content_hash" in result_output
+    assert window_output["output_port"] == "windows"
+    assert window_output["type"] == "file"
+    assert window_output["role"] == "result"
+    assert window_output["is_primary"] is False
+    assert "content_hash" in window_output
+    assert all(
+        (manifest_path.parent / item["path"]).resolve() != video.resolve() for item in manifest["outputs"]
+    )

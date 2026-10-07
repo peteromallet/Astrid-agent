@@ -140,11 +140,17 @@ def load_element_definition(
     source: str,
     editable: bool,
     priority: int,
+    manifest_path: str | Path | None = None,
     element_kind_registry: ElementKindRegistry | None = None,
 ) -> ElementDefinition:
     element_root = Path(root)
     folder_kind = _normalize_kind(kind, element_kind_registry=element_kind_registry)
-    manifest_path = _element_manifest_path(element_root)
+    if manifest_path is None:
+        manifest_path = _element_manifest_path(element_root)
+    else:
+        manifest_path = Path(manifest_path).resolve()
+        if manifest_path.parent != element_root.resolve() or not manifest_path.is_file():
+            raise ElementValidationError(f"element manifest must be a regular file in {element_root}")
     if manifest_path is None:
         raise ElementValidationError(f"missing element manifest in {element_root}")
     payload = _read_manifest(manifest_path)

@@ -15,8 +15,8 @@ from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.rendering.contracts import SCHEMA_VERSION, RenderRequest
 from astrid.core.theme import builtin_theme
 from astrid.core.timeline.resolution import AssetIntegrity, classify_asset
-from astrid.packs.rendering.executors.timeline_visualize.assets import verify_now
-from astrid.packs.rendering.executors.timeline_visualize.thumbnails import sample_filmstrip
+from astrid.packs.rendering.actions.timeline_visualize.assets import verify_now
+from astrid.packs.rendering.actions.timeline_visualize.thumbnails import sample_filmstrip
 
 
 class _Runtime:
@@ -182,7 +182,7 @@ def test_host_derived_registry_executes_canonical_ffmpeg_executor(tmp_path: Path
     runtime = _Runtime(payload)
     attempt = tmp_path / "attempt"
     host = GenericPackHost(
-        pack_roots=[Path(__file__).parents[2] / "astrid" / "packs" / "rendering" / "executors" / "render"],
+        pack_roots=[Path(__file__).parents[2] / "astrid" / "packs" / "rendering" / "actions" / "render"],
         client=runtime,
         attempt_root=attempt,
     )
@@ -304,7 +304,7 @@ def test_host_derived_registry_reaches_canonical_remotion_executor_process(tmp_p
     attempt = tmp_path / "attempt"
     runtime_client = _Runtime({digest: payload, theme_digest: theme_payload})
     host = GenericPackHost(
-        pack_roots=[Path(__file__).parents[2] / "astrid" / "packs" / "rendering" / "executors" / "render"],
+            pack_roots=[Path(__file__).parents[2] / "astrid" / "packs" / "rendering" / "actions" / "render"],
         client=runtime_client, attempt_root=attempt,
     )
     values = host._materialize_inputs(

@@ -1,2 +1,0 @@
-"""Clip-candidate executor."""
-

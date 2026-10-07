@@ -127,11 +127,15 @@ const getMetadata = async ({
   const canvas = getCanvas(props);
   const fps = canvas.fps ?? 30;
   const clock = getRenderClock(props.timeline);
+  const metadata = (props.timeline as typeof props.timeline & {metadata?: Record<string, unknown>}).metadata;
+  const windowDuration = metadata?.source_window_start_seconds !== undefined
+    && typeof metadata.duration_seconds === 'number'
+    ? Math.round(metadata.duration_seconds * fps) : undefined;
   return {
     width: canvas.width ?? 1920,
     height: canvas.height ?? 1080,
     fps,
-    durationInFrames: Math.max(1, clock?.render_duration_frames ?? getTimelineDurationInFrames(props.timeline, fps)),
+    durationInFrames: Math.max(1, windowDuration ?? clock?.render_duration_frames ?? getTimelineDurationInFrames(props.timeline, fps)),
   };
 };
 

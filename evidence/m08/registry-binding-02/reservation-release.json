@@ -1,0 +1,19 @@
+{
+  "schema": "megado-reservation-release/v1",
+  "task": "M08",
+  "subtask": "H3 v3 transform typed CLI binding correction",
+  "released_at_utc": "2026-10-03T03:58:04Z",
+  "released_by": "/root/m08_h3_typed_bindings",
+  "status": "released",
+  "exclusive_write_set": [
+    "astrid/packs/h3_av/**",
+    "tests/packs/h3_av/test_transform_command_binding_v3.py",
+    "evidence/m08/registry-binding-02/**"
+  ],
+  "source_result": "H3 correction complete",
+  "downstream_first_failure": "iteration.experiment_review_session: command.argv[3] uses unknown placeholder {orchestrator_args}",
+  "owner_boundary_respected": true,
+  "tasklist_status_control_artifacts_edited": false,
+  "stage_commit_merge_push_publish_deploy_performed": false,
+  "provider_network_user_project_operations_performed": false
+}

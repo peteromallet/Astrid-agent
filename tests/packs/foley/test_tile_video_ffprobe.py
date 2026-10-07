@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from astrid.packs.foley.executors.tile_video import run as tile_video
-from astrid.packs.foley.executors.tile_video.run import FoleyProbeError, _ffprobe
+from astrid.packs.foley.actions.tile_video import run as tile_video
+from astrid.packs.foley.actions.tile_video.run import FoleyProbeError, _ffprobe
 
 
 def _patch_ffprobe(payload: dict) -> patch:
@@ -28,7 +28,7 @@ def _patch_ffprobe(payload: dict) -> patch:
         args=["ffprobe"], returncode=0, stdout=json.dumps(payload), stderr=""
     )
     return patch(
-        "astrid.packs.foley.executors.tile_video.run.subprocess.run",
+        "astrid.packs.foley.actions.tile_video.run.subprocess.run",
         return_value=completed,
     )
 
@@ -115,7 +115,7 @@ def test_main_writes_result_manifest(tmp_path: Path) -> None:
     out_dir = tmp_path / "tiles_output"
 
     with patch(
-        "astrid.packs.foley.executors.tile_video.run.subprocess.run",
+        "astrid.packs.foley.actions.tile_video.run.subprocess.run",
         side_effect=_fake_subprocess_run,
     ):
         rc = tile_video.main(

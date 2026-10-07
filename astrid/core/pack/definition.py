@@ -51,6 +51,11 @@ class PackDefinition:
     domain: str = field(default="general")
     stability: str = field(default="stable")
     support: str = field(default="project")
+    actions: dict[str, Any] = field(default_factory=dict)
+    ui: dict[str, Any] = field(default_factory=dict)
+    rendering: dict[str, Any] = field(default_factory=dict)
+    documents: dict[str, Any] = field(default_factory=dict)
+    documentation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         taxonomy = {
@@ -86,4 +91,10 @@ class PackDefinition:
                 self.extensions,
                 path="pack.extensions",
             )
+        if self.documentation:
+            payload["documentation"] = dict(self.documentation)
+        for section in ("actions", "ui", "rendering", "documents"):
+            declarations = getattr(self, section)
+            if declarations or str(self.schema_version) == "3":
+                payload[section] = _normalize_json_value(declarations, path=f"pack.{section}")
         return payload

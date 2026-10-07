@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.inspector_viewer import render_inspector
+from astrid.packs.rendering.actions.timeline_visualize.inspector_viewer import render_inspector
 
 
 def _viewer_data():
@@ -46,7 +46,7 @@ if(app.keyboard({key:'ArrowLeft',target:{tagName:'INPUT'}})!==false)throw Error(
 console.log('ok');
 """
     script.write_text(source)
-    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/executors/timeline_visualize/inspector_assets/inspector.js")
+    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/actions/timeline_visualize/inspector_assets/inspector.js")
     completed = subprocess.run(["node", str(script), module_path, json.dumps(_viewer_data())], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "ok"
@@ -100,7 +100,7 @@ if(app.renderAudioStatus().label!=='Render audio: available')throw Error('render
 console.log('ok');
 """
     script.write_text(source)
-    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/executors/timeline_visualize/inspector_assets/inspector.js")
+    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/actions/timeline_visualize/inspector_assets/inspector.js")
     completed = subprocess.run(["node", str(script), module_path, json.dumps(_viewer_data())], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "ok"
@@ -166,7 +166,7 @@ if(elements['detail-content'].children.length===0)throw Error('selected card det
 console.log('ok');
 """
     script.write_text(source)
-    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/executors/timeline_visualize/inspector_assets/inspector.js")
+    module_path = str(Path(__file__).parents[3] / "astrid/packs/rendering/actions/timeline_visualize/inspector_assets/inspector.js")
     completed = subprocess.run(["node", str(script), module_path], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "ok"

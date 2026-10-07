@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.transcript_attach import (
+from astrid.packs.rendering.actions.timeline_visualize.transcript_attach import (
     TranscriptAttachment,
     discover_attachment,
 )

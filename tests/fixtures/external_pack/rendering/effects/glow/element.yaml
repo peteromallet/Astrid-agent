@@ -1,0 +1,28 @@
+{
+  "id": "glow",
+  "kind": "effect",
+  "pack_id": "external_pack",
+  "metadata": {
+    "label": "Glow",
+    "description": "Minimal reviewable glow effect for contract testing."
+  },
+  "schema": {
+    "type": "object",
+    "properties": {
+      "intensity": {
+        "type": "number",
+        "default": 0.5
+      }
+    },
+    "additionalProperties": false
+  },
+  "defaults": {
+    "intensity": 0.5
+  },
+  "dependencies": {
+    "js_packages": [],
+    "python_requirements": []
+  },
+  "short_description": "Glow effect for contract testing.",
+  "keywords": ["glow", "effect"]
+}

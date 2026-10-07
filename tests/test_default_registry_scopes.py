@@ -21,8 +21,14 @@ class DefaultRegistryScopeTest(unittest.TestCase):
         self.assertEqual(youtube.metadata["source"], "pack")
         self.assertEqual(youtube.metadata["source_pack"], "youtube")
         self.assertNotIn("pack_id", youtube.metadata)
-        self.assertTrue(youtube.metadata["executor_root"].endswith("astrid/packs/youtube/executors/upload"))
-        self.assertTrue(youtube.metadata["manifest_file"].endswith("astrid/packs/youtube/executors/upload/executor.yaml"))
+        self.assertTrue(youtube.metadata["pack_root"].endswith("astrid/packs/youtube"))
+        youtube_declaration = youtube.metadata["action_declaration"]
+        self.assertEqual(youtube_declaration["metadata"]["runtime_file"], "actions/upload/run.py")
+        self.assertEqual(youtube_declaration["metadata"]["runtime_module"], "astrid.packs.youtube.actions.upload.run")
+        youtube_invocation = youtube.metadata["action_invocation"]
+        self.assertEqual(youtube_invocation["kind"], "python")
+        self.assertEqual(youtube_invocation["path"], "actions/upload/run.py")
+        self.assertEqual(youtube_invocation["function"], "run")
 
         for executor_id, folder in (
             ("understanding.audio_understand", "audio_understand"),
@@ -34,15 +40,30 @@ class DefaultRegistryScopeTest(unittest.TestCase):
                 self.assertEqual(action.metadata["source"], "pack")
                 self.assertEqual(action.metadata["source_pack"], "understanding")
                 self.assertNotIn("pack_id", action.metadata)
-                self.assertTrue(action.metadata["executor_root"].endswith(f"astrid/packs/understanding/executors/{folder}"))
-                self.assertTrue(action.metadata["manifest_file"].endswith(f"astrid/packs/understanding/executors/{folder}/executor.yaml"))
+                self.assertTrue(action.metadata["pack_root"].endswith("astrid/packs/understanding"))
+                action_declaration = action.metadata["action_declaration"]
+                self.assertEqual(action_declaration["metadata"]["runtime_file"], f"actions/{folder}/run.py")
+                module = f"astrid.packs.understanding.actions.{folder}.run"
+                self.assertEqual(action_declaration["metadata"]["runtime_module"], module)
+                action_invocation = action.metadata["action_invocation"]
+                self.assertEqual(action_invocation["kind"], "command")
+                self.assertEqual(action_invocation["command"]["argv"][:3], ["{python_exec}", "-m", module])
 
         vibecomfy = canonical.get("vibecomfy.run")
         self.assertEqual(vibecomfy.kind, "external")
         self.assertEqual(vibecomfy.metadata["pack_id"], "vibecomfy")
         self.assertEqual(vibecomfy.metadata["source_pack"], "vibecomfy")
         self.assertEqual(vibecomfy.metadata["source"], "pack")
-        self.assertTrue(vibecomfy.metadata["executor_root"].endswith("astrid/packs/vibecomfy/executors/run"))
+        self.assertTrue(vibecomfy.metadata["pack_root"].endswith("astrid/packs/vibecomfy"))
+        vibecomfy_declaration = vibecomfy.metadata["action_declaration"]
+        self.assertEqual(vibecomfy_declaration["metadata"]["runtime_file"], "actions/run/run.py")
+        self.assertEqual(vibecomfy_declaration["metadata"]["runtime_module"], "astrid.packs.vibecomfy.actions.run.run")
+        vibecomfy_invocation = vibecomfy.metadata["action_invocation"]
+        self.assertEqual(vibecomfy_invocation["kind"], "command")
+        self.assertEqual(
+            vibecomfy_invocation["command"]["argv"][:3],
+            ["{python_exec}", "-m", "astrid.packs.vibecomfy.actions.run.run"],
+        )
 
     def test_default_orchestrator_registries_do_not_classify_vibecomfy_as_orchestrator(self) -> None:
         canonical = load_orchestrator_registry(executor_registry=load_executor_registry())
@@ -59,15 +80,25 @@ class DefaultRegistryScopeTest(unittest.TestCase):
     def test_canonical_builtin_executor_runtime_module(self) -> None:
         canonical = load_executor_registry()
         render = canonical.get("rendering.render")
-        self.assertEqual(render.metadata["runtime_module"], "astrid.packs.rendering.executors.render.run")
+        self.assertEqual(render.metadata["runtime_module"], "astrid.packs.rendering.actions.render.run")
 
     def test_external_executor_roots_are_pack_native(self) -> None:
         registry = load_executor_registry()
 
-        self.assertTrue(registry.get("moirae.moirae").metadata["executor_root"].endswith("astrid/packs/moirae/executors/moirae"))
-        self.assertTrue(
-            registry.get("vibecomfy.run").metadata["executor_root"].endswith("astrid/packs/vibecomfy/executors/run")
+        moirae = registry.get("moirae.moirae")
+        self.assertTrue(moirae.metadata["pack_root"].endswith("astrid/packs/moirae"))
+        moirae_declaration = moirae.metadata["action_declaration"]
+        self.assertEqual(moirae_declaration["metadata"]["runtime_file"], "actions/moirae/run.py")
+        self.assertEqual(moirae_declaration["metadata"]["runtime_module"], "astrid.packs.moirae.actions.moirae.run")
+        moirae_invocation = moirae.metadata["action_invocation"]
+        self.assertEqual(moirae_invocation["kind"], "command")
+        self.assertEqual(
+            moirae_invocation["command"]["argv"][:3],
+            ["{python_exec}", "-m", "astrid.packs.moirae.actions.moirae.run"],
         )
+
+        vibecomfy = registry.get("vibecomfy.run")
+        self.assertTrue(vibecomfy.metadata["pack_root"].endswith("astrid/packs/vibecomfy"))
 
 
 if __name__ == "__main__":

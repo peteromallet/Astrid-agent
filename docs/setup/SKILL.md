@@ -35,9 +35,9 @@ If the platform or a required setup step is unsupported or undocumented, explain
 After provisioning the default sources, run:
 
 ```bash
-python3 -m astrid.skills.cli sync
-python3 -m astrid.skills.cli sync --check
-python3 -m astrid.skills.cli doctor --json
+python3 -m astrid.skills sync
+python3 -m astrid.skills sync --check
+python3 -m astrid.skills doctor --json
 ```
 
 Confirm the user’s agent appears in the installation report and can read the core skill and a linked pack. Preserve existing instructions and intentional skill removals. Do not use `--force` to bypass a conflict. Follow the manual guide if the agent is not detected.
@@ -54,4 +54,4 @@ The inspected gateway does not establish a direct interactive launch path. If no
 
 Summarize the checks briefly. When direct launch and credential reuse have passed, give the tested command and explain that the person can launch Astrid directly using that agent’s supported existing sign-in, or keep using it here. Otherwise offer the verified current-agent route and name the direct-launch limitation.
 
-Ask what they would like to make, then follow [Astrid’s core skill](../../astrid/packs/_core/skill/SKILL.md) and the relevant pack. Guide any additional credential entry locally.
+Ask what they would like to make, then follow [Astrid’s core skill](../../astrid/packs/_core/docs/SKILL.md) and the relevant pack. Guide any additional credential entry locally.

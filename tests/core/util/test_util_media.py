@@ -15,7 +15,7 @@ from astrid.core.media import (
     ffprobe_metadata,
     ffprobe_metadata_strict,
 )
-from astrid.packs.editorial.executors.editor_review.run import (
+from astrid.packs.editorial.actions.editor_review.run import (
     _probe_duration as editor_probe_duration,
 )
 from astrid.core.verify.checks import ffprobe_duration_seconds as checks_ffprobe_duration_seconds

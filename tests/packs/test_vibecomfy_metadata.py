@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from astrid.core.execution.executor.folder import load_folder_executors
 from astrid.core.execution.executor.registry import load_default_registry
 from astrid.packs.vibecomfy import production_engine
-from astrid.packs.vibecomfy.executors.run.run import _run_and_settle
+from astrid.packs.vibecomfy.actions.run.run import _run_and_settle
 
 
 def _fake_vibecomfy_modules(result: object) -> tuple[dict[str, types.ModuleType], Mock]:
@@ -47,7 +47,7 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
             [
                 "{python_exec}",
                 "-m",
-                "astrid.packs.vibecomfy.executors.run.run",
+                "astrid.packs.vibecomfy.actions.run.run",
                 "run",
                 "{workflow}",
                 "--python",
@@ -68,6 +68,16 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "{readiness_profile_path}",
                 "--readiness-profile-hash",
                 "{readiness_profile_hash}",
+                "--source-video",
+                "{source_video}",
+                "--source-video-node",
+                "{source_video_node}",
+                "--source-video-widget",
+                "{source_video_widget}",
+                "--managed-assets",
+                "{managed_assets}",
+                "--workflow-inputs",
+                "{workflow_inputs}",
             ],
         )
         self.assertEqual(payload["isolation"]["requirements"], ["vibecomfy"])
@@ -78,7 +88,7 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
         self.assertEqual(metadata["vibecomfy_command"], "run")
         self.assertEqual(metadata["command_names"], ["run", "validate"])
         self.assertEqual(metadata["requirements"], ["vibecomfy"])
-        self.assertEqual(metadata["requirements_source"], "requirements.txt")
+        self.assertEqual(metadata["requirements_source"], "actions/run/requirements.txt")
         self.assertEqual(
             metadata["workflow_input_contract"],
             {

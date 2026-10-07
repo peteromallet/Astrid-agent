@@ -27,9 +27,9 @@ from astrid.core.rendering.remotion_runtime import (
     remotion_runtime_status,
     resolve_remotion_runtime_tools,
 )
-from astrid.packs.rendering.backends.remotion import run as remotion_run
-from astrid.packs.rendering.executors.render import task_adapter as task_adapter_module
-from astrid.packs.rendering.executors.render.task_adapter import (
+from astrid.packs.rendering.rendering.renderers.remotion import run as remotion_run
+from astrid.packs.rendering.actions.render import task_adapter as task_adapter_module
+from astrid.packs.rendering.actions.render.task_adapter import (
     RenderExportExecutionContext,
     RenderExportRefused,
     RenderExportTaskAdapter,

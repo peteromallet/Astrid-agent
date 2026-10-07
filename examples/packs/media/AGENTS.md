@@ -1,26 +1,13 @@
-# Media Production Pack
+# Media Example Pack — Agent Guide
 
-## Purpose
-AI-assisted media production capabilities for video trailer creation.
+Use this pack when explaining how v3 media actions can compose and refer to
+pack-owned schemas, templates, and rendering elements.
 
-## Components
-- **ingest_assets** executor: Ingests and validates project assets from a source directory.
-- **make_trailer** orchestrator: Coordinates asset ingestion and assembly into a trailer.
-- **project-title-card** element: A Remotion effect for rendering project title cards.
+## Public actions
 
-## Entrypoints
-- `ingest_assets`: Run the asset ingestion executor.
-- `make_trailer`: Run the trailer orchestration pipeline.
+- `media.ingest_assets` returns a manifest of files in a source directory.
+- `media.make_trailer` composes `media.ingest_assets` and returns a trailer
+  build manifest.
 
-## Required Context
-- `brief`: A creative brief describing the desired output.
-- `project_config`: Project configuration including output settings.
-
-## Secrets
-- `OPENAI_API_KEY` (required): For AI-assisted media generation.
-- `UNSPLASH_ACCESS_KEY` (optional): For stock image search.
-
-## Dependencies
-- Python: openai>=1.0.0, requests
-- npm: @remotion/player@4.0.0
-- System: ffmpeg
+The Remotion title card is a declared rendering element. The pack's authored
+skill is `docs/SKILL.md`.

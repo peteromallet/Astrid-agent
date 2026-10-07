@@ -4,7 +4,7 @@ Astrid is a Python SDK and harness toolkit for building and running agentic UXes
 pipelines where agents and humans collaborate to make art.
 
 **Where to start:** agents begin at [AGENTS.md](../AGENTS.md) +
-[`astrid/packs/_core/skill/SKILL.md`](../astrid/packs/_core/skill/SKILL.md);
+[`astrid/packs/_core/docs/SKILL.md`](../astrid/packs/_core/docs/SKILL.md);
 humans begin at [Getting Started](getting-started.md).
 
 ## Essentials
@@ -28,10 +28,10 @@ public SDK.
 
 ### I want to author packs
 
-Pack authoring docs live under **[docs/packs/](packs/)**.  Start with the
-**[pack contract](packs/contract.md)** for vocabulary and identity rules, then
-**[Creating Packs](packs/creating-packs.md)** for the scaffold → populate →
-validate workflow.
+Start new pack authors with [When and how to create a pack](guides/create-a-pack.md).
+Use the [pack contract](packs/contract.md) for vocabulary and identity rules;
+the [legacy pack protocol reference](packs/creating-packs.md) retains older
+manifest and migration material.
 
 ### I'm building agentic consumers
 

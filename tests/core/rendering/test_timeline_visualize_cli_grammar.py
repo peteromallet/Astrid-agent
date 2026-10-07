@@ -7,8 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
-from astrid.packs.timeline.cli import build_parser
+from astrid.core.cli.domain_timelines import build_parser
 
 
 @pytest.fixture()
@@ -94,13 +95,12 @@ def test_structural_navigation_flags_are_not_public_cli_routes(parser, flag):
         parser.parse_args(argv)
 
 
-def test_executor_manifest_only_advertises_filmstrip_surface():
+def test_action_manifest_only_advertises_filmstrip_surface():
     root = Path(__file__).resolve().parents[3]
-    manifest = json.loads(
-        (root / "astrid/packs/rendering/executors/timeline_visualize/executor.yaml").read_text(
-            encoding="utf-8"
-        )
+    pack = yaml.safe_load(
+        (root / "astrid/packs/rendering/pack.yaml").read_text(encoding="utf-8")
     )
+    manifest = pack["actions"]["timeline_visualize"]
     input_names = {item["name"] for item in manifest["inputs"]}
     assert not input_names & {"all", "scope", "layout", "filmstrip", "from_view", "focus", "refresh_root"}
     assert manifest["outputs"][0]["path_template"] == "{out}/filmstrip-view"

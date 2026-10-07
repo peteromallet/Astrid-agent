@@ -1,0 +1,27 @@
+{
+  "schema": "megado-coordinator-review/v1",
+  "task": "M08",
+  "slice": "H3 v3 transform typed CLI binding correction",
+  "reviewed_at_utc": "2026-10-03T04:05:00Z",
+  "disposition": "PASS_WITH_DECLARED_LIMITS",
+  "source_hashes_match_release": true,
+  "release_receipt": "evidence/m08/registry-binding-02/reservation-release.json",
+  "result": "evidence/m08/registry-binding-02/result.json",
+  "changed_source": {
+    "astrid/packs/h3_av/pack.yaml": "664769a78e41b4b337e535da704b14c3f62e9d0ccc8c2db21d995be50d6fd408",
+    "tests/packs/h3_av/test_transform_command_binding_v3.py": "b5e39b9b6d040942b63ac837df485ff4ba701c11f8d29fe6d7e00d301b64e8c6"
+  },
+  "checks": {
+    "typed_binding_tests": "6 passed",
+    "canonical_validate": "pass",
+    "canonical_inspect": "pass",
+    "existing_h3_proof": "70 passed, 1 existing warning",
+    "reserved_h3_hashes": "65 unchanged",
+    "ordinary_unfiltered_public_sdk_dry_run": "passes H3 projection; next fails at iteration.experiment_review_session on unknown {orchestrator_args}"
+  },
+  "declared_limits": [
+    "M08's H3 declaration correction is locally accepted; the whole-registry public dry-run remains blocked by the separately owned M09 Iteration declaration.",
+    "No Iteration path was changed; the new first failure is routed to M09."
+  ],
+  "no_stage_commit_merge_push_publication_deployment": true
+}

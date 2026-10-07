@@ -115,27 +115,27 @@ def test_require_existing_storage_fails_without_creating_when_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Provision/session executors do NOT auto-create storage
+# Provision/session actions do NOT auto-create storage
 # ---------------------------------------------------------------------------
 
-# Note: The provision and session executors in run.py do NOT call
+# Note: The provision and session actions in run.py do NOT call
 # ensure_storage — they just pass storage_name through to launch().
 # If that fails, the error propagates naturally. This test confirms
-# the executors don't silently create volumes as a side-effect.
+# the actions don't silently create volumes as a side-effect.
 
 
 def test_provision_does_not_auto_create_storage() -> None:
-    """provision executor does NOT invoke ensure_storage or create_storage."""
+    """provision action does NOT invoke ensure_storage or create_storage."""
     # Read the run.py source and verify no auto-create paths
-    run_py = Path(__file__).parent.parent.parent.parent / "astrid" / "packs" / "runpod" / "executors" / "provision" / "run.py"
+    run_py = Path(__file__).parent.parent.parent.parent / "astrid" / "packs" / "runpod" / "actions" / "provision" / "run.py"
     source = run_py.read_text()
     # The cmd_provision function should NOT reference ensure_storage
     # or Pod.create_storage
     assert "ensure_storage" not in source, (
-        "provision executor must NOT auto-create storage volumes"
+        "provision action must NOT auto-create storage volumes"
     )
     assert "create_storage" not in source, (
-        "provision executor must NOT call create_storage"
+        "provision action must NOT call create_storage"
     )
 
 
@@ -143,8 +143,8 @@ def test_storage_free_provision_and_session_do_not_probe_or_create_storage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Storage-free executor modes do not call get_storage or create_storage."""
-    from astrid.packs.runpod.executors.provision.run import cmd_provision, cmd_session
+    """Storage-free action modes do not call get_storage or create_storage."""
+    from astrid.packs.runpod.actions.provision.run import cmd_provision, cmd_session
 
     pod = MagicMock()
     pod.id = "pod-storage-free"

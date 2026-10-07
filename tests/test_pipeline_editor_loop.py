@@ -8,10 +8,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 from astrid.core import timeline
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.editorial.executors.editor_review import run as editor_review
-from astrid.packs.video_editing.orchestrators.hype import run as pipeline
+from astrid.packs.editorial.actions.editor_review import run as editor_review
+from astrid.packs.video_editing.actions.hype import entrypoint as pipeline
+
+
+@pytest.fixture(autouse=True)
+def isolated_pack_sources(tmp_path, monkeypatch):
+    # This suite mocks subprocess.run; it must not intercept managed-source git
+    # verification against the developer's real checkout inventory.
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(tmp_path / "absent-source-state.json"))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
 
 
 class PipelineEditorLoopTest(unittest.TestCase):

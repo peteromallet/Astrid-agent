@@ -18,7 +18,8 @@ from .harnesses.base import PlannedStep, ensure_symlink
 
 
 _ROOT_ROUTE_REWRITES = {
-    "../../rendering/skill/SKILL.md": "packs/rendering/SKILL.md",
+    "../../rendering/docs/SKILL.md": "packs/rendering/SKILL.md",
+    "../../media/docs/references.md": "packs/media/references.md",
     "../../video_editing/skill/SKILL.md": "packs/video_editing/SKILL.md",
     "../../references/skill/SKILL.md": "packs/references/SKILL.md",
     "../../hivemind/skill/SKILL.md": "packs/hivemind/SKILL.md",
@@ -28,9 +29,10 @@ _CREATIVE_ROUTE_REWRITES = {
     "../../../vibecomfy/skill/SKILL.md": "../packs/vibecomfy/SKILL.md",
     "../../../understanding/skill/SKILL.md": "../packs/understanding/SKILL.md",
     "../../../editorial/skill/SKILL.md": "../packs/editorial/SKILL.md",
-    "../../../media/skill/SKILL.md": "../packs/media/SKILL.md",
+    "../../../media/docs/SKILL.md": "../packs/media/SKILL.md",
+    "../../../media/docs/references.md": "../packs/media/references.md",
     "../../../video_editing/skill/SKILL.md": "../packs/video_editing/SKILL.md",
-    "../../../rendering/skill/SKILL.md": "../packs/rendering/SKILL.md",
+    "../../../rendering/docs/SKILL.md": "../packs/rendering/SKILL.md",
     "../../../iteration/skill/SKILL.md": "../packs/iteration/SKILL.md",
     "../../../fal/skill/SKILL.md": "../packs/fal/SKILL.md",
     "../../../foley/skill/SKILL.md": "../packs/foley/SKILL.md",
@@ -43,7 +45,7 @@ _CREATIVE_ROUTE_REWRITES = {
 }
 _PACK_BUILDER_DOC_PREFIX = "https://github.com/peteromallet/Astrid/blob/main/"
 _PACK_BUILDER_VIEW_REWRITES = {
-    "../../../rendering/skill/SKILL.md": "../packs/rendering/SKILL.md",
+    "../../../rendering/docs/SKILL.md": "../packs/rendering/SKILL.md",
     "../../../references/skill/SKILL.md": "../packs/references/SKILL.md",
 }
 
@@ -84,7 +86,7 @@ def compose_view(
     packs: list[SkillDescriptor],
     *,
     dry_run: bool = False,
-) -> tuple[SkillDescriptor, list[PlannedStep]]:
+) -> tuple[SkillDescriptor, list[PlannedStep], list[SkillDescriptor]]:
     """Compose one harness view and return a descriptor for its gateway.
 
     Pack links are keyed by pack id and are therefore safe to reconcile without

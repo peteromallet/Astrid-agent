@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import (
+from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
     INSPECTION_MAX_BYTES, compact_render_receipt, inspect_filmstrip,
 )
 
@@ -150,3 +150,23 @@ def test_cli_does_not_bootstrap_runtime_and_errors_stay_small(tmp_path, monkeypa
     assert json.loads(output)["data"]["records"][0]["frame"] == 4
     assert dispatch._dispatch_timelines(["inspect", "--manifest", str(manifest), "--bogus", "x" * 10000]) == 2
     assert len(capsys.readouterr().out.encode()) < 1024
+
+
+def test_inspect_dispatch_uses_core_timeline_cli_owner(monkeypatch):
+    from astrid.core.cli import domain_timelines
+    from astrid.core.gateway import dispatch
+
+    seen = {}
+    monkeypatch.setattr(
+        domain_timelines,
+        "offline_inspect_main",
+        lambda args: seen.__setitem__("args", list(args)) or 7,
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "_dispatch_product",
+        lambda _args: pytest.fail("offline inspect must not use product dispatch"),
+    )
+
+    assert dispatch._dispatch_timelines(["inspect", "--manifest", "bundle.json"]) == 7
+    assert seen["args"] == ["--manifest", "bundle.json"]

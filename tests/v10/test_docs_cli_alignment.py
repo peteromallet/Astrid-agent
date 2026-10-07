@@ -2,7 +2,7 @@
 
 Every ``astrid ...`` / ``python3 -m astrid ...`` command documented in the
 agent-facing docs (AGENTS.md, _core/SKILL.md, getting-started.md,
-cli-journeys.md, every pack STAGE.md / skill/SKILL.md, and every
+cli-journeys.md, every pack STAGE.md / docs/SKILL.md / skill/SKILL.md, and every
 docs/contracts/*.md / docs/packs/*.md guide) must be a real
 command on the shipped eight-family gateway:
 
@@ -31,22 +31,28 @@ import re
 import shlex
 from pathlib import Path
 
+import yaml
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _TOP_LEVEL_FAMILIES = frozenset(
     {"projects", "timelines", "media", "tasks", "runs", "serve", "doctor", "backup"}
 )
 
+# Hivemind contributor authentication is a separate contributor surface.  It
+# is documented in getting-started.md but is not a Runtime gateway family.
+_HIVEMIND_COMMANDS = frozenset({"login", "status", "logout", "revoke"})
+
 # (family, nested) -> parser module for the manifest-declared nested mounts.
 _NESTED_MOUNTS: dict[tuple[str, str], str] = {
-    ("timelines", "shots"): "astrid.packs.shots.cli",
-    ("media", "references"): "astrid.packs.references.cli",
+    ("timelines", "shots"): "astrid.core.cli.domain_shots",
+    ("media", "references"): "astrid.core.cli.domain_references",
 }
 
 # The frozen in-tree family parser builders (mirrors domain_product).
 _FAMILY_PARSERS: dict[str, str] = {
     "projects": "astrid.core.cli.domain_projects",
-    "timelines": "astrid.packs.timeline.cli",
+    "timelines": "astrid.core.cli.domain_timelines",
     "media": "astrid.core.cli.domain_media",
     "tasks": "astrid.core.cli.domain_tasks",
     "runs": "astrid.core.cli.domain_runs",
@@ -76,7 +82,7 @@ _IN_FLIGHT_EXCLUDED = (
 
 _CORE_DOCS = (
     _ROOT / "AGENTS.md",
-    _ROOT / "astrid/packs/_core/skill/SKILL.md",
+    _ROOT / "astrid/packs/_core/docs/SKILL.md",
     _ROOT / "docs/getting-started.md",
     _ROOT / "docs/guides/cli-journeys.md",
 )
@@ -90,11 +96,30 @@ def _pack_docs() -> list[Path]:
     for path in sorted((_ROOT / "astrid/packs").rglob("skill/SKILL.md")):
         if not _is_excluded(path):
             files.append(path)
+    for path in sorted((_ROOT / "astrid/packs").rglob("docs/SKILL.md")):
+        if not _is_excluded(path):
+            files.append(path)
     return files
 
 
 def _is_excluded(path: Path) -> bool:
     return any(path.is_relative_to(root) for root in _IN_FLIGHT_EXCLUDED)
+
+
+def test_pack_docs_cover_declared_skills() -> None:
+    """Every current manifest skill must enter the CLI documentation checks."""
+    discovered = set(_pack_docs())
+    declared: set[Path] = set()
+    for manifest in sorted((_ROOT / "astrid/packs").glob("*/pack.yaml")):
+        documentation = yaml.safe_load(manifest.read_text(encoding="utf-8")).get("documentation", {})
+        if documentation.get("kind") != "skill":
+            continue
+        path = manifest.parent / documentation["path"]
+        if not _is_excluded(path):
+            declared.add(path)
+    assert declared, "no manifest-declared skills checked"
+    assert declared <= discovered, sorted(str(path.relative_to(_ROOT)) for path in declared - discovered)
+    assert all(path.is_file() for path in declared)
 
 
 def _contract_docs() -> list[Path]:
@@ -120,7 +145,9 @@ def _commands_from_line(raw_line: str) -> list[list[str]]:
     line = raw_line.split("#", 1)[0].strip()
     if not line:
         return []
-    match = re.search(r"(?:^|\s)(?:python3\s+-m\s+)?astrid(?=\s|$)", line)
+    # Match only a command head.  A pack-authoring example may legitimately
+    # use ``astrid`` as a generated pack name later in the line.
+    match = re.search(r"(?:^|python3\s+-m\s+)astrid(?=\s|$)", line)
     if not match:
         return []
     tail = re.split(r"[;&|]", line[match.end():].strip())[0].strip()
@@ -199,6 +226,8 @@ def _validate_command(tokens: list[str], where: str) -> list[str]:
     errors: list[str] = []
     first = tokens[0]
     if first in {"--help", "-h", "--version", "help"}:
+        return errors
+    if first in _HIVEMIND_COMMANDS:
         return errors
     if first not in _TOP_LEVEL_FAMILIES:
         errors.append(f"{where}: unknown top-level command {tokens!r}")
@@ -322,8 +351,8 @@ def test_validator_rejects_invalid_verb_and_flag() -> None:
 
 
 def test_core_docs_have_no_retired_invocation_strings() -> None:
-    """AGENTS.md and _core/SKILL.md never mention the retired task-mode verbs."""
-    for path in (_ROOT / "AGENTS.md", _ROOT / "astrid/packs/_core/skill/SKILL.md"):
+    """AGENTS.md and _core/docs/SKILL.md never mention retired task-mode verbs."""
+    for path in (_ROOT / "AGENTS.md", _ROOT / "astrid/packs/_core/docs/SKILL.md"):
         text = path.read_text(encoding="utf-8")
         for ghost in _GHOST_STRINGS:
             assert ghost not in text, f"{path.name} contains {ghost!r}"

@@ -188,15 +188,16 @@ def discover(
             sdk_module._capability_from_element(definition)
             for definition in element_registry.list()
         )
-    if kind is not None and kind not in ("executor", "orchestrator", "element"):
+    if kind is not None and kind not in ("action", "executor", "orchestrator", "element"):
         raise CapabilityValidationError(
-            f"discover(kind=...) must be one of 'executor', 'orchestrator', "
+            f"discover(kind=...) must be one of 'action', 'executor', 'orchestrator', "
             f"'element' — got {kind!r}"
         )
-    executors = executors if kind in (None, "executor") else ()
-    orchestrators = orchestrators if kind in (None, "orchestrator") else ()
+    executors = executors if kind in (None, "action", "executor") else ()
+    orchestrators = orchestrators if kind in (None, "action", "orchestrator") else ()
     elements = elements if kind in (None, "element") else ()
     return DiscoveryResult(
+        actions=executors + orchestrators,
         executors=executors,
         orchestrators=orchestrators,
         elements=elements,
@@ -304,6 +305,9 @@ def _validate_manifest_preview_inputs(
     for port in ports:
         if port.name not in values and getattr(port, "default", None) is not None:
             values[port.name] = port.default
+    from .actions import validate_action_inputs
+
+    validate_action_inputs(capability, values)
     missing = [
         str(port.name)
         for port in ports
@@ -601,6 +605,36 @@ def _manifest_preview_command(
     return command
 
 
+def _repeatable_string_input_names(capability: Any) -> frozenset[str]:
+    """Return command-mapped string ports that explicitly accept repeats.
+
+    This is intentionally narrower than the generic command binder's list
+    handling: the public child boundary only admits repeated JSON strings when
+    the admitted action declares that exact repeatable string mapping.
+    """
+    definition = getattr(capability, "definition", {})
+    command = definition.get("command") if isinstance(definition, Mapping) else None
+    if not isinstance(command, Mapping):
+        return frozenset()
+    input_args = command.get("input_args")
+    if not isinstance(input_args, (list, tuple)):
+        return frozenset()
+    ports = {
+        str(port.name): port
+        for port in (getattr(capability, "inputs", ()) or ())
+        if getattr(port, "name", None)
+    }
+    return frozenset(
+        str(mapping["input"])
+        for mapping in input_args
+        if isinstance(mapping, Mapping)
+        and type(mapping.get("input")) is str
+        and mapping.get("repeatable") is True
+        and mapping["input"] in ports
+        and str(getattr(ports[mapping["input"]], "type", "")).lower() == "string"
+    )
+
+
 def _validate_timeline_visualize_inputs(
     inputs: Mapping[str, Any] | None,
     *,
@@ -660,7 +694,7 @@ def _validate_timeline_visualize_inputs(
         raise CapabilityValidationError(
             "transcript input is host-owned; config.app.transcript supplies the CAS object"
         )
-    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import (
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
         inspection_options,
     )
     try:
@@ -691,7 +725,7 @@ def _validate_timeline_visualize_inputs(
     if values.get("project_slug") not in (None, "", project):
         raise CapabilityValidationError("project_slug does not match project")
     from .timeline_filmstrip import prepare_filmstrip
-    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_options import filmstrip_options
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
     try:
         filmstrip_options(values)
     except ValueError as exc:
@@ -870,7 +904,7 @@ def _validate_managed_speech_inputs(values: Mapping[str, Any]) -> None:
         raise CapabilityValidationError("speech_annotations must be a list of objects")
     if occurrences is not None and not isinstance(occurrences, list):
         raise CapabilityValidationError("speech_occurrences must be a list of objects")
-    from astrid.packs.rendering.executors.timeline_visualize.speech_projection import (
+    from astrid.packs.rendering.actions.timeline_visualize.speech_projection import (
         SpeechProjectionError,
         project_speech_annotations,
     )
@@ -890,19 +924,54 @@ def _validate_managed_speech_inputs(values: Mapping[str, Any]) -> None:
         raise CapabilityValidationError(f"invalid frozen speech metadata: {exc}") from exc
 
 
+def _validate_render_input_mode(inputs: Mapping[str, Any]) -> bool:
+    """Select file mode without resolving scope or granting file authority."""
+    for name in ("timeline_authority", "timeline_snapshot"):
+        if name in inputs:
+            raise CapabilityValidationError(
+                f"caller-supplied {name} is not accepted; canonical render authority is host-owned"
+            )
+    file_mode = inputs.get("timeline") not in (None, "")
+    if file_mode:
+        if inputs.get("timeline_ref") not in (None, ""):
+            raise CapabilityValidationError(
+                "timeline and timeline_ref are mutually exclusive; use timeline for explicit "
+                "file mode or timeline_ref for canonical managed mode"
+            )
+        if "expected_version" in inputs:
+            raise CapabilityValidationError("expected_version is only valid with timeline_ref")
+    return file_mode
+
+
 def _prepare_managed_render_inputs(
     inputs: Mapping[str, Any] | None,
     *,
     project: str | None,
     _client: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Resolve the explicit render ref and hand it to the runtime host.
+    """Select admitted file inputs or resolve a canonical render snapshot.
 
     Snapshot bytes remain in the admission envelope until the generic host
     materializes them beneath the assigned attempt.
     """
 
     values = dict(inputs or {})
+    if _validate_render_input_mode(values):
+        # File mode carries existing CAS descriptors unchanged. Never open
+        # these JSON inputs here or derive read authority from their contents;
+        # declared file admission and host materialization own those bytes.
+        from astrid.core.execution.managed_inputs import managed_file_digest
+
+        for name in ("timeline", "assets_registry"):
+            if values.get(name) in (None, ""):
+                continue
+            try:
+                managed_file_digest(values[name], name)
+            except ValueError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+        _validate_explicit_render_profile(values.get("profile"))
+        values.pop("timeline_ref", None)
+        return values, None
     timeline_ref = values.get("timeline_ref")
     expected_version = values.get("expected_version")
     if _client is not None:
@@ -942,13 +1011,8 @@ def _prepare_managed_render_inputs(
             values["timeline_ref"] = timeline_ref
     if timeline_ref in (None, ""):
         raise CapabilityValidationError(
-            "rendering.render requires timeline_ref=<runtime timeline slug/UUID/ULID>; "
-            "path-backed timeline inputs are not supported"
-        )
-    if values.get("timeline") not in (None, ""):
-        raise CapabilityValidationError(
-            "timeline and timeline_ref are mutually exclusive; use timeline for explicit "
-            "file mode or timeline_ref for canonical managed mode"
+            "rendering.render requires timeline=<admitted Runtime file> or "
+            "timeline_ref=<runtime timeline slug/UUID/ULID>"
         )
     if values.get("assets_registry") not in (None, ""):
         raise CapabilityValidationError(
@@ -966,7 +1030,7 @@ def _prepare_managed_render_inputs(
     ):
         raise CapabilityValidationError("expected_version must be a positive integer")
     _validate_explicit_render_profile(values.get("profile"))
-    from astrid.packs.rendering.executors.render.managed_timeline import (
+    from astrid.packs.rendering.actions.render.managed_timeline import (
         ManagedRenderValidationError,
         _runtime_snapshot_registry,
         resolve_managed_render_snapshot,
@@ -1409,7 +1473,7 @@ def _invocation_outputs(
             outputs["pack_root"] = str(pack_root)
             outputs["manifest_path"] = str(manifest)
             if isinstance(document, dict) and document.get("kind") == "timeline_filmstrip":
-                from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import action_argv
+                from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import action_argv
                 outputs["inspection"] = action_argv(
                     "python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest), "--section", "summary"
                 )
@@ -1947,6 +2011,7 @@ def _kernel_invoke(
     variant_context: Mapping[str, Any] | None = None,
     execution_request: Mapping[str, Any] | None = None,
     storage_estimate: Mapping[str, int] | None = None,
+    child_delegation: Mapping[str, Any] | None = None,
     registry: Any | None = None,
     _client: Any | None = None,
 ) -> tuple[str, str, str, Path | None, dict[str, Any], bool, Any]:
@@ -2315,6 +2380,10 @@ def _kernel_invoke(
         )
     if execution_request is not None:
         admission["execution_request"] = dict(execution_request)
+    if child_delegation is not None:
+        from ._child_bridge import _validate_child_policy
+
+        admission["child_delegation"] = _validate_child_policy(child_delegation)
     result = create_task(**admission)
     result_ok = bool(getattr(result, "ok", isinstance(result, Mapping)))
     data = getattr(result, "data", result if isinstance(result, Mapping) else None)
@@ -2404,7 +2473,7 @@ def _wait_for_kernel_task(
     poll_seconds: float,
     read_managed_outputs: bool = False,
 ) -> tuple[dict[str, Any], bool, str]:
-    """Follow one admitted task to a terminal runtime-owned result."""
+    """Follow one admitted task until completion, failure, or requested cancellation."""
     if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
         raise CapabilityValidationError("wait timeout_seconds must be positive")
     if not math.isfinite(float(poll_seconds)) or poll_seconds <= 0:
@@ -2467,7 +2536,7 @@ def _wait_for_kernel_task(
                     return completed, False, attempt_id
                 completed["managed_outputs"] = managed_outputs or []
             return completed, True, attempt_id
-        if state in {"failed", "cancelled"}:
+        if state in {"failed", "cancelled", "cancel_requested"}:
             settled = task.get("result")
             settled = dict(settled) if isinstance(settled, Mapping) else {}
             failure = settled.get("error")
@@ -2512,6 +2581,101 @@ def _wait_for_kernel_task(
         time.sleep(min(float(poll_seconds), remaining))
 
 
+def _invoke_bridge_child(
+    capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
+    child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+) -> InvocationResult:
+    """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
+    from types import SimpleNamespace
+    from astrid.core.foundation.hash import executor_definition_digest
+    from ._child_bridge import (
+        _BridgeRejected, _ChildOutputBinding, _child_request, _valid_id, _validate_output_page,
+    )
+
+    digest = executor_definition_digest(registries[0].get(capability.id))
+    request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
+                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+    try:
+        data = bridge.submit(request)
+    except _BridgeRejected as exc:
+        error = {**exc.error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
+        return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
+                                native_kind=capability.native_kind, ok=False, error=error,
+                                raw_result={"ok": False, "error": exc.error}, executor_version=digest)
+    if (not isinstance(data, Mapping) or not _valid_id(data.get("task_id"))
+            or not _valid_id(data.get("run_id"))):
+        bridge.close()
+        raise CapabilityInvocationError("child bridge admission returned an incomplete task resource")
+    run_id, task_id = data["run_id"], data["task_id"]
+    attempt_id = str(data.get("attempt_id") or "")
+    raw = {"ok": True, "run_id": run_id, "kernel_run_id": run_id,
+           "kernel_task_id": task_id, "kernel_attempt_id": attempt_id, "task": dict(data)}
+    ok = True
+    if wait:
+        deadline = time.monotonic() + float(timeout_seconds)
+        latest_status: Mapping[str, Any] = data
+
+        def status(observed_id: str) -> Any:
+            nonlocal latest_status
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return latest_status
+            try:
+                observed = bridge.status(request["child_key"], observed_id,
+                                         timeout_seconds=remaining)
+            except _BridgeRejected as exc:
+                return SimpleNamespace(ok=False, data=None, error=exc.error)
+            if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
+                bridge.close()
+                raise CapabilityInvocationError("child bridge status returned a foreign task resource")
+            latest_status = observed
+            return observed
+
+        def read_outputs(observed_id: str) -> Any:
+            try:
+                rows = bridge.outputs(request["child_key"], observed_id,
+                                      timeout_seconds=max(0.000001, deadline - time.monotonic()))
+                if not _valid_id(latest_status.get("attempt_id")):
+                    raise ValueError("invalid settled child attempt")
+                return _validate_output_page(rows, task_id=task_id, run_id=run_id,
+                                             attempt_id=latest_status["attempt_id"])
+            except _BridgeRejected as exc:
+                return SimpleNamespace(ok=False, data=None, error=exc.error)
+            except ValueError as exc:
+                bridge.close()
+                raise CapabilityInvocationError("child bridge returned foreign or invalid outputs") from exc
+
+        read_client = SimpleNamespace(tasks=SimpleNamespace(show=status, list_managed_outputs=read_outputs))
+        raw, ok, waited_attempt = _wait_for_kernel_task(
+            read_client, task_id=task_id, run_id=run_id, timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds, read_managed_outputs=True,
+        )
+        if waited_attempt:
+            attempt_id = waited_attempt
+        settled = raw.get("result", {})
+        payload = settled.get("payload", {}) if isinstance(settled, Mapping) else {}
+        if ok and isinstance(payload, Mapping) and "action_result" in payload:
+            from .actions import validate_action_output_definition
+
+            validate_action_output_definition(capability.definition, payload["action_result"])
+    raw["executor_version"] = digest
+    error = raw.get("error")
+    result = InvocationResult(
+        capability_id=capability.id, capability_type=capability.capability_type,
+        native_kind=capability.native_kind, ok=ok,
+        error={**error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
+        if isinstance(error, Mapping) else None,
+        raw_result=raw, run_id=run_id, outputs=_invocation_outputs(
+            raw, manifest_path=None, capability_id=capability.id,
+        ), executor_version=digest, kernel_run_id=run_id,
+        kernel_task_id=task_id, kernel_attempt_id=attempt_id,
+    )
+    if wait and ok:
+        object.__setattr__(result, "_child_output_binding",
+                           _ChildOutputBinding(result, bridge, request["child_key"]))
+    return result
+
+
 def invoke(
     capability_id: str,
     *,
@@ -2526,6 +2690,8 @@ def invoke(
     inputs: Mapping[str, Any] | None = None,
     execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
     idempotency_context: Mapping[str, Any] | None = None,
+    child_delegation: Mapping[str, Any] | None = None,
+    child_key: str | None = None,
     outputs: Mapping[str, Any] | None = None,
     brief: Path | str | None = None,
     dry_run: bool = False,
@@ -2542,6 +2708,25 @@ def invoke(
     _include_internal: bool = False,
     _internal_dispatch_token: object | None = None,
 ) -> InvocationResult:
+    """Invoke a selected capability through Runtime or the installed host bridge.
+
+    ``child_delegation`` is parent admission policy, outside action inputs.
+    Inside an admitted action, a private host bridge handles child calls.
+    ``child_key`` identifies one logical child (and requires that bridge);
+    omitting it uses a stable key derived from exact capability and inputs.
+    """
+    from . import _child_bridge
+
+    child_mode = _child_bridge._bridge is not None or child_key is not None
+    if child_mode and child_delegation is not None:
+        raise CapabilityValidationError("child invocation cannot set child_delegation")
+    validated_child_policy = _child_bridge._validate_child_policy(child_delegation)
+    if child_mode and _child_bridge._bridge is None:
+        raise CapabilityInvocationError("child invocation requires a live host bridge")
+    if child_mode and any(value is not None for value in (
+        execution_request, idempotency_context, outputs, project, out, brief, python_exec,
+    )):
+        raise CapabilityValidationError("child invocation accepts only declared inputs and child wait controls")
     if _include_internal and _internal_dispatch_token is not _INTERNAL_DISPATCH_TOKEN:
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     try:
@@ -2575,8 +2760,17 @@ def invoke(
     if capability.capability_type == "element":
         raise UnsupportedCapabilityError(f"elements are not invokable via the SDK: {capability.id}")
 
+    # The unified action selector resolves a native route before admission.
+    # Runtime task kinds and existing SDK result DTOs retain their contracts.
+    if kind == "action":
+        kind = capability.capability_type
+
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
+    if capability.id == "rendering.render":
+        # Apply caller/mode checks before delegated child dispatch as well as
+        # top-level preflight. Child file custody still belongs to the bridge.
+        _validate_render_input_mode(request_inputs)
     variant_context: dict[str, Any] | None = None
     variant_of_supplied = "variant_of" in request_inputs
     primary_supplied = "primary" in request_inputs
@@ -2630,6 +2824,52 @@ def invoke(
                 f"{capability.id} requires explicit generation_intent because its "
                 "output cardinality is not safely inferable at admission"
             )
+
+    from .actions import validate_action_inputs
+
+    effective_inputs = dict(request_inputs)
+    for port in capability.inputs if hasattr(capability, "inputs") else ():
+        if port.name not in effective_inputs and port.default is not None:
+            effective_inputs[port.name] = port.default
+    validate_action_inputs(capability, effective_inputs)
+
+    if child_mode:
+        if dry_run or capability.capability_type != "executor" or argv or orchestrator_args:
+            raise CapabilityValidationError("child bridge requires an executable action without launcher controls")
+        _child_bridge._strict_json(effective_inputs)
+        metadata = capability.definition.get("metadata", {})
+        repeatable_string_inputs = _repeatable_string_input_names(capability)
+        for name, value in effective_inputs.items():
+            if type(value) is not list:
+                continue
+            if name not in repeatable_string_inputs:
+                continue
+            if any(type(item) is not str for item in value):
+                raise CapabilityValidationError(
+                    f"child input {name!r} repeatable values must be strings"
+                )
+        if "action_inputs_schema" not in metadata:
+            unknown = set(effective_inputs) - {port.name for port in capability.inputs}
+            if unknown:
+                raise CapabilityValidationError("child invocation contains undeclared inputs")
+            for port in capability.inputs:
+                value = effective_inputs.get(port.name)
+                if value is None:
+                    continue
+                if type(value) is list and port.name in repeatable_string_inputs:
+                    continue
+                accepted = {"string": (str,), "path": (str,), "directory": (str,), "html": (str,),
+                            "boolean": (bool,), "integer": (int,), "number": (int, float)}.get(port.type)
+                if accepted is not None and type(value) not in accepted:
+                    raise CapabilityValidationError(f"child input {port.name!r} must match declared {port.type} type")
+        effective_inputs = _validate_manifest_preview_inputs(
+            capability, inputs=effective_inputs, orchestrator_args=(),
+        )
+        return _invoke_bridge_child(
+            capability, registries=registries, inputs=effective_inputs,
+            bridge=_child_bridge._bridge, child_key=child_key,
+            wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+        )
 
     if isinstance(project, str) and not project.strip():
         project = None
@@ -2723,46 +2963,47 @@ def invoke(
             # sync so the Runtime host can materialize the attempt-local
             # timeline before expanding the renderer command.
             request_inputs = dict(inputs)
-            snapshot = (inputs or {}).get("timeline_snapshot")
-            snapshot_config = snapshot.get("config") if isinstance(snapshot, Mapping) else None
-            snapshot_registry = snapshot.get("registry") if isinstance(snapshot, Mapping) else None
-            if not isinstance(snapshot_config, Mapping) or not isinstance(snapshot_registry, Mapping):
-                raise CapabilityInvocationError(
-                    "managed render storage estimation requires the expanded canonical snapshot"
+            if invocation_authority_context is not None:
+                snapshot = (inputs or {}).get("timeline_snapshot")
+                snapshot_config = snapshot.get("config") if isinstance(snapshot, Mapping) else None
+                snapshot_registry = snapshot.get("registry") if isinstance(snapshot, Mapping) else None
+                if not isinstance(snapshot_config, Mapping) or not isinstance(snapshot_registry, Mapping):
+                    raise CapabilityInvocationError(
+                        "managed render storage estimation requires the expanded canonical snapshot"
+                    )
+                from astrid.core.rendering.storage import (
+                    StorageEstimateError,
+                    estimate_managed_render_storage,
+                    managed_object_sizes,
+                    used_effect_asset_sizes,
                 )
-            from astrid.core.rendering.storage import (
-                StorageEstimateError,
-                estimate_managed_render_storage,
-                managed_object_sizes,
-                used_effect_asset_sizes,
-            )
-            from astrid.sdk.pagination import paged_rows
+                from astrid.sdk.pagination import paged_rows
 
-            media_rows = paged_rows(_client.media.list, str(project), limit=50)
-            if media_rows is None:
-                raise CapabilityInvocationError(
-                    "runtime media listing is unavailable for exact render storage estimation"
-                )
-            try:
-                exact_object_sizes = managed_object_sizes(snapshot_registry, media_rows)
-                effect_sizes = used_effect_asset_sizes(snapshot_config)
-                storage_estimate = estimate_managed_render_storage(
-                    timeline=snapshot_config,
-                    registry=snapshot_registry,
-                    object_sizes=exact_object_sizes,
-                    effect_asset_sizes=effect_sizes,
-                    requested_profile=(inputs or {}).get("profile"),
-                )
-            except StorageEstimateError as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-            invocation_admission_metadata = {
-                "storage_estimate": storage_estimate,
-                "runtime_enforced": True,
-            }
-            invocation_storage_estimate = {
-                "scratch_bytes": int(storage_estimate["estimated_scratch_bytes"]),
-                "output_bytes": int(storage_estimate["estimated_output_bytes"]),
-            }
+                media_rows = paged_rows(_client.media.list, str(project), limit=50)
+                if media_rows is None:
+                    raise CapabilityInvocationError(
+                        "runtime media listing is unavailable for exact render storage estimation"
+                    )
+                try:
+                    exact_object_sizes = managed_object_sizes(snapshot_registry, media_rows)
+                    effect_sizes = used_effect_asset_sizes(snapshot_config)
+                    storage_estimate = estimate_managed_render_storage(
+                        timeline=snapshot_config,
+                        registry=snapshot_registry,
+                        object_sizes=exact_object_sizes,
+                        effect_asset_sizes=effect_sizes,
+                        requested_profile=(inputs or {}).get("profile"),
+                    )
+                except StorageEstimateError as exc:
+                    raise CapabilityValidationError(str(exc)) from exc
+                invocation_admission_metadata = {
+                    "storage_estimate": storage_estimate,
+                    "runtime_enforced": True,
+                }
+                invocation_storage_estimate = {
+                    "scratch_bytes": int(storage_estimate["estimated_scratch_bytes"]),
+                    "output_bytes": int(storage_estimate["estimated_output_bytes"]),
+                }
 
     # Generation requests have a single read-only preflight for both dry-run
     # and live invocation.  This keeps generic ``sdk.invoke`` from accepting
@@ -2787,7 +3028,7 @@ def invoke(
         if capability.id == "generation.generate_image":
             recipe = request_inputs.get("shot_generation_recipe")
             if recipe is not None:
-                from astrid.packs.generation.executors.generate_image.task_adapter import (
+                from astrid.packs.generation.actions.generate_image.task_adapter import (
                     GenerateImageAdapterError,
                     validate_shot_generation_recipe,
                 )
@@ -2868,6 +3109,8 @@ def invoke(
         )
 
     if capability.capability_type == "orchestrator":
+        if validated_child_policy is not None:
+            raise CapabilityValidationError("child_delegation requires a Runtime-admitted executor action")
         # The Runtime task registry is the executor/worker surface.  A
         # parent orchestrator is the public launcher that coordinates those
         # registered child tasks and owns the caller's output directory.
@@ -2920,6 +3163,8 @@ def invoke(
             kernel_kwargs["variant_context"] = variant_context
         if normalized_execution_request is not None:
             kernel_kwargs["execution_request"] = normalized_execution_request
+        if validated_child_policy is not None:
+            kernel_kwargs["child_delegation"] = validated_child_policy
         if registry is not None:
             kernel_kwargs["registry"] = registry
         kr, kt, ka, mpath, raw_result, ok, _ = _kernel_invoke(

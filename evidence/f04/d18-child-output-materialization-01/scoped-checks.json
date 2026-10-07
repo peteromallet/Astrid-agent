@@ -1,0 +1,114 @@
+[
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check",
+      "--",
+      "astrid/sdk/_child_bridge.py",
+      "astrid/sdk/invocation.py",
+      "astrid/sdk/results.py",
+      "astrid/sdk/__init__.py",
+      "tests/sdk/test_child_bridge_d18.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 0,
+    "elapsed_seconds": 0.031439781188964844,
+    "stdout_file": "scoped-check-00.stdout.txt",
+    "stderr_file": "scoped-check-00.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "apply",
+      "--check",
+      "--reverse",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/incremental-source.patch"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 0,
+    "elapsed_seconds": 0.011863231658935547,
+    "stdout_file": "scoped-check-01.stdout.txt",
+    "stderr_file": "scoped-check-01.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--no-index",
+      "--check",
+      "--",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/_child_bridge.py",
+      "astrid/sdk/_child_bridge.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 1,
+    "elapsed_seconds": 0.009453058242797852,
+    "stdout_file": "scoped-check-02.stdout.txt",
+    "stderr_file": "scoped-check-02.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--no-index",
+      "--check",
+      "--",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/invocation.py",
+      "astrid/sdk/invocation.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 1,
+    "elapsed_seconds": 0.010360002517700195,
+    "stdout_file": "scoped-check-03.stdout.txt",
+    "stderr_file": "scoped-check-03.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--no-index",
+      "--check",
+      "--",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/results.py",
+      "astrid/sdk/results.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 1,
+    "elapsed_seconds": 0.008012056350708008,
+    "stdout_file": "scoped-check-04.stdout.txt",
+    "stderr_file": "scoped-check-04.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--no-index",
+      "--check",
+      "--",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/__init__.py",
+      "astrid/sdk/__init__.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 1,
+    "elapsed_seconds": 0.007613182067871094,
+    "stdout_file": "scoped-check-05.stdout.txt",
+    "stderr_file": "scoped-check-05.stderr.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--no-index",
+      "--check",
+      "--",
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/tests/sdk/test_child_bridge_d18.py",
+      "tests/sdk/test_child_bridge_d18.py"
+    ],
+    "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+    "exit_code": 1,
+    "elapsed_seconds": 0.008042097091674805,
+    "stdout_file": "scoped-check-06.stdout.txt",
+    "stderr_file": "scoped-check-06.stderr.txt"
+  }
+]

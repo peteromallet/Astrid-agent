@@ -1,0 +1,27 @@
+{
+  "schema": "m08-registry-binding-hashes/v1",
+  "task": "M08",
+  "source_head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+  "input_evidence_sha256": {
+    "briefs/M08-registry-binding-02.md": "ef839598dd53e11a70183eddde5a3be749c62bc11051de94ac2674914bc46bcb",
+    "evidence/m08/registry-binding-02/preflight.json": "833afda331ef0f410bdddf6c2851c48c1cab0c3d581669a6e535fc559c84dd62",
+    "evidence/wave3/post-m17-composition-preflight-candidate-manifest.json": "6dd5d133ce2f79e868d83947daa4f021f7bce97ae16b477619d0a00ed5a1c07f",
+    "evidence/wave3/post-m17-composition-preflight-verification.json": "d8b0c03e92600d33ed01ee5b7c3890fd6594d83d637d3f643e2bebbd2a5badc8"
+  },
+  "source_before_sha256": {
+    "astrid/packs/h3_av/pack.yaml": "0679c4f291c10bbf7945753ecbe3c8d5b703b0dd4c5d2f5192a8b9d0dd43b2bf",
+    "astrid/packs/h3_av reserved tree": "7362fb2ab88deed2279770311f52c9ac1ad6f5faac17eb7777a2a33651db9c02",
+    "tests/packs/h3_av/test_transform_command_binding_v3.py": "absent"
+  },
+  "source_after_sha256": {
+    "astrid/packs/h3_av/pack.yaml": "664769a78e41b4b337e535da704b14c3f62e9d0ccc8c2db21d995be50d6fd408",
+    "tests/packs/h3_av/test_transform_command_binding_v3.py": "b5e39b9b6d040942b63ac837df485ff4ba701c11f8d29fe6d7e00d301b64e8c6"
+  },
+  "output_evidence_sha256": {
+    "evidence/m08/registry-binding-02/public-sdk-probe.traceback.txt": "d34aebe51eea915caaf9039d65a25b8e7158a4647bdca1059f809e8321c9ccc1",
+    "evidence/m08/registry-binding-02/verification.md": "053f5fe156e5a8993f65a7faa26c348029c6f08d2573612ef290336bbfb598f1",
+    "evidence/m08/registry-binding-02/result.json": "d15b8b63be2e70730e083461c4f90a8a89c22f9a3e6181335cf8284679b2d620",
+    "evidence/m08/registry-binding-02/reservation-release.json": "7ed528f5b777721fbbfc8082ebe02de980029fc765f6ab879e304bcd07a91ca8"
+  },
+  "hash_manifest_scope": "Every M08 follow-up output present before this hash manifest; this file is excluded to avoid a self-referential digest."
+}

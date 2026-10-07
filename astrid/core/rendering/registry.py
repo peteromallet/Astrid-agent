@@ -566,6 +566,15 @@ def _load_candidates(
                 discovered.pack,
                 content_type=registry.capability_kind,
             )
+            if str(discovered.pack.schema_version) == "3":
+                expected = next(
+                    f"{discovered.id}.{key}"
+                    for key, item in discovered.pack.rendering.items()
+                    if item["type"] == registry.capability_kind
+                    and (discovered.pack.root / item["path"]).resolve() == manifest_path
+                )
+                if manifest.id != expected:
+                    raise ValueError(f"descriptor identity {manifest.id!r} must match declared {expected!r}")
             digest = sha256_file(manifest_path)
         except Exception as exc:
             if isinstance(exc, RenderingRegistryError):

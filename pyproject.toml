@@ -116,14 +116,24 @@ astrid = [
     "core/rendering/schemas/v1/*.json",
 
     # Capability manifests, runtime data, and agent-facing pack skills.
-    # STAGE.md, requirements files, golden logs, and other authoring-only
-    # material remain excluded by these patterns.
+    # STAGE.md remains authoring-only except for declared v3 action docs and
+    # the bounded Video Editing executor/orchestrator content-root docs below.
+    # Action-local requirements are included only by their explicit pattern;
+    # arbitrary requirements files and deeper legacy stage notes stay excluded.
     "packs/**/pack.yaml",
+    "packs/*/actions/*/STAGE.md",
+    "packs/*/actions/*/requirements.txt",
+    "packs/runpod/shared/requirements.txt",
     # Agent-facing pack skills are shipped with the product.  They are
     # discovered from the installed package on a fresh machine, so they
     # cannot remain authoring-only source files.
     "packs/**/skill/*",
     "packs/**/skill/**/*",
+    # A v3 pack's single authored skill and its adjacent linked support live
+    # beneath docs/. Keep this projection scoped to pack documentation rather
+    # than broadening package data to arbitrary repository files.
+    "packs/**/docs/*",
+    "packs/**/docs/**/*",
     "packs/**/AGENTS.md",
     "packs/**/README.md",
     "packs/**/*.yaml",
@@ -131,13 +141,23 @@ astrid = [
     # Runtime mask resources used by the packaged LanPaint compiler.
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png",
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png",
-    "packs/local/elements/effects/frame-overlay/assets/frame.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-0.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-1.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-2.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-3.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-4.png",
-    "packs/local/elements/effects/end-spanning-layer/assets/card-5.png",
+    "packs/blender/server/blender-render-api.service",
+    "packs/local/rendering/elements/effects/end-codex-transform/assets/*.png",
+    "packs/local/rendering/elements/effects/end-codex-transform/assets/*.mp4",
+    "packs/local/rendering/elements/effects/end-mid-combined/assets/*.png",
+    "packs/local/rendering/elements/effects/end-mid-combined/assets/*.mp4",
+    "packs/local/rendering/elements/effects/end-minimax-animate/assets/*.png",
+    "packs/local/rendering/elements/effects/end-minimax-animate/assets/*.mp4",
+    "packs/local/rendering/elements/effects/end-spanning-layer/assets/*.png",
+    "packs/local/rendering/elements/effects/end-spanning-layer/assets/*.mp4",
+    "packs/local/rendering/elements/effects/ending-carousel/assets/*.png",
+    "packs/local/rendering/elements/effects/ending-carousel/assets/*.mp4",
+    "packs/local/rendering/elements/effects/frame-overlay/assets/*.png",
+    "packs/local/rendering/elements/effects/frame-overlay/assets/*.mp4",
+    # These two bounded patterns retain Video Editing's current content-root
+    # stage guides; deeper or unrelated content-root stage notes stay excluded.
+    "packs/video_editing/executors/*/STAGE.md",
+    "packs/video_editing/orchestrators/*/STAGE.md",
     "packs/text_analysis/fixtures/*.txt",
     "packs/**/*.html",
     "packs/**/*.css",

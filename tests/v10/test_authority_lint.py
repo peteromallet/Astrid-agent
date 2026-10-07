@@ -288,20 +288,20 @@ def test_composition_exemption_is_the_only_kernel_to_pack_allowed(
     _write(
         tmp_path,
         "astrid/core/gateway/dispatch.py",
-        "import astrid.packs.timeline.cli\n",
+        "import astrid.packs.shots.conformance\n",
     )
     # Any other kernel file importing a pack is a violation.
     _write(
         tmp_path,
         "astrid/core/not_exempt.py",
-        "import astrid.packs.timeline.cli\n",
+        "import astrid.packs.shots.conformance\n",
     )
     errors = lint_import_boundaries(tmp_path)
     assert not any(
         "astrid/core/gateway/dispatch.py" in error for error in errors
     ), errors
     assert any(
-        "astrid/core/not_exempt.py: kernel-to-pack import 'astrid.packs.timeline.cli'"
+        "astrid/core/not_exempt.py: kernel-to-pack import 'astrid.packs.shots.conformance'"
         in error
         for error in errors
     ), errors

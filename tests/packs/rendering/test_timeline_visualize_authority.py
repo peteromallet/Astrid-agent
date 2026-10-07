@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import frozen, select
+from astrid.packs.rendering.actions.timeline_visualize import frozen, select
 
 
 class _Runtime:

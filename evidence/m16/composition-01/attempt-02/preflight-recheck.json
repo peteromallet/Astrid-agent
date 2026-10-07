@@ -1,0 +1,36 @@
+{
+  "schema": "m16-composition-attempt-02-preflight-recheck/v1",
+  "status": "PASS",
+  "pinned_validation_source": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/runs/pack-authoring-convergence-20261001/evidence/m16/composition-01/validation-preflight-02.json",
+  "requested_worktree_relative_validation_path_present": false,
+  "resolved_pinned_validation_source_present": true,
+  "baseline_candidate": {
+    "sha256": "75295b192dbc2b1ec345fd241764a7c69f4f0fc8a99b5778f5bd3d341feb0367",
+    "verification_sha256": "982d005ef8d5a7c3a2816757997d7cb76f9a0c634ad2dc9f3cf7b2c95a64a998",
+    "verified_at": "2026-10-04"
+  },
+  "heads": {
+    "Astrid": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+    "Reigh": "34a8a2ff2cbeb8132346cbf43e33955be6063776",
+    "Runtime": "a278cd460018976940ae21fc2cad563a29a29649"
+  },
+  "mutable_draft_hashes_match": {
+    "astrid/packs/stream_content/actions/distill/run.py": "c27ee284dcaeff92ab4b49b0a70a8ae46433e3b8ad004f719858ac74b157297d",
+    "astrid/packs/stream_content/actions/distill/plan_template.py": "09ad8ebc15084123aac22b69e1fac50ee318bcc15f7893ee8658755cc9000c2f",
+    "tests/packs/stream_content/test_stream_content.py": "cbe450d695477a5a6b9edcaf4d66c9d1f0809954f8ecf2d8169e79a988e6aac3"
+  },
+  "pinned_proof_dependencies_verified": true,
+  "source_writer_check": {
+    "m16_specific_writer_processes": [],
+    "unrelated_long_lived_processes_observed": true,
+    "unrelated_processes_left_untouched": true
+  },
+  "capacity_before_write": {
+    "free_kib": 15991736,
+    "absolute_free_stop_kib": 1048576,
+    "net_decline_stop_kib": 1048576,
+    "fixture_ceiling_bytes": 134217728
+  },
+  "product_source_writes": false,
+  "evidence_write_scope": "evidence/m16/composition-01/attempt-02/**"
+}

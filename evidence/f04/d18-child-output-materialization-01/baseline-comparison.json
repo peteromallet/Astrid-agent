@@ -1,0 +1,9 @@
+{
+  "lint_baseline_findings": 27,
+  "lint_after_findings": 27,
+  "lint_new_findings": [],
+  "type_baseline_errors": 14,
+  "type_after_errors": 14,
+  "type_output_equal_after_line_normalization": true,
+  "compile": "PASS"
+}

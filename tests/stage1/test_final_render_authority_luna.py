@@ -147,7 +147,7 @@ def test_renderer_authoring_cli_has_no_unadmitted_smoke_render_route() -> None:
 def test_attached_render_module_and_nested_runner_are_deleted() -> None:
     assert not (ROOT / "astrid/core/rendering/attached.py").exists()
     for path in (
-        ROOT / "astrid/packs/editorial/executors/human_notes/run.py",
+        ROOT / "astrid/packs/editorial/actions/human_notes/run.py",
         ROOT / "astrid/packs/video_editing/executors/cut/run.py",
         ROOT / "astrid/packs/video_editing/executors/cut/resume.py",
         ROOT / "astrid/packs/video_editing/orchestrators/hype/steps.py",

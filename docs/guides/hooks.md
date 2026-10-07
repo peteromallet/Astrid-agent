@@ -14,5 +14,5 @@ python3 -m astrid --help          # the eight-family census
 python3 -m astrid doctor --json   # read-only health check
 ```
 
-The agent-facing guidance lives in `astrid/packs/_core/skill/SKILL.md`;
+The agent-facing guidance lives in `astrid/packs/_core/docs/SKILL.md`;
 human-facing setup lives in [getting-started.md](../getting-started.md).

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import validate_structural
+from astrid.packs.rendering.actions.timeline_visualize import validate_structural
 
 
 def _timeline(*clips: dict[str, Any]) -> dict[str, Any]:

@@ -1,9 +1,9 @@
 {
   "vibecomfy": {
-    "artifact": "artifacts/h3-candidate-wheels/vibecomfy-2.8.0-py3-none-any.whl",
+    "artifact": "artifacts/m20-candidate-wheels/f0b8ad21595a5a9da4957ce04e35de767fc5100000fba753e03913f258425ca3/vibecomfy-2.8.0-py3-none-any.whl",
     "revision": "31f90bb03d330283b76e7dbdda51197be787090d",
     "tree": "101744f0d87eebe5ddf6752c10f01f52dc94e3e9",
-    "wheel": "e589917a94ef2c988d63556c39e3542eee89f9389c980493fea6eb605973b352"
+    "wheel": "f0b8ad21595a5a9da4957ce04e35de767fc5100000fba753e03913f258425ca3"
   },
   "astrid": {
     "artifact": "artifacts/h3-candidate-wheels/astrid-0.1.0-py3-none-any.whl",

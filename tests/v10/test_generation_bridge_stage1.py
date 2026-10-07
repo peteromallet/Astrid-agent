@@ -8,8 +8,8 @@ import pytest
 
 from astrid.core.execution.executor.registry import load_default_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, build_executor_command
-from astrid.packs.generation.executors.generate_image.run import build_parser
-from astrid.packs.generation.executors.generate_image.task_adapter import (
+from astrid.packs.generation.actions.generate_image.run import build_parser
+from astrid.packs.generation.actions.generate_image.task_adapter import (
     GenerateImageAdapterError,
     _decode_inputs,
     validate_shot_generation_recipe,

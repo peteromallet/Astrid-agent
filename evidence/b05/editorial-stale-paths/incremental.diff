@@ -1,0 +1,65 @@
+diff --git a/tests/packs/editorial/test_quality_zones_hash.py b/tests/packs/editorial/test_quality_zones_hash.py
+index fadee28c..ab30974c 100644
+--- a/tests/packs/editorial/test_quality_zones_hash.py
++++ b/tests/packs/editorial/test_quality_zones_hash.py
+@@ -19,7 +19,7 @@ from pathlib import Path
+ from tempfile import TemporaryDirectory
+ from unittest.mock import patch
+ 
+-from astrid.packs.editorial.executors.quality_zones.run import compute
++from astrid.packs.editorial.actions.quality_zones.run import compute
+ 
+ 
+ class _MutatingReadBytes:
+@@ -69,7 +69,7 @@ class QualityZonesShaTocTouTest(unittest.TestCase):
+             source.write_bytes(mutated_bytes)
+ 
+             with patch(
+-                "astrid.packs.editorial.executors.quality_zones.run._run_ffmpeg",
++                "astrid.packs.editorial.actions.quality_zones.run._run_ffmpeg",
+                 return_value="",
+             ):
+                 report = compute(source, source_sha256=caller_sha)
+@@ -85,7 +85,7 @@ class QualityZonesShaTocTouTest(unittest.TestCase):
+             source.write_bytes(content)
+             expected = hashlib.sha256(content).hexdigest()
+             with patch(
+-                "astrid.packs.editorial.executors.quality_zones.run._run_ffmpeg",
++                "astrid.packs.editorial.actions.quality_zones.run._run_ffmpeg",
+                 return_value="",
+             ):
+                 report = compute(source)
+diff --git a/tests/packs/editorial/test_validate_clip_duration.py b/tests/packs/editorial/test_validate_clip_duration.py
+index c32baea3..294c05c6 100644
+--- a/tests/packs/editorial/test_validate_clip_duration.py
++++ b/tests/packs/editorial/test_validate_clip_duration.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from astrid.packs.editorial.executors.validate.run import clip_timeline_duration_sec
++from astrid.packs.editorial.actions.validate.run import clip_timeline_duration_sec
+ 
+ 
+ def test_clip_duration_accepts_raw_json_from_alias() -> None:
+diff --git a/tests/packs/iteration/test_experiment_review_session.py b/tests/packs/iteration/test_experiment_review_session.py
+index 5c782de3..0eac0241 100644
+--- a/tests/packs/iteration/test_experiment_review_session.py
++++ b/tests/packs/iteration/test_experiment_review_session.py
+@@ -22,14 +22,14 @@ from astrid.core.experiments.state import (
+     init_experiment_review_state,
+     make_initial_experiment_review_state,
+ )
+-from astrid.packs.editorial.executors.human_review.run import (
++from astrid.packs.editorial.actions.human_review.run import (
+     _parse_mounts,
+     make_handler_class,
+ )
+-from astrid.packs.iteration.orchestrators.experiment_review_session.run import (
++from astrid.packs.iteration.actions.experiment_review_session.run import (
+     _resolve_media_mounts,
+ )
+-from astrid.packs.iteration.orchestrators.experiment_review_session.run import (
++from astrid.packs.iteration.actions.experiment_review_session.run import (
+     main as session_main,
+ )
+ 

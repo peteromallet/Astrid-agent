@@ -64,12 +64,43 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--warnings", action="store_true", help="Also print non-fatal warnings."
     )
+    validate_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable validation diagnostics."
+    )
     validate_parser.set_defaults(handler=_handle_validate)
 
     new_parser = subparsers.add_parser(
-        "new", help="Create a new pack skeleton in the current directory."
+        "new", help="Create a v3 role-based pack starter."
     )
     new_parser.add_argument("pack_id", help="Pack identifier (e.g., my_project).")
+    new_parser.add_argument(
+        "--starter",
+        default="standalone",
+        help="Authoring journey: standalone, wrapper, or nested.",
+    )
+    new_parser.add_argument(
+        "--role",
+        action="append",
+        choices=("action", "ui", "rendering", "shared"),
+        dest="roles",
+        help="Role to emit; repeat for a mixed starter (default: action).",
+    )
+    new_parser.add_argument(
+        "--destination",
+        dest="destination",
+        help="Pack root to create (nested defaults to integrations/astrid).",
+    )
+    new_parser.add_argument(
+        "--dependency",
+        default="external-package",
+        help="External package name for the wrapper journey.",
+    )
+    new_parser.add_argument(
+        "--external-module",
+        default="external_package",
+        dest="external_module",
+        help="Importable module used by the wrapper action.",
+    )
     new_parser.set_defaults(handler=_handle_new)
 
     list_parser = subparsers.add_parser(

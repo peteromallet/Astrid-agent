@@ -5,8 +5,8 @@ import path from 'node:path';
 const projectDir = process.cwd();
 const activeThemeDir = path.resolve(projectDir, '_active_theme');
 const astridDir = path.resolve(projectDir, '..');
-const renderingPackElementsDir = path.resolve(astridDir, 'astrid/packs/rendering/elements');
-const localPackElementsDir = path.resolve(astridDir, 'astrid/packs/local/elements');
+const renderingPackElementsDir = path.resolve(astridDir, 'astrid/packs/rendering/rendering/elements');
+const localPackElementsDir = path.resolve(astridDir, 'astrid/packs/local/rendering/elements');
 
 // SDK invocations may explicitly add external pack roots.  The generated
 // element registry uses one alias per owning pack; keep those aliases scoped

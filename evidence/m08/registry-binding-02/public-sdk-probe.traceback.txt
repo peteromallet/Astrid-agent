@@ -1,0 +1,26 @@
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py", line 2679, in invoke
+    registries = sdk_module._load_registries(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/discovery.py", line 112, in _load_registries
+    executor_registry = sdk_module._load_executor_registry(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/discovery.py", line 47, in _load_executor_registry
+    registry = load_default_registry(
+               ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/executor/registry.py", line 169, in load_default_registry
+    registry.register(action_executor_definition(pack, local_id, action))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/executor/actions.py", line 133, in action_executor_definition
+    return validate_executor_definition(definition)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/executor/schema.py", line 223, in validate_executor_definition
+    _validate_executor(executor)
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/executor/schema.py", line 528, in _validate_executor
+    _validate_command(executor.command, placeholders)
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/executor/schema.py", line 704, in _validate_command
+    _validate_placeholders(part, placeholders, f"command.argv[{index}]")
+  File "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/contracts/capability_schema.py", line 142, in validate_placeholders
+    raise self.error_cls(f"{path} uses unknown placeholder {{{placeholder}}}")
+astrid.core.execution.executor.schema.ExecutorValidationError: command.argv[3] uses unknown placeholder {orchestrator_args}

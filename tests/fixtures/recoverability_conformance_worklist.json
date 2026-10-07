@@ -2708,100 +2708,100 @@
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.arrange.run",
+      "module": "astrid.packs.editorial.actions.arrange.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/arrange/run.py",
+      "path": "astrid/packs/editorial/actions/arrange/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.boundary_candidates.run",
+      "module": "astrid.packs.editorial.actions.boundary_candidates.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/boundary_candidates/run.py",
+      "path": "astrid/packs/editorial/actions/boundary_candidates/run.py",
       "prog": "-c",
       "enum_arg_count": 1
     },
     {
-      "module": "astrid.packs.editorial.executors.editor_review.run",
+      "module": "astrid.packs.editorial.actions.editor_review.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/editor_review/run.py",
+      "path": "astrid/packs/editorial/actions/editor_review/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.human_notes.run",
+      "module": "astrid.packs.editorial.actions.human_notes.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/human_notes/run.py",
+      "path": "astrid/packs/editorial/actions/human_notes/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.human_review.run",
+      "module": "astrid.packs.editorial.actions.human_review.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/human_review/run.py",
+      "path": "astrid/packs/editorial/actions/human_review/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.inspect_cut.run",
+      "module": "astrid.packs.editorial.actions.inspect_cut.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/inspect_cut/run.py",
+      "path": "astrid/packs/editorial/actions/inspect_cut/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.quality_zones.run",
+      "module": "astrid.packs.editorial.actions.quality_zones.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/quality_zones/run.py",
+      "path": "astrid/packs/editorial/actions/quality_zones/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.quote_scout.run",
+      "module": "astrid.packs.editorial.actions.quote_scout.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/quote_scout/run.py",
+      "path": "astrid/packs/editorial/actions/quote_scout/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.refine.run",
+      "module": "astrid.packs.editorial.actions.refine.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/refine/run.py",
+      "path": "astrid/packs/editorial/actions/refine/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.scenes.run",
+      "module": "astrid.packs.editorial.actions.scenes.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/scenes/run.py",
+      "path": "astrid/packs/editorial/actions/scenes/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.script_pipeline.run",
+      "module": "astrid.packs.editorial.actions.script_pipeline.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/script_pipeline/run.py",
+      "path": "astrid/packs/editorial/actions/script_pipeline/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.shots.run",
+      "module": "astrid.packs.editorial.actions.shots.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/shots/run.py",
+      "path": "astrid/packs/editorial/actions/shots/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },
     {
-      "module": "astrid.packs.editorial.executors.transcribe.run",
+      "module": "astrid.packs.editorial.actions.transcribe.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/transcribe/run.py",
+      "path": "astrid/packs/editorial/actions/transcribe/run.py",
       "prog": "-c",
       "enum_arg_count": 1
     },
     {
-      "module": "astrid.packs.editorial.executors.triage.run",
+      "module": "astrid.packs.editorial.actions.triage.run",
       "builder": "build_parser",
-      "path": "astrid/packs/editorial/executors/triage/run.py",
+      "path": "astrid/packs/editorial/actions/triage/run.py",
       "prog": "-c",
       "enum_arg_count": 0
     },

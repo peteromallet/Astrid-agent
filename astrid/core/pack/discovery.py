@@ -24,6 +24,7 @@ from typing import Any, Callable
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
+    PackValidationError,
     discover_packs,
     iter_element_roots,
     iter_executor_roots,
@@ -79,22 +80,33 @@ class DiscoveredPack:
     def element_roots(self, *, kind: str | None = None):
         return iter_element_roots(self.pack, kind=kind)
 
-    def skill_roots(self) -> tuple[Path, ...]:
-        """Candidate ``skill/`` directories: pack-level plus nested content.
+    @property
+    def documentation_path(self) -> Path | None:
+        """The singular authored documentation file declared by this pack."""
+        raw_path = self.pack.documentation.get("path")
+        if not raw_path:
+            return None
+        root = self.pack_dir.resolve()
+        relative = Path(raw_path)
+        resolved = (root / relative).resolve()
+        if relative.is_absolute() or not resolved.is_relative_to(root):
+            raise PackValidationError("pack.documentation.path must stay within the pack root")
+        return resolved
 
-        Mirrors the directories that ``astrid.skills.discovery`` scans, so
-        skills discovery can consume this metadata in Step 13 without
-        re-deriving roots.
+    def skill_roots(self) -> tuple[Path, ...]:
+        """Only the declared pack skill directory; actions never export skills.
+
+        Manifestless ``_core`` remains a separate shell owned by skill discovery.
         """
-        roots: list[Path] = [self.pack_dir / "skill"]
-        for content_root in (*self.executor_roots(), *self.orchestrator_roots()):
-            roots.append(content_root / "skill")
-        return tuple(roots)
+        if self.pack.documentation.get("kind") != "skill":
+            return ()
+        path = self.documentation_path
+        return (path.parent,) if path is not None else ()
 
 
 @dataclass(frozen=True)
 class CanonicalDiscoveredPack:
-    """A strict-v2 capability pack from a read-only discovery layer."""
+    """An admitted v2/v3 pack from a read-only external discovery layer."""
 
     entry: CanonicalPackEntry
     source_kind: str
@@ -118,7 +130,11 @@ def discover_canonical_pack_metadata(
     project_root: str | Path = REPO_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
 ) -> tuple[CanonicalDiscoveredPack, ...]:
-    """Discover capability-only v2 packs through source/local/extra/env."""
+    """Discover admitted v2/v3 packs through local/managed/extra/env.
+
+    Source packs belong to the bundled canonical catalog. External failures
+    are isolated per pack, matching :func:`discover_pack_metadata`.
+    """
     project_root = Path(project_root).expanduser().resolve()
     discovered: list[CanonicalDiscoveredPack] = []
     seen: set[tuple[str, str]] = set()
@@ -166,23 +182,45 @@ def discover_canonical_pack_metadata(
         if root in scanned or not root.is_dir():
             return
         scanned.add(root)
-        for child in sorted(root.iterdir(), key=lambda p: p.name):
-            if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
-                continue
+        try:
+            children = (
+                (root,) if (root / "pack.yaml").is_file()
+                else sorted(root.iterdir(), key=lambda p: p.name)
+            )
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "skipping unreadable %s root %s: %s", source.value, root, exc
+            )
+            return
+        for child in children:
             manifest = child / "pack.yaml"
-            if manifest.is_file():
-                add(manifest, source)
+            try:
+                if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+                    continue
+                if child.name in {"local", "__pycache__"}:
+                    continue
+                if manifest.is_file():
+                    add(manifest, source)
+            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                logging.getLogger(__name__).warning(
+                    "skipping %s pack %s: manifest failed to load: %s", source.value, manifest, exc
+                )
 
     local = project_root / "astrid" / "packs" / "local" / "pack.yaml"
     if local.is_file():
         add(local, ExternalPackSource.LOCAL)
     if managed_inventory is not None:
         for source in managed_inventory.sources:
-            add(
-                source.pack_root / "pack.yaml",
-                ExternalPackSource.MANAGED,
-                source_record=source,
-            )
+            root = source.pack_root.resolve()
+            if root in scanned:
+                continue
+            scanned.add(root)
+            try:
+                add(root / "pack.yaml", ExternalPackSource.MANAGED, source_record=source)
+            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                logging.getLogger(__name__).warning(
+                    "skipping managed pack %s: manifest failed to load: %s", root, exc
+                )
     for root in extra_pack_roots:
         scan(root, ExternalPackSource.EXTRA)
     for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep):
@@ -307,12 +345,12 @@ def discover_pack_metadata(
                 if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
                     continue
                 manifest_path = pack_manifest_path(child)
-            except OSError as exc:
+            except (OSError, PackValidationError) as exc:
                 # Per-child pre-scan failures (e.g. an unreadable pack
                 # directory) skip only that child, matching the
                 # per-manifest isolation below.
                 _LOGGER.warning(
-                    "skipping unreadable %s pack %s: %s",
+                    "skipping %s pack %s: manifest lookup failed: %s",
                     source_kind,
                     child,
                     exc,

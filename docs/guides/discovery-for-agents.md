@@ -38,6 +38,23 @@ mutation path.
 Every discoverable capability (executor, orchestrator, element) belongs to a
 pack and is exposed through a consistent discovery surface.
 
+Each pack is also the unit of authored guidance. Its `pack.yaml` declares one
+skill source:
+
+```yaml
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+```
+
+The pack authors that ordinary `docs/SKILL.md` with YAML `name` and
+`description` frontmatter. Adjacent Markdown, references, templates, and
+assets are normal relative links, not additional skills. Public actions, UI,
+and rendering contributions are declared in `pack.yaml`; `shared` is support
+for the pack's own contributions. A folder is not an export merely because it
+exists. The manifestless `_core` gateway is the exception and remains composed
+as Astrid's gateway.
+
 See the formal vocabulary in
 [docs/packs/contract.md](../packs/contract.md).
 
@@ -66,7 +83,7 @@ inventory = sdk.discover()
 pack's capabilities (executors, orchestrators, elements), and per-capability
 metadata. There is no separate "skills list" step — pack skills are the
 `SKILL.md` files the pack ships (see the core skill at
-`astrid/packs/_core/skill/SKILL.md`).
+`astrid/packs/_core/docs/SKILL.md`).
 
 ### 2. Look up one capability
 

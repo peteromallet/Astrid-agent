@@ -20,10 +20,10 @@ from astrid.core.rendering.contracts import (
     VideoArtifact,
 )
 from astrid.core.rendering.transport import CommandTransport
-from astrid.packs.rendering.backends.ffmpeg import audio_reactive_colour, command
-from astrid.packs.rendering.backends.ffmpeg import run as ffmpeg
-from astrid.packs.rendering.executors.render import audio_reactive_colour as legacy_audio_reactive
-from astrid.packs.rendering.executors.render import run as facade
+from astrid.packs.rendering.rendering.renderers.ffmpeg import audio_reactive_colour, command
+from astrid.packs.rendering.rendering.renderers.ffmpeg import run as ffmpeg
+from astrid.packs.rendering.actions.render import audio_reactive_colour as legacy_audio_reactive
+from astrid.packs.rendering.actions.render import run as facade
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -149,7 +149,8 @@ def test_manifest_registers_static_raw_command_backend() -> None:
         / "astrid"
         / "packs"
         / "rendering"
-        / "backends"
+        / "rendering"
+        / "renderers"
         / "ffmpeg"
         / "renderer.yaml"
     )
@@ -172,14 +173,14 @@ def test_manifest_registers_static_raw_command_backend() -> None:
         "sequential_audio": True,
         "static_image_overlay": True,
     }
-    assert (manifest_path.parents[2] / manifest.command[1]).is_file()
+    assert (manifest_path.parents[3] / manifest.command[1]).is_file()
 
     pack = yaml.safe_load(
-        (manifest_path.parents[2] / "pack.yaml").read_text(encoding="utf-8")
+        (manifest_path.parents[3] / "pack.yaml").read_text(encoding="utf-8")
     )
-    assert "backends/ffmpeg/renderer.yaml" in pack["extensions"]["rendering"][
-        "renderers"
-    ]
+    assert pack["schema_version"] == 3
+    assert pack["rendering"]["ffmpeg"]["type"] == "renderer"
+    assert pack["rendering"]["ffmpeg"]["path"] == "rendering/renderers/ffmpeg/renderer.yaml"
 
 
 def test_support_is_strict_while_legacy_facade_eligibility_is_preserved(

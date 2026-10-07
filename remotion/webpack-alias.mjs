@@ -6,8 +6,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ACTIVE_THEME_DIR = path.resolve(__dirname, '_active_theme');
 const ASTRID_DIR = path.resolve(__dirname, '..');
-const RENDERING_PACK_ELEMENTS_DIR = path.resolve(ASTRID_DIR, 'astrid/packs/rendering/elements');
-const LOCAL_PACK_ELEMENTS_DIR = path.resolve(ASTRID_DIR, 'astrid/packs/local/elements');
+const RENDERING_PACK_ELEMENTS_DIR = path.resolve(ASTRID_DIR, 'astrid/packs/rendering/rendering/elements');
+const LOCAL_PACK_ELEMENTS_DIR = path.resolve(ASTRID_DIR, 'astrid/packs/local/rendering/elements');
 
 const extraPackAliases = {};
 for (const rawRoot of (process.env.ASTRID_PACKS_PATH ?? '').split(path.delimiter)) {

@@ -29,9 +29,9 @@ from astrid.core.rendering.contracts import (
     SupportReport,
 )
 from astrid.core.rendering.transport import CommandTransport
-from astrid.packs.rendering.backends.remotion import run as remotion
-from astrid.packs.rendering.executors.render import run as facade
-from astrid.packs.rendering.executors.render.run import render
+from astrid.packs.rendering.rendering.renderers.remotion import run as remotion
+from astrid.packs.rendering.actions.render import run as facade
+from astrid.packs.rendering.actions.render.run import render
 from tests.packs.rendering._helpers import _execution_env, _probe
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -172,7 +172,8 @@ def test_manifest_registers_static_raw_command_backend() -> None:
         / "astrid"
         / "packs"
         / "rendering"
-        / "backends"
+        / "rendering"
+        / "renderers"
         / "remotion"
         / "renderer.yaml"
     )
@@ -186,7 +187,7 @@ def test_manifest_registers_static_raw_command_backend() -> None:
     assert manifest.operations == ("render", "support")
     assert manifest.required_permissions == ("project_files", "subprocess")
     assert manifest.required_binaries == ("ffprobe",)
-    assert (manifest_path.parents[2] / manifest.command[1]).is_file()
+    assert (manifest_path.parents[3] / manifest.command[1]).is_file()
 
 
 def test_support_is_request_sensitive_and_accepts_complete_timeline(

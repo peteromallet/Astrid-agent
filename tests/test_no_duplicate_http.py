@@ -57,22 +57,22 @@ def test_no_duplicate_defs_in_packs() -> None:
 
 ALLOWLIST_URLLIB = {
     # Migrated in Sprint 01 — still uses urllib for OpenAI API (not fal)
-    "astrid/packs/generation/executors/generate_image_openai/run.py",
+    "astrid/packs/generation/actions/generate_image_openai/run.py",
     # Pre-existing packs NOT migrated this sprint (grandfathered):
     "astrid/packs/video_editing/orchestrators/vary_grid/run.py",
-    "astrid/packs/understanding/executors/visual_understand/run.py",
-    "astrid/packs/understanding/executors/audio_understand/run.py",
+    "astrid/packs/understanding/actions/visual_understand/run.py",
+    "astrid/packs/understanding/actions/audio_understand/run.py",
     "astrid/packs/rendering/executors/render/run.py",
-    "astrid/packs/training/executors/search_loras/run.py",
+    "astrid/packs/training/actions/search_loras/run.py",
     "astrid/packs/rendering/executors/sprite_sheet/run.py",
     # seinfeld/script_pipeline was generalized into builtin/script_pipeline (builtin-training epic)
-    "astrid/packs/editorial/executors/script_pipeline/run.py",
+    "astrid/packs/editorial/actions/script_pipeline/run.py",
     # blender.render: downloads mesh assets from remote URLs (urlretrieve) and
     # POSTs render jobs to a user-supplied cloud render host (urlopen)
-    "astrid/packs/blender/executors/render/run.py",
+    "astrid/packs/blender/actions/render/run.py",
     # media.gif_search: GIPHY search API + GIF download through an injected
     # urllib.request.urlopen (legitimate third-party media HTTP)
-    "astrid/packs/media/executors/gif_search/run.py",
+    "astrid/packs/media/actions/gif_search/run.py",
 }
 
 
@@ -111,7 +111,7 @@ def test_no_urllib_in_pack_run_py() -> None:
 
 def test_logo_ideas_dry_run(tmp_path: Path) -> None:
     """logo_ideas --dry-run succeeds without import errors."""
-    from astrid.packs.video_editing.orchestrators.logo_ideas.run import main
+    from astrid.packs.video_editing.actions.logo_ideas.run import main
 
     out = tmp_path / "logo_out"
     code = main(
@@ -127,7 +127,7 @@ def test_logo_ideas_dry_run(tmp_path: Path) -> None:
 
 def test_fal_foley_dry_run(tmp_path: Path) -> None:
     """fal_foley --dry-run succeeds without import errors."""
-    from astrid.packs.fal.executors.fal_foley.run import main
+    from astrid.packs.fal.actions.fal_foley.run import main
 
     out = tmp_path / "foley_out"
     # fal_foley requires --clip, --prompt, and --out

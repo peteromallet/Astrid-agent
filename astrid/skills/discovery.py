@@ -1,13 +1,12 @@
-"""Walk astrid/packs/*/skill/SKILL.md and nested executor/orchestrator skill dirs.
+"""Discover the one authored skill declared by each pack manifest.
 
-A "skill" here is a Claude-style frontmatter document (`name`, `description`)
-plus the directory it lives in. Hermes-only extras live under an optional
-`metadata.hermes.*` block in the same file; Claude/Codex ignore unknown keys.
-
-Discovery strategy:
-  1. Direct pack skills: astrid/packs/<pack>/skill/SKILL.md
-  2. Nested executor/orchestrator skills: astrid/packs/<pack>/<content>/skill/SKILL.md
-     where <content> has an executor.yaml/orchestrator.yaml manifest.
+A ``SkillDescriptor`` is a Claude-style frontmatter document (``name`` and
+``description``) plus the directory it lives in.  The pack's singular
+``documentation: {kind: skill, path: ...}`` declaration chooses the source;
+supporting files beside it remain available through the existing directory-link
+sync.  Nested component guides are ordinary linked documentation, never extra
+skills.  Hermes-only extras live under an optional ``metadata.hermes.*`` block
+in the same file; Claude/Codex ignore unknown keys.
 """
 
 from __future__ import annotations
@@ -17,12 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.pack import (
-    iter_executor_roots,
-    iter_orchestrator_roots,
-    load_pack_manifest,
-    pack_manifest_path,
-)
+from astrid.core.pack import load_pack_manifest, pack_manifest_path
 from astrid.core.search import short_description_or_truncated
 
 PACKS_DIR = REPO_ROOT / "astrid" / "packs"
@@ -73,24 +67,37 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return data, body
 
 
-_CONTENT_MANIFEST_NAMES = ("executor.yaml", "executor.yml", "executor.json",
-                            "orchestrator.yaml", "orchestrator.yml", "orchestrator.json")
+def _declared_skill_path(pack_dir: Path, pack: object) -> tuple[Path, bool] | None:
+    """Return the declared skill source and whether strict frontmatter applies.
 
-
-def _is_content_dir(path: Path) -> bool:
-    """Return True if *path* contains an executor or orchestrator manifest."""
-    if not path.is_dir():
-        return False
-    for name in _CONTENT_MANIFEST_NAMES:
-        if (path / name).is_file():
-            return True
-    return False
+    Real ``PackDefinition`` instances always expose ``documentation``.  The
+    small compatibility fallback is only for older test seams that supplied a
+    light-weight external-pack object before the manifest declaration became
+    authoritative; real manifests without a skill declaration return ``None``.
+    """
+    if not hasattr(pack, "documentation"):
+        return pack_dir / "skill" / "SKILL.md", False
+    documentation = getattr(pack, "documentation") or {}
+    if not isinstance(documentation, dict) or documentation.get("kind") != "skill":
+        return None
+    raw_path = documentation.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    relative = Path(raw_path)
+    root = pack_dir.resolve()
+    resolved = (root / relative).resolve()
+    if relative.is_absolute() or not resolved.is_relative_to(root):
+        return None
+    schema_version = str(getattr(pack, "schema_version", ""))
+    return resolved, schema_version == "3"
 
 
 def _try_add_skill(
     descriptors: list[SkillDescriptor],
     skill_md: Path,
     pack_id: str,
+    *,
+    strict_frontmatter: bool = False,
 ) -> bool:
     """Parse *skill_md* and append a SkillDescriptor if valid.
 
@@ -103,6 +110,13 @@ def _try_add_skill(
     except OSError:
         return False
     front, body = _parse_frontmatter(text)
+    if strict_frontmatter:
+        if not text.startswith("---"):
+            return False
+        if not isinstance(front.get("name"), str) or not front["name"].strip():
+            return False
+        if not isinstance(front.get("description"), str) or not front["description"].strip():
+            return False
     name = str(front.get("name") or pack_id)
     description = str(front.get("description") or "")
     short = short_description_or_truncated(
@@ -149,16 +163,23 @@ def _scan_discovered_packs(descriptors: list[SkillDescriptor]) -> None:
         pack = discovered.pack
         if pack.status == "deprecated" or pack.visibility == "hidden":
             continue
-        pack_skill = discovered.pack_dir / "skill" / "SKILL.md"
-        if pack.id not in seen_ids and _try_add_skill(descriptors, pack_skill, pack.id):
+        declared = _declared_skill_path(discovered.pack_dir, pack)
+        if declared is not None:
+            pack_skill, strict_frontmatter = declared
+        else:
+            pack_skill = None
+            strict_frontmatter = False
+        if (
+            pack_skill is not None
+            and pack.id not in seen_ids
+            and _try_add_skill(
+                descriptors,
+                pack_skill,
+                pack.id,
+                strict_frontmatter=strict_frontmatter,
+            )
+        ):
             seen_ids.add(pack.id)
-        for content_dir in (*discovered.executor_roots(), *discovered.orchestrator_roots()):
-            qualified_id = f"{pack.id}.{content_dir.name}"
-            nested_skill = content_dir / "skill" / "SKILL.md"
-            if qualified_id not in seen_ids and _try_add_skill(
-                descriptors, nested_skill, qualified_id
-            ):
-                seen_ids.add(qualified_id)
 
 
 def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
@@ -180,30 +201,28 @@ def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
         if pack is not None and (pack.status == "deprecated" or pack.visibility == "hidden"):
             continue
 
-        # Strategy 1: direct pack skill at astrid/packs/<pack>/skill/SKILL.md
-        skill_md = pack_dir / "skill" / "SKILL.md"
-        _try_add_skill(descriptors, skill_md, pack.id if pack is not None else pack_dir.name)
-        if pack is not None and pack.content:
-            for content_dir in (*iter_executor_roots(pack), *iter_orchestrator_roots(pack)):
-                nested_skill = content_dir / "skill" / "SKILL.md"
-                qualified_id = f"{pack.id}.{content_dir.name}"
-                _try_add_skill(descriptors, nested_skill, qualified_id)
+        if pack is not None:
+            declared = _declared_skill_path(pack_dir, pack)
+            if declared is None:
+                continue
+            skill_md, strict_frontmatter = declared
+            _try_add_skill(
+                descriptors,
+                skill_md,
+                pack.id,
+                strict_frontmatter=strict_frontmatter,
+            )
             continue
 
-        # Strategy 2: nested executor/orchestrator skills
-        # Walk pack_dir for child dirs that contain an executor.yaml or
-        # orchestrator.yaml manifest.  Those are content dirs (e.g.,
-        # generate_image, clip_extract).  If they have a skill/SKILL.md,
-        # register it with the fully qualified pack_id.
-        for content_dir in sorted(pack_dir.iterdir()):
-            if not content_dir.is_dir() or content_dir.name.startswith("."):
-                continue
-            if content_dir.name in ("skill", "elements", "golden", "fixtures", "__pycache__"):
-                continue
-            if _is_content_dir(content_dir):
-                nested_skill = content_dir / "skill" / "SKILL.md"
-                qualified_id = f"{pack_dir.name}.{content_dir.name}"
-                _try_add_skill(descriptors, nested_skill, qualified_id)
+        # _core is the intentional manifestless gateway shell.  No other
+        # manifestless directory can become an implicit skill.
+        if pack_dir.name == "_core":
+            _try_add_skill(
+                descriptors,
+                pack_dir / "docs" / "SKILL.md",
+                "_core",
+                strict_frontmatter=True,
+            )
 
     # When scanning the default source tree, layer in installed/extra packs
     # via the shared discovery metadata. An explicit *packs_dir* keeps the

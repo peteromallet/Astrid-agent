@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import filmstrip_execution as execution
-from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import plan_filmstrip
-from astrid.packs.rendering.executors.timeline_visualize.filmstrip_options import filmstrip_options
-from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import project_input_window
+from astrid.packs.rendering.actions.timeline_visualize import filmstrip_execution as execution
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import plan_filmstrip
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
+from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import project_input_window
 
 
 def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
@@ -43,7 +43,7 @@ def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
     assert (manifest_path.parent / 'render-snapshot.json').is_file()
     assert len(json.dumps(index, separators=(',', ':')).encode()) < 8192
 
-    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import inspect_filmstrip
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspect_filmstrip
 
     assert inspect_filmstrip(manifest_path, section='summary')['ok']
     placements = inspect_filmstrip(manifest_path, section='placements')
@@ -591,7 +591,7 @@ def test_paired_surface_page_size_respects_smaller_request_and_sparse_card_fills
 
 def test_paired_surface_centers_spoken_text_in_card_body(tmp_path, monkeypatch):
     from PIL import Image
-    from astrid.packs.rendering.executors.timeline_visualize import filmstrip_cards
+    from astrid.packs.rendering.actions.timeline_visualize import filmstrip_cards
 
     output = tmp_path / 'filmstrip-001.png'
     inputs = tmp_path / 'input-band-001.png'
@@ -663,7 +663,7 @@ def test_paired_surface_omits_empty_lanes_but_preserves_canonical_track_metadata
 
 
 def test_paired_navigation_describes_pages_and_drill_down():
-    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import _navigation_usage
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import _navigation_usage
 
     navigation = _navigation_usage(
         {'project_slug': 'demo', 'timeline_id': 'main', 'render_run_id': 'run'},

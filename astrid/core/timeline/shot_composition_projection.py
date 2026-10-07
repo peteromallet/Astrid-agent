@@ -462,9 +462,16 @@ def project_runtime_parent_composition(
     payload = _mapping(parent.get("payload"), "parent_revision.payload")
     config_value = _mapping(payload.get("config"), "parent_revision.payload.config")
     registry_value = _effective_parent_registry(payload, config_value)
-    ordinary_clips = payload.get("clips", config_value.get("clips", []))
-    if not isinstance(ordinary_clips, list):
-        raise ShotCompositionProjectionError("parent_revision.payload.clips must be a list")
+    payload_clips = payload.get("clips", [])
+    config_clips = config_value.get("clips", [])
+    for location, clips in (("clips", payload_clips), ("config.clips", config_clips)):
+        if not isinstance(clips, list):
+            raise ShotCompositionProjectionError(f"parent_revision.payload.{location} must be a list")
+    if payload_clips and config_clips and payload_clips != config_clips:
+        raise ShotCompositionProjectionError(
+            "parent_revision.payload.clips and payload.config.clips disagree"
+        )
+    ordinary_clips = payload_clips or config_clips
     raw_occurrences = payload.get("occurrences")
     if not isinstance(raw_occurrences, list):
         raise ShotCompositionProjectionError("parent_revision.payload.occurrences must be a list")

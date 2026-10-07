@@ -1,20 +1,28 @@
 # Creating Astrid Packs
 
-This guide walks you through creating a pack — a reusable bundle of
-executors, orchestrators, elements, and optional rendering implementations
-that Astrid agents can discover and run.
+This page preserves the v1 pack protocol and reference material for existing
+packs, including executor, orchestrator, element, and rendering-extension
+manifests.
+
+> **New-pack route:** Start with [When and how to create a pack](../guides/create-a-pack.md).
+> That page and the [Pack Builder skill](../../astrid/packs/_core/docs/pack-builder/SKILL.md)
+> describe the implemented v3 convention: one pack, public declarations in
+> `pack.yaml`, role folders only where needed, and one authored `docs/SKILL.md`.
+> The sections below are legacy v1 reference unless explicitly stated
+> otherwise; their `skill/` and component-root examples are not current
+> starter instructions.
 
 Terminology note: for pack identity, capability identity, default-enabled versus
 optional placement, aliases, and in-place edits, use the
-Milestone 0 contract at `docs/packs/contract.md`. This guide stays focused on
-the current authoring workflow.
+Milestone 0 contract at `docs/packs/contract.md`. New authoring decisions
+belong in the current guide linked above.
 
 Capability packs are not database schema packs. Do not add `schema-pack.yaml`,
 SQL migrations, or a local schema registry. Product state is written through
 the neutral workspace runtime contract; a pack may only provide executable
 capabilities and attempt-local delivery artifacts.
 
-## Quick Start
+## Legacy v1 quick start
 
 ```bash
 # 1. Scaffold a new pack
@@ -35,7 +43,7 @@ python3 -m astrid.core.pack.cli validate .
 # valid: /path/to/my_video_tools
 ```
 
-## Repository Shape
+## Legacy v1 repository shape
 
 A pack is a directory with a `pack.yaml` manifest at its root. The
 example below shows the canonical layout:
@@ -113,7 +121,7 @@ modified. The `--show-hidden` flag includes packs with
 `visibility: hidden` (excluded by default from both `list` and
 `status`).
 
-## Manifests
+## Legacy v1 manifests and protocol
 
 Every pack component has a YAML manifest that declares its identity,
 contract, and runtime requirements. The manifest schemas are published
@@ -292,7 +300,7 @@ Key rules:
   manifests is legacy validation-only — new aliases must use the pack-level
   `aliases` field.
 
-### Rendering Extensions
+### Legacy v1 rendering extensions
 
 A pack can add timeline rendering implementations without adding an executor
 and without editing the built-in rendering pack. Declare pack-relative
@@ -389,7 +397,7 @@ additional fields for:
 
 Refer to `orchestrator.json` for the full field list.
 
-## Scaffold Flow
+## Legacy v1 scaffold flow
 
 The recommended workflow for creating a pack:
 
@@ -465,17 +473,19 @@ pack authoring patterns. These packs are **not** runtime-discovered (they
 live under `examples/packs/`, not `astrid/packs/`). See
 [`examples/README.md`](../../examples/README.md) for the full listing.
 
-The canonical minimal example is `examples/packs/minimal/`:
+The canonical minimal v3 example is `examples/packs/minimal/`. It declares
+`minimal.ingest_assets` as a simple action and `minimal.make_trailer` as an
+ordinary action that calls it through the public action API. There is no
+separate executor/orchestrator role in this current example.
 
-- One executor (`minimal.ingest_assets`): ingests and validates
-  project assets.
-- One orchestrator (`minimal.make_trailer`): coordinates asset
-  ingestion and assembly.
-
-Additional examples demonstrate more complex patterns:
-`file_summarizer` (multi-step text pipeline), `text_digest`
-(agent-in-the-loop text pipelines), `text_review` (machine summary +
-agent verdict), and `media` (pack with elements and schemas).
+Other current v3 examples demonstrate different boundaries: `media` declares
+ingestion and composed trailer actions alongside schema/template/rendering
+resources; `text_review` separates deterministic summary work from caller
+judgment; and `file_summarizer` makes summary validation and caller review
+explicit. The legacy `astrid.core.orchestrate` Python modules and golden events
+in `file_summarizer` and `text_review` remain teaching artifacts outside the
+v3 action catalog; they do not imply v3 pause/ack lifecycle parity.
+`text_digest` remains a v2 compatibility example owned separately.
 
 Validate any example pack with:
 
@@ -486,14 +496,19 @@ python3 -m astrid.core.pack.cli validate examples/packs/file_summarizer
 
 ## Legacy Templates
 
-The `docs/templates/` directory contains JSON-shaped templates for the
-*internal* built-in pack format. These templates describe the legacy
-manifest shape used by built-in executors, orchestrators, and elements
-inside `astrid/packs/`. They are **not** modified during Sprint 1 and
-remain the reference for the built-in format.
+The `docs/templates/executor/` and `docs/templates/orchestrator/` directories
+contain legacy descriptor examples retained as reference material and inputs
+to schema-v2 compatibility validation. They are not the current authoring
+authority: the v3 authoring CLI constructs current pack scaffolds. Preserve
+these bundles because existing compatibility fixtures and historical examples
+use them; do not copy them when creating a new v3 pack. See the
+[current authoring guide](../guides/creating-tools.md#templates) for the
+authoring route. The element directory remains a separate legacy reference
+and is outside this executor/orchestrator retention decision.
 
-The new v1 external pack contract described in this document is a
-separate path. The canonical external example is `examples/packs/minimal/`.
+The v1 external pack contract described in this legacy reference is a separate
+compatibility path. The current canonical external example is the v3
+`examples/packs/minimal/` pack.
 
 ## Related Guides
 
@@ -526,12 +541,13 @@ constraints.
 
 ## Next Steps
 
-After creating and validating your pack:
+For the current v3 route, return to [When and how to create a pack](../guides/create-a-pack.md).
+The historical v1 flow below is retained for existing packs and migration work:
 
 1. Implement the `run.py` entrypoints for your executors and
    orchestrators.
 2. Add tests in a `tests/` directory beside each component.
-3. Document your pack's capabilities in `skill/SKILL.md`.
+3. Document your legacy pack's capabilities in `skill/SKILL.md`.
 4. Share your pack as a Git repository for others to install (Git
    install is planned for Sprint 2).
 

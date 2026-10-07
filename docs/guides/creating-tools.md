@@ -180,8 +180,9 @@ The authoritative layout for every pack is its `pack.yaml` manifest. The
 `content` roots declared there — `executors`, `orchestrators`, `elements` —
 are what the runtime and validation use. New packs must declare their layout
 explicitly; do not rely on implicit folder discovery. See
-[creating-packs.md](../packs/creating-packs.md) for the full pack authoring
-workflow and manifest schemas.
+[create-a-pack.md](create-a-pack.md) for the current v3 pack authoring
+workflow. The [legacy pack protocol reference](../packs/creating-packs.md)
+retains older manifest schemas and migration details.
 
 Executor folders use:
 
@@ -220,7 +221,20 @@ sidecar.
 
 ## Templates
 
-Copy the closest template and replace the placeholder identifiers:
+New packs use the v3 authoring CLI. Create a starter directly in the target
+pack root, then edit the generated manifest, role files, and `docs/SKILL.md`:
+
+```bash
+python3 -m astrid.core.pack.cli new my_pack \
+  --starter standalone \
+  --role action \
+  --destination ./my_pack
+```
+
+The executor and orchestrator folders below are retained legacy reference
+material and inputs to schema-v2 compatibility validation. They are not the
+current v3 scaffold source. The element folder remains a separate legacy
+reference until its owning authoring path is documented:
 
 - `docs/templates/executor/`
 - `docs/templates/orchestrator/`

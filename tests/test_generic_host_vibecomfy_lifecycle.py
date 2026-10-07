@@ -126,30 +126,47 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     monkeypatch.setattr(generic_host, "_prepare_vibecomfy_execution_identity", lambda *args: (lambda value: (value[0], value[1], "template-a", {"model_id": value[1], "resident_metadata": {"model_assets": [value[1]]}}))(next(identities)))
     from astrid.core.generation.backends import vibecomfy
     events: list[str] = []
+    children: dict[str, subprocess.Popen[bytes]] = {}
+
+    def checkout_for_model(cls: object, **kwargs: object) -> _FakeCheckout:
+        profile = kwargs["hc03_profile"]
+        assert isinstance(profile, dict)
+        events.append(f"profile-pid:{profile['vibecomfy_session']['pid']}")
+        model_id = str(kwargs["model_id"])
+        checkout = _FakeCheckout(events, spawn_child=model_id not in children)
+        if checkout.child is not None:
+            children[model_id] = checkout.child
+        return checkout
+
     monkeypatch.setattr(
         vibecomfy.CheckoutServerAdapter,
         "from_host_session",
-        classmethod(lambda cls, **kwargs: (
-            events.append(f"profile-pid:{kwargs['hc03_profile']['vibecomfy_session']['pid']}"),
-            _FakeCheckout(events, spawn_child=("old-child-exited" in events or "construct" not in events)),
-        )[1]),
+        classmethod(checkout_for_model),
     )
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
-    host.discover()
-    for task_id in ("warm-1", "warm-2", "changed-model", "changed-model-followup"):
-        task = _task(task_id, digest)
-        runtime.tasks[task_id] = task
-        assert host.run_task(task, lease_token=f"lease-{task_id}")["task"]["status"] == "completed"
-    observed_binding = runtime.settlements[0][2]["result"]["managed_tool_session"]["binding"]
-    assert observed_binding["launch_generation"] == "process-a"
-    assert observed_binding["engine_birth_id"] == "comfy-a"
-    assert "release:capacity_replacement" not in events[: events.index("old-child-exited")]
-    release_index = events.index("release:capacity_replacement")
-    assert events.index("old-child-exited") < release_index
-    assert release_index < events.index("construct", release_index + 1)
-    assert "profile-pid:103" in events
-    assert events.count("release:capacity_replacement") == 1
-    host.managed_tool_session.close()
+    try:
+        host.discover()
+        for task_id in ("warm-1", "warm-2", "changed-model", "changed-model-followup"):
+            task = _task(task_id, digest)
+            runtime.tasks[task_id] = task
+            assert host.run_task(task, lease_token=f"lease-{task_id}")["task"]["status"] == "completed"
+        observed_binding = runtime.settlements[0][2]["result"]["managed_tool_session"]["binding"]
+        assert observed_binding["launch_generation"] == "process-a"
+        assert observed_binding["engine_birth_id"] == "comfy-a"
+        assert "release:capacity_replacement" not in events[: events.index("old-child-exited")]
+        release_index = events.index("release:capacity_replacement")
+        assert events.index("old-child-exited") < release_index
+        assert release_index < events.index("construct", release_index + 1)
+        assert "profile-pid:103" in events
+        assert events.count("release:capacity_replacement") == 1
+        assert set(children) == {"model-a", "model-b"}
+        host.managed_tool_session.close()
+        assert all(child.poll() is not None for child in children.values())
+    finally:
+        for child in children.values():
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
 
 
 def test_vibecomfy_child_receives_only_the_profile_model_root_binding(

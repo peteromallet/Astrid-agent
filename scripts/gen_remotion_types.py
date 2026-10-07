@@ -301,7 +301,7 @@ def _main_unlocked(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from astrid.packs.rendering.backends.remotion import lock as remotion_lock
+    from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
 
     if remotion_lock.remotion_render_lock_held():
         return _main_unlocked(argv)

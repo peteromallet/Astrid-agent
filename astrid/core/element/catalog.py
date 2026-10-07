@@ -94,6 +94,8 @@ def list_element_descriptors(
     kind: ElementKind | None = None,
     *,
     project_slug: str | None = None,
+    pack_id: str | None = None,
+    include_shadowed: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Return the stable editor-facing projection of the Astrid registry.
 
@@ -109,7 +111,7 @@ def list_element_descriptors(
         if kind is not None
         else None
     )
-    definitions = registry.list(kind=normalized_kind)
+    definitions = registry.list(kind=normalized_kind, pack_id=pack_id, include_shadowed=include_shadowed)
     if normalized_kind is None:
         definitions = tuple(
             definition

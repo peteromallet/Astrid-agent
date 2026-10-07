@@ -1,0 +1,621 @@
+[
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 87,
+      "row": 45
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport math\nimport os\nimport platform\nimport re\nimport time\nfrom collections.abc import Mapping\nfrom pathlib import Path\nfrom typing import Any\n\nfrom astrid.core.contracts.binding import (\n    BindingError,\n    assert_provided_inputs_bound,\n    expand_command,\n)\n\nfrom ._module import _sdk_module\nfrom .exceptions import (\n    AstridSDKError,\n    CapabilityInvocationError,\n    CapabilityMissingInputError,\n    CapabilityPreconditionError,\n    CapabilityValidationError,\n    UnsupportedCapabilityError,\n    _redact_message,\n    _sdk_error_from_exception,\n)\nfrom .execution_request import (\n    ExecutionRequest,\n    ExecutionRequestError,\n    merge_execution_input_manifest,\n    merge_execution_request_inputs,\n    normalize_execution_request,\n    reject_caller_execution_binding,\n)\nfrom .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping\n\n",
+          "end_location": {
+            "column": 1,
+            "row": 48
+          },
+          "location": {
+            "column": 1,
+            "row": 6
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 6
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 6,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 102,
+      "row": 698
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import (\n        filmstrip_options,\n    )\n\n    from .timeline_filmstrip import prepare_filmstrip\n",
+          "end_location": {
+            "column": 1,
+            "row": 699
+          },
+          "location": {
+            "column": 1,
+            "row": 697
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 5,
+      "row": 697
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 697,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 61,
+      "row": 1007
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 1008
+          },
+          "location": {
+            "column": 1,
+            "row": 1007
+          }
+        }
+      ],
+      "message": "Remove unused import: `.render_shot_snapshot.shot_text_snapshot`"
+    },
+    "location": {
+      "column": 43,
+      "row": 1007
+    },
+    "message": "`.render_shot_snapshot.shot_text_snapshot` imported but unused",
+    "noqa_row": 1007,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 110,
+      "row": 1416
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "                from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (\n                    action_argv,\n                )\n",
+          "end_location": {
+            "column": 1,
+            "row": 1417
+          },
+          "location": {
+            "column": 1,
+            "row": 1416
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 17,
+      "row": 1416
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 1416,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 69,
+      "row": 1452
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "        from .exceptions import _SERVICE_ERROR_CLASSES, ServiceError\n",
+          "end_location": {
+            "column": 1,
+            "row": 1453
+          },
+          "location": {
+            "column": 1,
+            "row": 1452
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 9,
+      "row": 1452
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 1452,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 21,
+      "row": 2379
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 2379
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "noqa_row": 2379,
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 63,
+      "row": 2531
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/invocation.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "    from types import SimpleNamespace\n\n    from astrid.core.foundation.hash import executor_definition_digest\n\n    from ._child_bridge import _BridgeRejected, _child_request\n",
+          "end_location": {
+            "column": 1,
+            "row": 2532
+          },
+          "location": {
+            "column": 1,
+            "row": 2529
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 5,
+      "row": 2529
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 2529,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F402",
+    "end_location": {
+      "column": 18,
+      "row": 320
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/results.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 320
+    },
+    "message": "Import `field` from line 6 shadowed by loop variable",
+    "noqa_row": 320,
+    "url": "https://docs.astral.sh/ruff/rules/import-shadowed-by-loop-var"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 40,
+      "row": 432
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/sdk/results.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 433
+          },
+          "location": {
+            "column": 1,
+            "row": 432
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `explicit_generation_payload`"
+    },
+    "location": {
+      "column": 13,
+      "row": 432
+    },
+    "message": "Local variable `explicit_generation_payload` is assigned to but never used",
+    "noqa_row": 432,
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 57,
+      "row": 12
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\n\nimport json\nimport socket\nimport threading\nfrom concurrent.futures import ThreadPoolExecutor\nfrom types import SimpleNamespace\n\nimport pytest\nfrom test_public_actions_f04 import isolated, write_pack\n\nimport astrid\nfrom astrid.sdk import _child_bridge as bridge_module\nfrom astrid.sdk import invocation\n\n\n",
+          "end_location": {
+            "column": 1,
+            "row": 15
+          },
+          "location": {
+            "column": 1,
+            "row": 1
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 1
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 1,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 45,
+      "row": 12
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from test_public_actions_f04 import write_pack",
+          "end_location": {
+            "column": 57,
+            "row": 12
+          },
+          "location": {
+            "column": 1,
+            "row": 12
+          }
+        }
+      ],
+      "message": "Remove unused import: `test_public_actions_f04.isolated`"
+    },
+    "location": {
+      "column": 37,
+      "row": 12
+    },
+    "message": "`test_public_actions_f04.isolated` imported but unused",
+    "noqa_row": 12,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 74,
+      "row": 51
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 66,
+      "row": 51
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 51,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 60,
+      "row": 79
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "    from astrid.sdk.remote import RemoteAstridClient\n    from astrid.sdk.workspace_client import WorkspaceClient\n    from banodoco_workspace_client.generated import WorkspaceClient as GeneratedWorkspaceClient\n",
+          "end_location": {
+            "column": 1,
+            "row": 80
+          },
+          "location": {
+            "column": 1,
+            "row": 77
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 5,
+      "row": 77
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "noqa_row": 77,
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 87,
+      "row": 112
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 79,
+      "row": 112
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 112,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 87,
+      "row": 155
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 79,
+      "row": 155
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 155,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 94,
+      "row": 171
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 86,
+      "row": 171
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 171,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 88,
+      "row": 191
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 80,
+      "row": 191
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 191,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 85,
+      "row": 217
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 77,
+      "row": 217
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 217,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 65,
+      "row": 236
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 57,
+      "row": 236
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 236,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 68,
+      "row": 245
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 60,
+      "row": 245
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 245,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 66,
+      "row": 260
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 58,
+      "row": 260
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 260,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 87,
+      "row": 274
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 79,
+      "row": 274
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 274,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 68,
+      "row": 292
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 60,
+      "row": 292
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 292,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 66,
+      "row": 307
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 58,
+      "row": 307
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 307,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 82,
+      "row": 339
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 74,
+      "row": 339
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 339,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 87,
+      "row": 349
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 79,
+      "row": 349
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 349,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  },
+  {
+    "cell": null,
+    "code": "F811",
+    "end_location": {
+      "column": 56,
+      "row": 382
+    },
+    "filename": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/tests/sdk/test_child_bridge_d18.py",
+    "fix": null,
+    "location": {
+      "column": 48,
+      "row": 382
+    },
+    "message": "Redefinition of unused `isolated` from line 12",
+    "noqa_row": 382,
+    "url": "https://docs.astral.sh/ruff/rules/redefined-while-unused"
+  }
+]

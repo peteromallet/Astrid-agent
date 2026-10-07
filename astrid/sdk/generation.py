@@ -236,7 +236,7 @@ class GenerationFacade:
 
         recipe = inputs.get("shot_generation_recipe")
         if recipe is not None:
-            from astrid.packs.generation.executors.generate_image.task_adapter import (
+            from astrid.packs.generation.actions.generate_image.task_adapter import (
                 GenerateImageAdapterError,
                 validate_shot_generation_recipe,
             )

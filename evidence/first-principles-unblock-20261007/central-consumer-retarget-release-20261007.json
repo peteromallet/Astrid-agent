@@ -1,0 +1,32 @@
+{
+  "schema": "megado-source-reservation-release/v1",
+  "reservation_id": "B05-CENTRAL-CONSUMER-RETARGET-20261007",
+  "status": "RELEASED_PASS_WITH_DECLARED_LIMITS",
+  "released_at_utc": "2026-10-07T01:01:16Z",
+  "source_write_set_released": true,
+  "changed_files": [
+    "tests/core/test_generation_manifest_atomic_write.py",
+    "tests/packs/builtin/dataset_build/test_caption_validation.py",
+    "tests/packs/h3_av/test_compile.py",
+    "tests/packs/test_audio_render.py",
+    "tests/packs/foley/test_tile_video_ffprobe.py",
+    "astrid/packs/discord_local/tests/test_command.py"
+  ],
+  "focused_validation": {
+    "command": "PYTHONPATH=\"$PWD\" PYTHONDONTWRITEBYTECODE=1 /Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python -m pytest -p no:cacheprovider -q tests/core/test_generation_manifest_atomic_write.py tests/packs/builtin/dataset_build/test_caption_validation.py tests/packs/h3_av/test_compile.py tests/packs/test_audio_render.py tests/packs/foley/test_tile_video_ffprobe.py astrid/packs/discord_local/tests/test_command.py",
+    "result": "29 passed in 8.76s"
+  },
+  "post_hashes_sha256": {
+    "tests/core/test_generation_manifest_atomic_write.py": "95c5529457ee2608256b338c8b5c71df3d649e8f63811c5cfe817c84072fde43",
+    "tests/packs/builtin/dataset_build/test_caption_validation.py": "b436fa0e80b12d2b4c6b41a3defc8a772961f42b3cc08fd162be3c28fefafd27",
+    "tests/packs/h3_av/test_compile.py": "38133bd8fece703d5b3e43e41cd7e667b214d816c9dc46e3de3c485099e2a3f",
+    "tests/packs/test_audio_render.py": "11d876c21128bed32bfdeda03249d558c8fbadd815e4fa0ff2fc5b5e17bd7416",
+    "tests/packs/foley/test_tile_video_ffprobe.py": "e1b57d16c35d16737019763bb80402f69d59c0523be73bfbde4eca90bf8be884",
+    "astrid/packs/discord_local/tests/test_command.py": "9b8303ce24812722daad11e84dbfe3105fc56d32f479f161f8fa2bf29866026e"
+  },
+  "proof_boundary": [
+    "Proves the six selected active consumers import and exercise the current V3 action/shared paths.",
+    "Does not prove installed candidate parity, full corpus closure, legacy registration retirement, or final Pack acceptance."
+  ],
+  "external_operations": false
+}

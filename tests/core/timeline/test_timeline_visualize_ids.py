@@ -6,13 +6,13 @@ import math
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.ids import (
+from astrid.packs.rendering.actions.timeline_visualize.ids import (
     QualifiedRef,
     RootIdMap,
     format_qualified_ref,
     parse_qualified_ref,
 )
-from astrid.packs.rendering.executors.timeline_visualize.snapshot_digest import (
+from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
     canonical_json_bytes,
     sha256_bytes,
     sns_digest,

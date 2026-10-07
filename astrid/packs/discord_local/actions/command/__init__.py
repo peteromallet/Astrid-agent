@@ -1,0 +1,1 @@
+"""Bounded Discord command action."""

@@ -8,7 +8,7 @@ from unittest import mock
 
 from astrid.core import timeline
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.editorial.executors.editor_review import run as editor_review
+from astrid.packs.editorial.actions.editor_review import run as editor_review
 
 
 class EditorReviewTest(unittest.TestCase):

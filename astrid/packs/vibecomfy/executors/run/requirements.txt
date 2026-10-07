@@ -1,2 +1,0 @@
-# Selected hash-bound VibeComfy wheel; see candidate-dependencies.json.
-vibecomfy==2.8.0 --hash=sha256:e589917a94ef2c988d63556c39e3542eee89f9389c980493fea6eb605973b352

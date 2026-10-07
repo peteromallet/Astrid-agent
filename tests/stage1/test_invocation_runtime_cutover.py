@@ -339,12 +339,13 @@ def test_wait_for_kernel_task_returns_runtime_outputs(monkeypatch) -> None:
     assert raw["outputs"]["artifacts"][0]["name"] == "video"
 
 
-def test_wait_for_kernel_task_propagates_terminal_failure() -> None:
+@pytest.mark.parametrize("state", ["failed", "cancelled"])
+def test_wait_for_kernel_task_propagates_terminal_failure(state) -> None:
     tasks = SimpleNamespace(
         show=lambda _task_id: SimpleNamespace(
             ok=True,
             data={
-                "state": "failed",
+                "state": state,
                 "attempt_id": "attempt-2",
                 "result": {"error": {"message": "encoder exploded"}},
             },
@@ -361,8 +362,62 @@ def test_wait_for_kernel_task_propagates_terminal_failure() -> None:
 
     assert ok is False
     assert attempt_id == "attempt-2"
-    assert raw["error"]["code"] == "task_failed"
+    assert raw["state"] == state
+    assert raw["error"]["code"] == f"task_{state}"
     assert raw["error"]["message"] == "encoder exploded"
+
+
+def test_wait_for_kernel_task_returns_requested_cancellation_without_output_read(
+    monkeypatch,
+) -> None:
+    task = {
+        "task_id": "task-cancel-requested",
+        "state": "cancel_requested",
+        "attempt_id": "attempt-cancel-requested",
+        "cancellation_reason": "provider_state_unknown",
+        "result": None,
+    }
+    polls = []
+    output_reads = []
+
+    def show(task_id):
+        polls.append(task_id)
+        assert len(polls) == 1, "requested cancellation must return on the first poll"
+        return SimpleNamespace(ok=True, data=task)
+
+    def read_outputs(*args):
+        output_reads.append(args)
+        pytest.fail("requested cancellation must not read successful outputs")
+
+    def sleep(_seconds):
+        pytest.fail("requested cancellation must return without another poll")
+
+    monkeypatch.setattr(invocation, "_read_task_managed_outputs", read_outputs)
+    monkeypatch.setattr(invocation.time, "sleep", sleep)
+
+    raw, ok, attempt_id = invocation._wait_for_kernel_task(
+        SimpleNamespace(tasks=SimpleNamespace(show=show)),
+        task_id="task-cancel-requested",
+        run_id="run-cancel-requested",
+        timeout_seconds=3600,
+        poll_seconds=0.1,
+        read_managed_outputs=True,
+    )
+
+    assert ok is False
+    assert raw["ok"] is False
+    assert raw["state"] == "cancel_requested"
+    assert raw["kernel_task_id"] == "task-cancel-requested"
+    assert raw["kernel_attempt_id"] == attempt_id == "attempt-cancel-requested"
+    assert raw["run_id"] == raw["kernel_run_id"] == "run-cancel-requested"
+    assert raw["task"] == task
+    assert task["state"] == "cancel_requested"
+    assert raw["error"]["code"] == "task_cancel_requested"
+    assert raw["error"]["details"]["state"] == "cancel_requested"
+    assert polls == ["task-cancel-requested"]
+    assert output_reads == []
+    assert "outputs" not in raw
+    assert "managed_outputs" not in raw
 
 
 def test_wait_for_kernel_task_rejects_non_finite_timeout() -> None:

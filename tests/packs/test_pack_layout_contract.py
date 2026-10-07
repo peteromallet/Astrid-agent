@@ -34,11 +34,11 @@ _REMOVED_DATA_ONLY_PACKAGE_MARKERS = (
     "astrid/packs/media/executors/clip_extract/__init__.py",
 )
 _PRESERVED_HELPER_PACKAGE_MARKERS = (
-    "astrid/packs/runpod/executors/session/__init__.py",
-    "astrid/packs/training/orchestrators/training_run/trainer_adapters/__init__.py",
-    "astrid/packs/editorial/executors/refine/src/reviewers/__init__.py",
+    "astrid/packs/runpod/actions/session/__init__.py",
+    "astrid/packs/training/actions/training_run/trainer_adapters/__init__.py",
+    "astrid/packs/editorial/actions/refine/src/reviewers/__init__.py",
 )
-_REMOVED_MARKER_IMPORT_PATHS = (
+_RETIRED_IMPORT_PATHS = (
     "astrid.packs.media.executors.clip_extract.run",
 )
 
@@ -48,21 +48,26 @@ _REMOVED_MARKER_IMPORT_PATHS = (
 _SHIPPED_PACK_IDS = frozenset({
     "blender",
     "comfy_wrap",
+    "discord_local",
     "editorial",
     "fal",
     "foley",
     "generation",
+    "h3_av",
     "iteration",
+    "local",
     "media",
     "moirae",
     "rendering",
     "runpod",
+    "seedance_local",
     "stream_content",
     "training",
     "typed_timeline",
     "understanding",
     "vibecomfy",
     "video_editing",
+    "wan2gp",
     "youtube",
 })
 
@@ -214,11 +219,14 @@ def test_helper_package_markers_still_exist() -> None:
     )
 
 
-def test_removed_package_markers_do_not_break_runtime_imports() -> None:
-    """Namespace-packaged pack paths must still import after marker cleanup."""
-    for module_name in _REMOVED_MARKER_IMPORT_PATHS:
-        module = importlib.import_module(module_name)
-        assert module is not None
+def test_retired_package_paths_are_not_importable() -> None:
+    """Removed v2 package paths stay retired; no compatibility alias is added."""
+    for module_name in _RETIRED_IMPORT_PATHS:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        raise AssertionError(f"retired module unexpectedly imports: {module_name}")
 
 
 # ── T15: special directory classification & discovery stability ──────────────
@@ -237,17 +245,16 @@ def test_core_is_skill_only_shell_no_pack_manifest() -> None:
 
 
 def test_core_has_skill_md() -> None:
-    """``_core`` skill_only_shell must provide ``skill/SKILL.md`` for agent
-    harness skill discovery."""
-    skill_md = _PACKS_ROOT / "_core" / "skill" / "SKILL.md"
+    """``_core`` skill_only_shell uses its admitted ``docs/SKILL.md`` source."""
+    skill_md = _PACKS_ROOT / "_core" / "docs" / "SKILL.md"
     assert skill_md.is_file(), (
         f"_core is classified as skill_only_shell but is missing "
-        f"skill/SKILL.md at {skill_md}"
+        f"docs/SKILL.md at {skill_md}"
     )
 
 
-def test_core_only_contains_skill_directory() -> None:
-    """``_core`` skill_only_shell must contain *only* the ``skill/`` tree
+def test_core_only_contains_docs_directory() -> None:
+    """``_core`` skill_only_shell must contain *only* the ``docs/`` tree
     (no executors, orchestrators, elements, or build directories)."""
     core_root = _PACKS_ROOT / "_core"
     forbidden_dirs = {"executors", "orchestrators", "elements", "build"}
@@ -258,12 +265,12 @@ def test_core_only_contains_skill_directory() -> None:
     assert not found, (
         f"_core (skill_only_shell) contains forbidden content roots: {found}"
     )
-    # Verify that only the skill/ directory exists as a top-level child.
+    # Verify that only the docs/ directory exists as a top-level child.
     actual_dirs = sorted(
         child.name for child in core_root.iterdir() if child.is_dir()
     )
-    assert actual_dirs == ["skill"], (
-        f"_core (skill_only_shell) expected only 'skill/' directory; "
+    assert actual_dirs == ["docs"], (
+        f"_core (skill_only_shell) expected only 'docs/' directory; "
         f"got {actual_dirs}"
     )
 
@@ -387,8 +394,8 @@ def test_skill_discovery_finds_pack_skills() -> None:
     )
 
 
-def test_v2_integration_packs_are_discoverable() -> None:
-    """Former external-origin packs remain discoverable after v2 conversion."""
+def test_migrated_integration_packs_are_discoverable() -> None:
+    """Former external-origin packs remain discoverable after V3 conversion."""
     integration_ids = {
         "fal",
         "moirae",
@@ -402,11 +409,13 @@ def test_v2_integration_packs_are_discoverable() -> None:
     assert not missing, (
         f"Integration packs not discovered: {sorted(missing)}"
     )
-    # Strict v2 intentionally removes the retired origin field.
+    # V3 keeps ownership in the pack declaration and authored skill bundle.
     import yaml as _yaml
     for pack in discovered:
         if pack.id in integration_ids:
             manifest_path = pack.manifest_path
             data = _yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-            assert data["schema_version"] == 2
+            assert data["schema_version"] == 3
             assert "origin" not in data
+            assert data["documentation"] == {"kind": "skill", "path": "docs/SKILL.md"}
+            assert (manifest_path.parent / "docs/SKILL.md").is_file()

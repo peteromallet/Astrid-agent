@@ -56,6 +56,7 @@ from astrid.core.pack.loader import (
     packs_root,
 )
 from astrid.core.pack.permissions import (
+    _normalize_editor_extensions,
     _normalize_element_extensions,
     _normalize_element_kinds,
     _normalize_generation_backends,
@@ -82,6 +83,7 @@ from astrid.core.pack.registry import (
     artifact_type_registry_for_pack,
     element_kind_registry_for_pack,
     pack_artifact_type_descriptors,
+    pack_editor_entry_paths,
     pack_element_kind_descriptors,
     pack_kind_descriptors,
     pack_rendering_manifest_paths,
@@ -118,6 +120,7 @@ __all__ = [
     "iter_executor_roots",
     "iter_orchestrator_roots",
     "load_pack_manifest",
+    "pack_editor_entry_paths",
     "pack_taxonomy_from_manifest",
     "pack_manifest_path",
     "pack_rendering_manifest_paths",

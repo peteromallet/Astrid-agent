@@ -12,7 +12,7 @@ pytestmark = pytest.mark.skip(reason="legacy filesystem fixture superseded by ru
 pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core.timeline.snapshot import TimelineSnapshot, snapshot_from_runtime
-from astrid.packs.rendering.executors.timeline_visualize.layout import (
+from astrid.packs.rendering.actions.timeline_visualize.layout import (
     PAGE_H,
     PAGE_W,
     Box,
@@ -20,7 +20,7 @@ from astrid.packs.rendering.executors.timeline_visualize.layout import (
     layout_timeline,
     serialize_view_map,
 )
-from astrid.packs.rendering.executors.timeline_visualize.model import (
+from astrid.packs.rendering.actions.timeline_visualize.model import (
     ClipModel,
     IntervalFrames,
     IntervalSeconds,
@@ -29,15 +29,15 @@ from astrid.packs.rendering.executors.timeline_visualize.model import (
     TrackModel,
     build_model,
 )
-from astrid.packs.rendering.executors.timeline_visualize.navigation import (
+from astrid.packs.rendering.actions.timeline_visualize.navigation import (
     IdentityMap,
     build_identity_map,
 )
-from astrid.packs.rendering.executors.timeline_visualize.schemas import (
+from astrid.packs.rendering.actions.timeline_visualize.schemas import (
     DEFS_PATH,
     SCHEMAS,
 )
-from astrid.packs.rendering.executors.timeline_visualize.scope import Scope, select_scope
+from astrid.packs.rendering.actions.timeline_visualize.scope import Scope, select_scope
 
 TESTS_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = TESTS_ROOT / "fixtures" / "timeline_visualize"

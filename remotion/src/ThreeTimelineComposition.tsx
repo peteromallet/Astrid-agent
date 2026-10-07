@@ -52,8 +52,9 @@ import {useEffect, useMemo} from 'react';
 import type {ReactElement} from 'react';
 import {useCurrentFrame, useVideoConfig} from 'remotion';
 import {ThreeCanvas} from '@remotion/three';
+import {LiveSceneClip} from './LiveSceneClip';
 import * as THREE from 'three';
-import type {TimelineCompositionProps} from '@banodoco/timeline-composition';
+import {DEFAULT_THEME, TimelineComposition, type TimelineCompositionProps} from '@banodoco/timeline-composition';
 import type {
   TimelineThemeOverrides,
   VisualOverrides,
@@ -402,6 +403,28 @@ const TextPlane = ({data}: {data: TextPlaneData}): ReactElement => {
   return <primitive object={data.mesh} />;
 };
 
+const TextLayer = ({props, alpha}: {props: TimelineCompositionProps; alpha: boolean}): ReactElement => {
+  const frame = useCurrentFrame();
+  const {width, height, fps} = useVideoConfig();
+  const background = useMemo(() => resolveBackground(props), [props]);
+  const planes = useMemo(
+    () => buildTextPlanes(props, frame, fps, width, height),
+    [props, frame, fps, width, height],
+  );
+  return <ThreeCanvas
+    width={width}
+    height={height}
+    orthographic
+    camera={{
+      left: -width / 2, right: width / 2, top: height / 2, bottom: -height / 2,
+      near: CAMERA_NEAR, far: CAMERA_FAR, position: [0, 0, CAMERA_Z],
+    }}
+  >
+    {alpha ? null : <color attach="background" args={[background]} />}
+    {planes.map(data => <TextPlane key={data.clipId} data={data} />)}
+  </ThreeCanvas>;
+};
+
 export const ThreeTimelineComposition = (
   props: TimelineCompositionProps,
 ): ReactElement => {
@@ -409,30 +432,40 @@ export const ThreeTimelineComposition = (
   const {width, height, fps} = useVideoConfig();
   const background = useMemo(() => resolveBackground(props), [props]);
   const alpha = useMemo(() => isAlphaLayer(props), [props]);
-  const planes = useMemo(
-    () => buildTextPlanes(props, frame, fps, width, height),
-    [props, frame, fps, width, height],
-  );
+  const scenes = (props.timeline.clips ?? []).filter(clip => clip.clipType === 'com.reigh.astrid.liveScene');
+  const time = frame / fps;
+  const audioTracks = (props.timeline.tracks ?? []).filter(track => track.kind === 'audio');
+  const ordinaryProps = (tracks: typeof props.timeline.tracks): TimelineCompositionProps => ({
+    ...props,
+    timeline: {...props.timeline, tracks, clips: props.timeline.clips.filter(clip =>
+      tracks?.some(track => track.id === clip.track) && clip.clipType !== 'com.reigh.astrid.liveScene')},
+    theme: {...(props.theme ?? DEFAULT_THEME), visual: {
+      ...(props.theme ?? DEFAULT_THEME).visual,
+      color: {...(props.theme ?? DEFAULT_THEME).visual.color, bg: 'transparent'},
+    }},
+  });
+
+  if (scenes.length > 0) {
+    return <>
+      <div style={{position: 'absolute', inset: 0, background: alpha ? 'transparent' : background}} />
+      {[...getVisualTracks(props)].reverse().map(track => <div key={track.id} style={{position: 'absolute', inset: 0}}>
+        {scenes.filter(clip => clip.track === track.id).map(clip => {
+          const from = clip.from ?? 0, speed = clip.speed ?? 1;
+          const duration = (clip.hold ?? ((clip.to ?? from) - from)) / speed;
+          if (time < clip.at || time >= clip.at + duration) return null;
+          const source = (clip as typeof clip & {app?: {liveScene?: unknown}}).app?.liveScene;
+          return <LiveSceneClip key={clip.id} source={source} sourceTime={from + (time - clip.at) * speed} width={width} height={height} />;
+        })}
+        {props.timeline.clips.some(clip => clip.track === track.id && clip.clipType === 'text')
+          ? <TextLayer props={ordinaryProps(props.timeline.tracks?.filter(value => value.id === track.id))} alpha /> : null}
+      </div>)}
+      <TimelineComposition {...ordinaryProps(audioTracks)} />
+    </>;
+  }
 
   return (
-    <ThreeCanvas
-      width={width}
-      height={height}
-      orthographic
-      camera={{
-        left: -width / 2,
-        right: width / 2,
-        top: height / 2,
-        bottom: -height / 2,
-        near: CAMERA_NEAR,
-        far: CAMERA_FAR,
-        position: [0, 0, CAMERA_Z],
-      }}
-    >
-      {alpha ? null : <color attach="background" args={[background]} />}
-      {planes.map((data) => (
-        <TextPlane key={data.clipId} data={data} />
-      ))}
-    </ThreeCanvas>
+    <><TextLayer props={props} alpha={alpha} />
+    <TimelineComposition {...ordinaryProps(audioTracks)} />
+    </>
   );
 };

@@ -1,0 +1,57 @@
+{
+  "candidate_sha256": "42387ce22a64b01b73d9bd837484cf431e5fc97719e57bb438c897a08812fd74",
+  "files": {
+    "astrid/core/execution/_child_bridge.py": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "643a4a0bd53f442837a693c1f9c58fdc3b5231b2683ba8767bc2f68da957ee18",
+      "size": 48068,
+      "verified_before_edit": true
+    },
+    "astrid/packs/editorial/actions/transcribe/run.py": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "20d65d8ed92be32ea158f87fce808e53df6effb6aa9ef939dbc4fb973c2894bc",
+      "size": 20541,
+      "verified_before_edit": true
+    },
+    "astrid/packs/editorial/pack.yaml": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "17f986462b58d45a11e553017e76d397e0b724fb9499beaadf1d08521f57d379",
+      "size": 37246,
+      "verified_before_edit": true
+    },
+    "astrid/packs/training/actions/dataset_build/budget.py": {
+      "classification": "authorized_source_file_changed",
+      "matches_pin": false,
+      "sha256": "2832518e05eb5ea537c9f76d3b3fe0a957bfd058937a1856eeb736a17405af2d",
+      "size": 17617,
+      "verified_before_edit": true
+    },
+    "astrid/packs/training/actions/dataset_build/source_providers/youtube.py": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "ee850c3e8f6afe253b85d0b5f53e1a77f7ca4caf57635030d4525704953e4482",
+      "size": 14721,
+      "verified_before_edit": true
+    },
+    "astrid/packs/training/pack.yaml": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "df513689c48d6e225fc141ac790247f86234c78db575b669a9256122d06c0db3",
+      "size": 20280,
+      "verified_before_edit": true
+    },
+    "astrid/sdk/_child_bridge.py": {
+      "classification": "read_only_dependency",
+      "matches_pin": true,
+      "sha256": "20555350ce39c154551471d565981ee7020f87de21adb56374fc0c984891dd6f",
+      "size": 20547,
+      "verified_before_edit": true
+    }
+  },
+  "runtime_head": "a278cd460018976940ae21fc2cad563a29a29649",
+  "runtime_worktree": "/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001",
+  "schema": "megado-dependency-verification/v1"
+}

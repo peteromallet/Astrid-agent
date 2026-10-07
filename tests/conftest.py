@@ -132,13 +132,40 @@ def _sandboxed_home_and_projects(
     # function-scoped tmp_path. Using tmp_path_factory here retained three
     # roots for every test until session end and exhausted disk in the full
     # 7,000+ test suite before the installed-artifact lanes could start.
+    home = tmp_path / "home"
     astrid_home = tmp_path / "astrid-home"
     projects_root = tmp_path / "projects"
     workspace_config_dir = tmp_path / "workspace-config"
-    for root in (astrid_home, projects_root, workspace_config_dir):
+    xdg_state = tmp_path / "xdg-state"
+    xdg_data = tmp_path / "xdg-data"
+    xdg_config = tmp_path / "xdg-config"
+    xdg_cache = tmp_path / "xdg-cache"
+    for root in (
+        home,
+        astrid_home,
+        projects_root,
+        workspace_config_dir,
+        xdg_state,
+        xdg_data,
+        xdg_config,
+        xdg_cache,
+    ):
         root.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("ASTRID_HOME", str(astrid_home))
     monkeypatch.setenv("ASTRID_WORKSPACE_CONFIG_DIR", str(workspace_config_dir))
+    monkeypatch.setenv("XDG_STATE_HOME", str(xdg_state))
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
+    for name in (
+        "ASTRID_SOURCE_DECLARATIONS",
+        "ASTRID_SOURCE_STATE",
+        "ASTRID_SOURCE_DATA",
+        "ASTRID_PACKS_PATH",
+        "ASTRID_HIVEMIND_REVISION",
+    ):
+        monkeypatch.delenv(name, raising=False)
     # Seed PROJECTS_ROOT to a tmp dir so tests never touch the real
     # projects root. Tests that need their own projects-root (via
     # tmp_projects_root) override this with their own monkeypatch.setenv.

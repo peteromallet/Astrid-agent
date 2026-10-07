@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from astrid.packs.rendering.finalizers.runtime_stitch import build_stitch_admission
-from astrid.packs.video_editing.orchestrators.runtime_orchestration import OrchestrationContractError
+from astrid.packs.rendering.shared.runtime_stitch import build_stitch_admission
+from astrid.packs.video_editing.shared.runtime_orchestration import OrchestrationContractError
 
 
 DIGEST = "sha256:" + "a" * 64

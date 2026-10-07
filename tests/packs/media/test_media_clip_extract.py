@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.media.executors.clip_extract.run import (
+from astrid.packs.media.actions.clip_extract.run import (
     build_ffmpeg_cmd,
     build_parser,
     main,

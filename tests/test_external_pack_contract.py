@@ -91,12 +91,12 @@ _EXTERNAL_PACK_SCRIPT = (
     '    glow = astrid.get_capability(\n'
     '        "glow",\n'
     '        kind="element",\n'
-    '        element_kind="widget",\n'
+    '        element_kind="effect",\n'
     "    )\n"
     '    # Capability.id uses canonical kind/id form (kind is plural canonical)\n'
-    '    assert glow.id == "widgets/glow", f"unexpected id: {glow.id}"\n'
+    '    assert glow.id == "effects/glow", f"unexpected id: {glow.id}"\n'
     '    assert glow.capability_type == "element"\n'
-    '    assert glow.native_kind == "widgets"\n'
+    '    assert glow.native_kind == "effects"\n'
     "\n"
     "    return {\n"
     '        "pack_ids": [p["id"] for p in env_packs],\n'
@@ -127,7 +127,7 @@ def test_external_pack_via_env_path() -> None:
     """Copy the fixture outside the repo, set ``ASTRID_PACKS_PATH``,
     run a subprocess that uses only ``import astrid``, and assert the
     pack is discovered as ``source_kind == "env"`` and its ``glow``
-    widget element resolves correctly."""
+    effect element resolves correctly."""
 
     fixture_src = Path(__file__).resolve().parent / "fixtures" / "external_pack"
     assert fixture_src.is_dir(), f"Missing fixture: {fixture_src}"
@@ -193,9 +193,9 @@ def test_external_pack_via_env_path() -> None:
             f"external_pack missing from env packs: {result['pack_ids']}"
         )
         assert result["external_pack_source_kind"] == "env"
-        assert result["glow_id"] == "widgets/glow", f"unexpected glow_id: {result['glow_id']}"
+        assert result["glow_id"] == "effects/glow", f"unexpected glow_id: {result['glow_id']}"
         assert result["glow_capability_type"] == "element"
-        assert result["glow_native_kind"] == "widgets"
+        assert result["glow_native_kind"] == "effects"
 
 
 def test_external_pack_python_executor_manifest_validates() -> None:

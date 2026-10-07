@@ -32,7 +32,7 @@ _SCHEMA_PACKS: tuple[str, ...] = ("timeline", "shots", "references")
 _TASK_WORKER_ROOTS: tuple[Path, ...] = (
     _PACKS_ROOT / "video_editing/executors/cut",
     _PACKS_ROOT / "iteration/executors/assemble",
-    _PACKS_ROOT / "editorial/executors/refine",
+    _PACKS_ROOT / "editorial/actions/refine",
 )
 
 # Event-append entrypoints a pack must never call directly.

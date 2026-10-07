@@ -2,7 +2,7 @@ profile: h3_av.native.v1
 workflow: workflows/native_h3_continuation
 operations: [edit, continue, generate]
 source_free_generation:
-  adapter: src/generation.py
+  adapter: shared/generation.py
   reference_capacity: 9
   reference_kind: still-image
   output_cardinality: one

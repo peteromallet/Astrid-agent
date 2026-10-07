@@ -1,0 +1,3 @@
+timestamp_utc,elapsed_seconds,free_kib,net_decline_kib,fixture_bytes
+2026-10-03T22:15:15.918462+00:00,0.004,15814012,4,1899719
+2026-10-03T22:15:16.179484+00:00,0.265,15814008,8,1900134

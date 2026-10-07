@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.executors.compile.run import main as compile_executor_main
-from astrid.packs.h3_av.src.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.src.prepare import prepare_request
-from astrid.packs.h3_av.src.request import normalize_request
+from astrid.packs.h3_av.actions.compile.run import main as compile_executor_main
+from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.request import normalize_request
 
 
 PROMPT = (
@@ -96,7 +96,7 @@ def test_compilation_manifest_round_trips(tmp_path: Path) -> None:
 
 
 def test_compile_executor_publishes_selected_bundle_members(tmp_path: Path) -> None:
-    from astrid.packs.h3_av.src.input_bundle import build_input_bundle, bundle_digest, materialize_input_bundle
+    from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, bundle_digest, materialize_input_bundle
 
     source = tmp_path / "source.mp4"
     source.write_bytes(b"fixture-video")

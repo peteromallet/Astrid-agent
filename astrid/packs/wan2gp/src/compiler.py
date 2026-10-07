@@ -248,7 +248,7 @@ def compile_from_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
         attempt_root=inputs.get("attempt_root"),
     )
 
-DEFAULT_ENGINE_IDENTITY = "wan2gp@181bb71a21008032e4771e11663f33e4489c4512"
+DEFAULT_ENGINE_IDENTITY = "wan2gp@f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4"
 
 
 def runner_fingerprint(

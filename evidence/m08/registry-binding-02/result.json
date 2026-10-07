@@ -1,0 +1,77 @@
+{
+  "schema": "m08-registry-binding-result/v1",
+  "task": "M08",
+  "subtask": "H3 v3 transform typed CLI binding correction",
+  "completed_at_utc": "2026-10-03T03:58:04Z",
+  "status": "h3_complete_downstream_declaration_blocked",
+  "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "source_head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+  "preflight": {
+    "path": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/runs/pack-authoring-convergence-20261001/evidence/m08/registry-binding-02/preflight.json",
+    "sha256": "833afda331ef0f410bdddf6c2851c48c1cab0c3d581669a6e535fc559c84dd62",
+    "candidate_manifest_sha256": "6dd5d133ce2f79e868d83947daa4f021f7bce97ae16b477619d0a00ed5a1c07f",
+    "candidate_verification_sha256": "d8b0c03e92600d33ed01ee5b7c3890fd6594d83d637d3f643e2bebbd2a5badc8",
+    "reserved_tree_sha256": "7362fb2ab88deed2279770311f52c9ac1ad6f5faac17eb7777a2a33651db9c02",
+    "reserved_files_verified": 66,
+    "reserved_hash_failures": 0,
+    "reserved_test_initial_state": "absent"
+  },
+  "source_changes": {
+    "astrid/packs/h3_av/pack.yaml": {
+      "before_sha256": "0679c4f291c10bbf7945753ecbe3c8d5b703b0dd4c5d2f5192a8b9d0dd43b2bf",
+      "after_sha256": "664769a78e41b4b337e535da704b14c3f62e9d0ccc8c2db21d995be50d6fd408"
+    },
+    "tests/packs/h3_av/test_transform_command_binding_v3.py": {
+      "before": "absent",
+      "after_sha256": "b5e39b9b6d040942b63ac837df485ff4ba701c11f8d29fe6d7e00d301b64e8c6"
+    },
+    "other_preflight_reserved_h3_files": {
+      "count": 65,
+      "post_test_hash_failures": 0
+    }
+  },
+  "correction": {
+    "removed_placeholder": "{orchestrator_args}",
+    "required_fixed_bindings": [
+      "request:file",
+      "asset_map:file"
+    ],
+    "optional_value_bindings": [
+      "execution_request:file",
+      "project:string",
+      "worker_qualification:file",
+      "cleanup_receipt:file"
+    ],
+    "default_false_flag_bindings": [
+      "require_worker_qualification:boolean",
+      "editorial_approved:boolean",
+      "resume:boolean",
+      "dry_run:boolean"
+    ],
+    "host_output_binding": "--out {out}"
+  },
+  "checks": {
+    "typed_binding_pytest": "6 passed in 0.61s",
+    "canonical_validate": "pass: valid v3 pack, zero errors, zero warnings",
+    "canonical_inspect": "pass: five H3 actions projected",
+    "prior_offline_h3_behavior": "70 passed, 1 warning in 20.57s",
+    "h3_orchestrator_args_scan": "pass: no matches",
+    "scoped_diff_check": "pass"
+  },
+  "ordinary_public_sdk_probe": {
+    "capability": "youtube.youtube_audio",
+    "kind": "action",
+    "inputs": {
+      "query": "M08 offline fixture",
+      "mode": "audio"
+    },
+    "dry_run": true,
+    "registry_discovery": "normal unfiltered",
+    "network_or_provider_side_effects": false,
+    "result": "failed_during_registry_loading_after_h3_projection",
+    "first_failing_declaration": "iteration.experiment_review_session",
+    "exception": "astrid.core.execution.executor.schema.ExecutorValidationError: command.argv[3] uses unknown placeholder {orchestrator_args}",
+    "disposition": "recorded and stopped without editing Iteration-owned paths"
+  },
+  "prohibited_operations_performed": []
+}

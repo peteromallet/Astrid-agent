@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.abc
+import importlib.util
+import keyword
+import uuid
 import os
 import shutil
 import subprocess
@@ -178,6 +182,9 @@ class ExecutorRunResult:
 class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunResult, ExecutorDefinition]):
     """Executor binding of the shared :class:`CapabilityRunner` skeleton."""
 
+    def __init__(self, *, admission: Mapping[str, Any] | None = None) -> None:
+        self._admission = admission
+
     def load_default_registry(self) -> ExecutorRegistry:
         return load_default_registry()
 
@@ -234,7 +241,7 @@ class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunR
         return _prepare_dry_run_request(request)
 
     def run_inner(self, request: ExecutorRunRequest, definition: ExecutorDefinition) -> ExecutorRunResult:
-        return _run_executor_inner(request, definition)
+        return _run_executor_inner(request, definition, _admission=self._admission)
 
     def finalize_project(
         self,
@@ -259,17 +266,26 @@ class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunR
 _EXECUTOR_RUNNER = ExecutorCapabilityRunner()
 
 
-def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None = None) -> ExecutorRunResult:
-    return _EXECUTOR_RUNNER.run(request, registry)
+def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None = None,
+                 *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
+    runner = ExecutorCapabilityRunner(admission=_admission) if _admission is not None else _EXECUTOR_RUNNER
+    return runner.run(request, registry)
 
 
-def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition) -> ExecutorRunResult:
+def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition,
+                        *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
     _validate_scoped_configs_at_dispatch(executor)
-    values = _request_values(request, executor)
+    invocation = executor.metadata.get("action_invocation")
+    python_action = isinstance(invocation, Mapping) and invocation.get("kind") == "python"
+    values = _action_input_values(executor, request) if python_action else _request_values(request, executor)
+    if python_action:
+        from astrid.sdk.actions import validate_action_inputs_definition
+        validate_action_inputs_definition(executor, values)
     _validate_declared_input_choices(executor, values)
-    _validate_required_inputs(
-        executor.id, executor.inputs, values, noun="executor", error_cls=ExecutorRunnerError
-    )
+    if not python_action or "action_inputs_schema" not in executor.metadata:
+        _validate_required_inputs(
+            executor.id, executor.inputs, values, noun="executor", error_cls=ExecutorRunnerError
+        )
     condition_result = evaluate_conditions(executor, values)
     if condition_result.skipped:
         return ExecutorRunResult(
@@ -297,9 +313,127 @@ def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinitio
             executor_version=executor_definition_digest(executor),
         )
 
+    if python_action:
+        return _run_python_action(executor, request, values, _admission=_admission)
     if executor.kind == "built_in" and "pipeline_step" in executor.metadata:
         return _run_builtin_executor(executor, request)
     return _run_external_executor(executor, request, values)
+
+
+def _action_input_values(executor: ExecutorDefinition, request: ExecutorRunRequest) -> dict[str, Any]:
+    values = {port.name: port.default for port in executor.inputs if port.default is not None}
+    schema = executor.metadata.get("action_inputs_schema")
+    if isinstance(schema, Mapping):
+        for name, declaration in schema.get("properties", {}).items():
+            if isinstance(declaration, Mapping) and "default" in declaration:
+                values[name] = declaration["default"]
+    values.update(request.inputs)
+    return values
+
+
+class _PackSourceLoader(importlib.abc.Loader):
+    """Compile admitted Python source directly; never consult pack bytecode."""
+
+    def __init__(self, source: Path | None, directory: Path) -> None:
+        self.source = source
+        self.directory = directory
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        if self.source is not None:
+            module.__file__ = str(self.source)
+            exec(compile(self.source.read_bytes(), str(self.source), "exec"), module.__dict__)
+
+
+class _PackSourceFinder(importlib.abc.MetaPathFinder):
+    """Own only one opaque pack prefix, including package initializers."""
+
+    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str]) -> None:
+        self.prefix, self.root, self.path_names = prefix, root, path_names
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
+            return None
+        parts = fullname.split(".")[1:]
+        if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
+            raise ExecutorRunnerError("invalid private action module name")
+        base = self.root.joinpath(*(self.path_names.get(part, part) for part in parts))
+        directory = base.resolve()
+        source = None
+        package = directory.is_dir()
+        if package:
+            initializer = base / "__init__.py"
+            if initializer.exists():
+                source = initializer.resolve()
+        else:
+            source = Path(str(base) + ".py").resolve()
+            if not source.is_file():
+                # Do not let the default finder pick up cached/native modules.
+                raise ModuleNotFoundError(f"no admitted Python source for {fullname!r}")
+        if not directory.is_relative_to(self.root) or (source is not None and not source.is_relative_to(self.root)):
+            raise ExecutorRunnerError("private action import escapes admitted pack root")
+        loader = _PackSourceLoader(source, directory)
+        spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
+        if package:
+            spec.submodule_search_locations = [str(directory)]
+        return spec
+
+
+def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest,
+                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None) -> ExecutorRunResult:
+    from astrid.core.execution.generic_host import _verify_action_admission, _verify_admitted_source
+    from astrid.sdk.actions import validate_action_output_definition
+
+    invocation = executor.metadata["action_invocation"]
+    root = Path(str(executor.metadata["pack_root"])).expanduser().resolve()
+    raw_path, function_name = invocation.get("path"), invocation.get("function")
+    relative = Path(raw_path) if isinstance(raw_path, str) else Path()
+    if (not isinstance(raw_path, str) or relative.is_absolute() or "\\" in raw_path
+            or "\x00" in raw_path or any(part in ("", ".", "..") for part in raw_path.split("/"))
+            or not relative.parts or relative.parts[0] != "actions" or relative.suffix != ".py"
+            or not isinstance(function_name, str) or not function_name.isidentifier() or keyword.iskeyword(function_name)):
+        raise ExecutorRunnerError("invalid Python action path/function")
+    source = (root / relative).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        raise ExecutorRunnerError("Python action entrypoint is missing or escapes admitted pack root")
+    if request.dry_run:
+        return ExecutorRunResult(executor_id=executor.id, kind=executor.kind, dry_run=True,
+                                 payload={"executor_id": executor.id},
+                                 executor_version=executor_definition_digest(executor),
+                                 run_id=request.run_id, run_root=request.run_root)
+    if os.environ.get(ASTRID_INTERNAL_INVOCATION) != "1" or _admission is None:
+        raise ExecutorRunnerError("Python actions require the admitted internal host worker")
+    _verify_action_admission(executor.to_dict(), _admission)
+    _verify_admitted_source(_admission)
+    prefix = "_astrid_pack_" + uuid.uuid4().hex
+    path_names = {}
+    module_parts = []
+    for part in (*relative.parts[:-1], relative.stem):
+        name = part if part.isidentifier() and not keyword.iskeyword(part) else "_path_" + uuid.uuid4().hex
+        if name != part:
+            path_names[name] = part
+        module_parts.append(name)
+    finder = _PackSourceFinder(prefix, root, path_names)
+    sys.meta_path.insert(0, finder)
+    try:
+        module = import_module(prefix + "." + ".".join(module_parts))
+        function = getattr(module, function_name, None)
+        if not callable(function):
+            raise ExecutorRunnerError(f"Python action function {function_name!r} is missing or not callable")
+        action_result = function(**dict(values))
+        validate_action_output_definition(executor, action_result)
+    finally:
+        sys.meta_path.remove(finder)
+        for name in tuple(sys.modules):
+            if name == prefix or name.startswith(prefix + "."):
+                del sys.modules[name]
+    return ExecutorRunResult(executor_id=executor.id, kind=executor.kind,
+                             payload={"action_result": action_result}, returncode=0,
+                             outputs=_resolve_declared_outputs(executor, request),
+                             executor_version=executor_definition_digest(executor),
+                             run_id=request.run_id, run_root=request.run_root)
 
 
 def _resolve_declared_outputs(

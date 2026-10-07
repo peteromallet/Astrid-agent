@@ -224,7 +224,7 @@ def test_run_executor_verifies_checkout_readiness_pair_and_selects_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     workflow = tmp_path / "workflow.json"
     workflow.write_text('{"template_id":"image/a","bindings":{}}', encoding="utf-8")
     output_root = tmp_path / "outputs"
@@ -265,7 +265,7 @@ def test_run_executor_rejects_outputs_outside_private_custody(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     workflow = tmp_path / "workflow.json"
     workflow.write_text('{"template_id":"image/a","bindings":{}}', encoding="utf-8")
     outside = tmp_path / "outside.png"
@@ -328,7 +328,7 @@ def test_managed_result_is_rebased_and_keeps_producer_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     envelope, payload = _managed_result_fixture(tmp_path)
     production = production_engine.ProductionRunResult(
         outputs=(envelope.parent / "outputs" / "final.mp4",),
@@ -368,7 +368,7 @@ def test_managed_result_from_previous_attempt_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     envelope, payload = _managed_result_fixture(tmp_path)
     production = production_engine.ProductionRunResult(
         outputs=(),
@@ -395,7 +395,7 @@ def test_managed_result_invalid_or_late_completion_fails_closed(
     tmp_path: Path, mutation, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    run = importlib.import_module("astrid.packs.vibecomfy.executors.run.run")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     envelope, payload = _managed_result_fixture(tmp_path)
     mutation(payload)
     envelope.write_text(json.dumps(payload), encoding="utf-8")

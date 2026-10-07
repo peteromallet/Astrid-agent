@@ -1,0 +1,20 @@
+{
+  "schema": "m16-composition-source-hashes/v1",
+  "preflight": "evidence/m16/composition-01-preflight.json",
+  "preflight_sha256": "7ef0e7b1f1131ea21bdf3ceef14669be956cee1772f3bd771438cd6606145841",
+  "files": {
+    "astrid/packs/stream_content/actions/distill/run.py": {
+      "before_sha256": "47a93a033639cae65279eeb25b9f2baacfd85be6c603a5bbefb01a97754829c6",
+      "after_sha256": "c27ee284dcaeff92ab4b49b0a70a8ae46433e3b8ad004f719858ac74b157297d"
+    },
+    "astrid/packs/stream_content/actions/distill/plan_template.py": {
+      "before_sha256": "eef0937c0b0972a32f8ebcea05b1a4ecd358551cf4f7ce15d53ba6172a6a7bd3",
+      "after_sha256": "09ad8ebc15084123aac22b69e1fac50ee318bcc15f7893ee8658755cc9000c2f"
+    },
+    "tests/packs/stream_content/test_stream_content.py": {
+      "before_sha256": "3639c2bd02b33c6d5f72646b22c98ff245a5a86de089a33ea27e1952b00fffc4",
+      "after_sha256": "cbe450d695477a5a6b9edcaf4d66c9d1f0809954f8ecf2d8169e79a988e6aac3"
+    }
+  },
+  "write_set_only": true
+}

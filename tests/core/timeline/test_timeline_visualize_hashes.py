@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from astrid.packs.rendering.executors.timeline_visualize.snapshot_digest import (
+    from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
         canonical_json_bytes,
     )
 except ImportError:  # pragma: no cover - fallback for environments without astrid

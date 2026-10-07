@@ -5,11 +5,11 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
-from astrid.packs.video_editing.executors.cut import run as cut
-from astrid.packs.editorial.executors.refine import run as refine
+from astrid.packs.video_editing.actions.cut import run as cut
+from astrid.packs.editorial.actions.refine import run as refine
 from astrid.core import timeline
-from astrid.packs.editorial.executors.validate import run as validate
-from astrid.packs.editorial.hype.arrangement_rules import TRIM_BOUND_EXTENSION_SEC
+from astrid.packs.editorial.actions.validate import run as validate
+from astrid.core.timeline import TRIM_BOUND_EXTENSION_SEC
 
 
 class RefineTest(unittest.TestCase):

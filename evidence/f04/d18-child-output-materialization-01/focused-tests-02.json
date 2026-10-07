@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "tests/sdk/test_child_bridge_d18.py"
+  ],
+  "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "exit_code": 0,
+  "elapsed_seconds": 5.284538745880127,
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+  }
+}

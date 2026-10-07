@@ -79,7 +79,7 @@ Use **Astrid timeline editing → review-mode render → integrated filmstrip in
 | Work with clip placement, trims, speed and timeline composition | [Timeline cookbook](../astrid/packs/rendering/skill/references/timeline-cookbook.md) |
 | Sample rendered frames; inspect tracks, audio, speech and pinned targets | [Timeline visualization contract](../astrid/packs/rendering/executors/timeline_visualize/STAGE.md) |
 | Obtain transcription through the supported capability | [Editorial skill](../astrid/packs/editorial/skill/SKILL.md) and [transcription contract](../astrid/packs/editorial/executors/transcribe/STAGE.md) |
-| Find the capability for generating replacement speech or edited media | [Creative-work routing skill](../astrid/packs/_core/skill/creative-work/SKILL.md) |
+| Find the capability for generating replacement speech or edited media | [Creative-work routing skill](../astrid/packs/_core/docs/creative-work/SKILL.md) |
 
 During editorial feedback, render with `--review` (SDK input `review: true`) by default and retain it through subsequent revisions unless the user asks for a clean export. Give registered shots meaningful names, and verify that shot names and timecodes are readable in the actual exported video. A labeled filmstrip alone does not let someone identify a frame while watching the video. When a shot contains several reference poses, use the shot name plus timecode to distinguish them.
 The default Remotion review artifact is scaled by the backend with `--scale` to

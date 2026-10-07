@@ -10,8 +10,8 @@ For every shipped pack id in ``PORTFOLIO_PACK_IDS`` we prove:
   :func:`_run_external_executor` (the same path external packs
   use). We verify the dispatch boundary by stubbing that subprocess
   entrypoint.
-* Per-component manifests are v1-compliant: ``schema_version: 1`` is
-  present on every per-component manifest with a valid ``kind``.
+* Current v3 pack declarations resolve their documentation, action, UI,
+  rendering, and resource references without legacy component manifests.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ PACKS_DIR = REPO_ROOT / "astrid" / "packs"
 
 PORTFOLIO_PACK_IDS = [
     "rendering",
+    "media",
     "training",
     "iteration",
     "youtube",
@@ -48,11 +49,11 @@ PORTFOLIO_PACK_IDS = [
 ]
 
 
-# One executor per pack to exercise the dispatch path. Each is picked
-# specifically because it has a runtime.command.argv block in its
-# manifest, so the runner reaches ``_run_external_executor``.
+# One command action per current v3 pack exercises the external dispatch
+# boundary. These are projections of pack.yaml actions, not provider calls.
 REPRESENTATIVE_EXECUTORS: dict[str, str] = {
     "rendering": "rendering.render",
+    "media": "media.clip_extract",
     "training": "training.search_loras",
     "iteration": "iteration.assemble",
     "youtube": "youtube.youtube_audio",
@@ -60,6 +61,7 @@ REPRESENTATIVE_EXECUTORS: dict[str, str] = {
     "moirae": "moirae.moirae",
     "runpod": "runpod.session",
 }
+DISPATCH_PACK_IDS = list(PORTFOLIO_PACK_IDS)
 
 
 def _load_manifest(path: Path) -> dict:
@@ -81,6 +83,21 @@ def _iter_component_manifests(pack_root: Path) -> list[Path]:
     return out
 
 
+def _iter_declared_resource_paths(value: object):
+    """Yield every pack-local path listed in nested v3 ``resources`` blocks."""
+    if isinstance(value, dict):
+        resources = value.get("resources")
+        if isinstance(resources, list):
+            for resource in resources:
+                if isinstance(resource, dict) and isinstance(resource.get("path"), str):
+                    yield resource["path"]
+        for nested in value.values():
+            yield from _iter_declared_resource_paths(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_declared_resource_paths(nested)
+
+
 # ---------------------------------------------------------------------------
 # Resolver + validator parity
 # ---------------------------------------------------------------------------
@@ -99,9 +116,8 @@ def test_resolver_discovers_pack(packs_index: dict, pack_id: str) -> None:
     assert pack is not None, f"pack {pack_id!r} not discovered"
     assert pack.id == pack_id
     assert pack.root.is_dir()
-    assert pack.content, (
-        f"pack {pack_id!r} must declare content roots in pack.yaml"
-    )
+    assert pack.schema_version == "3"
+    assert pack.actions or pack.ui or pack.rendering or pack.documents
 
 
 @pytest.mark.parametrize("pack_id", PORTFOLIO_PACK_IDS)
@@ -114,65 +130,45 @@ def test_validator_accepts_pack(pack_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Strict-v2 pack / v1 component compliance
+# Current v3 pack and component/resource declarations
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("pack_id", PORTFOLIO_PACK_IDS)
-def test_pack_manifest_v2_compliant(pack_id: str) -> None:
-    """Pack manifest declares canonical schema_version 2 and content roots."""
+def test_pack_manifest_uses_admitted_layout(pack_id: str) -> None:
+    """Portfolio representatives use the current v3 declaration contract."""
     pack_yaml = PACKS_DIR / pack_id / "pack.yaml"
+    pack_root = PACKS_DIR / pack_id
     doc = _load_manifest(pack_yaml)
-    assert doc.get("schema_version") == 2, (
-        f"{pack_yaml}: schema_version must be 2, got {doc.get('schema_version')!r}"
+    assert doc.get("schema_version") == 3, (
+        f"{pack_yaml}: schema_version must be 3, got {doc.get('schema_version')!r}"
     )
-    content_val = doc.get("content")
-    assert isinstance(content_val, dict) and content_val, (
-        f"{pack_yaml}: must declare a non-empty content:{{}} block"
+    assert doc.get("documentation") == {"kind": "skill", "path": "docs/SKILL.md"}
+    assert (pack_root / "docs/SKILL.md").is_file()
+    assert not doc.get("content"), f"{pack_yaml}: v3 pack must not declare legacy content roots"
+    assert any(doc.get(section) for section in ("actions", "ui", "rendering", "documents"))
+
+    declared_resources = list(_iter_declared_resource_paths(doc))
+    missing_resources = [path for path in declared_resources if not (pack_root / path).exists()]
+    assert not missing_resources, (
+        f"{pack_yaml}: declared v3 resources are missing: {missing_resources}"
     )
 
 
 @pytest.mark.parametrize("pack_id", PORTFOLIO_PACK_IDS)
 def test_component_manifests_v1_compliant(pack_id: str) -> None:
-    """Every per-component manifest declares schema_version: 1 and a valid kind."""
+    """V3 components come from pack.yaml action/UI/rendering declarations."""
     pack_root = PACKS_DIR / pack_id
     manifests = _iter_component_manifests(pack_root)
-    assert manifests, f"pack {pack_id!r} has no component manifests"
-    for mpath in manifests:
-        doc = _load_manifest(mpath)
-        rel = mpath.relative_to(REPO_ROOT)
-        # Multi-executor manifests (top-level "executors" key) are wrappers;
-        # the per-executor objects inside them carry the kind field.  Single-
-        # component manifests carry kind at the top level.
-        components: list[dict] = (
-            doc.get("executors") or doc.get("orchestrators") or []  # pyright: ignore[reportArgumentType]
-        )
-        if components:
-            for comp in components:
-                assert comp.get("schema_version") == 1 or doc.get("schema_version") == 1, (
-                    f"{rel}: schema_version must be 1"
-                )
-                kind = comp.get("kind")
-                assert kind in ("built_in", "external"), (
-                    f"{rel}: kind must be 'built_in' or 'external', got {kind!r}"
-                )
-        else:
-            assert doc.get("schema_version") == 1, (
-                f"{rel}: schema_version must be 1, got {doc.get('schema_version')!r}"
-            )
-            kind = doc.get("kind")
-            assert kind in ("built_in", "external"), (
-                f"{rel}: kind must be 'built_in' or 'external', got {kind!r}"
-            )
+    assert manifests == [], (
+        f"v3 pack {pack_id!r} must declare components in pack.yaml, found {manifests}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Dispatch path parity — every pack's representative executor goes through
 # _run_external_executor.
 # ---------------------------------------------------------------------------
-
-
-DISPATCH_PACK_IDS = [pack_id for pack_id in PORTFOLIO_PACK_IDS if pack_id != "rendering"]
 
 
 @pytest.mark.parametrize("pack_id", DISPATCH_PACK_IDS)
@@ -201,9 +197,9 @@ def test_representative_executor_dispatches_external(pack_id: str) -> None:
             returncode=0,
         )
 
-    # Build a minimal request that passes input validation for each
-    # representative executor. The dry-run flag short-circuits subprocess
-    # execution, but we still patch the dispatch fns to be tamper-evident.
+    # Build a minimal request that passes input validation for each command
+    # action. The stub intercepts the external boundary before any provider or
+    # subprocess work can occur.
     inputs: dict[str, object] = {}
     for port in executor.inputs:
         if not port.required:

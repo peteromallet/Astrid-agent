@@ -1,0 +1,39 @@
+{
+  "schema": "b05-editorial-stale-paths-after-v1",
+  "task": "B05 Editorial stale test-path import follow-up",
+  "status": "bounded_edit_complete_scoped_test_blocked",
+  "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "source_head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+  "reservation": {
+    "runtime_d18": "released",
+    "new_reservation_created": false
+  },
+  "before_sha256": {
+    "tests/packs/editorial/test_validate_clip_duration.py": "8677bdcd56f1c8ea3392026fd21c8f26019f33c671f7663007c1a1d5cd97e8e6",
+    "tests/packs/editorial/test_quality_zones_hash.py": "1a466dbe94fbd2fb0ee79d500f8251fe814def00c09672fa435f37e1a3e54447",
+    "tests/packs/iteration/test_experiment_review_session.py": "21a68d770a5c99292c7d94a246ace0eeb3b945ad9a0763dd966a1b654ff7616d"
+  },
+  "after_sha256": {
+    "tests/packs/editorial/test_validate_clip_duration.py": "defe2a5712fcd36bb6c93eab657cebe8b444fefdbb443044be6ed9e6b9aa72b7",
+    "tests/packs/editorial/test_quality_zones_hash.py": "1b517c325dab69dea3308c27d540b132bb78155aa691a8926615ea9e85af9214",
+    "tests/packs/iteration/test_experiment_review_session.py": "b045c91f29362979357ad8f8dce34242492dbb9836c5f684dda90680b1013478"
+  },
+  "incremental_diff": {
+    "path": "evidence/b05/editorial-stale-paths/incremental.diff",
+    "sha256": "de0b71a2edd6e35aced51a3e6e614a562b538c8168fcbf5e60b1fe9015dc4cb4",
+    "stat": "3 files changed, 7 insertions(+), 7 deletions(-)"
+  },
+  "m09_preservation": {
+    "preflight_before_diff": "evidence/b05/editorial-stale-paths/before.diff",
+    "preflight_before_diff_sha256": "947fcceb489d44c8340f290621a1c3678f248beefd6fd0c2d785601469340cc2",
+    "preserved_changes": [
+      "astrid.packs.iteration.orchestrators.experiment_review_session.run -> astrid.packs.iteration.actions.experiment_review_session.run (_resolve_media_mounts)",
+      "astrid.packs.iteration.orchestrators.experiment_review_session.run -> astrid.packs.iteration.actions.experiment_review_session.run (session_main)"
+    ]
+  },
+  "edits": [
+    "astrid.packs.editorial.executors.validate.run -> astrid.packs.editorial.actions.validate.run",
+    "astrid.packs.editorial.executors.quality_zones.run -> astrid.packs.editorial.actions.quality_zones.run (import and both mocked patch targets)",
+    "astrid.packs.editorial.executors.human_review.run -> astrid.packs.editorial.actions.human_review.run"
+  ]
+}

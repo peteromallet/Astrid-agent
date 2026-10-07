@@ -214,7 +214,7 @@ def test_video_enhance_control_rejection_precedes_request_validation() -> None:
 
 
 def test_media_command_rejects_before_profile_read_or_scratch_creation(tmp_path) -> None:
-    from astrid.packs.vibecomfy.media import run
+    from astrid.packs.vibecomfy.media import runtime as run
 
     output = tmp_path / "attempt-output"
     with pytest.raises(MediaCompileError, match="enable_interpolation is unsupported"):
@@ -231,7 +231,7 @@ def test_media_command_rejects_before_profile_read_or_scratch_creation(tmp_path)
 
 
 def test_typed_media_output_enforces_runtime_per_object_limit(tmp_path, monkeypatch) -> None:
-    from astrid.packs.vibecomfy.media import run
+    from astrid.packs.vibecomfy.media import runtime as run
 
     output = tmp_path / "output.mp4"
     output.write_bytes(b"12345")

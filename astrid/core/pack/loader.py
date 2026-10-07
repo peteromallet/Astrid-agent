@@ -58,7 +58,7 @@ def discover_packs(
 
 
 def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:
-    """Load one strict-v2 capability manifest through the canonical parser."""
+    """Load one admitted v2/v3 pack through the canonical parser."""
     manifest_path = Path(path).expanduser().resolve()
     if manifest_path.name != "pack.yaml" or not manifest_path.is_file():
         raise PackValidationError(
@@ -85,10 +85,15 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         agent=dict(data["agent"]),
         status=definition.status,
         visibility=definition.visibility,
-        schema_version="2",
+        schema_version=str(definition.schema_version),
         aliases=tuple(dict(alias) for alias in data["aliases"]),
         permissions=_normalize_pack_permissions(data["permissions"]),
-        extensions=_optional_pack_extensions(data["extensions"], path="pack.extensions"),
+        extensions=_optional_pack_extensions(data.get("extensions", {}), path="pack.extensions"),
+        actions=dict(data.get("actions", {})),
+        ui=dict(data.get("ui", {})),
+        rendering=dict(data.get("rendering", {})),
+        documents=dict(data.get("documents", {})),
+        documentation=dict(data.get("documentation", {})),
         **taxonomy,
     )
 

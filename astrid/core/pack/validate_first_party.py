@@ -6,8 +6,12 @@ Validates the ``astrid/packs/`` source tree structure and inventory.
 
 from __future__ import annotations
 
-import subprocess
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable, Literal
+
+import yaml
 
 # ---------------------------------------------------------------------------
 # Known first-party pack IDs and internal directories
@@ -18,29 +22,154 @@ _FIRST_PARTY_PACKS_ROOT = _REPO_ROOT / "astrid" / "packs"
 _FIRST_PARTY_PACK_IDS = (
     "blender",
     "comfy_wrap",
+    "discord_local",
     "editorial",
     "fal",
     "foley",
     "generation",
+    "h3_av",
     "iteration",
+    "local",
     "media",
     "moirae",
     "rendering",
     "runpod",
+    "seedance_local",
     "stream_content",
     "training",
     "understanding",
     "vibecomfy",
     "video_editing",
+    "wan2gp",
     "youtube",
     "typed_timeline",
+)
+_TRACKED_FIRST_PARTY_PACK_IDS = tuple(
+    pack_id for pack_id in _FIRST_PARTY_PACK_IDS
+    if pack_id not in {"discord_local", "seedance_local"}
 )
 # ``_core`` is a skill-only shell. The three runtime product mount directories
 # retain executable CLI adapters but intentionally have no ``pack.yaml``:
 # their durable state belongs to the neutral workspace runtime, not a local
 # schema host.
 _FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots", "timeline"}
+_EXCLUDED_FIRST_PARTY_DIRS = {"external", "hivemind"}
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
+
+ValidationContext = Literal["standalone", "assembled"]
+
+
+@dataclass(frozen=True)
+class PackRootValidation:
+    """Static result for one explicit pack root in an aggregate check."""
+
+    path: Path
+    pack_id: str | None
+    status: str
+    visibility: str
+    documentation: str
+    skill_exports: tuple[str, ...]
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def active(self) -> bool:
+        return self.status != "deprecated" and self.visibility != "hidden"
+
+
+@dataclass(frozen=True)
+class PackValidationReport:
+    """Aggregate output shared by standalone and assembled CLI validation."""
+
+    context: ValidationContext
+    root: Path | None
+    results: tuple[PackRootValidation, ...]
+    inventory_errors: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+    runtime_mounts: tuple[str, ...] = ()
+
+    @property
+    def errors(self) -> list[str]:
+        errors = [f"[internal-inventory] {error}" for error in self.inventory_errors]
+        seen_ids: dict[str, Path] = {}
+        for result in self.results:
+            label = result.pack_id or str(result.path)
+            for error in result.errors:
+                errors.append(f"[layout] {label}: {error}")
+            if result.pack_id is not None and result.active:
+                previous = seen_ids.setdefault(result.pack_id, result.path)
+                if previous != result.path:
+                    errors.append(
+                        f"[catalog] duplicate active pack id {result.pack_id!r}: "
+                        f"{previous} and {result.path}"
+                    )
+            if len(result.skill_exports) > 1 and not any(
+                "one authored skill" in error for error in result.errors
+            ):
+                exports = ", ".join(result.skill_exports)
+                errors.append(
+                    f"[skills] {label}: multiple skill exports are not allowed: {exports}"
+                )
+        return errors
+
+    @property
+    def warnings(self) -> list[str]:
+        return [
+            f"{result.pack_id or result.path}: {warning}"
+            for result in self.results
+            for warning in result.warnings
+        ]
+
+    @property
+    def valid(self) -> bool:
+        return not self.errors
+
+    @property
+    def counts(self) -> dict[str, int]:
+        documentation = Counter(result.documentation for result in self.results)
+        active = sum(result.active for result in self.results)
+        return {
+            "roots": len(self.results),
+            "active": active,
+            "deprecated": sum(result.status == "deprecated" for result in self.results),
+            "hidden": sum(result.visibility == "hidden" for result in self.results),
+            "valid": sum(not result.errors for result in self.results),
+            "invalid": sum(bool(result.errors) for result in self.results),
+            "skill": documentation.get("skill", 0),
+            "agents": documentation.get("agents", 0),
+            "none": documentation.get("none", 0),
+            "undocumented": documentation.get("undocumented", 0),
+            "skill_exports": sum(len(result.skill_exports) for result in self.results),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "context": self.context,
+            "path": str(self.root) if self.root is not None else None,
+            "valid": self.valid,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "counts": self.counts,
+            "roots": [
+                {
+                    "path": str(result.path),
+                    "id": result.pack_id,
+                    "status": result.status,
+                    "visibility": result.visibility,
+                    "active": result.active,
+                    "documentation": result.documentation,
+                    "skill_exports": list(result.skill_exports),
+                    "valid": not result.errors,
+                    "errors": list(result.errors),
+                    "warnings": list(result.warnings),
+                }
+                for result in self.results
+            ],
+            "dispositions": {
+                "excluded": list(self.excluded),
+                "runtime_mounts": list(self.runtime_mounts),
+            },
+        }
 
 
 def is_first_party_packs_root_candidate(path: str | Path) -> bool:
@@ -64,44 +193,142 @@ def is_first_party_packs_root_candidate(path: str | Path) -> bool:
     }
     if root == _FIRST_PARTY_PACKS_ROOT:
         return True
-    return "_core" in recognized_dirs and len(recognized_dirs) >= len(_FIRST_PARTY_PACK_IDS)
+    return "_core" in recognized_dirs and any(
+        (child / "pack.yaml").is_file()
+        for child in root.iterdir()
+        if child.is_dir() and child.name not in _IGNORED_PACKS_ROOT_DIRS
+    )
+
+
+def validate_pack_roots(
+    pack_roots: Iterable[str | Path],
+    *,
+    context: ValidationContext = "standalone",
+    root: str | Path | None = None,
+) -> PackValidationReport:
+    """Validate an explicit set of pack roots with the author validator.
+
+    The caller supplies the root set. This keeps source inventory ownership
+    with P01/discovery while reusing :func:`validate_pack` as the only pack
+    validator. ``context`` is intentionally retained in the result so a
+    standalone structural check cannot be mistaken for an assembled catalog
+    check.
+    """
+    if context not in {"standalone", "assembled"}:
+        raise ValueError(f"unknown pack validation context: {context!r}")
+
+    # Late import keeps the validator's existing split free of a module cycle.
+    from astrid.core.pack.validate import validate_pack
+
+    results: list[PackRootValidation] = []
+    for raw_path in pack_roots:
+        path = Path(raw_path).expanduser().resolve()
+        metadata = _read_pack_metadata(path)
+        errors, warnings = validate_pack(path)
+        if metadata["error"] is not None and metadata["error"] not in errors:
+            errors = [metadata["error"], *errors]
+        results.append(
+            PackRootValidation(
+                path=path,
+                pack_id=metadata["id"],
+                status=metadata["status"],
+                visibility=metadata["visibility"],
+                documentation=metadata["documentation"],
+                skill_exports=metadata["skill_exports"],
+                errors=tuple(errors),
+                warnings=tuple(warnings),
+            )
+        )
+    return PackValidationReport(
+        context=context,
+        root=Path(root).expanduser().resolve() if root is not None else None,
+        results=tuple(results),
+    )
+
+
+def validate_first_party_packs_root_report(
+    packs_root: str | Path,
+    *,
+    pack_roots: Iterable[str | Path] | None = None,
+    context: ValidationContext = "assembled",
+) -> PackValidationReport:
+    """Return a detailed report for a first-party root and its explicit packs."""
+    root = Path(packs_root).expanduser().resolve()
+    inventory_errors, selected_roots, excluded, runtime_mounts = _first_party_inventory(
+        root,
+        pack_roots=pack_roots,
+    )
+    report = validate_pack_roots(selected_roots, context=context)
+    return PackValidationReport(
+        context=report.context,
+        root=root,
+        results=report.results,
+        inventory_errors=tuple(inventory_errors),
+        excluded=tuple(excluded),
+        runtime_mounts=tuple(runtime_mounts),
+    )
 
 
 def validate_first_party_packs_root(
     packs_root: str | Path,
 ) -> tuple[list[str], list[str]]:
     """Validate the canonical first-party ``astrid/packs`` source tree."""
-    # Late imports to avoid circular dependency at module level.
-    from astrid.core.pack.validate import validate_pack
-
-    root = Path(packs_root).resolve()
-    internal_inventory_errors = _validate_first_party_packs_root_inventory(root)
-    layout_errors: list[str] = []
-    warnings: list[str] = []
-
-    for pack_id in _FIRST_PARTY_PACK_IDS:
-        pack_dir = root / pack_id
-        if not pack_dir.is_dir():
-            continue
-        pack_errors, pack_warnings = validate_pack(pack_dir)
-        layout_errors.extend(f"{pack_id}: {error}" for error in pack_errors)
-        warnings.extend(f"{pack_id}: {warning}" for warning in pack_warnings)
-
+    report = validate_first_party_packs_root_report(packs_root)
+    layout_errors = [
+        f"{result.pack_id or result.path}: {error}"
+        for result in report.results
+        for error in result.errors
+    ]
     errors = _aggregate_first_party_packs_root_errors(
-        internal_inventory_errors=internal_inventory_errors,
+        internal_inventory_errors=list(report.inventory_errors),
         layout_errors=layout_errors,
     )
-    return errors, warnings
+    return errors, report.warnings
 
 
-def _validate_first_party_packs_root_inventory(root: Path) -> list[str]:
-    """Check that the first-party packs root has the expected directory inventory."""
-    # Late import to avoid circular dependency at module level.
-    from astrid.core.pack import pack_manifest_path
+def _read_pack_metadata(path: Path) -> dict[str, Any]:
+    """Read only manifest metadata needed for aggregate diagnostics."""
+    data: Any = None
+    error: str | None = None
+    manifest = path / "pack.yaml"
+    try:
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    except OSError as exc:
+        error = f"{path}: cannot read pack manifest: {exc}"
+    except yaml.YAMLError as exc:
+        error = f"{path}: invalid YAML pack manifest: {exc}"
+    if not isinstance(data, dict):
+        data = {}
+    documentation = data.get("documentation")
+    documentation_kind = (
+        documentation.get("kind")
+        if isinstance(documentation, dict)
+        and isinstance(documentation.get("kind"), str)
+        else "undocumented"
+    )
+    skill_paths: list[str] = []
+    if path.is_dir():
+        for candidate in sorted(path.rglob("SKILL.md")):
+            if not candidate.is_symlink():
+                skill_paths.append(candidate.relative_to(path).as_posix())
+    return {
+        "id": data.get("id") if isinstance(data.get("id"), str) else None,
+        "status": data.get("status", "active") if isinstance(data.get("status", "active"), str) else "active",
+        "visibility": data.get("visibility", "visible") if isinstance(data.get("visibility", "visible"), str) else "visible",
+        "documentation": documentation_kind,
+        "skill_exports": tuple(skill_paths),
+        "error": error,
+    }
 
-    errors: list[str] = []
+
+def _first_party_inventory(
+    root: Path,
+    *,
+    pack_roots: Iterable[str | Path] | None,
+) -> tuple[list[str], tuple[Path, ...], list[str], list[str]]:
+    """Resolve first-party root dispositions without discovering packs."""
     if not root.is_dir():
-        return [f"{root}: first-party packs root does not exist"]
+        return [f"{root}: first-party packs root does not exist"], (), [], []
 
     child_dirs = {
         child.name: child
@@ -109,73 +336,55 @@ def _validate_first_party_packs_root_inventory(root: Path) -> list[str]:
         if child.is_dir()
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
-        and not _is_repo_ignored_first_party_child(root, child)
     }
-    expected_pack_ids = set(_FIRST_PARTY_PACK_IDS)
-    allowed_names = expected_pack_ids | _FIRST_PARTY_INTERNAL_DIRS
+    runtime_mounts = sorted(
+        name for name in _FIRST_PARTY_INTERNAL_DIRS - {"_core"} if name in child_dirs
+    )
+    excluded = sorted(
+        name for name in _EXCLUDED_FIRST_PARTY_DIRS if name in child_dirs
+    )
+    if pack_roots is not None:
+        selected = tuple(Path(path).expanduser().resolve() for path in pack_roots)
+        return [], selected, excluded, runtime_mounts
 
-    for pack_id in sorted(expected_pack_ids - set(child_dirs)):
+    expected = set(_FIRST_PARTY_PACK_IDS if root == _FIRST_PARTY_PACKS_ROOT else _TRACKED_FIRST_PARTY_PACK_IDS)
+    allowed = expected | _FIRST_PARTY_INTERNAL_DIRS | _EXCLUDED_FIRST_PARTY_DIRS
+    errors: list[str] = []
+    for pack_id in sorted(expected - set(child_dirs)):
         errors.append(f"missing first-party pack directory: {pack_id}")
-
-    for name in sorted(set(child_dirs) - allowed_names):
+    for name in sorted(set(child_dirs) - allowed):
         errors.append(f"unexpected top-level directory: {name}")
-
-    for pack_id in sorted(expected_pack_ids & set(child_dirs)):
-        pack_dir = child_dirs[pack_id]
-        if pack_manifest_path(pack_dir) is None:
-            errors.append(
-                f"{pack_id}: pack manifest not found "
-                f"(pack.yaml, pack.yml, or pack.json)"
-            )
-
+    selected: list[Path] = []
+    for pack_id in _FIRST_PARTY_PACK_IDS:
+        pack_dir = child_dirs.get(pack_id)
+        if pack_dir is None:
+            continue
+        if not (pack_dir / "pack.yaml").is_file():
+            errors.append(f"{pack_id}: pack manifest not found (pack.yaml)")
+            continue
+        selected.append(pack_dir)
     core_dir = child_dirs.get("_core")
     if core_dir is None:
         errors.append("missing internal directory: _core")
-        return errors
+    else:
+        for manifest_name in ("pack.yaml", "pack.yml", "pack.json"):
+            if (core_dir / manifest_name).is_file():
+                errors.append(f"_core: skill-only shell must not contain {manifest_name}")
+        if not (core_dir / "docs" / "SKILL.md").is_file():
+            errors.append("_core: skill-only shell must provide docs/SKILL.md")
+        for forbidden in sorted(
+            child.name
+            for child in core_dir.iterdir()
+            if child.is_dir() and child.name in {"executors", "orchestrators", "elements", "build"}
+        ):
+            errors.append(f"_core: skill-only shell must not contain top-level {forbidden}/")
+    return errors, tuple(selected), excluded, runtime_mounts
 
-    for manifest_name in ("pack.yaml", "pack.yml", "pack.json"):
-        if (core_dir / manifest_name).is_file():
-            errors.append(
-                f"_core: skill-only shell must not contain {manifest_name}"
-            )
-    if not (core_dir / "skill" / "SKILL.md").is_file():
-        errors.append("_core: skill-only shell must provide skill/SKILL.md")
-    for forbidden in sorted(
-        child.name
-        for child in core_dir.iterdir()
-        if child.is_dir() and child.name in {"executors", "orchestrators", "elements", "build"}
-    ):
-        errors.append(
-            f"_core: skill-only shell must not contain top-level {forbidden}/"
-        )
 
+def _validate_first_party_packs_root_inventory(root: Path) -> list[str]:
+    """Check that the first-party packs root has the expected directory inventory."""
+    errors, _selected, _excluded, _runtime = _first_party_inventory(root, pack_roots=None)
     return errors
-
-
-def _is_repo_ignored_first_party_child(root: Path, child: Path) -> bool:
-    if root != _FIRST_PARTY_PACKS_ROOT:
-        return False
-    rel = child.relative_to(_REPO_ROOT).as_posix()
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", rel],
-        cwd=_REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if not tracked.stdout.strip():
-        return True
-    try:
-        subprocess.run(
-            ["git", "check-ignore", "-q", "--", rel],
-            cwd=_REPO_ROOT,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return False
-    return True
 
 
 def _aggregate_first_party_packs_root_errors(
@@ -196,5 +405,9 @@ def _aggregate_first_party_packs_root_errors(
 
 __all__ = [
     "is_first_party_packs_root_candidate",
+    "PackRootValidation",
+    "PackValidationReport",
+    "validate_pack_roots",
     "validate_first_party_packs_root",
+    "validate_first_party_packs_root_report",
 ]

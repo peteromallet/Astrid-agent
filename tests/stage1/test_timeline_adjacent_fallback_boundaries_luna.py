@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.editorial.executors.arrange import run as arrange
-from astrid.packs.editorial.executors.refine import run as refine
-from astrid.packs.editorial.executors.refine.src.reviewers import audio_boundary
+from astrid.packs.editorial.actions.arrange import run as arrange
+from astrid.packs.editorial.actions.refine import run as refine
+from astrid.packs.editorial.actions.refine.src.reviewers import audio_boundary
 from astrid.packs.video_editing.executors.cut import resume
 from astrid.packs.video_editing.orchestrators.hype import parser as hype_parser
 from astrid.packs.video_editing.orchestrators.hype import runner as hype_runner

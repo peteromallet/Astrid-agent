@@ -14,8 +14,8 @@ pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core import timeline
 from astrid.core.rendering import remotion_runtime
-from astrid.packs.rendering.backends.remotion import run as render_remotion
-from astrid.packs.rendering.executors.render import run as render_facade
+from astrid.packs.rendering.rendering.renderers.remotion import run as render_remotion
+from astrid.packs.rendering.actions.render import run as render_facade
 
 ROOT = Path(__file__).resolve().parents[3]
 LOCAL_EFFECT_SMOKE_FIXTURE = ROOT / "tests" / "fixtures" / "local_effect_smoke"

@@ -1,4 +1,4 @@
-from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import (
+from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
     canonical_clip_identity,
     classify_output_records,
     normalize_components,
@@ -99,7 +99,7 @@ def test_status_keeps_timeout_running_and_offers_argv_actions():
 
 
 def test_input_projection_default_uses_admitted_extent_past_short_render():
-    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import (
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import (
         _input_projection_bounds,
     )
 
@@ -127,7 +127,7 @@ def test_dense_projection_bands_include_every_track():
 
 def test_source_preview_requires_admitted_digest_and_managed_identity(tmp_path):
     import hashlib
-    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_execution import _asset_integrity_from_registry
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_execution import _asset_integrity_from_registry
 
     source = tmp_path / "still.png"
     source.write_bytes(b"png-bytes")

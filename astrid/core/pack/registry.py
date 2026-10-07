@@ -266,9 +266,19 @@ def pack_rendering_manifest_paths(
 ) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
     """Return contained renderer, planner, and finalizer manifest paths.
 
-    Rendering extensions name manifests relative to the pack root. Resolving
-    every path before returning it also rejects traversal and symlink escapes.
+    V3 declarations and v2 rendering extensions name descriptors relative to
+    the pack root. Resolving paths also rejects traversal and symlink escapes.
     """
+    if str(pack.schema_version) == "3":
+        def paths_for(role: str) -> tuple[Path, ...]:
+            return _resolve_pack_rendering_manifest_paths(
+                pack,
+                (item["path"] for item in pack.rendering.values() if item["type"] == role),
+                kind=role,
+            )
+
+        return paths_for("renderer"), paths_for("planner"), paths_for("finalizer")
+
     rendering = pack.extensions.get("rendering", {})
     renderers = _resolve_pack_rendering_manifest_paths(
         pack,
@@ -301,7 +311,34 @@ def _resolve_pack_rendering_manifest_paths(
         resolved = (root / relative_path).resolve()
         if relative_path.is_absolute() or not resolved.is_relative_to(root):
             raise PackValidationError(
+                f"pack.rendering.{kind}[{index}] must stay within the pack root"
+                if str(pack.schema_version) == "3" else
                 f"pack.extensions.rendering.{kind}[{index}] must stay within the pack root"
+            )
+        resolved_paths.append(resolved)
+    return tuple(resolved_paths)
+
+def pack_editor_entry_paths(pack: "PackDefinition") -> tuple[Path, ...]:
+    """Return declared browser editor entry modules owned by *pack*.
+
+    The pack manifest is the authority. Entries are resolved only within the
+    pack root and must be regular files so a generated browser catalog cannot
+    silently import a path outside the trusted pack.
+    """
+    editor = pack.extensions.get("editor", {})
+    entries = editor.get("entries", ()) if isinstance(editor, dict) else ()
+    root = pack.root.resolve()
+    resolved_paths: list[Path] = []
+    for index, raw_path in enumerate(entries):
+        relative_path = Path(raw_path)
+        resolved = (root / relative_path).resolve()
+        if relative_path.is_absolute() or not resolved.is_relative_to(root):
+            raise PackValidationError(
+                f"pack.extensions.editor.entries[{index}] must stay within the pack root"
+            )
+        if not resolved.is_file():
+            raise PackValidationError(
+                f"pack.extensions.editor.entries[{index}] must name a regular file: {raw_path}"
             )
         resolved_paths.append(resolved)
     return tuple(resolved_paths)

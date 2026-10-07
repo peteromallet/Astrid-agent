@@ -1,0 +1,68 @@
+{
+  "schema": "m16-composition-verification/v1",
+  "preflight": {
+    "candidate_manifest": "evidence/wave3/post-f04-cancel-requested-candidate-manifest.json",
+    "candidate_sha256": "75295b192dbc2b1ec345fd241764a7c69f4f0fc8a99b5778f5bd3d341feb0367",
+    "preflight_sha256": "7ef0e7b1f1131ea21bdf3ceef14669be956cee1772f3bd771438cd6606145841",
+    "roots": {
+      "Astrid": {
+        "head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+        "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+      },
+      "Reigh": {
+        "head": "34a8a2ff2cbeb8132346cbf43e33955be6063776",
+        "worktree": "/Users/peteromalley/Documents/reigh-workspace/reigh-app/.otto/worktrees/pack-authoring-convergence-20261001"
+      },
+      "Runtime": {
+        "head": "a278cd460018976940ae21fc2cad563a29a29649",
+        "worktree": "/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001"
+      }
+    },
+    "all_preflight_source_hashes_match": true,
+    "reservation_id": "M16-composition-01",
+    "reservation_status_at_start": "active",
+    "reserved_write_set": [
+      "astrid/packs/stream_content/actions/distill/run.py",
+      "astrid/packs/stream_content/actions/distill/plan_template.py",
+      "tests/packs/stream_content/test_stream_content.py"
+    ]
+  },
+  "capacity": {
+    "gate": "evidence/wave3/capacity-two-writer-02.json",
+    "gate_sha256": "32df54352fb46f5339b98d9f4de0e579349ae05dc2f12ce07e6f6039add33cb0",
+    "gate_passed": true,
+    "window_seconds": 360.038,
+    "minimum_observed_free_kib": 15812232,
+    "net_decline_kib": 33268,
+    "immediate_recheck": "evidence/wave3/capacity-two-writer-02-recheck.json",
+    "immediate_recheck_sha256": "9bcf02b08af55801a7d9418d07980686c3b1fdebcc7a668b85fb80b7756addf6",
+    "immediate_free_kib": 15792024,
+    "required_minimum_free_kib": 3849952,
+    "current_df_available_kib": 15926376
+  },
+  "checks": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/packs/stream_content/test_stream_content.py -q --tb=short -p no:cacheprovider",
+      "result": "9 passed in 1.11s"
+    },
+    {
+      "command": "ASTRID_INTERNAL_INVOCATION=1 PYTHONDONTWRITEBYTECODE=1 python -c '<ast parse and import run.py and plan_template.py>'",
+      "result": "exit 0"
+    },
+    {
+      "command": "git diff --check -- tests/packs/stream_content/test_stream_content.py",
+      "result": "exit 0"
+    },
+    {
+      "command": "git diff --no-index --check /dev/null astrid/packs/stream_content/actions/distill/run.py; git diff --no-index --check /dev/null astrid/packs/stream_content/actions/distill/plan_template.py",
+      "result": "expected exit 1 for untracked-file comparison; no diagnostics"
+    }
+  ],
+  "public_children": [
+    "editorial.transcribe",
+    "editorial.scenes",
+    "media.clip_extract"
+  ],
+  "d18_receiver_evidence_suffices": true,
+  "d18_scope_note": "Existing F04/F05 bridge and materialize_output evidence establishes the public child admission, parent-custody object binding, waited settlement, exact association materialization, and cancellation/error boundary. No live provider or normal-vendor media execution was attempted."
+}

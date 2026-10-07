@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from astrid.packs.rendering.executors.timeline_visualize.select import (
+from astrid.packs.rendering.actions.timeline_visualize.select import (
     select_from_manifest,
     select_kernel_timelines,
 )

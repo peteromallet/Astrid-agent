@@ -1,56 +1,45 @@
 # Skills install layer
 
-Astrid installs its prompt content as "skills" into three agent harnesses: **Claude Code**, **Codex**, and **Hermes**. One canonical command:
+Astrid installs its prompt content as "skills" into three agent harnesses:
+**Claude Code**, **Codex**, and **Hermes**. Each manifest-backed pack exports
+one authored skill bundle through the existing sync layer. One canonical
+command is:
 
 ```bash
-python3 -m astrid.skills.cli install --all
+python3 -m astrid.skills install --all
 ```
 
 `--all` only writes to harnesses whose home directory exists; missing harnesses are skipped silently.
 
 The gateway also recognizes external packs selected by managed setup. Run
-`python3 -m astrid.setup` to provision the pinned defaults and compose their
+`python3 -m astrid.setup` to provision pinned defaults and compose their
 skills; discovery and `skills sync` do not download code. If a user removes a
 managed default skill with `skills uninstall`, Astrid records that choice and
-leaves it removed. A missing link that was still installed is treated as drift
-and is restored by the normal auto-heal path or `skills sync`.
-
-The external pack manifest must be strict v2. Default selection belongs to the
-setup declaration, not to an installer-specific manifest field such as
-`install_tier`.
+leaves it removed. A missing link that was still installed is drift and is
+restored by the normal auto-heal path or `skills sync`.
 
 The installed-wheel recovery entrypoint is `python -m astrid.skills sync` (or
 `python -m astrid.skills doctor --heal`).
 
 ## SkillDescriptor contract
 
-Each pack that wants to be installable contributes one file:
+For a v3 pack, `pack.yaml` declares the single authored source:
 
-```
-astrid/packs/<pack>/skill/SKILL.md
-```
-
-Discovery also understands canonical component roots declared in `pack.yaml`.
-If a pack declares `content.executors: executors` or
-`content.orchestrators: orchestrators`, Astrid will discover nested component
-skills at:
-
-```
-astrid/packs/<pack>/executors/<executor>/skill/SKILL.md
-astrid/packs/<pack>/orchestrators/<orchestrator>/skill/SKILL.md
+```yaml
+documentation:
+  kind: skill
+  path: docs/SKILL.md
 ```
 
-Those nested descriptors use the qualified pack id
-`<pack>.<component_slug>`. Legacy flat component layouts are still scanned for
-packs without canonical `content` roots. Directories that contain a
-`skill/SKILL.md` but lack a `pack.yaml` fall back to Strategy 2 flat-walk
-discovery without error.
+That file is `astrid/packs/<pack>/docs/SKILL.md` in the checkout. It has normal
+YAML frontmatter with at least `name` and `description`, followed by Markdown
+body content. Discovery requires the declared file and reads the authored
+bundle as-is. It does not scan executor, action, UI, rendering, or nested
+component directories for additional skills.
 
-Discovery skips packs with `status: deprecated` or `visibility: hidden`
-by default, unless the pack is explicitly requested. This keeps stale
-and development-only packs out of the agent's prompt context.
-
-The file is a Claude-Code-style skill: YAML frontmatter with at least `name` and `description`, followed by Markdown body content.
+`astrid/packs/_core/docs/SKILL.md` is the manifestless Astrid gateway and is
+composed by the same existing sync path; it is not a second manifest-backed
+pack export.
 
 ```markdown
 ---
@@ -71,19 +60,42 @@ When Astrid discovers a skill it builds a `SkillDescriptor`:
 | `name` | frontmatter `name` |
 | `description` | frontmatter `description` |
 | `short_description` | reused from the discovery search index — `short_description_or_truncated(...)` |
-| `skill_dir` | `astrid/packs/<pack>/skill/` |
-| `skill_md` | `astrid/packs/<pack>/skill/SKILL.md` |
+| `skill_dir` | the declared authored bundle directory, normally `astrid/packs/<pack>/docs/` |
+| `skill_md` | the declared `documentation.path`, normally `astrid/packs/<pack>/docs/SKILL.md` |
 | `hermes_metadata` | optional `metadata.hermes.*` block (see below) |
 
-## Per-pack `skill/SKILL.md` convention
+## Per-pack `docs/SKILL.md` convention
 
-- Source-of-truth: ONE shared SKILL.md per pack. Claude and Codex read it as-is. Hermes reads it as-is too.
+- Source of truth: exactly one authored `docs/SKILL.md` per pack. Claude, Codex,
+  and Hermes receive that bundle through the existing composed view.
+- Additional Markdown files under the pack are linked documentation, not extra
+  skills. Keep references, templates, and assets beside the authored guide and
+  use normal relative links.
 - The shared file MUST NOT contain Hermes-specific dynamic tokens. The two patterns flagged by the linter are:
   - `${HERMES_*}` — environment-variable interpolation
   - `` !`shell` `` — Hermes inline-shell substitution
-- If a pack genuinely needs Hermes-only dynamic content, put it in `astrid/packs/<pack>/skill/references/hermes-only.md` and reference it via `metadata.hermes.references`.
+- If a pack genuinely needs Hermes-only dynamic content, put it in
+  `astrid/packs/<pack>/docs/references/hermes-only.md` and reference it via
+  `metadata.hermes.references`.
 
-Run the lint check via `python3 -m astrid.skills.cli doctor`. Findings are non-zero exit code.
+Do not author in an installed or composed view. Edit the pack bundle, then
+refresh the view with the existing sync command. For a source-only check, use
+the read-only form:
+
+```bash
+python3 -m astrid.skills sync --check --deep
+```
+
+When a disposable harness is appropriate, the write form is:
+
+```bash
+python3 -m astrid.skills sync --deep --mechanism external-dir --json
+```
+
+`--deep` (also `--all`) links each pack skill; `--check` reports drift without
+writing. Do not use a personal/global sync to publish an in-progress pack.
+
+Run the lint check via `python3 -m astrid.skills doctor`. Findings are non-zero exit code.
 
 ## `metadata.hermes.*` block
 
@@ -96,7 +108,7 @@ description: "Short blurb."
 metadata:
   hermes:
     references:
-      - "references/hermes-only.md"
+    - "references/hermes-only.md"
     enable_when: "${HERMES_FEATURE_X}"
 ---
 ```
@@ -144,5 +156,6 @@ If at least one harness is detected on disk and is missing one of the expected p
   contract for discovering capabilities: `skills list`, search, and
   `inspect --json`. Skills install is the delivery mechanism; discovery
   describes what agents do with the installed skills.
-- [creating-packs.md](../packs/creating-packs.md) — Pack authoring and source
-  discovery conventions.
+- [create-a-pack.md](create-a-pack.md) — Current v3 pack authoring and source
+  discovery route. The [legacy pack protocol reference](../packs/creating-packs.md)
+  covers older manifests and migration details.

@@ -68,9 +68,25 @@ def _inspect_discovered_pack(
         for key, value in sorted(payload.items()):
             print(f"{key}: {value}")
         return 0
-    for key in ("id", "name", "version", "description", "status", "visibility", "root", "manifest_path"):
+    for key in (
+        "id",
+        "name",
+        "version",
+        "description",
+        "status",
+        "visibility",
+        "root",
+        "manifest_path",
+        "documentation",
+    ):
         print(f"{key}: {payload.get(key, '')}")
     _print_taxonomy_block(payload.get("taxonomy", _pack_taxonomy(pack)))
+    for section in ("actions", "ui", "rendering", "documents"):
+        declarations = payload.get(section, {})
+        if declarations:
+            print(f"{section}:")
+            for key, value in sorted(declarations.items()):
+                print(f"  {key}: {value}")
     if pack.content:
         print("content:")
         for key, value in sorted(pack.content.items()):

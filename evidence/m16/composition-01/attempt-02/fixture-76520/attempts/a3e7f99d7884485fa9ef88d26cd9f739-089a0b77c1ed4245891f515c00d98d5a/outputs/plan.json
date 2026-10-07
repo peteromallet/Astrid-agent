@@ -1,0 +1,126 @@
+{
+  "plan_id": "stream-content-4b6e36afcc80",
+  "steps": [
+    {
+      "adapter": "local",
+      "command": "astrid.sdk.invoke(\"editorial.transcribe\", kind='action', inputs={\"audio\": \"/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/inputs/source.mp4\"}, wait=True)",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "transcribe",
+      "produces": {
+        "transcript": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "transcript.json"
+        }
+      }
+    },
+    {
+      "adapter": "local",
+      "command": "astrid.sdk.invoke(\"editorial.scenes\", kind='action', inputs={\"video\": \"/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/inputs/source.mp4\"}, wait=True)",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "scenes",
+      "produces": {
+        "scenes": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "scenes.json"
+        }
+      }
+    },
+    {
+      "adapter": "local",
+      "command": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python -m astrid.packs.stream_content.actions.segment_map.run --video /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/inputs/source.mp4 --transcript /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/transcribe/v1/produces/transcript.json --scenes /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/scenes/v1/produces/scenes.json --out '{produces_root}/segment_map.json'",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "segment-map",
+      "produces": {
+        "segment_map": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "segment_map.json"
+        }
+      }
+    },
+    {
+      "adapter": "local",
+      "command": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python -m astrid.packs.stream_content.actions.distill.run extract-segments --video /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/inputs/source.mp4 --segment-map /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/segment-map/v1/produces/segment_map.json --out-dir '{produces_root}/segments' --manifest '{produces_root}/segments/segments.json'",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "extract-segments",
+      "produces": {
+        "segments_manifest": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "segments/segments.json"
+        }
+      }
+    },
+    {
+      "adapter": "local",
+      "command": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python -m astrid.packs.stream_content.actions.clip_candidates.run --transcript /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/transcribe/v1/produces/transcript.json --segment-map /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/segment-map/v1/produces/segment_map.json --out '{produces_root}/candidates.json'",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "clip-candidates",
+      "produces": {
+        "candidates": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "candidates.json"
+        }
+      }
+    },
+    {
+      "adapter": "local",
+      "command": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python -m astrid.packs.stream_content.actions.distill.run review --video /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/inputs/source.mp4 --segment-map /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/segment-map/v1/produces/segment_map.json --candidates /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/clip-candidates/v1/produces/candidates.json --segments-manifest /Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76520/attempts/a3e7f99d7884485fa9ef88d26cd9f739-089a0b77c1ed4245891f515c00d98d5a/outputs/steps/extract-segments/v1/produces/segments/segments.json --out '{produces_root}/review.html'",
+      "cost": {
+        "amount": 0.0,
+        "currency": "USD",
+        "source": "local"
+      },
+      "id": "review",
+      "produces": {
+        "review": {
+          "check": {
+            "check_id": "file_nonempty",
+            "params": {},
+            "sentinel": false
+          },
+          "path": "review.html"
+        }
+      }
+    }
+  ],
+  "version": 2
+}

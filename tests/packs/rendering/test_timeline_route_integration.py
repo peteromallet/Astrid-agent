@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from astrid.packs.timeline.cli import _cmd_show, _cmd_visualize, build_parser
+from astrid.core.cli.domain_timelines import _cmd_show, _cmd_visualize, build_parser
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.results import InvocationResult
 

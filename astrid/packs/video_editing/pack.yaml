@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 id: video_editing
 name: Astrid Video Editing
 version: 1.0.0
@@ -9,38 +9,435 @@ support: core
 visibility: visible
 permissions:
   - id: subprocess
-    reason: Runs ffmpeg-based cut and foley executors plus orchestrator child processes.
+    reason: Runs ffmpeg-based media actions and child processes.
   - id: project_files
-    reason: Reads and writes timelines, assets, and editorial artifacts.
-description: End-to-end video production orchestrators (hype edits, talks, thumbnails, logos, image animation) plus the timeline-cut executor.
-keywords:
-- video
-- timeline
-- edit
-- hype
-- thumbnail
-- render
-- animate
-- grid
-capabilities:
-- run_hype_pipeline
-- build_timeline
-- assemble_event_talk
-- make_thumbnails
-- generate_logo_grid
-- animate_image
-- vary_image_grid
-- render_iteration_video
-agent:
-  purpose: Choose this pack for video-production orchestrators and adjacent visual-generation workflows — hype, event, and iteration videos; thumbnails; logo grids; image animation; and grid variation.
-  do_not_use_for: Do not use to merely understand/caption media (use understanding) or to run a raw ComfyUI generation graph (use vibecomfy); this pack owns the editorial assembly and render flow, distinct from the editorial pack's analysis stages it depends on.
-  normal_entrypoints:
-  - video_editing.hype
-  - video_editing.event_talks
-  - video_editing.thumbnail_maker
-content:
-  executors: executors
-  orchestrators: orchestrators
+    reason: Reads admitted media and writes bounded action outputs.
+description: End-to-end video production actions for cuts, Hype edits, talks, thumbnails, logos, image animation, grid variation, and iteration video rendering.
+keywords: [video, timeline, edit, hype, thumbnail, render, animate, grid, iteration]
+capabilities: [run_hype_pipeline, build_timeline, assemble_event_talk, make_thumbnails, generate_logo_grid, animate_image, vary_image_grid, render_iteration_video]
 documentation:
   kind: skill
-  path: skill/SKILL.md
+  path: docs/SKILL.md
+agent:
+  purpose: Use this pack for bounded video-production actions and iteration-video rendering.
+  do_not_use_for: Media understanding, raw ComfyUI graphs, or editorial analysis stages owned by other packs.
+  normal_entrypoints:
+    - video_editing.cut
+    - video_editing.hype
+    - video_editing.event_talks
+    - video_editing.thumbnail_maker
+    - video_editing.logo_ideas
+    - video_editing.animate_image
+    - video_editing.vary_grid
+    - video_editing.iteration_video
+actions:
+  cut:
+    name: Video Cut
+    version: 1.0.0
+    short_description: Build a timeline cut from admitted editorial inputs.
+    description: Build a bounded timeline cut and emit the public timeline, assets, and metadata files.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.cut.run", "--out", "{out}"]
+        input_args:
+          - {input: scenes, flag: --scenes, optional: true}
+          - {input: timeline, flag: --timeline, optional: true}
+          - {input: assets, flag: --assets, optional: true}
+          - {input: video, flag: --video, optional: true}
+          - {input: audio, flag: --audio, optional: true}
+          - {input: transcript, flag: --transcript, optional: true}
+          - {input: shots, flag: --shots, optional: true}
+          - {input: arrangement, flag: --arrangement, optional: true}
+          - {input: pool, flag: --pool, optional: true}
+          - {input: brief, flag: --brief, optional: true}
+          - {input: theme, flag: --theme, optional: true}
+          - {input: asset, flag: --asset, repeatable: true, optional: true}
+          - {input: verbose, flag: --verbose, optional: true}
+          - {input: primary_asset, flag: --primary-asset, optional: true}
+          - {input: renderer, flag: --renderer, optional: true}
+    inputs:
+      - {name: brief, type: file, required: true}
+      - {name: pool, type: file, required: false}
+      - {name: arrangement, type: file, required: false}
+      - {name: video, type: file, required: false}
+      - {name: audio, type: file, required: false}
+      - {name: theme, type: file, required: false}
+      - {name: scenes, type: file, required: false}
+      - {name: timeline, type: file, required: false}
+      - {name: assets, type: file, required: false}
+      - {name: transcript, type: file, required: false}
+      - {name: shots, type: file, required: false}
+      - {name: asset, type: string, required: false}
+      - {name: verbose, type: boolean, required: false, default: false}
+      - {name: primary_asset, type: string, required: false}
+      - {name: renderer, type: string, required: false, default: rendering.remotion}
+    outputs:
+      - {name: timeline, type: file, path_template: "{out}/hype.timeline.json", mode: create_or_replace, artifact_type: timeline}
+      - {name: assets, type: file, path_template: "{out}/hype.assets.json", mode: create_or_replace, artifact_type: timeline/assets}
+      - {name: metadata, type: file, path_template: "{out}/hype.metadata.json", mode: create_or_replace}
+    resources:
+      - {kind: implementation, path: actions/cut/__init__.py}
+      - {kind: implementation, path: actions/cut/run.py}
+      - {kind: implementation, path: actions/cut/probe.py}
+      - {kind: implementation, path: actions/cut/resume.py}
+      - {kind: implementation, path: actions/cut/timeline_build.py}
+      - {kind: implementation, path: actions/cut/attempt_assets.py}
+      - {kind: documentation, path: actions/cut/STAGE.md}
+    clip_kinds_supported: [video, image, audio, text, effect]
+    pipeline_requirements: [arrangement, pool]
+    conditions:
+      - {input: brief, kind: requires_input}
+    graph:
+      consumes: []
+      depends_on:
+        - editorial.transcribe
+        - editorial.scenes
+        - editorial.quality_zones
+        - editorial.shots
+        - editorial.triage
+        - understanding.scene_describe
+        - editorial.quote_scout
+        - training.pool_build
+        - training.pool_merge
+        - editorial.arrange
+      provides: [timeline, assets, metadata]
+    cache:
+      always_run: false
+      mode: sentinel
+      per_brief: true
+      sentinels: [hype.timeline.json, hype.assets.json, hype.metadata.json]
+    isolation:
+      binaries: []
+      mode: subprocess
+      network: false
+      requirements: []
+    metadata:
+      runtime_entrypoint: main
+      runtime_file: actions/cut/run.py
+      runtime_module: astrid.packs.video_editing.actions.cut.run
+      output_result_manifest: true
+      command_builder: astrid.packs.video_editing.actions.hype.run.build_pool_steps
+      pipeline_step: cut
+      pipeline_step_order: 10
+  hype:
+    name: Hype Video
+    version: 1.0.0
+    short_description: Run the Hype video production pipeline.
+    description: Run the Hype pipeline from admitted source media and brief, emitting a bounded result manifest.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.hype.entrypoint", "--out", "{out}"]
+        input_args:
+          - {input: video, flag: --video}
+          - {input: brief, flag: --brief}
+          - {input: project, flag: --project, optional: true}
+          - {input: audio, flag: --audio, optional: true}
+          - {input: target_duration, flag: --target-duration, optional: true}
+          - {input: asset, flag: --asset, repeatable: true, optional: true}
+          - {input: primary_asset, flag: --primary-asset, optional: true}
+          - {input: source_slug, flag: --source-slug, optional: true}
+          - {input: brief_slug, flag: --brief-slug, optional: true}
+          - {input: from_step, flag: --from, optional: true}
+          - {input: skip, flag: --skip, repeatable: true, optional: true}
+          - {input: render, flag: --render, optional: true}
+          - {input: theme, flag: --theme, optional: true}
+          - {input: max_editor_passes, flag: --max-editor-passes, optional: true}
+          - {input: config, flag: --config, optional: true}
+          - {input: python_exec, flag: --python, optional: true}
+          - {input: verbose, flag: --verbose, optional: true}
+          - {input: env_file, flag: --env-file, optional: true}
+          - {input: no_audit, flag: --no-audit, optional: true}
+          - {input: allow_generative_effects, flag: --allow-generative-effects, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+    inputs:
+      - {name: video, type: file, required: true}
+      - {name: brief, type: file, required: true}
+      - {name: project, type: string, required: false}
+      - {name: audio, type: file, required: false}
+      - {name: target_duration, type: number, required: false}
+      - {name: asset, type: string, required: false}
+      - {name: primary_asset, type: string, required: false}
+      - {name: source_slug, type: string, required: false}
+      - {name: brief_slug, type: string, required: false}
+      - {name: from_step, type: string, required: false}
+      - {name: skip, type: string, required: false}
+      - {name: render, type: boolean, required: false, default: false}
+      - {name: theme, type: file, required: false}
+      - {name: max_editor_passes, type: integer, required: false, default: 2}
+      - {name: config, type: path, required: false}
+      - {name: python_exec, type: path, required: false}
+      - {name: verbose, type: boolean, required: false, default: false}
+      - {name: env_file, type: file, required: false}
+      - {name: no_audit, type: boolean, required: false, default: false}
+      - {name: allow_generative_effects, type: boolean, required: false, default: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/hype/__init__.py}
+      - {kind: implementation, path: actions/hype/entrypoint.py}
+      - {kind: implementation, path: actions/hype/run.py}
+      - {kind: implementation, path: actions/hype/parser.py}
+      - {kind: implementation, path: actions/hype/config.py}
+      - {kind: implementation, path: actions/hype/project_adapter.py}
+      - {kind: implementation, path: actions/hype/runner.py}
+      - {kind: implementation, path: actions/hype/steps.py}
+      - {kind: implementation, path: actions/hype/step_worker.py}
+      - {kind: implementation, path: actions/hype/plan_template.py}
+      - {kind: documentation, path: actions/hype/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/hype/entrypoint.py, runtime_module: astrid.packs.video_editing.actions.hype.entrypoint, callback_module: astrid.packs.video_editing.actions.hype.run, output_result_manifest: true}
+  event_talks:
+    name: Event Talks
+    version: 1.0.0
+    short_description: Build an event-talk video artifact.
+    description: Run the event-talk action with explicit source, transcript, project, and bounded output inputs.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.event_talks.run", "--out", "{out}"]
+        input_args:
+          - {input: source, flag: --source, optional: true}
+          - {input: transcript, flag: --transcript, optional: true}
+          - {input: project, flag: --project, optional: true}
+          - {input: python_exec, flag: --python-exec, optional: true}
+          - {input: verbose, flag: --verbose, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+    inputs:
+      - {name: source, type: file, required: false}
+      - {name: transcript, type: file, required: false}
+      - {name: project, type: string, required: false}
+      - {name: python_exec, type: path, required: false}
+      - {name: verbose, type: boolean, required: false, default: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/event_talks/__init__.py}
+      - {kind: implementation, path: actions/event_talks/run.py}
+      - {kind: implementation, path: actions/event_talks/plan_template.py}
+      - {kind: implementation, path: actions/event_talks/workflow.py}
+      - {kind: asset, path: actions/event_talks/data/ados_sunday_speakers.json}
+      - {kind: documentation, path: actions/event_talks/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/event_talks/run.py, runtime_module: astrid.packs.video_editing.actions.event_talks.run, output_result_manifest: true}
+  thumbnail_maker:
+    name: Thumbnail Maker
+    version: 1.0.0
+    short_description: Create thumbnail candidates from admitted video inputs.
+    description: Run the thumbnail action and emit its bounded result manifest.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.thumbnail_maker.run", "--out", "{out}"]
+        input_args:
+          - {input: video, flag: --video, optional: true}
+          - {input: query, flag: --query, optional: true}
+          - {input: size, flag: --size, optional: true}
+          - {input: count, flag: --count, optional: true}
+          - {input: model, flag: --model, optional: true}
+          - {input: quality, flag: --quality, optional: true}
+          - {input: output_format, flag: --output-format, optional: true}
+          - {input: visual_mode, flag: --visual-mode, optional: true}
+          - {input: reference_mode, flag: --reference-mode, optional: true}
+          - {input: max_candidates, flag: --max-candidates, optional: true}
+          - {input: previous_manifest, flag: --previous-manifest, optional: true}
+          - {input: feedback, flag: --feedback, optional: true}
+          - {input: env_file, flag: --env-file, optional: true}
+          - {input: project, flag: --project, optional: true}
+          - {input: python_exec, flag: --python-exec, optional: true}
+          - {input: verbose, flag: --verbose, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+    inputs:
+      - {name: video, type: file, required: false}
+      - {name: query, type: string, required: false}
+      - {name: size, type: string, required: false}
+      - {name: count, type: integer, required: false}
+      - {name: model, type: string, required: false}
+      - {name: quality, type: string, required: false}
+      - {name: output_format, type: string, required: false}
+      - {name: visual_mode, type: string, required: false}
+      - {name: reference_mode, type: string, required: false}
+      - {name: max_candidates, type: integer, required: false}
+      - {name: previous_manifest, type: file, required: false}
+      - {name: feedback, type: string, required: false}
+      - {name: env_file, type: file, required: false}
+      - {name: project, type: string, required: false}
+      - {name: python_exec, type: path, required: false}
+      - {name: verbose, type: boolean, required: false, default: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/thumbnail_maker/__init__.py}
+      - {kind: implementation, path: actions/thumbnail_maker/run.py}
+      - {kind: implementation, path: actions/thumbnail_maker/plan_template.py}
+      - {kind: implementation, path: actions/thumbnail_maker/workflow.py}
+      - {kind: documentation, path: actions/thumbnail_maker/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/thumbnail_maker/run.py, runtime_module: astrid.packs.video_editing.actions.thumbnail_maker.run, output_result_manifest: true}
+  logo_ideas:
+    name: Logo Ideas
+    version: 1.0.0
+    short_description: Generate a logo-idea grid from admitted ideas.
+    description: Run the logo-idea action with explicit ideas and bounded output.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.logo_ideas.run", "--out", "{out}"]
+        input_args:
+          - {input: ideas, flag: --ideas}
+          - {input: count, flag: --count, optional: true}
+          - {input: provider, flag: --provider, optional: true}
+          - {input: model, flag: --model, optional: true}
+          - {input: image_size, flag: --image-size, optional: true}
+          - {input: output_format, flag: --output-format, optional: true}
+          - {input: env_file, flag: --env-file, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+    inputs:
+      - {name: ideas, type: file, required: true}
+      - {name: count, type: integer, required: false}
+      - {name: provider, type: string, required: false}
+      - {name: model, type: string, required: false}
+      - {name: image_size, type: string, required: false}
+      - {name: output_format, type: string, required: false}
+      - {name: env_file, type: file, required: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/logo_ideas/__init__.py}
+      - {kind: implementation, path: actions/logo_ideas/run.py}
+      - {kind: documentation, path: actions/logo_ideas/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/logo_ideas/run.py, runtime_module: astrid.packs.video_editing.actions.logo_ideas.run, output_result_manifest: true}
+  animate_image:
+    name: Animate Image
+    version: 1.0.0
+    short_description: Animate an admitted style image against a reference video.
+    description: Run the image-animation action with explicit media inputs and bounded output.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.animate_image.run", "--out", "{out}"]
+        input_args:
+          - {input: style_image, flag: --style-image}
+          - {input: ref_video, flag: --ref-video}
+          - {input: prompt, flag: --prompt, optional: true}
+          - {input: replace_prompt, flag: --replace-prompt, optional: true}
+          - {input: quality, flag: --quality, optional: true}
+          - {input: output_format, flag: --output-format, optional: true}
+          - {input: resolution, flag: --resolution, optional: true}
+          - {input: num_inference_steps, flag: --num-inference-steps, optional: true}
+          - {input: guidance_scale, flag: --guidance-scale, optional: true}
+          - {input: shift, flag: --shift, optional: true}
+          - {input: video_quality, flag: --video-quality, optional: true}
+          - {input: use_turbo, flag: --use-turbo, optional: true}
+          - {input: seed, flag: --seed, optional: true}
+          - {input: env_file, flag: --env-file, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+          - {input: skip_generate, flag: --skip-generate, optional: true}
+          - {input: use_image, flag: --use-image, optional: true}
+          - {input: skip_animate, flag: --skip-animate, optional: true}
+    inputs:
+      - {name: style_image, type: file, required: true}
+      - {name: ref_video, type: file, required: true}
+      - {name: prompt, type: string, required: false}
+      - {name: replace_prompt, type: string, required: false}
+      - {name: quality, type: string, required: false}
+      - {name: output_format, type: string, required: false}
+      - {name: resolution, type: string, required: false}
+      - {name: num_inference_steps, type: integer, required: false}
+      - {name: guidance_scale, type: number, required: false}
+      - {name: shift, type: number, required: false}
+      - {name: video_quality, type: string, required: false}
+      - {name: use_turbo, type: boolean, required: false, default: false}
+      - {name: seed, type: integer, required: false}
+      - {name: env_file, type: file, required: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+      - {name: skip_generate, type: boolean, required: false, default: false}
+      - {name: use_image, type: file, required: false}
+      - {name: skip_animate, type: boolean, required: false, default: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/animate_image/__init__.py}
+      - {kind: implementation, path: actions/animate_image/run.py}
+      - {kind: documentation, path: actions/animate_image/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/animate_image/run.py, runtime_module: astrid.packs.video_editing.actions.animate_image.run, output_result_manifest: true}
+  vary_grid:
+    name: Vary Grid
+    version: 1.0.0
+    short_description: Generate a variation grid from an admitted source and ideas.
+    description: Run the grid-variation action with explicit source, cell, and idea inputs.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.vary_grid.run", "--out", "{out}"]
+        input_args:
+          - {input: from, flag: --from}
+          - {input: cells, flag: --cells}
+          - {input: ideas, flag: --ideas}
+          - {input: count, flag: --count, optional: true}
+          - {input: source_rows, flag: --source-rows, optional: true}
+          - {input: source_cols, flag: --source-cols, optional: true}
+          - {input: size, flag: --size, optional: true}
+          - {input: quality, flag: --quality, optional: true}
+          - {input: output_format, flag: --output-format, optional: true}
+          - {input: model, flag: --model, optional: true}
+          - {input: no_kimi, flag: --no-kimi, optional: true}
+          - {input: env_file, flag: --env-file, optional: true}
+          - {input: dry_run, flag: --dry-run, optional: true}
+          - {input: favicon, flag: --favicon, optional: true}
+          - {input: favicon_size, flag: --favicon-size, optional: true}
+          - {input: favicon_zoom, flag: --favicon-zoom, optional: true}
+    inputs:
+      - {name: from, type: file, required: true}
+      - {name: cells, type: string, required: true}
+      - {name: ideas, type: string, required: true}
+      - {name: count, type: integer, required: false}
+      - {name: source_rows, type: integer, required: false}
+      - {name: source_cols, type: integer, required: false}
+      - {name: size, type: string, required: false}
+      - {name: quality, type: string, required: false}
+      - {name: output_format, type: string, required: false}
+      - {name: model, type: string, required: false}
+      - {name: no_kimi, type: boolean, required: false, default: false}
+      - {name: env_file, type: file, required: false}
+      - {name: dry_run, type: boolean, required: false, default: false}
+      - {name: favicon, type: boolean, required: false, default: false}
+      - {name: favicon_size, type: integer, required: false}
+      - {name: favicon_zoom, type: integer, required: false}
+    outputs:
+      - {name: manifest, type: file, path_template: "{out}/manifest.json", mode: create_or_replace, artifact_type: metadata/result-manifest}
+    resources:
+      - {kind: implementation, path: actions/vary_grid/__init__.py}
+      - {kind: implementation, path: actions/vary_grid/run.py}
+      - {kind: documentation, path: actions/vary_grid/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/vary_grid/run.py, runtime_module: astrid.packs.video_editing.actions.vary_grid.run, output_result_manifest: true}
+  iteration_video:
+    name: Iteration Video
+    version: 1.0.0
+    short_description: Render one admitted runtime iteration selection.
+    description: Consume an admitted frozen iteration envelope and media dependency, delegate one rendering child, and emit video plus provenance.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-m", "astrid.packs.video_editing.actions.iteration_video.run", "--project-id", "{project_id}", "--target-run-id", "{target_run_id}", "--frozen-inputs", "{frozen_inputs}", "--media-dependency", "{media_dependency}", "--out", "{out}"]
+        input_args:
+          - {input: theme, flag: --theme, optional: true}
+          - {input: force, flag: --force, optional: true}
+    inputs:
+      - {name: project_id, type: string, required: true}
+      - {name: target_run_id, type: string, required: true}
+      - {name: frozen_inputs, type: file, required: true, artifact_type: runtime/frozen-iteration-inputs}
+      - {name: media_dependency, type: file, required: true, artifact_type: media/dependency}
+      - {name: theme, type: file, required: false}
+      - {name: force, type: boolean, required: false, default: false}
+    outputs:
+      - {name: iteration.mp4, type: file, path_template: "{out}/iteration.mp4", mode: create_or_replace, artifact_type: video/clip}
+      - {name: iteration.mp4.provenance.json, type: file, path_template: "{out}/iteration.mp4.provenance.json", mode: create_or_replace, artifact_type: metadata/provenance}
+    resources:
+      - {kind: implementation, path: actions/iteration_video/__init__.py}
+      - {kind: implementation, path: actions/iteration_video/run.py}
+      - {kind: implementation, path: actions/iteration_video/admission.py}
+      - {kind: documentation, path: actions/iteration_video/STAGE.md}
+    metadata: {runtime_entrypoint: main, runtime_file: actions/iteration_video/run.py, runtime_module: astrid.packs.video_editing.actions.iteration_video.run, output_result_manifest: true, authority: runtime}

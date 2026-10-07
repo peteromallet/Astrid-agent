@@ -81,7 +81,7 @@ def test_networked_transcribe_sdk_dispatch_does_not_trip_orchestrator_guard() ->
     )
 
     assert result.ok is True
-    assert "astrid.packs.editorial.executors.transcribe.run" in result.raw_result["command"]
+    assert "astrid.packs.editorial.actions.transcribe.run" in result.raw_result["command"]
 
 
 def test_hype_inputs_are_typed_and_preserved_in_command() -> None:

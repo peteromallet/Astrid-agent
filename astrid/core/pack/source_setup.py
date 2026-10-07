@@ -278,7 +278,7 @@ def _tree_digest(root: Path) -> str:
     root = root.resolve()
     try:
         repo_root = Path(_run_git("", "-C", str(root), "rev-parse", "--show-toplevel")).resolve()
-        tracked = _run_git("", "-C", str(root), "ls-files", "-z").split("\0")
+        tracked = _run_git("", "-C", str(root), "ls-files", "--full-name", "-z").split("\0")
         paths = []
         for item in tracked:
             if not item:
@@ -331,7 +331,7 @@ def _validate_checkout(checkout: Path, declaration: SourceDeclaration) -> Instal
             expected_pack_id=declaration.pack_id,
         )
     except CanonicalPackValidationError as exc:
-        raise SourceSetupError(f"managed source failed strict v2 admission: {exc}") from exc
+        raise SourceSetupError(f"managed source failed canonical v2/v3 admission: {exc}") from exc
     manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     tree_digest = _tree_digest(pack_root)
     if declaration.manifest_sha256 and declaration.manifest_sha256 != manifest_digest:
@@ -351,13 +351,13 @@ def _cached_checkout(declaration: SourceDeclaration, *, data_root: Path) -> Path
 def _stage_checkout(declaration: SourceDeclaration, *, data_root: Path) -> InstalledSource:
     destination_parent = _cached_checkout(declaration, data_root=data_root).parent
     destination_parent.mkdir(parents=True, exist_ok=True)
-    # Canonical v2 pack roots must be non-hidden; the staging directory is
+    # Canonical v2/v3 pack roots must be non-hidden; the staging directory is
     # validated before activation, so it must obey that rule too.
     temporary = Path(tempfile.mkdtemp(prefix=f"stage-{declaration.pack_id}-", dir=destination_parent))
     try:
         _run_git("", "clone", "--quiet", "--no-hardlinks", "--no-checkout", declaration.repository, str(temporary))
         _run_git("", "-C", str(temporary), "checkout", "--quiet", "--detach", declaration.revision)
-        staged = _validate_checkout(temporary, declaration)
+        _validate_checkout(temporary, declaration)
         final = _cached_checkout(declaration, data_root=data_root)
         if final.exists() or final.is_symlink():
             existing = _validate_checkout(final, declaration)

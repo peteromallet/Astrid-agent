@@ -2,9 +2,9 @@ from pathlib import Path
 import unittest
 
 from astrid.packs.editorial.hype import enriched_arrangement
-from astrid.packs.editorial.executors.refine.src.reviewers.overlay_fit import OverlayFitReviewer
-from astrid.packs.editorial.executors.refine.src.reviewers.speaker_flow import SpeakerFlowReviewer
-from astrid.packs.editorial.executors.refine.src.reviewers.visual_quality import VisualQualityReviewer
+from astrid.packs.editorial.actions.refine.src.reviewers.overlay_fit import OverlayFitReviewer
+from astrid.packs.editorial.actions.refine.src.reviewers.speaker_flow import SpeakerFlowReviewer
+from astrid.packs.editorial.actions.refine.src.reviewers.visual_quality import VisualQualityReviewer
 
 
 def make_clip(

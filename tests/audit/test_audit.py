@@ -59,7 +59,7 @@ def test_pipeline_audit_cli_is_retired() -> None:
 
 def test_pipeline_audit_env_propagation_and_fallback(monkeypatch, tmp_path: Path) -> None:
     pytest.importorskip("jsonschema")
-    from astrid.packs.video_editing.orchestrators.hype import run as pipeline
+    from astrid.packs.video_editing.actions.hype import entrypoint as pipeline
 
     script = tmp_path / "child.py"
     script.write_text(
@@ -90,7 +90,7 @@ def test_pipeline_audit_env_propagation_and_fallback(monkeypatch, tmp_path: Path
 
 
 def test_ambient_register_outputs_from_producer(monkeypatch, tmp_path: Path) -> None:
-    from astrid.packs.editorial.executors.scenes import run as scenes
+    from astrid.packs.editorial.actions.scenes import run as scenes
 
     run = tmp_path / "run"
     monkeypatch.setenv("ASTRID_AUDIT_RUN_DIR", str(run))
@@ -103,7 +103,7 @@ def test_ambient_register_outputs_from_producer(monkeypatch, tmp_path: Path) -> 
 
 
 def test_ambient_register_outputs_inherits_parent_ids(monkeypatch, tmp_path: Path) -> None:
-    from astrid.packs.editorial.executors.scenes import run as scenes
+    from astrid.packs.editorial.actions.scenes import run as scenes
 
     run = tmp_path / "run"
     parent_id = "source-parent"
@@ -134,10 +134,10 @@ def test_shots_writes_universal_result_manifest(tmp_path: Path) -> None:
         output.write_text("fake jpg", encoding="utf-8")
 
     with patch(
-        "astrid.packs.editorial.executors.shots.run.extract_frame",
+        "astrid.packs.editorial.actions.shots.run.extract_frame",
         side_effect=fake_extract_frame,
     ):
-        from astrid.packs.editorial.executors.shots.run import main
+        from astrid.packs.editorial.actions.shots.run import main
 
         ret = main(
             [
@@ -213,10 +213,10 @@ def test_transcribe_writes_universal_result_manifest(tmp_path: Path, monkeypatch
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
 
     with patch(
-        "astrid.packs.editorial.executors.transcribe.run.transcribe_to_outputs",
+        "astrid.packs.editorial.actions.transcribe.run.transcribe_to_outputs",
         return_value=(fake_paths, fake_summary, metadata_path),
     ):
-        from astrid.packs.editorial.executors.transcribe.run import main
+        from astrid.packs.editorial.actions.transcribe.run import main
 
         ret = main(
             [
@@ -287,13 +287,13 @@ def test_quote_scout_writes_universal_result_manifest(tmp_path: Path) -> None:
     }
 
     with patch(
-        "astrid.packs.editorial.executors.quote_scout.run.build_claude_client",
+        "astrid.packs.editorial.actions.quote_scout.run.build_claude_client",
         return_value=object(),
     ), patch(
-        "astrid.packs.editorial.executors.quote_scout.run.build_quote_candidates",
+        "astrid.packs.editorial.actions.quote_scout.run.build_quote_candidates",
         return_value=fake_payload,
     ):
-        from astrid.packs.editorial.executors.quote_scout.run import main
+        from astrid.packs.editorial.actions.quote_scout.run import main
 
         ret = main(
             [

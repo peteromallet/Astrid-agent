@@ -11,6 +11,41 @@ Normative references: `docs/astrid-first-sprint-plan-20260813.md` (Sprints 5–6
 
 ---
 
+## Pack authoring CLI
+
+Pack authoring is a separate source-level CLI from the runtime gateway. The
+implemented `new` operation defaults to the standalone action starter; choose
+one of the three journeys and repeat `--role` only for roles you use:
+
+```bash
+python3 -m astrid.core.pack.cli new my_pack \
+  --starter standalone --role action
+python3 -m astrid.core.pack.cli new adapter_pack \
+  --starter wrapper --role action \
+  --dependency clean-client --external-module clean_client
+python3 -m astrid.core.pack.cli new astrid \
+  --starter nested --role action --role ui
+```
+
+The valid roles are `action`, `ui`, `rendering`, and `shared`; unselected role
+folders are not created, and omitting `--role` emits only `action`.
+`--destination` overrides the generated root; wrapper starters also accept
+`--dependency` and `--external-module`. `pack.yaml` declares public functionality and points
+to the one authored `docs/SKILL.md`; adjacent guides are linked resources.
+Check the shared validator and read back the declaration with:
+
+```bash
+python3 -m astrid.core.pack.cli validate my_pack --json
+python3 -m astrid.core.pack.cli inspect my_pack --pack-root .
+```
+
+`validate --json` emits machine-readable diagnostics. Human `inspect` includes
+the documentation pointer plus populated `actions`, `ui`, `rendering`, and
+`documents` sections. The starter source is the F08 implementation, not a
+second template in this guide.
+
+---
+
 ## Runtime preamble
 
 Configure the installed local workspace runtime before issuing product
@@ -37,7 +72,7 @@ python3 -m astrid doctor --json
 
 # 3. Inspect a concrete family and verb without side effects.
 python3 -m astrid projects --help
-python3 -m astrid timelines save --help
+python3 -m astrid timelines inspect --help
 ```
 
 Notes:
@@ -482,24 +517,19 @@ There is no `--run` flag on `tasks retry`; the batch retry surface is
 
 ---
 
-## 6. `timelines` — create / list / show / save / archive / recover / history / diff / visualize / render
+## 6. `timelines` — list / show / replace-parent-media / archive / recover / history / diff / visualize / inspect / render
 
 ```bash
-# create — one client.timelines.create call (slug immutable)
-python3 -m astrid timelines create --project demo primary \
-  --name "Primary" --json
-
 # list — compact identities and counts for active timelines (slug ascending)
 python3 -m astrid timelines list --project demo --json
 
-# show — full timeline config and asset registry, by UUID, ULID, or slug
+# show — bounded canonical current-head inspection, by UUID, ULID, or slug
 python3 -m astrid timelines show --project demo primary --json
 
-# save — whole-document compare-and-swap (config and registry both required);
-# create sets config_version 1, so a fresh timeline saves with --expected-version 1
-python3 -m astrid timelines save --project demo primary \
-  --config '{"tracks":[{"id":"main","kind":"visual","label":"Main"}],"clips":[],"output":{"resolution":"320x180","fps":30,"file":"primary.mp4"}}' \
-  --registry '{"assets": {}}' --expected-version 1 --json
+# replace-parent-media — publish one exact parent-composition candidate
+python3 -m astrid timelines replace-parent-media --project demo primary \
+  --occurrence-id OCC_01ABC --clip-id CLIP_01ABC \
+  --source-object-id sha256:<MEDIA_DIGEST> --expected-head REV_01ABC --json
 
 # archive — event-backed terminal mutation
 python3 -m astrid timelines archive --project demo primary --json
@@ -519,6 +549,10 @@ python3 -m astrid timelines render primary --project demo \
 # timeline visualization; --include-media enables playback.
 python3 -m astrid timelines visualize primary --project demo \
   --render-run latest --include-media --json
+
+# inspect — bounded offline lookup of a verified materialized filmstrip bundle
+python3 -m astrid timelines inspect --manifest /path/to/manifest.json \
+  --section summary --json
 
 # queue only — explicit admission semantics, returned state is "admitted"
 python3 -m astrid timelines render primary --project demo --detach --json
@@ -594,16 +628,15 @@ tail local event files, or edit runtime state by hand. An unexpected command
 failure is returned as a typed error; preserve the idempotency key and retry
 only when the error's recovery guidance permits it.
 
-Timeline saves are compare-and-swap operations. A stale expected version is
-an HTTP `409 timeline_version_conflict` (or SDK `stale_version`) and changes
-nothing. Load the current timeline, merge the local draft, and save again with
-the returned version:
+Timeline reads are Runtime-owned canonical projections. Parent-media replacement
+publishes an exact candidate against the observed parent revision; stale heads
+fail closed without changing the Runtime timeline:
 
 ```bash
 python3 -m astrid timelines show --project demo primary --json
-python3 -m astrid timelines save --project demo primary \
-  --config '{"width":1920,"height":1080}' \
-  --registry '{"assets":{}}' --expected-version 1 --json
+python3 -m astrid timelines replace-parent-media --project demo primary \
+  --occurrence-id OCC_01ABC --clip-id CLIP_01ABC \
+  --source-object-id sha256:<MEDIA_DIGEST> --expected-head REV_01ABC --json
 ```
 
 For missing or byte-mutated media, run runtime verification again. The service

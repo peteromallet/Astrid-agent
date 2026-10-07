@@ -1,35 +1,36 @@
-"""Native Wan2GP driver — private spool + one-shot runner.
+"""Wan2GP adapter helpers for the host-owned native session.
 
-Owns the ``shared.api.init() → WanGPSession.submit_task() → GenerationResult``
-seam for the Astrid wan2gp pack.  The native path remains one-shot: a fresh
-``WanGPSession`` is created per attempt, its ``output_dir`` is a private
-attempt-scoped spool, outputs are verified to stay inside that spool, and the
-session is closed (model release) at the end.  This module also contains a
-fixture-only persistent runner for CPU lifecycle tests; it never imports or
-starts the native engine.
+The production path compiles typed inputs and asks GenericPackHost to invoke
+the retained ``shared.api.init() → WanGPSession.submit_task()`` child.  Native
+initialization and close therefore stay in the W2.1 host-owned interpreter;
+this module never imports the heavy upstream runtime.  The fake persistent
+runner below is fixture-only and never imports or starts the native engine.
 
 This module deliberately avoids Worker/GW imports and does not depend on any
-runtime database.  Importing/initializing the real Wan2GP engine requires the
-pinned Wan2GP checkout on ``sys.path`` with ``cwd`` inside that checkout
-(``Wan2GP/shared/api.py`` does ``_pushd(runtime.root)`` + ``import wgp``).
-When the checkout or heavy dependencies are absent, the driver surfaces a
-structured, disclosure-carrying failure rather than raising an opaque import
-error.
+runtime database.  The host admission supplies the pinned Wan2GP checkout,
+interpreter, config and lifecycle deadlines explicitly; if that owner artifact
+is absent, GenericPackHost rejects admission before the child starts.
 """
 
 import json
+import hashlib
 import os
-import sys
+import shutil
+import stat
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Mapping
 
-from .compiler import runner_fingerprint, warmth_identity
+from .compiler import compile_from_inputs, portable_digest, runner_fingerprint, warmth_identity
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 
-# Pinned by M0 source custody: banodoco/Wan2GP @ 181bb71a, reigh-sprint-3
-WAN2GP_PIN_SHA = "181bb71a21008032e4771e11663f33e4489c4512"
-WAN2GP_PIN_REF = "refs/remotes/origin/reigh-sprint-3"
+# W1.2 selected the unmodified official Python API candidate.  Installation
+# and device qualification remain an independent owner artifact (C1 HOLD).
+WAN2GP_PIN_SHA = "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4"
+WAN2GP_PIN_REF = "deepbeepmeep/Wan2GP"
 
 
 class RunCancelled(RuntimeError):
@@ -433,13 +434,6 @@ run_fake = fake_persistent_run
 
 
 @dataclass(frozen=True)
-class DriverSpec:
-    wan2gp_root: Path
-    attempt_root: Path
-    output_dir: Path
-
-
-@dataclass(frozen=True)
 class DriverResult:
     success: bool
     generated_files: list[str]
@@ -449,6 +443,196 @@ class DriverResult:
     failed_tasks: int
     disclosed_engine: dict[str, Any]
     spool: Path
+
+
+def compile_host_settings(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile and validate native settings without importing upstream Wan.
+
+    GenericPackHost calls this from the parent interpreter immediately before
+    sending the settings to the already initialized W2.1 child.  The returned
+    mapping is the native request; host/MTS identity stays in the control
+    envelope rather than being mixed into it.
+    """
+    settings = compile_from_inputs(dict(inputs))
+    return validate_settings(settings)
+
+
+@contextmanager
+def _custody_directory(path: Path, *, create: bool = False):
+    """Walk with directory descriptors; never follow a symlink, even in parents."""
+    path = path.expanduser().absolute()
+    if ".." in path.parts:
+        raise RuntimeError("Wan custody path contains traversal")
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _file_observation(info: os.stat_result) -> list[int]:
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("native Wan output must be a private regular file")
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+@contextmanager
+def _native_output(raw: str, source_root: Path):
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = source_root / path
+    if ".." in path.parts or not path.is_relative_to(source_root):
+        raise RuntimeError("native Wan output escapes its owned spool")
+    with _custody_directory(path.parent) as directory:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, "rb") as stream:
+            _file_observation(os.fstat(stream.fileno()))
+            yield path, stream
+
+
+def snapshot_native_outputs(files: Any, source_root: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    """Observe exact terminal native files, without touching bytes or metadata."""
+    if not isinstance(files, list) or any(not isinstance(raw, str) or not raw for raw in files):
+        raise RuntimeError("native Wan generated_files must be an exact file list")
+    root = Path(source_root).expanduser().absolute()
+    snapshots: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for raw in files:
+        with _native_output(raw, root) as (path, stream):
+            before = _file_observation(os.fstat(stream.fileno()))
+            identity = tuple(before[:2])
+            if identity in seen:
+                raise RuntimeError("duplicate native Wan output")
+            seen.add(identity)
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if _file_observation(os.fstat(stream.fileno())) != before:
+                raise RuntimeError("native Wan output changed during terminal observation")
+            snapshots.append({"path": str(path), "stat": before, "sha256": digest})
+    return snapshots
+
+
+def verify_host_result(mapped: Mapping[str, Any], *, attempt_root: Path) -> None:
+    """Recheck staged bytes at the existing harvest/settlement boundaries."""
+    if mapped.get("output_root") != str(attempt_root.absolute()):
+        raise RuntimeError("Wan result belongs to another attempt root")
+    expected = mapped.get("staged_outputs")
+    if not isinstance(expected, list) or not expected:
+        raise RuntimeError("Wan result has no observed staged outputs")
+    observed = snapshot_native_outputs([item["path"] for item in expected], attempt_root)
+    if observed != expected:
+        raise RuntimeError("Wan staged output changed after terminal custody")
+
+
+def materialize_host_result(
+    evidence: Mapping[str, Any],
+    *,
+    attempt_root: str | os.PathLike[str],
+    inputs: Mapping[str, Any],
+    expected_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy exact native result files into one Runtime attempt spool.
+
+    The caller holds the MTS admission until Runtime settlement. Native
+    terminal observations are checked again during copying; this is only
+    the handoff to the existing harvester, not another publication store.
+    """
+    result = evidence.get("result")
+    if not isinstance(result, Mapping) or result.get("success") is not True:
+        errors = result.get("errors", []) if isinstance(result, Mapping) else []
+        raise RuntimeError("native Wan2GP job failed: " + "; ".join(str(item) for item in errors))
+    if evidence.get("terminal") is not True or not evidence.get("native_job_id"):
+        raise RuntimeError("native Wan result lacks terminal job evidence")
+    if expected_identity is not None and any(evidence.get(key) != value for key, value in expected_identity.items()):
+        raise RuntimeError("native Wan result belongs to another admission")
+    source_root = Path(str(evidence["source_root"])).absolute()
+    snapshots = evidence.get("output_snapshots")
+    if not isinstance(snapshots, list) or not snapshots:
+        raise RuntimeError("native Wan result lacks terminal file observations")
+    if snapshot_native_outputs(result.get("generated_files"), source_root) != snapshots:
+        raise RuntimeError("native Wan output changed after terminal observation")
+    compiled_settings = compile_host_settings(inputs)
+    destination_root = Path(attempt_root).expanduser().absolute()
+    output_files: list[str] = []
+    names = [Path(item["path"]).name for item in snapshots]
+    if len(set(names)) != len(names) or "manifest.json" in names:
+        raise RuntimeError("duplicate or reserved native Wan output filename")
+    with _custody_directory(destination_root, create=True) as directory:
+        # Refuse a reused/shared output directory. Do not overwrite any bytes.
+        if os.listdir(directory):
+            raise RuntimeError("Wan output custody must be an empty attempt directory")
+        for item, name in zip(snapshots, names):
+            with _native_output(item["path"], source_root) as (_, stream):
+                if _file_observation(os.fstat(stream.fileno())) != item["stat"]:
+                    raise RuntimeError("native Wan output changed before copy")
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                digest = hashlib.sha256()
+                with os.fdopen(fd, "wb") as target:
+                    while chunk := stream.read(1024 * 1024):
+                        target.write(chunk)
+                        digest.update(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                if digest.hexdigest() != item["sha256"] or _file_observation(os.fstat(stream.fileno())) != item["stat"]:
+                    raise RuntimeError("native Wan output changed during copy")
+                output_files.append(name)
+        if snapshot_native_outputs(result.get("generated_files"), source_root) != snapshots:
+            raise RuntimeError("native Wan output changed after copy")
+    manifest = build_manifest(
+        kind="video",
+        inputs={key: inputs[key] for key in ("prompt", "model") if key in inputs},
+        outputs=[
+            {
+                "path": name,
+                "name": "generated_videos",
+                "ordinal": ordinal,
+                "role": "result",
+                "is_primary": ordinal == 0,
+                "content_hash": "sha256:" + snapshots[ordinal]["sha256"],
+                "bytes": snapshots[ordinal]["stat"][2],
+            }
+            for ordinal, name in enumerate(output_files)
+        ],
+        created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        schema_version=2,
+        warnings=[],
+        model=str(inputs.get("model", "wan-2.2")),
+        portable_digest=portable_digest(compiled_settings),
+        disclosed_engine={
+            "engine": "wan2gp",
+            "pin_sha": WAN2GP_PIN_SHA,
+            "pin_ref": WAN2GP_PIN_REF,
+            "seam": "host-owned shared.api.init / WanGPSession.submit_task",
+            "native_job_id": evidence.get("native_job_id"),
+        },
+        spool=str(destination_root),
+    )
+    manifest_path = destination_root / "manifest.json"
+        # Open exclusively through the held directory descriptor, like media.
+    with _custody_directory(destination_root) as directory:
+        fd = os.open(manifest_path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, sort_keys=True)
+    staged = snapshot_native_outputs([str(destination_root / name) for name in output_files], destination_root)
+    if [item["sha256"] for item in staged] != [item["sha256"] for item in snapshots]:
+        raise RuntimeError("Wan staged bytes differ from terminal native outputs")
+    return {
+        "output_root": str(destination_root),
+        "generated_files": output_files,
+        "manifest": manifest,
+        "native_job_id": evidence.get("native_job_id"),
+        "events": list(evidence.get("events", [])),
+        "disclosed_engine": manifest["disclosed_engine"],
+        "staged_outputs": staged,
+    }
 
 
 def _disclosed_engine(wan2gp_root: Path | None) -> dict[str, Any]:
@@ -524,237 +708,13 @@ def _canonicalize_generated_files(files: list[str]) -> None:
             media.save()
 
 
-def _terminal_mapping(
-    generation_result: Any, spool: Path, errors: list[str]
-) -> dict[str, Any]:
-    """Map the native GenerationResult / failure into structured terminal evidence."""
-    if generation_result is None:
-        return {
-            "status": "failed",
-            "reason": "; ".join(errors) if errors else "unknown failure",
-            "generated_files": [],
-            "spool": str(spool),
-            "disclosed_engine": _disclosed_engine(None),
-        }
-    success = bool(getattr(generation_result, "success", False))
-    files = list(getattr(generation_result, "generated_files", []) or [])
-    gen_errors = getattr(generation_result, "errors", []) or []
-    error_texts = [str(e) for e in gen_errors] + errors
-    violations = _verify_outputs_in_spool(files, spool)
-    if violations:
-        error_texts.append(f"output containment violated: {violations}")
-        success = False
-    return {
-        "status": "succeeded" if success else "failed",
-        "reason": "; ".join(error_texts) if error_texts else None,
-        "generated_files": files if success else [],
-        "total_tasks": int(getattr(generation_result, "total_tasks", 0) or 0),
-        "successful_tasks": int(getattr(generation_result, "successful_tasks", 0) or 0),
-        "failed_tasks": int(getattr(generation_result, "failed_tasks", 0) or 0),
-        "spool": str(spool),
-        "disclosed_engine": _disclosed_engine(None),
-    }
-
-
 def resolve_wan2gp_root(explicit: str | os.PathLike[str] | None = None) -> Path | None:
-    """Resolve the pinned Wan2GP checkout root, if present.
-
-    Resolution order:
-    1. Explicit ``explicit`` path, if provided and exists.
-    2. ``WAN2GP_PATH`` env var (used by Worker substrate).
-    3. Sibling of the reigh-worker checkout when running inside that repo.
-    4. Not found → None (caller must treat as disclosure, not crash).
-    """
-    candidates: list[Path] = []
+    """Resolve only a caller-supplied, independently owned source root."""
     if explicit is not None:
-        candidates.append(Path(explicit).expanduser().resolve())
-    env_root = os.environ.get("WAN2GP_PATH")
-    if env_root:
-        candidates.append(Path(env_root).expanduser().resolve())
-    # Worker-relative fallback (reigh-worker/Wan2GP)
-    # Walk up from this file looking for a reigh-worker checkout
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "Wan2GP"
-        if candidate not in candidates:
-            candidates.append(candidate)
-        # Also check worker layout
-        worker_candidate = parent.parent / "reigh-worker" / "Wan2GP"
-        if worker_candidate not in candidates:
-            candidates.append(worker_candidate)
-    for candidate in candidates:
-        if candidate.is_dir() and (candidate / "shared" / "api.py").exists():
+        candidate = Path(explicit).expanduser().resolve()
+        if candidate.is_dir() and (candidate / "shared" / "api.py").is_file():
             return candidate
     return None
-
-def _cancellation_reason(
-    token: CancellationToken | None,
-    cancelled: Callable[[], bool] | None,
-) -> str | None:
-    if token is not None and token.cancelled:
-        return token.reason or "cancelled"
-    if cancelled is not None and cancelled():
-        return "cancelled"
-    return None
-
-
-def _cancelled_driver_result(reason: str, spool: Path, disclosed: dict[str, Any]) -> DriverResult:
-    return DriverResult(
-        success=False,
-        generated_files=[],
-        errors=[f"cancelled: {reason}"],
-        total_tasks=0,
-        successful_tasks=0,
-        failed_tasks=1,
-        disclosed_engine=disclosed,
-        spool=spool,
-    )
-
-
-def one_shot_run(
-    *,
-    settings: dict[str, Any],
-    attempt_root: str | os.PathLike[str],
-    wan2gp_root: str | os.PathLike[str] | None = None,
-    timeout: float | None = None,
-    cancel_token: CancellationToken | None = None,
-    cancelled: Callable[[], bool] | None = None,
-) -> DriverResult:
-    """Run one Wan2GP task in a private per-attempt spool (one-shot).
-
-    ``attempt_root`` *is* the private spool (the host ``{out}`` directory) and
-    is passed as ``output_dir`` to ``shared.api.init``.  Do not nest another
-    ``outputs/`` under it — harvest reads ``{out}/manifest.json`` and the
-    files listed there.  The session is closed (model release) before return.
-    Outputs are verified to stay inside the spool.
-    """
-    attempt = Path(attempt_root).expanduser().resolve()
-    spool = attempt
-    spool.mkdir(parents=True, exist_ok=True)
-    root = resolve_wan2gp_root(wan2gp_root)
-    disclosed = _disclosed_engine(root)
-    reason = _cancellation_reason(cancel_token, cancelled)
-    if reason is not None:
-        return _cancelled_driver_result(reason, spool, disclosed)
-
-
-    if root is None:
-        return DriverResult(
-            success=False,
-            generated_files=[],
-            errors=["Wan2GP checkout not found (expected Wan2GP/shared/api.py under WAN2GP_PATH or sibling checkout)"],
-            total_tasks=0,
-            successful_tasks=0,
-            failed_tasks=1,
-            disclosed_engine=disclosed,
-            spool=spool,
-        )
-
-    # Ensure the Wan2GP checkout is importable as a top-level package
-    # ``shared`` (Wan2GP's own top-level package).  The native API expects
-    # to be imported after ``ensure_wan2gp_on_path``-style path insertion
-    # and a cwd inside the checkout.
-    original_path = list(sys.path)
-    original_cwd = Path.cwd()
-    try:
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        # Also add parent so ``import Wan2GP.shared.api`` could work if needed
-        parent = str(root.parent)
-        if parent not in sys.path:
-            sys.path.insert(0, parent)
-        os.chdir(root)
-        # Import the native API lazily (heavy; pulls torch-era deps on first use)
-        import importlib
-
-        api = importlib.import_module("shared.api")
-        init_fn = getattr(api, "init", None)
-        if not callable(init_fn):
-            return DriverResult(
-                success=False,
-                generated_files=[],
-                errors=["Wan2GP shared.api.init not found"],
-                total_tasks=0,
-                successful_tasks=0,
-                failed_tasks=1,
-                disclosed_engine=disclosed,
-                spool=spool,
-            )
-        session = init_fn(root=root, output_dir=spool, console_output=False)
-        try:
-            job = session.submit_task(settings)
-            reason = _cancellation_reason(cancel_token, cancelled)
-            if reason is not None:
-                cancel_fn = getattr(job, "cancel", None)
-                if callable(cancel_fn):
-                    try:
-                        cancel_fn()
-                    except Exception:
-                        pass
-                raise RunCancelled(reason)
-            result = job.result(timeout=timeout)
-            violations = _verify_outputs_in_spool(list(getattr(result, "generated_files", []) or []), spool)
-            if violations:
-                return DriverResult(
-                    success=False,
-                    generated_files=[],
-                    errors=[f"output containment violated: {violations}"],
-                    total_tasks=int(getattr(result, "total_tasks", 0) or 0),
-                    successful_tasks=int(getattr(result, "successful_tasks", 0) or 0),
-                    failed_tasks=max(1, int(getattr(result, "failed_tasks", 0) or 0)),
-                    disclosed_engine=disclosed,
-                    spool=spool,
-                )
-            disclosed["wan2gp_root"] = str(root)
-            generated_files = list(getattr(result, "generated_files", []) or [])
-            if getattr(result, "success", False):
-                _canonicalize_generated_files(generated_files)
-            return DriverResult(
-                success=bool(getattr(result, "success", False)),
-                generated_files=generated_files,
-                errors=[str(e) for e in (getattr(result, "errors", []) or [])],
-                total_tasks=int(getattr(result, "total_tasks", 0) or 0),
-                successful_tasks=int(getattr(result, "successful_tasks", 0) or 0),
-                failed_tasks=int(getattr(result, "failed_tasks", 0) or 0),
-                disclosed_engine=disclosed,
-                spool=spool,
-            )
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
-    except RunCancelled as exc:
-        return _cancelled_driver_result(str(exc), spool, disclosed)
-    except TimeoutError as exc:
-        return DriverResult(
-            success=False,
-            generated_files=[],
-            errors=[f"timeout: {exc}"],
-            total_tasks=0,
-            successful_tasks=0,
-            failed_tasks=1,
-            disclosed_engine=disclosed,
-            spool=spool,
-        )
-    except Exception as exc:
-        return DriverResult(
-            success=False,
-            generated_files=[],
-            errors=[str(exc)],
-            total_tasks=0,
-            successful_tasks=0,
-            failed_tasks=1,
-            disclosed_engine=disclosed,
-            spool=spool,
-        )
-    finally:
-        sys.path[:] = original_path
-        try:
-            os.chdir(original_cwd)
-        except Exception:
-            pass
-
 
 def validate_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Validate (but do not execute) a compiled Wan2GP settings dict.

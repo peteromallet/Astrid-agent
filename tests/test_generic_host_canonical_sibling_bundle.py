@@ -13,7 +13,7 @@ from astrid.core.execution.generic_host import (
     _prepare_vibecomfy_execution_identity,
 )
 from astrid.packs.vibecomfy import production_engine
-from astrid.packs.vibecomfy.executors._bundle_inputs import staged_workflow_path
+from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 from tests.test_generic_host import FakeRuntime
 
 

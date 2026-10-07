@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 id: external_pack
 name: External Pack
 version: 1.0.0
@@ -8,17 +8,11 @@ stability: experimental
 support: community
 visibility: visible
 permissions: []
-description: Minimal reviewable external pack fixture for contract testing.
-extensions:
-  elements:
-    kinds:
-    - id: widgets
-      singular: widget
-      plural: widgets
-      label: Widgets
-      description: Custom widget elements from an external pack.
-content:
-  elements: elements
+description: Minimal reviewable external pack fixture for v3 contract testing.
 documentation:
   kind: none
   reason: Fixture intentionally has no pack skill.
+rendering:
+  effects/glow:
+    type: element
+    path: rendering/effects/glow/element.yaml

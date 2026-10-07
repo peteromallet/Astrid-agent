@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -11,7 +12,9 @@ from typing import Any
 
 import pytest
 
+from astrid.core.execution import process_group
 from astrid.core.rendering import RenderPlan, RenderResult, SupportReport
+from astrid.core.rendering import transport as transport_module
 from astrid.core.rendering.errors import (
     RendererBinaryMissingError,
     RendererInternalError,
@@ -109,6 +112,23 @@ def test_successful_render_uses_authoritative_result_file(tmp_path: Path) -> Non
     assert isinstance(result, RenderResult)
     assert result.video.path == "outputs/visual.mp4"
     assert transport.last_logs == {"stdout": "", "stderr": ""}
+
+
+def test_none_timeout_waits_for_renderer_result(tmp_path: Path) -> None:
+    result = CommandTransport(RENDERER_ID, termination_grace=0.15).run(
+        "render",
+        [sys.executable, BACKEND_SCRIPT],
+        request_path=_request(
+            tmp_path,
+            {"action": "result", "payload": _wire_fixture("result.json")},
+        ),
+        result_path=tmp_path / "result.json",
+        cwd=FIXTURE_DIR,
+        timeout=None,
+    )
+
+    assert isinstance(result, RenderResult)
+    assert result.video.path == "outputs/visual.mp4"
 
 
 def test_bare_python3_uses_the_runtime_interpreter_not_child_path(
@@ -275,6 +295,67 @@ def test_sigint_kills_process_group_reaps_and_reraises(tmp_path: Path) -> None:
         os.waitpid(parent_pid, os.WNOHANG)
     _assert_pid_disappears(parent_pid)
     _assert_pid_disappears(child_pid)
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_detached_tree_timeout_and_interrupt_preserve_host_and_sibling(
+    tmp_path, monkeypatch, inherited, interrupted,
+):
+    registry = tmp_path / "identities"
+    fixture = FIXTURE_DIR / "owned_tree_backend.py"
+    if inherited:
+        monkeypatch.setenv("ASTRID_RENDER_INHERIT_PROCESS_GROUP", "1")
+    else:
+        monkeypatch.delenv("ASTRID_RENDER_INHERIT_PROCESS_GROUP", raising=False)
+    sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"])
+    original_observe = transport_module.observe_tree
+    original_killpg = os.killpg
+    observed = []
+    raised_interrupt = []
+
+    def observe(process):
+        live = original_observe(process)
+        if not observed:
+            observed.append(process)
+        if interrupted and len(live) == 4 and not raised_interrupt:
+            raised_interrupt.append(True)
+            raise KeyboardInterrupt()
+        return live
+
+    def killpg(pgid, sig):
+        assert pgid != os.getpgrp(), "transport signalled its containing group"
+        original_killpg(pgid, sig)
+
+    monkeypatch.setattr(transport_module, "observe_tree", observe)
+    monkeypatch.setattr(os, "killpg", killpg)
+    try:
+        expected = KeyboardInterrupt if interrupted else RendererTimeoutError
+        with pytest.raises(expected):
+            CommandTransport(RENDERER_ID, termination_grace=0.05).run(
+                "render", [sys.executable, fixture, "backend", tmp_path, registry],
+                request_path=_request(tmp_path, {}), result_path=tmp_path / "result.json",
+                cwd=FIXTURE_DIR, timeout=3 if interrupted else 0.5,
+            )
+        assert len(observed[0]._astrid_tree_members) == 4
+        for pid in observed[0]._astrid_tree_members:
+            _assert_pid_disappears(pid)
+        assert sibling.poll() is None
+        assert os.getpid() in process_group._process_snapshot()
+        stopped_write = (registry / "last-write.txt").read_text()
+        time.sleep(0.1)
+        assert (registry / "last-write.txt").read_text() == stopped_write
+        assert hasattr(observed[0], "_astrid_process_group_id") is not inherited
+    finally:
+        for process in observed:
+            snapshot = process_group._process_snapshot()
+            for pid, birth in reversed(tuple(getattr(process, "_astrid_tree_members", {}).items())):
+                info = snapshot.get(pid)
+                if info is not None and info.birth == birth:
+                    os.kill(pid, signal.SIGKILL)
+            process.wait(timeout=3)
+        sibling.terminate()
+        sibling.wait(timeout=3)
 
 
 def test_absent_result_file_is_protocol_failure(tmp_path: Path) -> None:

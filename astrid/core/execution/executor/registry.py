@@ -24,6 +24,7 @@ from astrid.core.registry import CapabilityRegistry
 
 if TYPE_CHECKING:
     from .banodoco_catalog import BanodocoCatalogConfig
+from .actions import action_executor_definition
 from .folder import load_folder_executors
 from .schema import ExecutorDefinition, ExecutorValidationError, validate_executor_definition
 
@@ -142,7 +143,15 @@ def load_default_registry(
     *,
     project_root: str | Path = REPO_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
+    additional_executors: Iterable[ExecutorDefinition | dict[str, Any]] = (),
 ) -> ExecutorRegistry:
+    """Compose admitted definitions before validating the complete graph.
+
+    Legacy pack executors, optional catalog definitions and v3 actions from
+    the same discovered inventory retain the established registration order.
+    Explicit additional definitions follow those sources. Existing priority
+    and winner rules apply; the complete graph is validated once.
+    """
     packs = _discover_executor_packs(
         project_root=project_root,
         extra_pack_roots=extra_pack_roots,
@@ -155,6 +164,11 @@ def load_default_registry(
 
         for executor in load_banodoco_catalog_executors(banodoco_config):
             registry.register(executor)
+    for pack in packs:
+        for local_id, action in getattr(pack, "actions", {}).items():
+            registry.register(action_executor_definition(pack, local_id, action))
+    for executor in additional_executors:
+        registry.register(executor)
     registry.validate_all()
     return registry
 

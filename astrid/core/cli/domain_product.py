@@ -278,10 +278,10 @@ def family_mount(family: str) -> ProductMount:
 # the static contract, and the import stays lazy until dispatch.
 FAMILY_PARSER_MODULES: dict[str, str] = {
     "projects": "astrid.core.cli.domain_projects",
-    "timelines": "astrid.packs.timeline.cli",
-    "shots": "astrid.packs.shots.cli",
+    "timelines": "astrid.core.cli.domain_timelines",
+    "shots": "astrid.core.cli.domain_shots",
     "media": "astrid.core.cli.domain_media",
-    "references": "astrid.packs.references.cli",
+    "references": "astrid.core.cli.domain_references",
     "tasks": "astrid.core.cli.domain_tasks",
     "runs": "astrid.core.cli.domain_runs",
 }

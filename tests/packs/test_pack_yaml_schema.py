@@ -1,4 +1,4 @@
-"""Runtime/schema parity for the canonical capability-only pack v2 contract."""
+"""Runtime/schema parity for the canonical capability-only pack contract."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ import yaml
 
 from astrid.core.pack import PackValidationError, load_pack_manifest
 
-
 ROOT = Path(__file__).resolve().parents[2]
-PACK_SCHEMA = ROOT / "astrid/core/pack/schemas/v2/pack.json"
+PACK_SCHEMAS = {
+    2: ROOT / "astrid/core/pack/schemas/v2/pack.json",
+    3: ROOT / "astrid/core/pack/schemas/v3/pack.json",
+}
 
 
 def _body(extra: str = "", *, pack_id: str = "demo") -> str:
@@ -36,7 +38,16 @@ def _write(tmp_path: Path, body: str, *, folder: str = "demo") -> Path:
 
 
 def _schema_errors(body: str) -> list[jsonschema.ValidationError]:
-    schema = json.loads(PACK_SCHEMA.read_text(encoding="utf-8"))
+    document = yaml.safe_load(body)
+    schema_version = (
+        document.get("schema_version") if isinstance(document, dict) else None
+    )
+    if type(schema_version) is not int or schema_version not in PACK_SCHEMAS:
+        raise AssertionError(
+            "cannot select canonical pack schema for exact schema_version "
+            f"{schema_version!r}; expected integer 2 or 3"
+        )
+    schema = json.loads(PACK_SCHEMAS[schema_version].read_text(encoding="utf-8"))
     validator_cls = jsonschema.validators.validator_for(schema)
     validator_cls.check_schema(schema)
     return list(validator_cls(schema).iter_errors(yaml.safe_load(body)))

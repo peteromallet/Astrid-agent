@@ -1,6 +1,6 @@
 """R8 navigation identities: semantic <-> display ordinals over the desert slice.
 
-Covers the R8 contract for :mod:`astrid.packs.rendering.executors.timeline_visualize.navigation`:
+Covers the R8 contract for :mod:`astrid.packs.rendering.actions.timeline_visualize.navigation`:
 ordinal ordering, duplicate rejection, sealed child copies, round trips,
 deterministic range minting, build determinism, and the no-write import sentinel.
 """
@@ -18,16 +18,16 @@ import pytest
 pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core.timeline.snapshot import snapshot_from_runtime
-from astrid.packs.rendering.executors.timeline_visualize.ids import (
+from astrid.packs.rendering.actions.timeline_visualize.ids import (
     SEMANTIC_KIND_TO_CODE,
     parse_qualified_ref,
 )
-from astrid.packs.rendering.executors.timeline_visualize.model import (
+from astrid.packs.rendering.actions.timeline_visualize.model import (
     ShotModel,
     TimelineInspectionModel,
     build_model,
 )
-from astrid.packs.rendering.executors.timeline_visualize.navigation import (
+from astrid.packs.rendering.actions.timeline_visualize.navigation import (
     IdentityMap,
     assign_range_ids,
     build_identity_map,
@@ -313,7 +313,7 @@ def test_navigation_imports_no_repair_or_mutation_api() -> None:
         / "astrid"
         / "packs"
         / "rendering"
-        / "executors"
+        / "actions"
         / "timeline_visualize"
     )
     tree = ast.parse((package_dir / "navigation.py").read_text(encoding="utf-8"))

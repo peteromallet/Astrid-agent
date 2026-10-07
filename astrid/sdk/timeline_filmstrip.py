@@ -322,7 +322,7 @@ def _open_current_input_closure(
     if not isinstance(parent_head, str) or not parent_head:
         _fail("Input inspection requires an immutable parent composition head for shot placements.")
     try:
-        from astrid.packs.rendering.executors.render.managed_timeline import _project_exact_parent_head
+        from astrid.packs.rendering.actions.render.managed_timeline import _project_exact_parent_head
 
         _parent, projected, expansion = _project_exact_parent_head(
             client=client, project_id=project_id,
@@ -511,7 +511,7 @@ def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, ru
     # A render may carry an immutable provider-independent annotation set in
     # its frozen input envelope.  Project it here only; opening a filmstrip
     # never discovers a transcript or calls an ASR provider.
-    from astrid.packs.rendering.executors.timeline_visualize.speech_projection import (
+    from astrid.packs.rendering.actions.timeline_visualize.speech_projection import (
         project_speech_annotations,
     )
     raw_annotations = inputs.get('speech_annotations', inputs.get('transcript_annotations'))
@@ -566,7 +566,7 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
     # workspace transport whose project/run readers admission needs.
     remote = getattr(client, '_remote', client)
     client = getattr(remote, '_transport', remote)
-    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import render_status
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import render_status
     if inputs.get('rendered_video'):
         _fail('Filmstrip review accepts a managed --render-run, not --rendered-video.')
     project_row = client.get_project(project)
@@ -576,7 +576,7 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
     if exact == 'latest':
         exact = None
     canonical_project = str(project_row.get('slug') or project)
-    from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import normalize_components
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import normalize_components
     components = normalize_components(inputs.get('show'), inputs.get('hide'))
     timeline_row = None
     if selector or not exact:

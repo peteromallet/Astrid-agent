@@ -19,8 +19,9 @@ from typing import Any, Mapping
 from astrid.core import modalities
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.sdk.pagination import paged_rows
+from astrid.packs.video_editing.shared.iteration_inputs import project_event
 SCHEMA_VERSION = 1
-from astrid.packs.iteration.executors.assemble import run as assemble
+from astrid.packs.iteration.actions.assemble import run as assemble
 
 OUTPUT_FILES = (
     ("iteration.mp4", "video"),
@@ -306,6 +307,8 @@ def _runtime_run_show(
         return None
     record = _normalize_runtime_record(value, client=client, project=project)
     _assert_runtime_project(record, project, project_identities=project_identities)
+    if record.get("run_id") != run_id:
+        raise IterationVideoError("runtime run show returned another run identity")
     return record
 
 
@@ -314,19 +317,37 @@ def _load_runtime_records(
     project: str,
     *,
     project_identities: set[str] | None = None,
+    target_run_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
-    for raw in _runtime_run_list(client, project):
-        record = _normalize_runtime_record(raw, client=client, project=project)
-        _assert_runtime_project(record, project, project_identities=project_identities)
-        run_id = str(record.get("run_id") or "")
-        if run_id:
+    if target_run_id is not None:
+        pending = [target_run_id]
+        examined = set()
+        while pending:
+            run_id = pending.pop(0)
+            if run_id in examined:
+                continue
+            examined.add(run_id)
+            record = _runtime_run_show(client, project, run_id, project_identities=project_identities)
+            if record is None:
+                continue  # Explicit missing parent IDs remain graph gaps.
             records[run_id] = record
+            _, unresolved = _runtime_parent_edges(record, records)
+            pending.extend(value for value in unresolved if _is_runtime_identifier(value)
+                           and value != "invalid_parent_lineage" and value not in examined)
+    else:
+        for raw in _runtime_run_list(client, project):
+            record = _normalize_runtime_record(raw, client=client, project=project)
+            _assert_runtime_project(record, project, project_identities=project_identities)
+            run_id = str(record.get("run_id") or "")
+            if run_id:
+                records[run_id] = record
     _attach_runtime_lineage(
         records,
         client=client,
         project=project,
         project_identities=project_identities,
+        exact_tasks=target_run_id is not None,
     )
     return records
 
@@ -337,6 +358,7 @@ def _attach_runtime_lineage(
     client: Any,
     project: str,
     project_identities: set[str] | None = None,
+    exact_tasks: bool = False,
 ) -> None:
     """Attach only runtime-owned lineage reads to each run resource.
 
@@ -349,7 +371,7 @@ def _attach_runtime_lineage(
 
     if project_identities is None:
         project_identities = _runtime_project_identities(client, project)
-    tasks, tasks_available = _runtime_task_records(
+    tasks, tasks_available = ({}, False) if exact_tasks else _runtime_task_records(
         client, project, project_identities=project_identities
     )
     relations, relations_available = _runtime_relations(client, project)
@@ -357,9 +379,14 @@ def _attach_runtime_lineage(
         relations, known_run_ids=set(records)
     )
     for run_id, record in records.items():
-        run_tasks = tasks.get(run_id, [])
+        if exact_tasks:
+            run_tasks, run_tasks_available = _runtime_exact_task_records(
+                client, record, project_identities=project_identities
+            )
+        else:
+            run_tasks, run_tasks_available = tasks.get(run_id, []), tasks_available
         record["task_records"] = run_tasks
-        if run_tasks:
+        if run_tasks and not exact_tasks:
             record["task_ids"] = [
                 str(item["task_id"]) for item in run_tasks if item.get("task_id")
             ]
@@ -381,13 +408,13 @@ def _attach_runtime_lineage(
             if relation.get("from_run_id") == run_id or relation.get("to_run_id") == run_id
         ]
         record["runtime_relations_available"] = relations_available and relation_binding_available
-        record["runtime_tasks_available"] = tasks_available
+        record["runtime_tasks_available"] = run_tasks_available
         record["runtime_run_events"], run_events_available = _runtime_run_events(
             client, project, run_id
         )
         record["runtime_run_events_available"] = run_events_available
         task_events: dict[str, list[dict[str, Any]]] = {}
-        task_events_available = tasks_available
+        task_events_available = run_tasks_available
         for task in run_tasks:
             task_id = str(task.get("task_id") or "")
             if not task_id:
@@ -404,6 +431,45 @@ def _attach_runtime_lineage(
             record, run_tasks, "receipt", "receipts", "command_receipt"
         )
         record["runtime_lineage_gaps"] = _lineage_gaps(record)
+
+
+def _runtime_exact_task_records(
+    client: Any, run: Mapping[str, Any], *, project_identities: set[str]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Hydrate only explicit task IDs; absent IDs remain unavailable."""
+    ids = run.get("task_ids")
+    method = getattr(getattr(client, "tasks", None), "show", None)
+    if (not isinstance(ids, (list, tuple)) or not ids or not callable(method)
+            or any(not _is_runtime_identifier(value) for value in ids) or len(set(ids)) != len(ids)):
+        return [], False
+    result = []
+    available = True
+    for task_id in ids:
+        try:
+            task = _as_mapping(_unwrap_runtime_result(method(task_id)))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            available = False
+            continue
+        owners = _runtime_project_owners(task or {})
+        if (task is None or not owners or any(owner not in project_identities for owner in owners)
+                or str(task.get("task_id") or task.get("id") or "") != task_id
+                or task.get("run_id") != run["run_id"]):
+            raise IterationVideoError("selected task project/run/task identity mismatch")
+        attempt = task.get("attempt_id")
+        process = (task.get("result") or {}).get("process_evidence") if isinstance(task.get("result"), Mapping) else None
+        process_attempt = process.get("attempt_id") if isinstance(process, Mapping) else None
+        if (attempt is not None and not _is_runtime_identifier(attempt)
+                or process_attempt is not None and (not _is_runtime_identifier(process_attempt) or process_attempt != attempt)
+                or run.get("attempt_id") is not None and run["attempt_id"] != attempt):
+            raise IterationVideoError("selected task attempt identity mismatch")
+        if attempt is None:
+            available = False
+        task["task_id"] = task_id
+        settled = task.get("result") if isinstance(task.get("result"), Mapping) else {}
+        task["output_artifacts"] = _artifact_list(task.get("output_artifacts") or task.get("outputs")
+            or settled.get("output_artifacts") or settled.get("outputs") or settled.get("output_objects"))
+        result.append(task)
+    return result, available
 
 
 def _runtime_task_records(
@@ -605,7 +671,7 @@ def _scoped_events(value: Any, *, aggregate_id: str) -> tuple[list[dict[str, Any
     if any(item is None for item in events):
         return [], False
     exact = [item for item in events if item.get("aggregate_id") == aggregate_id]
-    return exact, len(exact) == len(events)
+    return [project_event(item) for item in exact], len(exact) == len(events)
 
 
 def _as_mapping(value: Any) -> dict[str, Any] | None:
@@ -981,8 +1047,9 @@ def _build_runtime_inputs(nodes: list[RuntimeRunNode], *, target_run_id: str, pr
             "relations": list(node.record.get("runtime_relations", [])),
             "evidence": list(node.record.get("runtime_evidence", [])),
             "receipts": list(node.record.get("runtime_receipts", [])),
-            "run_events": list(node.record.get("runtime_run_events", [])),
-            "task_events": dict(node.record.get("runtime_task_events", {})),
+            "run_events": [project_event(event) for event in node.record.get("runtime_run_events", [])],
+            "task_events": {task_id: [project_event(event) for event in events]
+                            for task_id, events in node.record.get("runtime_task_events", {}).items()},
             "lineage_gaps": list(node.record.get("runtime_lineage_gaps", [])),
             "summary": None,
         })
@@ -1011,28 +1078,13 @@ def resolve_target_run_id(
         raise IterationVideoError("runtime client is required for iteration-video run discovery")
     project = _resolve_runtime_project(client, project_slug)
     project_identities = _runtime_project_identities(client, project)
-    all_records = _load_runtime_records(
-        client, project, project_identities=project_identities
-    )
     if not target_run_id or not _is_runtime_identifier(target_run_id):
         raise IterationVideoError(
             "target_run_id is required; pass the runtime-issued run id explicitly"
         )
-    if target_run_id not in all_records:
-        fetched = _runtime_run_show(
-            client,
-            project,
-            target_run_id,
-            project_identities=project_identities,
-        )
-        if fetched is not None:
-            all_records[target_run_id] = fetched
-            _attach_runtime_lineage(
-                all_records,
-                client=client,
-                project=project,
-                project_identities=project_identities,
-            )
+    all_records = _load_runtime_records(
+        client, project, project_identities=project_identities, target_run_id=target_run_id
+    )
     record = all_records.get(target_run_id)
     if record is None:
         raise IterationVideoError(f"unknown runtime run: {target_run_id}")

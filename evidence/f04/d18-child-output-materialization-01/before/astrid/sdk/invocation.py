@@ -1,0 +1,3249 @@
+"""Public SDK discovery and invocation helpers.
+
+This module keeps invocation orchestration behind the SDK package boundary.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import platform
+import re
+import time
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from astrid.core.contracts.binding import (
+    BindingError,
+    assert_provided_inputs_bound,
+    expand_command,
+)
+
+from .execution_request import (
+    ExecutionRequest,
+    ExecutionRequestError,
+    merge_execution_input_manifest,
+    merge_execution_request_inputs,
+    normalize_execution_request,
+    reject_caller_execution_binding,
+)
+
+from ._module import _sdk_module
+from .exceptions import (
+    AstridSDKError,
+    CapabilityInvocationError,
+    CapabilityMissingInputError,
+    CapabilityPreconditionError,
+    CapabilityValidationError,
+    UnsupportedCapabilityError,
+    _redact_message,
+    _sdk_error_from_exception,
+)
+from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping
+
+
+_MAX_GENERATION_METADATA_BYTES = 16 * 1024
+_MAX_GENERATION_METADATA_DEPTH = 8
+_INTERNAL_DISPATCH_TOKEN = object()
+
+
+def _validate_generation_metadata(value: Any) -> dict[str, Any]:
+    """Return a small JSON metadata object safe to persist with a generation."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise CapabilityValidationError("generation_intent.metadata must be an object")
+
+    def copy_json(item: Any, *, path: str, depth: int = 0) -> Any:
+        if depth > _MAX_GENERATION_METADATA_DEPTH:
+            raise CapabilityValidationError(
+                f"{path} exceeds the maximum metadata nesting depth of "
+                f"{_MAX_GENERATION_METADATA_DEPTH}"
+            )
+        if item is None or isinstance(item, (str, bool, int)):
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise CapabilityValidationError(f"{path} must contain only finite JSON values")
+            return item
+        if isinstance(item, Mapping):
+            copied: dict[str, Any] = {}
+            for key, nested in item.items():
+                if not isinstance(key, str) or not key:
+                    raise CapabilityValidationError(
+                        f"{path} keys must be non-empty strings"
+                    )
+                copied[key] = copy_json(nested, path=f"{path}.{key}", depth=depth + 1)
+            return copied
+        if isinstance(item, list):
+            return [
+                copy_json(nested, path=f"{path}[{index}]", depth=depth + 1)
+                for index, nested in enumerate(item)
+            ]
+        raise CapabilityValidationError(
+            f"{path} must contain only JSON objects, arrays, strings, numbers, booleans, or null"
+        )
+
+    copied = copy_json(value, path="generation_intent.metadata")
+    try:
+        encoded = json.dumps(
+            copied,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise CapabilityValidationError(
+            "generation_intent.metadata must be valid UTF-8 JSON"
+        ) from exc
+    if len(encoded) > _MAX_GENERATION_METADATA_BYTES:
+        raise CapabilityValidationError(
+            "generation_intent.metadata must be at most "
+            f"{_MAX_GENERATION_METADATA_BYTES} bytes"
+        )
+    return copied
+
+
+def _expanded_config_hash(config: Mapping[str, Any]) -> str:
+    """Hash the exact in-memory expansion sent to the renderer."""
+    payload = json.dumps(
+        config, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def discover(
+    *,
+    project_root: str | Path | None = None,
+    extra_pack_roots: tuple[str, ...] = (),
+    banodoco_config: Any | None = None,
+    active_theme: str | Path | None = None,
+    include_missing_roots: bool = False,
+    kind: str | None = None,
+) -> DiscoveryResult:
+    sdk_module = _sdk_module()
+    discovered_packs = sdk_module._discover_pack_inventory(
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+    )
+    pack_permission_ids_by_pack_id = sdk_module._pack_permission_ids_by_pack_id(discovered_packs)
+    executor_registry, orchestrator_registry, element_registry = sdk_module._load_registries(
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+        banodoco_config=banodoco_config,
+        include_missing_roots=include_missing_roots,
+        include_elements=True,
+    )
+    if element_registry is None:
+        raise CapabilityInvocationError("element registry was not loaded")
+    (
+        packs,
+        generation_backends,
+        element_kinds,
+        generation_features,
+        generation_modes,
+    ) = sdk_module._build_discovery_metadata(
+        discovered_packs,
+        element_registry=element_registry,
+    )
+
+    if pack_permission_ids_by_pack_id:
+        executors = tuple(
+            sdk_module._capability_from_executor(
+                definition,
+                executor_registry,
+                pack_permission_ids_by_pack_id=pack_permission_ids_by_pack_id,
+            )
+            for definition in executor_registry.list()
+        )
+        orchestrators = tuple(
+            sdk_module._capability_from_orchestrator(
+                definition,
+                orchestrator_registry,
+                pack_permission_ids_by_pack_id=pack_permission_ids_by_pack_id,
+            )
+            for definition in orchestrator_registry.list()
+        )
+        elements = tuple(
+            sdk_module._capability_from_element(
+                definition,
+                pack_permission_ids_by_pack_id=pack_permission_ids_by_pack_id,
+            )
+            for definition in element_registry.list()
+        )
+    else:
+        executors = tuple(
+            sdk_module._capability_from_executor(definition, executor_registry)
+            for definition in executor_registry.list()
+        )
+        orchestrators = tuple(
+            sdk_module._capability_from_orchestrator(definition, orchestrator_registry)
+            for definition in orchestrator_registry.list()
+        )
+        elements = tuple(
+            sdk_module._capability_from_element(definition)
+            for definition in element_registry.list()
+        )
+    if kind is not None and kind not in ("action", "executor", "orchestrator", "element"):
+        raise CapabilityValidationError(
+            f"discover(kind=...) must be one of 'action', 'executor', 'orchestrator', "
+            f"'element' — got {kind!r}"
+        )
+    executors = executors if kind in (None, "action", "executor") else ()
+    orchestrators = orchestrators if kind in (None, "action", "orchestrator") else ()
+    elements = elements if kind in (None, "element") else ()
+    return DiscoveryResult(
+        actions=executors + orchestrators,
+        executors=executors,
+        orchestrators=orchestrators,
+        elements=elements,
+        capabilities=executors + orchestrators + elements,
+        packs=packs,
+        generation_backends=generation_backends,
+        element_kinds=element_kinds,
+        generation_features=generation_features,
+        generation_modes=generation_modes,
+    )
+
+
+def get_capability(
+    capability_id: str,
+    *,
+    kind: Any | None = None,
+    element_kind: str | None = None,
+    project_root: str | Path | None = None,
+    extra_pack_roots: tuple[str, ...] = (),
+    include_elements: bool = True,
+    banodoco_config: Any | None = None,
+    active_theme: str | Path | None = None,
+    include_missing_roots: bool = False,
+    _registries: tuple[Any, Any, Any | None] | None = None,
+):
+    sdk_module = _sdk_module()
+    if _registries is None:
+        executor_registry, orchestrator_registry, element_registry = sdk_module._load_registries(
+            project_root=project_root,
+            extra_pack_roots=extra_pack_roots,
+            banodoco_config=banodoco_config,
+            include_missing_roots=include_missing_roots,
+            include_elements=include_elements or kind == "element" or kind is None,
+        )
+    else:
+        executor_registry, orchestrator_registry, element_registry = _registries
+
+    resolved = sdk_module._resolve_capability(
+        capability_id,
+        kind=kind,
+        element_kind=element_kind,
+        executor_registry=executor_registry,
+        orchestrator_registry=orchestrator_registry,
+        element_registry=element_registry,
+    )
+    # Keep direct describes consistent with discover(): pack-level and
+    # capability-specific safety permissions are part of the public handle,
+    # not only of the full inventory DTO.
+    discovered_packs = sdk_module._discover_pack_inventory(
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+    )
+    return sdk_module._apply_pack_permission_ids(
+        resolved,
+        pack_permission_ids_by_pack_id=sdk_module._pack_permission_ids_by_pack_id(discovered_packs),
+    )
+
+
+def _normalize_executor_result(result: Any) -> dict[str, Any]:
+    payload = {
+        "executor_id": result.executor_id,
+        "kind": result.kind,
+        "command": result.command,
+        "cwd": result.cwd,
+        "env": result.env,
+        "payload": result.payload,
+        "returncode": result.returncode,
+        "dry_run": result.dry_run,
+        "skipped": result.skipped,
+        "skipped_reason": result.skipped_reason,
+        "missing_binaries": result.missing_binaries,
+        "error": result.error,
+        "ok": result.ok,
+        "run_id": getattr(result, "run_id", None),
+        "run_root": getattr(result, "run_root", None),
+        "outputs": getattr(result, "outputs", {}),
+        "executor_version": getattr(result, "executor_version", None),
+    }
+    return _json_safe_mapping(payload)
+
+
+def _normalize_orchestrator_result(result: Any) -> dict[str, Any]:
+    return _json_safe_mapping(result.to_dict())
+
+
+def _validate_manifest_preview_inputs(
+    capability: Any,
+    *,
+    inputs: Mapping[str, Any] | None,
+    orchestrator_args: tuple[str, ...],
+) -> dict[str, Any]:
+    """Validate only manifest-owned inputs for a read-only invocation preview.
+
+    Dry-run is deliberately a ledger/manifest operation.  It must not build a
+    runner request (which imports project/run helpers), inspect an output tree,
+    or resolve a local project.  Port requirements and declared orchestrator
+    inputs are still checked here so callers retain the useful typed failures
+    they receive from a live admission attempt.
+    """
+
+    values = dict(inputs or {})
+    ports = tuple(getattr(capability, "inputs", ()) or ())
+    # Defaults belong to the manifest ledger.  Include them in the effective
+    # preview values without consulting runtime or project state.
+    for port in ports:
+        if port.name not in values and getattr(port, "default", None) is not None:
+            values[port.name] = port.default
+    from .actions import validate_action_inputs
+
+    validate_action_inputs(capability, values)
+    missing = [
+        str(port.name)
+        for port in ports
+        if bool(getattr(port, "required", False))
+        and getattr(port, "default", None) is None
+        and values.get(port.name) in (None, "")
+    ]
+    if missing:
+        raise CapabilityMissingInputError(
+            f"{capability.capability_type} {capability.id!r} missing required input(s): "
+            f"{', '.join(missing)}"
+        )
+
+    if capability.capability_type == "executor":
+        metadata = capability.definition.get("metadata", {})
+        choices = metadata.get("input_choices") if isinstance(metadata, Mapping) else None
+        if isinstance(choices, Mapping):
+            for input_name, raw_options in choices.items():
+                if not isinstance(raw_options, (list, tuple)) or input_name not in values:
+                    continue
+                options = tuple(str(option) for option in raw_options)
+                if str(values[input_name]) not in options:
+                    rendered = ", ".join(options)
+                    raise CapabilityValidationError(
+                        f"invalid {input_name} {values[input_name]!r} for executor "
+                        f"{capability.id!r}; valid options: {rendered}; recovery: retry with "
+                        f"--{str(input_name).replace('_', '-')} <one of: {rendered}>"
+                    )
+        requirements = (
+            metadata.get("input_requirements_by_choice")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if isinstance(requirements, Mapping):
+            for selector, choices_by_value in requirements.items():
+                selected = values.get(str(selector))
+                if selected is None or not isinstance(choices_by_value, Mapping):
+                    continue
+                required = choices_by_value.get(str(selected))
+                if not isinstance(required, (list, tuple)):
+                    continue
+                missing_choice = [
+                    str(name)
+                    for name in required
+                    if values.get(str(name)) in (None, "")
+                ]
+                if missing_choice:
+                    raise CapabilityMissingInputError(
+                        f"executor {capability.id!r} missing required input(s) for "
+                        f"{selector}={selected!r}: {', '.join(missing_choice)}"
+                    )
+    else:
+        declared = {str(port.name) for port in ports}
+        unknown = sorted(set(values) - declared)
+        if unknown:
+            declared_hint = ", ".join(sorted(declared)) or "none"
+            raise CapabilityValidationError(
+                f"orchestrator {capability.id!r} does not declare SDK input(s): "
+                f"{', '.join(unknown)}; declared inputs: {declared_hint}. recovery: pass the "
+                "runtime flags through orchestrator_args=(\"--flag\", \"value\") and retry"
+            )
+
+    return _json_safe_mapping(values)
+
+
+def _manifest_dry_run_result(
+    capability: Any,
+    *,
+    inputs: Mapping[str, Any] | None,
+    outputs: Mapping[str, Any] | None,
+    brief: Path | str | None,
+    python_exec: str | None,
+    out: Path | str | None = None,
+    orchestrator_args: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], bool]:
+    """Build the stable no-side-effect preview envelope from a capability DTO."""
+
+    validation_inputs = dict(inputs or {})
+    if brief is not None:
+        validation_inputs.setdefault("brief", brief)
+    preview_inputs = _validate_manifest_preview_inputs(
+        capability,
+        inputs=validation_inputs,
+        orchestrator_args=orchestrator_args,
+    )
+    if brief is not None:
+        preview_inputs.setdefault("brief", _json_safe(brief))
+    if python_exec is not None:
+        preview_inputs.setdefault("python_exec", python_exec)
+    preview = {
+        "kind": "manifest-ledger",
+        "capability_id": str(capability.id),
+        "inputs": preview_inputs,
+        "outputs": _json_safe_mapping(dict(outputs or {})),
+    }
+    command = _manifest_preview_command(
+        capability,
+        inputs=preview_inputs,
+        outputs=outputs,
+        brief=brief,
+        python_exec=python_exec,
+        out=out,
+        orchestrator_args=orchestrator_args,
+    )
+    if capability.capability_type == "executor":
+        return {
+            "executor_id": capability.id,
+            "kind": capability.native_kind,
+            "command": command,
+            "cwd": None,
+            "env": {},
+            "payload": {"preview": preview},
+            "returncode": None,
+            "dry_run": True,
+            "skipped": False,
+            "skipped_reason": "",
+            "missing_binaries": [],
+            "error": None,
+            "ok": True,
+            "run_id": None,
+            "run_root": None,
+            "outputs": {},
+            "executor_version": None,
+        }, True
+
+    runtime = capability.definition.get("runtime", {})
+    runtime_kind = runtime.get("kind") if isinstance(runtime, Mapping) else None
+    return {
+        "orchestrator_id": capability.id,
+        "kind": capability.native_kind,
+        "runtime_kind": runtime_kind or "unknown",
+        "command": command,
+        "planned_commands": [command] if command else [],
+        "cwd": None,
+        "env": {},
+        "returncode": None,
+        "dry_run": True,
+        "outputs": {},
+        "errors": [],
+        "plan": {
+            "steps": [],
+            "summary": "manifest-ledger preview; execution deferred to the runtime",
+        },
+        "preview": preview,
+        "ok": True,
+    }, True
+
+
+def _invoke_local_orchestrator(
+    capability: Any,
+    *,
+    project: str | None,
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any] | None,
+    out: Path | str | None,
+    brief: Path | str | None,
+    python_exec: str | None,
+    verbose: bool,
+    orchestrator_args: tuple[str, ...],
+) -> InvocationResult:
+    """Run a parent orchestrator through the public SDK boundary.
+
+    Parent orchestrators are launchers, not Runtime executor registrations.
+    Their child executor calls still use the connected Runtime client from
+    the orchestrator process.  Sending the parent itself to Runtime task
+    admission would require the GenericPackHost to claim a second capability
+    class and would lose the caller's local output root.
+    """
+    from astrid.core.execution.orchestrator.runner import (
+        OrchestratorRunRequest,
+        run_orchestrator,
+    )
+
+    request = OrchestratorRunRequest(
+        orchestrator_id=str(capability.id),
+        out=out,
+        project=project,
+        inputs=dict(inputs),
+        outputs=dict(outputs or {}),
+        brief=brief,
+        python_exec=python_exec,
+        verbose=verbose,
+        # The public SDK has already resolved an explicit project and an
+        # output root.  Mark it as resolved so the runner can retain the
+        # caller-owned output directory while the child receives the project
+        # identity through its normal environment/arguments.
+        project_was_auto_resolved=True,
+        invocation="sdk",
+        run_root=out,
+        orchestrator_args=tuple(orchestrator_args),
+    )
+    result = run_orchestrator(request)
+    raw_result = _normalize_orchestrator_result(result)
+    raw_result["dispatch"] = "public_sdk_local_orchestrator"
+    raw_result["kernel_run_id"] = None
+    raw_result["kernel_task_id"] = None
+    raw_result["kernel_attempt_id"] = None
+    error = None
+    if not result.ok:
+        errors = raw_result.get("errors")
+        message = (
+            str(errors[0].get("message"))
+            if isinstance(errors, list) and errors and isinstance(errors[0], Mapping)
+            else f"orchestrator {capability.id!r} failed"
+        )
+        error = {
+            "code": "orchestrator_runtime",
+            "message": message,
+            "sdk_error": "OrchestratorRunnerError",
+            "sdk_category": "runtime",
+        }
+    return InvocationResult(
+        capability_id=capability.id,
+        capability_type=capability.capability_type,
+        native_kind=capability.native_kind,
+        ok=bool(result.ok),
+        error=error,
+        manifest_path=None,
+        raw_result=raw_result,
+        run_id=None,
+        run_root=str(Path(out).expanduser().resolve()) if out not in (None, "") else None,
+        outputs=_json_safe_mapping(dict(result.outputs or {})),
+        executor_version=None,
+        kernel_run_id=None,
+        kernel_task_id=None,
+        kernel_attempt_id=None,
+    )
+
+
+def _manifest_preview_command(
+    capability: Any,
+    *,
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any] | None,
+    brief: Path | str | None,
+    python_exec: str | None,
+    out: Path | str | None = None,
+    orchestrator_args: tuple[str, ...] = (),
+) -> list[str]:
+    """Expand a manifest command through the same lossless contract as execution."""
+
+    definition = capability.definition
+    ports = tuple(getattr(capability, "inputs", ()) or ())
+    values: dict[str, Any] = {str(key): value for key, value in inputs.items()}
+    for port in ports:
+        if port.name not in values and getattr(port, "default", None) is not None:
+            values[port.name] = port.default
+    values.setdefault("brief", brief)
+    values.setdefault("python_exec", python_exec or "python")
+    values.setdefault("verbose", "false")
+    if out not in (None, ""):
+        values["out"] = out
+    elif isinstance(outputs, Mapping) and "out" in outputs:
+        values["out"] = outputs.get("out")
+
+    metadata = definition.get("metadata", {})
+    append_pipeline_out = False
+    if capability.capability_type == "executor":
+        raw_command = definition.get("command")
+        if not isinstance(raw_command, Mapping):
+            module = metadata.get("runtime_module") if isinstance(metadata, Mapping) else None
+            if not isinstance(module, str) or not module:
+                return []
+            argv: list[str] = ["{python_exec}", "-m", module]
+            append_pipeline_out = out not in (None, "")
+            raw_command = {"argv": argv}
+    else:
+        runtime = definition.get("runtime")
+        raw_command = runtime.get("command") if isinstance(runtime, Mapping) else None
+    if not isinstance(raw_command, Mapping):
+        return []
+    raw_argv = raw_command.get("argv")
+    if not isinstance(raw_argv, (list, tuple)):
+        return []
+    if "{orchestrator_args}" in raw_argv:
+        flattened: list[Any] = []
+        for part in raw_argv:
+            if part == "{orchestrator_args}":
+                flattened.extend(str(value) for value in orchestrator_args)
+            else:
+                flattened.append(part)
+        raw_command = {**raw_command, "argv": flattened}
+    try:
+        result = expand_command(raw_command, ports, values, metadata)
+        assert_provided_inputs_bound(result, ports, values, metadata)
+    except BindingError as exc:
+        if str(exc).startswith("missing mapped input"):
+            raise CapabilityMissingInputError(
+                f"capability {capability.id!r}: {exc}"
+            ) from exc
+        raise CapabilityValidationError(f"capability {capability.id!r}: {exc}") from exc
+    command = list(result.argv)
+    if append_pipeline_out:
+        command.extend(("--out", str(values["out"])))
+    return command
+
+
+def _validate_timeline_visualize_inputs(
+    inputs: Mapping[str, Any] | None,
+    *,
+    project: str | None,
+    project_root: str | Path | None = None,
+    out: str | Path | None = None,
+    _client: Any | None = None,
+) -> dict[str, Any]:
+    """Validate visualization's selector/ownership contract before admission.
+
+    This is intentionally read-only.  Timeline visualization's runner repeats
+    the checks as defense-in-depth, but a public SDK call must reject a
+    foreign, missing, or malformed timeline before kernel admission.
+    """
+
+    values = dict(inputs or {})
+    raw_formats = values.get("formats")
+    if raw_formats is not None:
+        if isinstance(raw_formats, str):
+            raw_formats = [raw_formats]
+        if not isinstance(raw_formats, (list, tuple, set)):
+            raise CapabilityValidationError(
+                "rendering.timeline_visualize formats must be a list of png or md"
+            )
+        formats = {
+            part.strip().lower()
+            for token in raw_formats
+            for part in str(token).split(",")
+            if part.strip()
+        }
+        if not formats:
+            raise CapabilityValidationError(
+                "rendering.timeline_visualize formats must contain png or md"
+            )
+        allowed = {"png", "md"}
+        invalid = sorted(formats - allowed)
+        if invalid:
+            raise CapabilityValidationError(
+                f"invalid visualization format(s): {', '.join(invalid)}; "
+                "choose png or md; the legacy SVG/all formats were removed"
+            )
+    if out not in (None, ""):
+        raise CapabilityValidationError(
+            "--out is not supported for project timeline visualization; "
+            "omit it and use the returned durable manifest_path"
+        )
+    # Timeline files are authoring/migration inputs only.  A live product
+    # invocation must address a runtime-owned timeline by its stable ref.
+    if "timeline_source" in values:
+        raise CapabilityValidationError(
+            "timeline_source is not a supported product input; use timeline_slug "
+            "or the runtime-selected default"
+        )
+    if "filmstrip_authority" in values:
+        raise CapabilityValidationError("filmstrip_authority is host-owned and cannot be supplied")
+    if "transcript_file" in values or "transcript.json" in values:
+        raise CapabilityValidationError(
+            "transcript input is host-owned; config.app.transcript supplies the CAS object"
+        )
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+        inspection_options,
+    )
+    try:
+        inspection_options(values)
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    # The paired rendered filmstrip is the only public timeline visualization
+    # surface.  The former structural diagram and frozen-object navigation
+    # route were removed; all review navigation is render-scoped (range,
+    # timestamp, shot, clip, asset, track, and density).
+    view = values.get("view", "filmstrip")
+    if view != "filmstrip":
+        raise CapabilityValidationError(
+            "only view=filmstrip is supported; the structural timeline view was removed"
+        )
+    removed = [
+        name for name in ("all", "from_view", "focus", "refresh_root", "layout", "filmstrip", "scope")
+        if values.get(name) not in (None, "", False, [])
+    ]
+    if removed:
+        flags = ", ".join(f"{name.replace('_', '-')}" for name in removed)
+        raise CapabilityValidationError(
+            f"legacy structural visualization options were removed ({flags}); "
+            "use the filmstrip's --range/--at/--shot/--clip/--asset controls"
+        )
+    if not isinstance(project, str) or not project.strip():
+        raise CapabilityValidationError("filmstrip review requires project=<slug>")
+    if values.get("project_slug") not in (None, "", project):
+        raise CapabilityValidationError("project_slug does not match project")
+    from .timeline_filmstrip import prepare_filmstrip
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
+    try:
+        filmstrip_options(values)
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    return prepare_filmstrip(values, project=project, client=_client)
+
+
+def _payload_manifest_path(raw_result: Mapping[str, Any]) -> str | None:
+    payload = raw_result.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    for key in ("manifest_path", "manifest"):
+        value = payload.get(key)
+        if not isinstance(value, str):
+            continue
+        path = Path(value).expanduser().resolve()
+        if path.name == "manifest.json":
+            return str(path)
+    return None
+
+
+_RENDER_PROFILE_REQUIRED_FIELDS = (
+    "width",
+    "height",
+    "fps_rational",
+    "time_base",
+    "container",
+    "video_codec",
+    "video_profile",
+    "video_level",
+    "pixel_format",
+    "duration_tolerance",
+)
+_RENDER_PROFILE_AUDIO_FIELDS = (
+    "audio_codec",
+    "audio_sample_rate",
+    "audio_channel_layout",
+)
+_RENDER_PROFILE_ALLOWED_FIELDS = frozenset(
+    (*_RENDER_PROFILE_REQUIRED_FIELDS, *_RENDER_PROFILE_AUDIO_FIELDS)
+)
+_RENDER_PROFILE_EXAMPLE = {
+    "width": 1920,
+    "height": 1080,
+    "fps_rational": [30, 1],
+    "time_base": [1, 90000],
+    "container": "mp4",
+    "video_codec": "h264",
+    "video_profile": None,
+    "video_level": None,
+    "pixel_format": "yuv420p",
+    "audio_codec": "aac",
+    "audio_sample_rate": 48000,
+    "audio_channel_layout": "stereo",
+    "duration_tolerance": 1,
+}
+
+
+def _render_profile_guidance() -> str:
+    example = json.dumps(_RENDER_PROFILE_EXAMPLE, separators=(",", ":"))
+    return (
+        "--profile uses the flat RenderProfile v1 object (no video/audio nesting); "
+        "audio_codec, audio_sample_rate, and audio_channel_layout must be supplied "
+        "together or all omitted. Explicit profiles must match the authoritative "
+        "theme canvas; set theme_overrides.visual.canvas for a different size. "
+        f"Complete Remotion MP4 example: {example}"
+    )
+
+
+def _validate_explicit_render_profile(profile: Any) -> None:
+    """Validate the frozen flat profile contract before kernel admission."""
+
+    if profile is None:
+        return
+    if not isinstance(profile, Mapping):
+        raise CapabilityValidationError(
+            f"invalid render profile: expected a JSON object. {_render_profile_guidance()}"
+        )
+    missing = [field for field in _RENDER_PROFILE_REQUIRED_FIELDS if field not in profile]
+    unknown = sorted(str(field) for field in profile if field not in _RENDER_PROFILE_ALLOWED_FIELDS)
+    key_issues: list[str] = []
+    if missing:
+        key_issues.append("missing required field(s): " + ", ".join(missing))
+    if unknown:
+        key_issues.append("unknown field(s): " + ", ".join(unknown))
+    if key_issues:
+        raise CapabilityValidationError(
+            "invalid render profile: " + "; ".join(key_issues) + ". " + _render_profile_guidance()
+        )
+    from astrid.core.rendering.contracts import RenderProfile
+
+    try:
+        RenderProfile.from_dict(profile)
+    except (TypeError, ValueError) as exc:
+        raise CapabilityValidationError(
+            f"invalid render profile: {exc}. {_render_profile_guidance()}"
+        ) from exc
+
+
+def _validate_managed_profile_theme_compatibility(
+    profile: Mapping[str, Any] | None,
+    *,
+    timeline: Mapping[str, Any],
+    registry: Mapping[str, Any],
+    timeline_slug: str,
+) -> None:
+    """Reject canvas/fps profiles that cannot match the canonical theme.
+
+    This is intentionally managed-ref-only. Explicit file-mode callers retain
+    the renderer's historical support-selection semantics.
+    """
+
+    if profile is None:
+        return
+    from astrid.core.rendering.profile import resolve_render_profile
+
+    try:
+        authoritative = resolve_render_profile(
+            timeline,
+            registry,
+            audio_ownership="rendered",
+        )
+    except (TypeError, ValueError, OSError, FileNotFoundError) as exc:
+        raise CapabilityValidationError(
+            f"cannot resolve authoritative theme canvas for canonical timeline "
+            f"{timeline_slug!r}: {exc}. Fix the timeline theme and retry"
+        ) from exc
+
+    mismatches: list[str] = []
+    for field, expected in (
+        ("width", authoritative.width),
+        ("height", authoritative.height),
+        ("fps_rational", list(authoritative.fps_rational)),
+    ):
+        requested = profile.get(field)
+        if requested != expected:
+            mismatches.append(
+                f"{field}={requested!r} (authoritative theme canvas produces {expected!r})"
+            )
+    if mismatches:
+        raise CapabilityValidationError(
+            f"invalid render profile for canonical timeline {timeline_slug!r}: "
+            + "; ".join(mismatches)
+            + ". Explicit profiles must match the authoritative theme canvas; "
+            "use the default profile from timelines render --help or set "
+            "theme_overrides.visual.canvas to the requested width, height, and fps, then retry"
+        )
+
+
+def _validate_managed_speech_inputs(values: Mapping[str, Any]) -> None:
+    """Validate frozen speech metadata before managed-render admission.
+
+    Speech annotations and their render occurrences are an immutable render
+    input contract.  Keep the projector as the single semantic validator so
+    filmstrip preparation and render admission cannot disagree about digest,
+    timing, or occurrence shape.  This helper deliberately does not discover
+    transcript files or infer missing occurrences.
+    """
+
+    fields = (
+        "speech_annotations",
+        "transcript_annotations",
+        "speech_occurrences",
+        "source_audio_digest",
+        "transcript_digest",
+        "annotation_digest",
+        "correction_version",
+        "timing_method",
+        "speech_coverage",
+    )
+    if not any(key in values and values[key] is not None for key in fields):
+        return
+    annotations = values.get("speech_annotations", values.get("transcript_annotations"))
+    occurrences = values.get("speech_occurrences")
+    if annotations is not None and not isinstance(annotations, list):
+        raise CapabilityValidationError("speech_annotations must be a list of objects")
+    if occurrences is not None and not isinstance(occurrences, list):
+        raise CapabilityValidationError("speech_occurrences must be a list of objects")
+    from astrid.packs.rendering.actions.timeline_visualize.speech_projection import (
+        SpeechProjectionError,
+        project_speech_annotations,
+    )
+
+    try:
+        project_speech_annotations(
+            annotations or [],
+            occurrences or [],
+            source_audio_digest=values.get("source_audio_digest"),
+            transcript_digest=values.get("transcript_digest"),
+            annotation_digest=values.get("annotation_digest"),
+            correction_version=values.get("correction_version", 0),
+            timing_method=values.get("timing_method"),
+            coverage=values.get("speech_coverage"),
+        )
+    except SpeechProjectionError as exc:
+        raise CapabilityValidationError(f"invalid frozen speech metadata: {exc}") from exc
+
+
+def _prepare_managed_render_inputs(
+    inputs: Mapping[str, Any] | None,
+    *,
+    project: str | None,
+    _client: Any | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Resolve the explicit render ref and hand it to the runtime host.
+
+    Snapshot bytes remain in the admission envelope until the generic host
+    materializes them beneath the assigned attempt.
+    """
+
+    values = dict(inputs or {})
+    timeline_ref = values.get("timeline_ref")
+    expected_version = values.get("expected_version")
+    if _client is not None:
+        timeline_service = getattr(_client, "timelines", None)
+        resolver = getattr(timeline_service, "resolve_scope", None)
+        if callable(resolver):
+            scope = resolver(project, timeline_ref)
+            if not scope.ok or not isinstance(scope.data, Mapping):
+                error = scope.error
+                raise CapabilityPreconditionError(error.message)
+            project = scope.data.get("project_ref") or project
+            timeline_ref = scope.data.get("timeline_ref") or timeline_ref
+            values["timeline_ref"] = timeline_ref
+        elif timeline_ref in (None, ""):
+            # Keep direct unit-test/older-client compatibility while all
+            # connected RemoteAstridClient instances use the shared resolver.
+            if project is None or not str(project).strip():
+                project = _runtime_selected_project(_client)
+            if project is None:
+                raise CapabilityPreconditionError(
+                    "no current project is selected; pass --project <project> or "
+                    "select a current project in the workspace runtime"
+                )
+            shown = _client.projects.show(str(project))
+            if not shown.ok:
+                error = shown.error
+                raise CapabilityPreconditionError(error.message)
+            project_row = shown.data
+            metadata = project_row.get("metadata") if isinstance(project_row, Mapping) else None
+            default_ref = metadata.get("default_timeline_id") if isinstance(metadata, Mapping) else None
+            if default_ref in (None, ""):
+                raise CapabilityPreconditionError(
+                    f"project {project!r} has no configured default canonical timeline; "
+                    "pass a timeline ref or set metadata.default_timeline_id",
+                )
+            timeline_ref = str(default_ref)
+            values["timeline_ref"] = timeline_ref
+    if timeline_ref in (None, ""):
+        raise CapabilityValidationError(
+            "rendering.render requires timeline_ref=<runtime timeline slug/UUID/ULID>; "
+            "path-backed timeline inputs are not supported"
+        )
+    if values.get("timeline") not in (None, ""):
+        raise CapabilityValidationError(
+            "timeline and timeline_ref are mutually exclusive; use timeline for explicit "
+            "file mode or timeline_ref for canonical managed mode"
+        )
+    if values.get("assets_registry") not in (None, ""):
+        raise CapabilityValidationError(
+            "assets_registry cannot be overridden with timeline_ref; the canonical timeline "
+            "registry is pinned with the snapshot"
+        )
+    if project is None or not str(project).strip():
+        raise CapabilityValidationError("rendering.render timeline_ref requires project=<slug>")
+    if not isinstance(timeline_ref, str) or not timeline_ref.strip():
+        raise CapabilityValidationError("timeline_ref must be a non-empty slug, UUID, or ULID")
+    if expected_version is not None and (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        raise CapabilityValidationError("expected_version must be a positive integer")
+    _validate_explicit_render_profile(values.get("profile"))
+    from astrid.packs.rendering.actions.render.managed_timeline import (
+        ManagedRenderValidationError,
+        _runtime_snapshot_registry,
+        resolve_managed_render_snapshot,
+        validate_managed_render_snapshot,
+    )
+
+    if _client is None:
+        raise CapabilityInvocationError(
+            "explicit generated runtime client is required for managed render admission"
+        )
+    try:
+        authoring_preview = values.pop("authoring_preview", None)
+        snapshot = resolve_managed_render_snapshot(
+            project_ref=str(project),
+            timeline_ref=timeline_ref.strip(),
+            expected_version=expected_version,
+            client=_client,
+            candidate_preview=authoring_preview is not None,
+        )
+        if authoring_preview is not None:
+            if not isinstance(authoring_preview, Mapping):
+                raise ValueError("authoring_preview must be a frozen candidate artifact")
+            from .authoring_render_preview import candidate_preview_snapshot
+
+            snapshot = candidate_preview_snapshot(
+                authoring_preview, snapshot=snapshot, client=_client
+            )
+        child_records: list[dict[str, Any]] = []
+        review_shots: list[dict[str, Any]] = []
+        review_phrases: list[dict[str, Any]] = []
+        shot_occurrences: list[dict[str, Any]] = []
+        shot_records: dict[str, dict[str, Any]] = {}
+        review_bindings: dict[str, list[dict[str, Any]]] = {}
+        from .render_shot_snapshot import shot_text_snapshot
+        raw_clips = snapshot.config.get("clips", [])
+        canonical_expansion = snapshot.expansion if isinstance(snapshot.expansion, Mapping) and snapshot.expansion.get("canonical") is True else None
+        if canonical_expansion is not None:
+            for shot in canonical_expansion.get("shots", []):
+                if not isinstance(shot, Mapping) or not isinstance(shot.get("shot_id"), str):
+                    continue
+                shot_id = str(shot["shot_id"])
+                bindings = [dict(item) for item in shot.get("text_bindings", []) if isinstance(item, Mapping)]
+                shot_records[shot_id] = {
+                    "shot_id": shot_id,
+                    "name": str(shot.get("name") or shot_id),
+                    "version": shot.get("revision_id"),
+                    "text_bindings": [{key: value for key, value in binding.items() if key != "text"} for binding in bindings],
+                }
+                review_bindings[shot_id] = bindings
+            for occurrence in canonical_expansion.get("occurrences", []):
+                if not isinstance(occurrence, Mapping):
+                    continue
+                shot_id = occurrence.get("shot_id")
+                occurrence_id = occurrence.get("occurrence_id")
+                if not isinstance(shot_id, str) or not isinstance(occurrence_id, str):
+                    continue
+                name = str(shot_records.get(shot_id, {}).get("name") or occurrence.get("name") or shot_id)
+                at = float(occurrence.get("at", float(occurrence.get("at_ms", 0)) / 1000.0))
+                hold = float(occurrence.get("hold", float(occurrence.get("duration_ms", 0)) / 1000.0))
+                shot_occurrences.append({
+                    "shot_occurrence_id": occurrence_id,
+                    "shot_id": shot_id,
+                    "name": name,
+                    "at": at,
+                    "hold": hold,
+                    "timeline_document_id": str(occurrence.get("parent_document_id") or snapshot.timeline_id),
+                    "source_index": int(occurrence.get("ordinal", len(shot_occurrences))),
+                    "output_identity": occurrence.get("output_identity"),
+                    "revision_id": occurrence.get("revision_id"),
+                })
+                review_shots.append({"shot_id": shot_id, "name": name, "at": at, "hold": hold})
+                for binding in review_bindings.get(shot_id, []):
+                    text = binding.get("text")
+                    if binding.get("kind") != "voiceover_script" or not isinstance(text, str) or not text.strip():
+                        continue
+                    review_phrases.append({
+                        "id": f"shot-script:{occurrence_id}:{binding.get('binding_id', 'binding')}",
+                        "shot_id": shot_id,
+                        "shot_occurrence_id": occurrence_id,
+                        "text": text.strip(),
+                        "status": "projected",
+                        "render_interval": {"start": at, "end": at + hold},
+                        "timing_basis": "shot_script",
+                        "word_aligned": False,
+                        "binding_id": binding.get("binding_id"),
+                        "head": binding.get("head"),
+                        "media_id": binding.get("media_id"),
+                    })
+
+        if any(
+            isinstance(clip, Mapping) and clip.get("clipType") == "shot"
+            for clip in raw_clips
+        ):
+            raise CapabilityValidationError(
+                f"canonical timeline {snapshot.timeline_slug!r} contains legacy clipType=shot entries; "
+                "migrate the timeline with the offline migration utility before rendering"
+            )
+
+        expanded_config, expanded_registry = snapshot.config, snapshot.registry
+        # The pure expander can carry the registered id and authored-order
+        # occurrence through arbitrary child payloads.  Pin the name here,
+        # after reading it from the canonical shot registry; child/caller
+        # metadata can never forge review provenance.
+        occurrence_names = {
+            item["shot_occurrence_id"]: item["name"] for item in shot_occurrences
+        }
+        for flat_clip in expanded_config.get("clips", []):
+            if not isinstance(flat_clip, Mapping):
+                continue
+            occurrence_id = flat_clip.get("shot_occurrence_id")
+            if occurrence_id is None:
+                continue
+            if occurrence_id not in occurrence_names:
+                raise CapabilityValidationError(
+                    f"expanded clip {flat_clip.get('id', '?')} has an unknown shot occurrence"
+                )
+            flat_clip["shot_name"] = occurrence_names[occurrence_id]
+        from dataclasses import replace
+
+        expanded_registry = _runtime_snapshot_registry(
+            expanded_registry,
+            project_ref=str(project),
+            client=_client,
+        )
+        snapshot = replace(
+            snapshot,
+            config=expanded_config,
+            registry=expanded_registry,
+            materialized_registry_hash=_expanded_config_hash(expanded_registry),
+            expansion={
+                "children": child_records,
+                "shots": [shot_records[key] for key in sorted(shot_records)],
+                "occurrences": shot_occurrences,
+                "expanded_config_hash": _expanded_config_hash(expanded_config),
+            },
+        )
+        validate_managed_render_snapshot(snapshot)
+    except ManagedRenderValidationError as exc:
+        raise CapabilityValidationError(str(exc), details=exc.details) from exc
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    _validate_managed_speech_inputs(values)
+    from .managed_transcript import transcript_input_from_snapshot
+
+    try:
+        transcript_input = transcript_input_from_snapshot(snapshot.config, snapshot.registry)
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    if transcript_input is not None and any(
+        values.get(key) is not None for key in ("speech_annotations", "transcript_annotations", "speech_occurrences")
+    ):
+        supplied_transcript_digest = values.get("transcript_digest")
+        if supplied_transcript_digest != transcript_input["digest"]:
+            raise CapabilityValidationError(
+                "frozen speech transcript_digest must match config.app.transcript.sha256"
+            )
+    _validate_managed_profile_theme_compatibility(
+        values.get("profile"),
+        timeline=snapshot.config,
+        registry=snapshot.registry,
+        timeline_slug=snapshot.timeline_slug,
+    )
+    from astrid.core.rendering.output_policy import (
+        DEFAULT_RENDER_OUTPUT_NAME,
+        RenderOutputPolicyError,
+        validate_render_output_policy,
+    )
+
+    output_name = values.get("output_name", DEFAULT_RENDER_OUTPUT_NAME)
+    if output_name is None:
+        output_name = DEFAULT_RENDER_OUTPUT_NAME
+    try:
+        validate_render_output_policy(
+            output_name,
+            timeline=snapshot.config,
+            profile=values.get("profile"),
+        )
+    except RenderOutputPolicyError as exc:
+        raise CapabilityValidationError(str(exc), details=exc.details) from exc
+    # Never trust caller-authored review labels: pin registered names alongside the render.
+    values.pop("review_context", None)
+    # ``review`` still controls only burned-in visual labels.  The occurrence
+    # envelope is always pinned at admission for provenance and script maps.
+    values["review_context"] = {
+        "shots": review_shots,
+        "speech": {"status": "projected", "phrases": review_phrases},
+    }
+    authority = snapshot.authority()
+    values.update(
+        {
+            # The generic host materializes this immutable snapshot below the
+            # assigned attempt.  The SDK never writes a project-side render
+            # snapshot or hands a project-root locator to a renderer.
+            "timeline_snapshot": {
+                "config": dict(snapshot.config),
+                "registry": dict(snapshot.registry),
+            },
+            "timeline_authority": authority,
+        }
+    )
+    # The public selector and CAS guard are admission-only controls. The
+    # resolved authority object below is the durable run input/cache identity;
+    # do not leak these two controls as undeclared renderer CLI flags.
+    values.pop("expected_version", None)
+    return values, authority
+
+
+def _discover_invocation_manifest_path(
+    raw_result: Mapping[str, Any],
+    *,
+    out: Path | str | None,
+) -> str | None:
+    manifest_path = _payload_manifest_path(raw_result)
+    if manifest_path is not None:
+        return manifest_path
+    outputs = raw_result.get("outputs")
+    if isinstance(outputs, Mapping):
+        output_manifest = outputs.get("manifest_path")
+        if isinstance(output_manifest, str):
+            candidate = Path(output_manifest).expanduser().resolve()
+            if candidate.name == "manifest.json" and candidate.is_file():
+                return str(candidate)
+    roots: list[Path] = []
+    for raw in (raw_result.get("run_root"), out):
+        if raw in (None, ""):
+            continue
+        root = Path(str(raw)).expanduser().resolve()
+        if root not in roots:
+            roots.append(root)
+    for root in roots:
+        for candidate in (root / "manifest.json", root / "agent-view" / "manifest.json"):
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _filmstrip_cache_parent(
+    *,
+    project: str | None,
+    cache_root: Path | str | None = None,
+) -> Path:
+    """Return the durable, project-namespaced filmstrip cache parent."""
+    if cache_root is not None:
+        base = Path(cache_root).expanduser().resolve()
+    elif (runtime_data_root := _runtime_data_root()) is not None:
+        base = runtime_data_root / "timeline-visualize"
+    elif platform.system() == "Darwin":
+        base = Path.home() / "Library" / "Caches" / "Astrid" / "timeline-visualize"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid" / "timeline-visualize"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(project or "unscoped")).strip("._") or "unscoped"
+    return base / slug
+
+
+def _runtime_data_root() -> Path | None:
+    """Return the installation-owned data root used by the neutral runtime."""
+    try:
+        from .storage_root import resolve_runtime_data_root
+
+        return resolve_runtime_data_root()
+    except (ImportError, OSError, ValueError):
+        # Older installed Astrid packages have no storage-root composition;
+        # retain their cache behavior until the launcher is upgraded.
+        return None
+
+
+def _materialize_filmstrip_outputs(
+    raw_result: dict[str, Any],
+    client: Any,
+    *,
+    project: str | None = None,
+    cache_root: Path | str | None = None,
+) -> str:
+    """Rehydrate verified published evidence into a durable project cache."""
+    import io
+    import tempfile
+    import zipfile
+    from pathlib import PurePosixPath
+
+    artifacts = raw_result.get("outputs", {}).get("artifacts", [])
+    bundles = [a for a in artifacts if a.get("name") == "filmstrip_bundle"]
+    if len(bundles) != 1:
+        raise CapabilityInvocationError("filmstrip task did not publish its evidence bundle")
+    artifact = bundles[0]
+    digest = str(artifact.get("digest", "")).removeprefix("sha256:")
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise CapabilityInvocationError("filmstrip bundle has an invalid digest")
+    data = client.media.read_bytes("sha256:" + digest)
+    if hashlib.sha256(data).hexdigest() != digest or len(data) != artifact.get("size"):
+        raise CapabilityInvocationError("filmstrip bundle does not match its published digest and size")
+    parent = _filmstrip_cache_parent(project=project, cache_root=cache_root)
+    parent.mkdir(parents=True, exist_ok=True)
+    root = parent / digest
+    staging = Path(tempfile.mkdtemp(prefix=f".{digest[:12]}-", dir=parent))
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            if len(members) > 10000 or sum(m.file_size for m in members) > 1024 ** 3:
+                raise CapabilityInvocationError("filmstrip bundle exceeds evidence extraction limits")
+            names: set[str] = set()
+            for member in members:
+                path = PurePosixPath(member.filename)
+                if (path.is_absolute() or not path.parts or ".." in path.parts
+                        or "\\" in member.filename or member.filename in names
+                        or (member.external_attr >> 16) & 0o170000 == 0o120000):
+                    raise CapabilityInvocationError("filmstrip bundle contains an unsafe or duplicate path")
+                names.add(member.filename)
+                destination = staging.joinpath(*path.parts)
+                if member.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(archive.read(member))
+        manifest = staging / "manifest.json"
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        if document.get("kind") != "timeline_filmstrip" or not (staging / "frame-index.json").is_file():
+            raise CapabilityInvocationError("filmstrip bundle is missing its manifest or frame-index entrypoint")
+        declared = document.get("outputs")
+        if not isinstance(declared, list):
+            raise CapabilityInvocationError("filmstrip manifest lacks member integrity records")
+        verified_members: set[str] = set()
+        for member in declared:
+            if not isinstance(member, Mapping):
+                raise CapabilityInvocationError("filmstrip manifest has an invalid member")
+            relative = member.get("path")
+            if not isinstance(relative, str) or relative in verified_members:
+                raise CapabilityInvocationError("filmstrip manifest has a duplicate or invalid path")
+            member_path = PurePosixPath(relative)
+            if member_path.is_absolute() or ".." in member_path.parts or "\\" in relative:
+                raise CapabilityInvocationError("filmstrip manifest member escapes its bundle")
+            path = staging.joinpath(*member_path.parts)
+            if not path.is_file():
+                raise CapabilityInvocationError("filmstrip manifest references a missing member")
+            with path.open("rb") as stream:
+                member_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+            if member_digest != member.get("content_hash") or path.stat().st_size != member.get("bytes"):
+                raise CapabilityInvocationError("filmstrip bundle member integrity mismatch")
+            verified_members.add(relative)
+        actual_members = {p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file()}
+        if actual_members != verified_members | {"manifest.json"}:
+            raise CapabilityInvocationError("filmstrip bundle has unrecorded members")
+        index_path = staging / "frame-index.json"
+        try:
+            frame_index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise CapabilityInvocationError("filmstrip frame index is invalid") from exc
+
+        def verified_relative_member(value: object, label: str) -> Path | None:
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise CapabilityInvocationError(f"filmstrip {label} path is invalid")
+            relative = PurePosixPath(value)
+            if relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in value:
+                raise CapabilityInvocationError(f"filmstrip {label} path is unsafe")
+            candidate = staging.joinpath(*relative.parts)
+            if not candidate.is_file() or value not in verified_members:
+                raise CapabilityInvocationError(f"filmstrip {label} path is not verified")
+            return candidate
+
+        media = frame_index.get("media") if isinstance(frame_index, Mapping) else None
+        audio_sidecar = frame_index.get("audio_sidecar") if isinstance(frame_index, Mapping) else None
+        media_path = verified_relative_member(media.get("path") if isinstance(media, Mapping) else None, "media")
+        audio_path = verified_relative_member(audio_sidecar.get("path") if isinstance(audio_sidecar, Mapping) else None, "audio sidecar")
+        media_relative = media_path.relative_to(staging) if media_path is not None else None
+        audio_relative = audio_path.relative_to(staging) if audio_path is not None else None
+        # Publish only after the archive and every declared member have been
+        # verified. A successful retry replaces the prior cache atomically;
+        # a failed retry leaves an existing usable cache untouched.
+        if root.exists():
+            import shutil
+            shutil.rmtree(root)
+        os.replace(staging, root)
+        staging = root
+        manifest = root / "manifest.json"
+        static_outputs = {
+            "pack_root": str(root),
+            "manifest_path": str(manifest),
+            "pages": [str(p) for p in sorted(root.glob("filmstrip-*.png"))],
+            "frame_index": str(root / "frame-index.json"),
+        }
+        markdown = root / "filmstrip.md"
+        if markdown.is_file():
+            static_outputs["markdown"] = str(markdown)
+        raw_result["outputs"].update(static_outputs)
+        if media_relative is not None:
+            raw_result["outputs"]["media"] = str(root / media_relative)
+        if audio_relative is not None:
+            raw_result["outputs"]["audio_analysis"] = str(root / audio_relative)
+        return str(manifest)
+    except Exception:
+        import shutil
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def _invocation_outputs(
+    raw_result: Mapping[str, Any],
+    *,
+    manifest_path: str | None,
+    capability_id: str | None = None,
+) -> dict[str, Any]:
+    outputs: dict[str, Any] = {}
+    declared = raw_result.get("outputs")
+    if isinstance(declared, Mapping):
+        outputs.update(declared)
+    payload = raw_result.get("payload")
+    if isinstance(payload, Mapping) and isinstance(payload.get("outputs"), Mapping):
+        outputs.update(payload["outputs"])
+    managed_outputs = raw_result.get("managed_outputs")
+    if isinstance(managed_outputs, list):
+        # These rows are Runtime-owned identities and remain valid after the
+        # private attempt spool is removed. Do not substitute their filenames
+        # with local paths; callers can request explicit materialization.
+        outputs["managed_outputs"] = [
+            _json_safe(item) for item in managed_outputs
+            if isinstance(item, Mapping)
+        ]
+    if manifest_path is not None:
+        manifest = Path(manifest_path)
+        try:
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            document = None
+        is_timeline_manifest = isinstance(document, dict) and document.get("kind") in {
+            "timeline_visualize",
+            "timeline_visualize_project",
+        }
+        if capability_id == "rendering.timeline_visualize" or is_timeline_manifest:
+            pack_root = manifest.parent
+            # Kernel completion publishes every evidence-pack member as its
+            # own managed CAS object and removes private staging.  The parent
+            # of the durable manifest is therefore a hash fan-out directory,
+            # not the logical pack root.  Reuse the frozen loader's verified
+            # task-output rehydration so the long-standing ``pack_root`` SDK
+            # convenience remains an actually navigable directory.
+            # The manifest is the runtime-owned result handle. Rehydration,
+            # when needed for navigation, is persisted in the deterministic,
+            # project-namespaced Astrid cache.
+            outputs["pack_root"] = str(pack_root)
+            outputs["manifest_path"] = str(manifest)
+            if isinstance(document, dict) and document.get("kind") == "timeline_filmstrip":
+                from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import action_argv
+                outputs["inspection"] = action_argv(
+                    "python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest), "--section", "summary"
+                )
+            page_pattern = "filmstrip-*.png" if isinstance(document, dict) and document.get("kind") == "timeline_filmstrip" else "PG*.png"
+            outputs["pages"] = [
+                str(path)
+                for path in sorted(pack_root.rglob(page_pattern))
+                if "filmstrip" not in path.relative_to(pack_root).parts
+            ]
+            if page_pattern == "filmstrip-*.png":
+                markdown = pack_root / "filmstrip.md"
+                if markdown.is_file():
+                    outputs["markdown"] = str(markdown)
+            outputs["file_hashes"] = {
+                path.relative_to(pack_root).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in sorted(pack_root.rglob("*"))
+                if path.is_file()
+            }
+    return _json_safe_mapping(outputs)
+
+
+def _runtime_selected_project(client: Any | None = None) -> str | None:
+    """Read the connected runtime's durable selection; never infer locally."""
+    if client is None:
+        return None
+    current = getattr(getattr(client, "projects", None), "current", None)
+    if not callable(current):
+        raise CapabilityInvocationError("runtime client does not expose current project selection")
+    result = current()
+    if not result.ok:
+        error = result.error
+        if getattr(error, "code", None) == "not_found":
+            return None
+        from .exceptions import ServiceError, _SERVICE_ERROR_CLASSES
+        error_type = _SERVICE_ERROR_CLASSES.get(error.code, ServiceError)
+        raise error_type(error.message, details=error.details)
+    data = result.data
+    row = data.get("project") if isinstance(data, Mapping) else None
+    if not isinstance(row, Mapping):
+        raise CapabilityInvocationError("runtime current project returned an invalid selection")
+    ref = row.get("project_id") or row.get("id") or row.get("slug")
+    if not isinstance(ref, str) or not ref.strip():
+        raise CapabilityInvocationError("runtime current project returned no project identity")
+    return ref
+
+
+def _project_scope(capability: Any) -> str:
+    """Return validated executor project scope, defaulting old manifests to required."""
+    definition = getattr(capability, "definition", None)
+    metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
+    scope = metadata.get("project_scope", "required") if isinstance(metadata, Mapping) else "required"
+    if scope not in {"required", "optional"}:
+        raise CapabilityInvocationError(
+            f"executor {getattr(capability, 'id', '<unknown>')!r} has invalid project_scope {scope!r}"
+        )
+    return str(scope)
+
+
+def _validate_generation_intent(
+    value: Any,
+    *,
+    modality: str,
+) -> dict[str, Any]:
+    """Validate and copy the opaque D1 generation intent envelope."""
+    if not isinstance(value, Mapping):
+        raise CapabilityValidationError("generation_intent must be an object")
+    required_keys = {"version", "modality", "partial_success_policy", "groups"}
+    allowed_keys = required_keys | {"metadata"}
+    if not required_keys.issubset(value) or set(value) - allowed_keys:
+        raise CapabilityValidationError(
+            "generation_intent must contain version, modality, "
+            "partial_success_policy, groups, and optional metadata"
+        )
+    version = value["version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        raise CapabilityValidationError("generation_intent.version must be 1")
+    if value["modality"] != modality:
+        raise CapabilityValidationError(
+            f"generation_intent.modality must match generation modality {modality!r}"
+        )
+    partial_success_policy = value["partial_success_policy"]
+    if not isinstance(partial_success_policy, str) or partial_success_policy not in {
+        "reject", "allow"
+    }:
+        raise CapabilityValidationError(
+            "generation_intent.partial_success_policy must be 'reject' or 'allow'"
+        )
+    groups = value["groups"]
+    if not isinstance(groups, list):
+        raise CapabilityValidationError("generation_intent.groups must be a list")
+    if not groups:
+        raise CapabilityValidationError(
+            "generation_intent.groups must contain at least one group"
+        )
+
+    copied_groups: list[dict[str, Any]] = []
+    seen_group_keys: set[str] = set()
+    for group_index, group in enumerate(groups):
+        if not isinstance(group, Mapping) or set(group) != {"group_key", "selectors"}:
+            raise CapabilityValidationError(
+                f"generation_intent.groups[{group_index}] must contain exactly "
+                "group_key and selectors"
+            )
+        group_key = group["group_key"]
+        if not isinstance(group_key, str) or not group_key.strip():
+            raise CapabilityValidationError(
+                f"generation_intent.groups[{group_index}].group_key must be non-empty"
+            )
+        if group_key in seen_group_keys:
+            raise CapabilityValidationError(
+                f"generation_intent has duplicate group_key {group_key!r}"
+            )
+        seen_group_keys.add(group_key)
+
+        selectors = group["selectors"]
+        if not isinstance(selectors, list):
+            raise CapabilityValidationError(
+                f"generation_intent.groups[{group_index}].selectors must be a list"
+            )
+        if not selectors:
+            raise CapabilityValidationError(
+                f"generation_intent.groups[{group_index}].selectors must contain "
+                "at least one selector"
+            )
+        copied_selectors: list[dict[str, Any]] = []
+        seen_ordinals: set[int] = set()
+        seen_variant_keys: set[str] = set()
+        for selector_index, selector in enumerate(selectors):
+            if not isinstance(selector, Mapping) or not {
+                "selector", "ordinal", "variant_key"
+            }.issubset(selector) or set(selector) - {
+                "selector", "ordinal", "variant_key", "required"
+            }:
+                raise CapabilityValidationError(
+                    f"generation_intent.groups[{group_index}].selectors[{selector_index}] "
+                    "must contain selector, ordinal, variant_key, and optional required"
+                )
+            selector_name = selector["selector"]
+            ordinal = selector["ordinal"]
+            variant_key = selector["variant_key"]
+            if not isinstance(selector_name, str) or not selector_name.strip():
+                raise CapabilityValidationError(
+                    f"generation_intent.groups[{group_index}].selectors[{selector_index}] "
+                    "selector must be non-empty"
+                )
+            if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+                raise CapabilityValidationError(
+                    f"generation_intent.groups[{group_index}].selectors[{selector_index}] "
+                    "ordinal must be a non-negative integer"
+                )
+            if not isinstance(variant_key, str) or not variant_key.strip():
+                raise CapabilityValidationError(
+                    f"generation_intent.groups[{group_index}].selectors[{selector_index}] "
+                    "variant_key must be non-empty"
+                )
+            required = selector.get("required", False)
+            if not isinstance(required, bool):
+                raise CapabilityValidationError(
+                    f"generation_intent.groups[{group_index}].selectors[{selector_index}] "
+                    "required must be a boolean"
+                )
+            if ordinal in seen_ordinals:
+                raise CapabilityValidationError(
+                    f"generation_intent group {group_key!r} has duplicate ordinal {ordinal}"
+                )
+            if variant_key in seen_variant_keys:
+                raise CapabilityValidationError(
+                    f"generation_intent group {group_key!r} has duplicate variant_key "
+                    f"{variant_key!r}"
+                )
+            seen_ordinals.add(ordinal)
+            seen_variant_keys.add(variant_key)
+            copied_selector = {
+                "selector": selector_name,
+                "ordinal": ordinal,
+                "variant_key": variant_key,
+            }
+            if "required" in selector:
+                copied_selector["required"] = required
+            copied_selectors.append(copied_selector)
+        copied_groups.append({"group_key": group_key, "selectors": copied_selectors})
+
+    result = {
+        "version": 1,
+        "modality": modality,
+        "partial_success_policy": partial_success_policy,
+        "groups": copied_groups,
+    }
+    if "metadata" in value:
+        result["metadata"] = _validate_generation_metadata(value["metadata"])
+    return result
+
+
+def _generation_capability_modality(capability: Any) -> str | None:
+    """Resolve a generation modality, including metadata opt-in capabilities."""
+    capability_id = str(getattr(capability, "id", capability))
+    if capability_id.startswith("generation.generate_image"):
+        return "image"
+    if capability_id.startswith("generation.generate_video"):
+        return "video"
+    if capability_id.startswith("generation.generate_audio"):
+        return "audio"
+    if capability_id in {"wan2gp.generate_video", "fal.h3_video", "vibecomfy.character_animation", "vibecomfy.video_enhance"}:
+        return "video"
+    if capability_id == "fal.fal_foley":
+        return "audio"
+    definition = getattr(capability, "definition", None)
+    metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
+    publication = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None
+    modality = publication.get("modality") if isinstance(publication, Mapping) else None
+    if modality in {"image", "video", "audio"}:
+        return str(modality)
+    return None
+
+
+def _generation_primary_output_port(capability: Any, modality: str) -> str:
+    """Resolve the single published file port for a typed generation route."""
+    expected = {
+        "image": "generated_images",
+        "video": "generated_videos",
+        "audio": "generated_audio",
+    }[modality]
+    declared_outputs = getattr(capability, "outputs", None)
+    if not declared_outputs:
+        definition = getattr(capability, "definition", None)
+        declared_outputs = (
+            definition.get("outputs", ())
+            if isinstance(definition, Mapping)
+            else getattr(definition, "outputs", ())
+        )
+
+    def output_field(output: Any, field: str) -> Any:
+        if isinstance(output, Mapping):
+            return output.get(field)
+        return getattr(output, field, None)
+
+    candidates = [
+        str(output_field(output, "name"))
+        for output in declared_outputs or ()
+        if output_field(output, "type") == "file"
+        and not str(output_field(output, "name") or "").endswith("_manifest")
+        and output_field(output, "artifact_type")
+    ]
+    if candidates.count(expected) == 1:
+        return expected
+    if len(candidates) == 1:
+        return candidates[0]
+    untyped_candidates = [
+        str(output_field(output, "name"))
+        for output in declared_outputs or ()
+        if output_field(output, "type") == "file"
+        and not str(output_field(output, "name") or "").endswith("_manifest")
+    ]
+    if len(untyped_candidates) == 1:
+        return untyped_candidates[0]
+    raise CapabilityValidationError(
+        f"generation capability must declare exactly one primary {modality!r} output"
+    )
+
+
+def _automatic_generation_intent(
+    capability: Any,
+    inputs: Mapping[str, Any],
+    *,
+    modality: str | None,
+) -> dict[str, Any] | None:
+    """Build a bounded default publication declaration for typed routes.
+
+    Routes whose output cardinality comes from an opaque prompt file are left
+    opt-in: admission cannot safely invent their selector set. Typed routes
+    with a declared count, or a single fixed output, can use the canonical
+    settlement path without requiring every caller to hand-compose D1 JSON.
+    """
+    if modality is None or getattr(capability, "capability_type", None) != "executor":
+        return None
+    capability_id = str(getattr(capability, "id", ""))
+    if capability_id == "generation.generate_image_openai":
+        return None
+
+    count_value: Any = inputs.get("count")
+    if count_value is None:
+        for port in getattr(capability, "inputs", ()) or ():
+            if getattr(port, "name", None) == "count":
+                count_value = getattr(port, "default", None)
+                break
+    if count_value is None:
+        count = 1
+    else:
+        try:
+            count = int(count_value)
+        except (TypeError, ValueError):
+            return None
+        if count < 1 or count > 128:
+            return None
+    selectors = []
+    for ordinal in range(count):
+        selectors.append({
+            "selector": f"main-{ordinal}",
+            "ordinal": ordinal,
+            "variant_key": "original" if ordinal == 0 else f"variant-{ordinal}",
+            "required": True,
+        })
+    return {
+        "version": 1,
+        "modality": modality,
+        "partial_success_policy": "reject",
+        "groups": [{"group_key": "main", "selectors": selectors}],
+    }
+
+
+def _generation_publish_effect(
+    capability: Any,
+    *,
+    project: str | None,
+    generation_intent: Mapping[str, Any],
+    variant_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compose the sole typed publication effect from validated GEN intent.
+
+    ``variant_context`` is resolved from Runtime before admission.  Keeping
+    this branch here means every generation capability shares the same
+    publication contract instead of teaching individual executors about
+    generation lineage.
+    """
+    if not isinstance(project, str) or not project.strip():
+        raise CapabilityValidationError(
+            "generation publication requires a project-scoped task"
+        )
+    modality = generation_intent["modality"]
+    output_port = _generation_primary_output_port(capability, modality)
+    groups = []
+    for group in generation_intent["groups"]:
+        groups.append({
+            "group_key": group["group_key"],
+            "selectors": [
+                {
+                    "selector": selector["selector"],
+                    "ordinal": selector["ordinal"],
+                    "variant_key": selector["variant_key"],
+                    "output_port": output_port,
+                    **({"required": selector["required"]} if "required" in selector else {}),
+                }
+                for selector in group["selectors"]
+            ],
+        })
+    payload = {
+            "version": 1,
+            "modality": modality,
+            "generation_type": str(capability.id),
+            "metadata": _validate_generation_metadata(generation_intent.get("metadata")),
+            "partial_success_policy": generation_intent["partial_success_policy"],
+            "groups": groups,
+        }
+    if variant_context is None:
+        return {
+            "effect_type": "generation.publish_v1",
+            "target_id": project,
+            "payload": payload,
+        }
+
+    selectors = [selector for group in groups for selector in group["selectors"]]
+    if len(selectors) != 1:
+        raise CapabilityValidationError(
+            "variant generation requests must produce exactly one output"
+        )
+    selector = selectors[0]
+    return {
+        "effect_type": "generation.variant.append",
+        "target_id": variant_context["generation_id"],
+        "expected_version": variant_context["expected_version"],
+        "payload": {
+            "source_variant_id": variant_context["source_variant_id"],
+            "source_object_id": variant_context["source_object_id"],
+            "variant_type": "edit",
+            "output_name": selector["output_port"],
+            "output_ordinal": selector["ordinal"],
+            "primary_policy": variant_context["primary_policy"],
+        },
+    }
+
+
+def _domain_result_data(result: Any, *, operation: str) -> Any:
+    """Unwrap a Runtime DomainResult at the generation admission boundary."""
+    if isinstance(result, Mapping):
+        ok = result.get("ok")
+        data = result.get("data")
+        error = result.get("error")
+    else:
+        ok = getattr(result, "ok", None)
+        data = getattr(result, "data", None)
+        error = getattr(result, "error", None)
+    if ok is not True:
+        message = getattr(error, "message", None)
+        if message is None and isinstance(error, Mapping):
+            message = error.get("message")
+        raise CapabilityPreconditionError(
+            f"{operation} failed: {message or 'Runtime returned no data'}"
+        )
+    return data
+
+
+def _resolve_generation_variant(
+    client: Any | None,
+    *,
+    project: str | None,
+    variant_of: Any,
+    primary: str,
+) -> dict[str, Any]:
+    """Resolve and authorize a Runtime generation variant for publication."""
+    if not isinstance(variant_of, Mapping):
+        raise CapabilityValidationError(
+            "variant_of must be an object with generation_id and variant_id"
+        )
+    generation_id = variant_of.get("generation_id")
+    variant_id = variant_of.get("variant_id")
+    if not isinstance(generation_id, str) or not generation_id.strip():
+        raise CapabilityValidationError("variant_of.generation_id must be a non-empty string")
+    if not isinstance(variant_id, str) or not variant_id.strip():
+        raise CapabilityValidationError("variant_of.variant_id must be a non-empty string")
+    if primary not in {"preserve", "promote"}:
+        raise CapabilityValidationError("primary must be 'preserve' or 'promote'")
+    if client is None:
+        raise CapabilityPreconditionError(
+            "variant generation requests require a connected Runtime client"
+        )
+    generations = getattr(client, "generations", None)
+    show = getattr(generations, "show", None)
+    variants = getattr(generations, "variants", None)
+    if not callable(show) or not callable(variants):
+        raise CapabilityPreconditionError(
+            "connected Runtime client does not expose generation variant reads"
+        )
+    generation = _domain_result_data(
+        show(project, generation_id), operation="generation lookup"
+    )
+    if not isinstance(generation, Mapping):
+        raise CapabilityPreconditionError("generation lookup returned an invalid resource")
+    owner = generation.get("project_id")
+    if not isinstance(owner, str) or not owner:
+        raise CapabilityPreconditionError("generation lookup returned no project owner")
+    owner_matches = owner == project
+    if not owner_matches:
+        projects = getattr(client, "projects", None)
+        project_show = getattr(projects, "show", None)
+        if callable(project_show):
+            project_row = _domain_result_data(
+                project_show(project), operation="project lookup"
+            )
+            if isinstance(project_row, Mapping):
+                owner_matches = owner in {
+                    project_row.get("project_id"),
+                    project_row.get("id"),
+                    project_row.get("slug"),
+                }
+    if not owner_matches:
+        raise CapabilityPreconditionError(
+            "variant generation source belongs to a different project"
+        )
+    version = generation.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise CapabilityPreconditionError(
+            "generation lookup returned no valid current version"
+        )
+    page = _domain_result_data(
+        variants(project, generation_id), operation="generation variant lookup"
+    )
+    rows = page[0] if isinstance(page, (list, tuple)) and len(page) == 2 else page
+    if not isinstance(rows, (list, tuple)):
+        raise CapabilityPreconditionError("generation variant lookup returned an invalid page")
+    source = next(
+        (row for row in rows if isinstance(row, Mapping) and row.get("variant_id") == variant_id),
+        None,
+    )
+    if source is None:
+        raise CapabilityPreconditionError(
+            f"generation variant {variant_id!r} was not found"
+        )
+    if source.get("generation_id") not in (None, generation_id):
+        raise CapabilityPreconditionError("generation variant belongs to a different generation")
+    source_object_id = source.get("object_id")
+    if not isinstance(source_object_id, str) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", source_object_id
+    ):
+        raise CapabilityPreconditionError(
+            "variant_of must reference a generation variant with a managed object"
+        )
+    return {
+        "generation_id": generation_id,
+        "expected_version": version,
+        "source_variant_id": variant_id,
+        "source_object_id": source_object_id,
+        "primary_policy": primary,
+    }
+
+
+def _validate_variant_controls(
+    variant_of: Any,
+    primary: Any,
+    *,
+    modality: str | None,
+    primary_supplied: bool = False,
+) -> None:
+    """Validate shared publication controls before model preflight."""
+    if modality is None:
+        if variant_of is None and not primary_supplied:
+            return
+        raise CapabilityValidationError(
+            "variant_of and primary are only accepted for generation capabilities"
+        )
+    if variant_of is None and primary == "preserve":
+        return
+    if not isinstance(primary, str) or primary not in {"preserve", "promote"}:
+        raise CapabilityValidationError("primary must be 'preserve' or 'promote'")
+    if variant_of is None and primary == "promote":
+        raise CapabilityValidationError("primary='promote' requires variant_of")
+
+
+def _kernel_invoke(
+    capability: Any,
+    *,
+    kind: Any,
+    project: str | None,
+    inputs: Mapping[str, Any] | None,
+    outputs: Mapping[str, Any] | None,
+    out: Path | str | None = None,
+    brief: Path | str | None = None,
+    python_exec: str | None = None,
+    orchestrator_args: tuple[str, ...] = (),
+    extra_pack_roots: tuple[str, ...] = (),
+    idempotency_context: Mapping[str, Any] | None = None,
+    admission_metadata: Mapping[str, Any] | None = None,
+    generation_intent: Mapping[str, Any] | None = None,
+    variant_context: Mapping[str, Any] | None = None,
+    execution_request: Mapping[str, Any] | None = None,
+    storage_estimate: Mapping[str, int] | None = None,
+    child_delegation: Mapping[str, Any] | None = None,
+    registry: Any | None = None,
+    _client: Any | None = None,
+) -> tuple[str, str, str, Path | None, dict[str, Any], bool, Any]:
+    """Admit an invocation through the runtime client and generic host.
+
+    The SDK is a client of the workspace runtime.  It must not compose a
+    local application, open SQLite, or execute a capability in-process on the
+    normal invocation path. ``registry`` is an explicit dependency-injection
+    seam for callers that provide test doubles and is intentionally unused by
+    the runtime admission request.
+    """
+    del registry
+
+    try:
+        reject_caller_execution_binding(execution_request, None)
+        execution_request = normalize_execution_request(execution_request)
+    except ExecutionRequestError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+
+    request_inputs = dict(inputs or {})
+    # Runtime workers expand the manifest command directly and therefore do
+    # not see the public SDK's separate ``project=`` argument.  Mirror the
+    # in-process executor runner's derivation for declared project_slug ports
+    # so project-scoped executors receive the same explicit input on either
+    # path.  Callers can still provide the field, subject to preflight's
+    # project identity check.
+    input_ports = {
+        str(port.name)
+        for port in (getattr(capability, "inputs", ()) or ())
+        if getattr(port, "name", None)
+    }
+    if project and "project_slug" in input_ports and "project_slug" not in request_inputs:
+        request_inputs["project_slug"] = project
+
+    spec: dict[str, Any] = {
+        "capability_id": str(capability.id),
+        "kind": str(kind),
+        "inputs": _json_safe_mapping(request_inputs),
+        "outputs": _json_safe_mapping(dict(outputs or {})),
+        "extra_pack_roots": list(extra_pack_roots),
+    }
+    if capability.capability_type == "orchestrator":
+        # These are runner-owned fields, not creative inputs.  Keep them in
+        # the admitted spec so a live Runtime worker can reconstruct the same
+        # OrchestratorRunRequest that the dry-run command preview validated.
+        if out not in (None, ""):
+            spec["out"] = str(out)
+        if brief not in (None, ""):
+            spec["brief"] = str(brief)
+        if python_exec not in (None, ""):
+            spec["python_exec"] = str(python_exec)
+        spec["orchestrator_args"] = [str(value) for value in orchestrator_args]
+    try:
+        spec = merge_execution_request_inputs(execution_request, spec)
+    except ExecutionRequestError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    if str(capability.id) == "vibecomfy.run":
+        # Canonical sibling/source invocations use the same preflight as the
+        # direct remote task route.  Convert request-owned descriptors into the
+        # preflight view when callers supplied only the frozen request, and do
+        # this before any task admission or worker work.
+        canonical_names = {"python", "companion", "source", "source_video"}
+        contract_inputs = (
+            execution_request.get("inputs", [])
+            if isinstance(execution_request, Mapping)
+            else []
+        )
+        preflight_inputs = dict(request_inputs)
+        if isinstance(contract_inputs, list):
+            for item in contract_inputs:
+                if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+                    continue
+                preflight_inputs.setdefault(
+                    str(item["name"]),
+                    {
+                        "object_id": item.get("object_id"),
+                        "digest": item.get("digest") or item.get("object_id"),
+                        "filename": item.get("filename"),
+                    },
+                )
+        if (
+            canonical_names & set(preflight_inputs)
+            or isinstance(execution_request, Mapping)
+            and "workflow" in execution_request
+        ):
+            from .remote import _vibecomfy_invocation_preflight
+
+            # ``invoke_result`` receives the public AstridClient, whose
+            # Runtime object reader lives behind the two SDK composition
+            # layers (AstridClient -> RemoteAstridClient -> WorkspaceClient).
+            # Unwrap both layers before the canonical bundle preflight.  The
+            # old one-layer lookup rejected every real public-client call
+            # before admission, even though the reader was available.
+            remote = getattr(_client, "_remote", _client)
+            transport = getattr(remote, "_transport", remote)
+            if not callable(getattr(transport, "get_object", None)):
+                raise CapabilityValidationError(
+                    "canonical VibeComfy preflight requires the runtime object reader"
+                )
+            try:
+                spec["invocation_preflight"] = _vibecomfy_invocation_preflight(
+                    transport,
+                    {"inputs": preflight_inputs},
+                    strict=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - admission validation boundary
+                raise CapabilityValidationError(
+                    f"VibeComfy invocation preflight failed: {exc}"
+                ) from exc
+    if str(capability.id) == "generation.generate_image_codex":
+        # Bounded host profiles consume typed params as their single input
+        # authority, including the ordered CAS descriptors.
+        spec["params"] = spec.pop("inputs")
+    if idempotency_context:
+        spec["authority_context"] = _json_safe_mapping(dict(idempotency_context))
+    if admission_metadata:
+        # Keep the transparent estimate out of capability inputs: it is task
+        # admission evidence, not an executor-authored input.
+        spec["admission_metadata"] = _json_safe_mapping(dict(admission_metadata))
+    # Managed renders authorize their snapshot registry media at admission:
+    # derive task input_object_ids from the immutable timeline snapshot so
+    # the generic host can materialize registry assets below the attempt.
+    input_manifest: list[str] = []
+    input_digests: list[dict[str, str]] = []
+    # File ports are Runtime-owned CAS inputs on the task path.  Keep the
+    # digest in both the explicit input-digest witness and the authorization
+    # manifest; otherwise a remote GenericPackHost can see the descriptor but
+    # is correctly forbidden from fetching it.  This was especially easy to
+    # miss for VibeComfy's canonical sibling bundle and managed source video.
+    file_input_names = {
+        str(port.name)
+        for port in (getattr(capability, "inputs", ()) or ())
+        if getattr(port, "name", None)
+        and str(getattr(port, "type", "")).lower() == "file"
+    }
+    for name in sorted(file_input_names):
+        value = spec.get("inputs", request_inputs).get(name)
+        if value is None:
+            continue
+        from astrid.core.execution.managed_inputs import managed_file_digest
+
+        try:
+            canonical = managed_file_digest(value, name)
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        if canonical not in input_manifest:
+            input_manifest.append(canonical)
+        input_digests.append({"name": name, "digest": canonical})
+    if input_digests:
+        spec["input_digests"] = input_digests
+    if variant_context is not None:
+        source_object_id = variant_context.get("source_object_id")
+        if not isinstance(source_object_id, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", source_object_id
+        ):
+            raise CapabilityValidationError(
+                "variant generation source object must be a managed SHA-256 digest"
+            )
+        input_manifest.append(source_object_id)
+    if str(capability.id) == "generation.generate_image_codex":
+        # ``input_manifest`` already contains every declared file port,
+        # including these Codex reference roles.  Use a separate set for the
+        # role-level distinctness check; consulting ``input_manifest`` here
+        # makes the first reference appear to duplicate itself and rejects
+        # every valid Codex reference invocation.
+        seen_reference_digests: set[str] = set()
+        codex_reference_digests: list[str] = []
+        for name in ("image_ref", "style_ref", "brand_ref"):
+            reference = request_inputs.get(name)
+            if reference is None:
+                continue
+            if not isinstance(reference, Mapping):
+                raise CapabilityValidationError(f"{name} requires a managed image descriptor")
+            digest = str(reference.get("digest") or "").removeprefix("sha256:")
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise CapabilityValidationError(f"{name} requires a managed SHA-256 digest")
+            canonical_digest = "sha256:" + digest
+            if canonical_digest in seen_reference_digests:
+                raise CapabilityValidationError("Codex reference roles must use distinct images")
+            seen_reference_digests.add(canonical_digest)
+            codex_reference_digests.append(canonical_digest)
+        if codex_reference_digests:
+            codex_reference_set = set(codex_reference_digests)
+            input_manifest = [
+                digest for digest in input_manifest
+                if digest not in codex_reference_set
+            ] + codex_reference_digests
+    raw_snapshot = request_inputs.get("timeline_snapshot")
+    if isinstance(raw_snapshot, Mapping):
+        raw_registry = raw_snapshot.get("registry")
+        raw_assets = raw_registry.get("assets") if isinstance(raw_registry, Mapping) else None
+        if isinstance(raw_assets, Mapping):
+            seen: set[str] = set()
+            for entry in raw_assets.values():
+                if not isinstance(entry, Mapping):
+                    continue
+                candidate = next(
+                    (
+                        value
+                        for value in (
+                            entry.get("object_id"),
+                            entry.get("media_id"),
+                            entry.get("content_sha256"),
+                            entry.get("digest"),
+                            entry.get("sha256"),
+                            entry.get("hash"),
+                        )
+                        if isinstance(value, str)
+                        and len(value.removeprefix("sha256:")) == 64
+                        and all(
+                            ch in "0123456789abcdef"
+                            for ch in value.removeprefix("sha256:")
+                        )
+                    ),
+                    None,
+                )
+                if candidate is None:
+                    continue
+                normalized = candidate.removeprefix("sha256:")
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                input_manifest.append(candidate)
+
+    # Timeline visualization carries its immutable snapshot in the
+    # host-owned authority context rather than in public ``inputs``.  The
+    # registry media still needs to be part of the admission manifest so the
+    # generic host can fetch and hash-check those objects before the child
+    # renders source previews.
+    if (str(capability.id) == "rendering.timeline_visualize"
+            and isinstance(idempotency_context, Mapping)
+            and idempotency_context.get("mode") in {"filmstrip", "input_only"}):
+        authority_snapshot = (
+            idempotency_context.get("filmstrip_snapshot")
+            or idempotency_context.get("input_snapshot")
+        )
+        authority_registry = (
+            authority_snapshot.get("registry")
+            if isinstance(authority_snapshot, Mapping)
+            else None
+        )
+        authority_assets = (
+            authority_registry.get("assets")
+            if isinstance(authority_registry, Mapping)
+            else None
+        )
+        if isinstance(authority_assets, Mapping):
+            seen = {str(value).removeprefix("sha256:") for value in input_manifest}
+            for entry in authority_assets.values():
+                if not isinstance(entry, Mapping):
+                    continue
+                candidate = next(
+                    (
+                        value
+                        for value in (
+                            entry.get("object_id"),
+                            entry.get("media_id"),
+                            entry.get("content_sha256"),
+                            entry.get("digest"),
+                            entry.get("sha256"),
+                            entry.get("hash"),
+                        )
+                        if isinstance(value, str)
+                        and len(value.removeprefix("sha256:")) == 64
+                        and all(
+                            ch in "0123456789abcdef"
+                            for ch in value.removeprefix("sha256:")
+                        )
+                    ),
+                    None,
+                )
+                if candidate is None:
+                    continue
+                normalized = candidate.removeprefix("sha256:")
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                input_manifest.append(candidate)
+
+    if (str(capability.id) == "rendering.timeline_visualize"
+            and isinstance(idempotency_context, Mapping)
+            and idempotency_context.get("mode") == "filmstrip"):
+        # This authority is minted by managed-render preflight, never by a
+        # public file argument. Generic-host materialization requires the
+        # same immutable object in both inputs and the authorization manifest.
+        video_id = idempotency_context.get("video_object_id")
+        video_input = request_inputs.get("rendered_video")
+        if (not isinstance(video_id, str) or not video_id.startswith("sha256:")
+                or len(video_id) != 71
+                or any(c not in "0123456789abcdef" for c in video_id[7:])
+                or not isinstance(video_input, Mapping)
+                or video_input.get("digest") != video_id
+                or video_input.get("object_id") != video_id):
+            raise CapabilityValidationError("filmstrip video admission identity mismatch")
+        input_manifest.append(video_id)
+
+    if str(capability.id) == "rendering.timeline_visualize":
+        transcript_input = request_inputs.get("transcript.json")
+        if transcript_input is not None:
+            if (
+                not isinstance(transcript_input, Mapping)
+                or not isinstance(transcript_input.get("digest"), str)
+                or not isinstance(transcript_input.get("object_id"), str)
+                or transcript_input["digest"] != transcript_input["object_id"]
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", transcript_input["digest"])
+            ):
+                raise CapabilityValidationError(
+                    "transcript_file admission identity must be a matching sha256 digest/object_id"
+                )
+            input_manifest.append(transcript_input["digest"])
+
+    # A filmstrip authority snapshot can mention the rendered video both as
+    # the explicit ``rendered_video`` input and as a registry entry.  The
+    # execution-request contract is an ordered *set* of CAS identities, so
+    # collapse repeated witnesses before admission while retaining the first
+    # occurrence's order.  Without this, an otherwise valid render->visualize
+    # handoff is rejected as ``input_object_ids contains duplicate object IDs``.
+    if input_manifest:
+        unique_manifest: list[str] = []
+        seen_manifest: set[str] = set()
+        for object_id in input_manifest:
+            normalized_id = str(object_id)
+            if normalized_id in seen_manifest:
+                continue
+            seen_manifest.add(normalized_id)
+            unique_manifest.append(normalized_id)
+        input_manifest = unique_manifest
+
+    try:
+        input_manifest = merge_execution_input_manifest(
+            execution_request,
+            input_manifest,
+        )
+    except ExecutionRequestError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+
+    if _client is None:
+        raise CapabilityInvocationError(
+            "explicit generated runtime client is required for task admission"
+        )
+
+    tasks = getattr(_client, "tasks", None)
+    create_task = getattr(tasks, "create", None)
+    if not callable(create_task):
+        raise CapabilityInvocationError(
+            "runtime client does not expose generated task admission"
+        )
+    admission = {
+        "project_id": project,
+        "capability": str(capability.id),
+        "spec": spec,
+        "input_manifest": input_manifest,
+        # RemoteTasks owns the completed admission (including the selected
+        # capability digest and normalized execution request). Derive the key
+        # there so every field Runtime compares participates in replay identity.
+        "deterministic_idempotency": True,
+        "storage_estimate": dict(storage_estimate) if storage_estimate is not None else None,
+    }
+    if generation_intent is not None:
+        admission["generation_intent"] = generation_intent
+        admission["settlement_effect"] = _generation_publish_effect(
+            capability,
+            project=project,
+            generation_intent=generation_intent,
+            variant_context=variant_context,
+        )
+    if execution_request is not None:
+        admission["execution_request"] = dict(execution_request)
+    if child_delegation is not None:
+        from ._child_bridge import _validate_child_policy
+
+        admission["child_delegation"] = _validate_child_policy(child_delegation)
+    result = create_task(**admission)
+    result_ok = bool(getattr(result, "ok", isinstance(result, Mapping)))
+    data = getattr(result, "data", result if isinstance(result, Mapping) else None)
+    if not result_ok:
+        error = getattr(result, "error", None)
+        if hasattr(error, "as_dict"):
+            error = error.as_dict()
+        elif isinstance(error, Mapping):
+            error = dict(error)
+        else:
+            error = {
+                "code": "runtime_error",
+                "message": "runtime rejected task admission",
+                "details": {},
+            }
+        return "", "", "", None, {"ok": False, "error": error}, False, None
+    if not isinstance(data, Mapping):
+        raise CapabilityInvocationError("runtime task admission returned no task resource")
+
+    run_id = str(data.get("run_id") or "")
+    task_id = str(data.get("task_id") or "")
+    if not run_id or not task_id:
+        raise CapabilityInvocationError(
+            "runtime task admission returned an incomplete task resource"
+        )
+    attempt_id = str(data.get("attempt_id") or "")
+    raw_result = {
+        "ok": True,
+        "run_id": run_id,
+        "kernel_run_id": run_id,
+        "kernel_task_id": task_id,
+        "kernel_attempt_id": attempt_id,
+        "task": dict(data),
+    }
+    return run_id, task_id, attempt_id, None, raw_result, True, None
+
+
+def _read_task_managed_outputs(
+    client: Any,
+    task_id: str,
+) -> tuple[list[Any] | None, dict[str, Any] | None]:
+    """Read the Runtime-owned managed-output page for one completed task."""
+    tasks = getattr(client, "tasks", None)
+    reader = getattr(tasks, "list_managed_outputs", None)
+    if not callable(reader):
+        return None, {
+            "code": "managed_output_readback_unavailable",
+            "message": "runtime client does not expose task managed-output readback",
+            "details": {"task_id": task_id},
+        }
+    try:
+        value = reader(task_id)
+    except Exception as exc:
+        return None, {
+            "code": "managed_output_readback_unavailable",
+            "message": "managed outputs could not be read for the completed task",
+            "details": {"task_id": task_id, "error_type": type(exc).__name__},
+        }
+    if hasattr(value, "ok") and hasattr(value, "data"):
+        if not bool(value.ok):
+            error = getattr(value, "error", None)
+            if hasattr(error, "as_dict"):
+                error = error.as_dict()
+            return None, {
+                "code": "managed_output_readback_unavailable",
+                "message": "managed outputs could not be read for the completed task",
+                "details": _json_safe(error) if error is not None else {"task_id": task_id},
+            }
+        value = value.data
+    if isinstance(value, (list, tuple)) and len(value) == 2 and isinstance(value[0], list):
+        return list(value[0]), None
+    if isinstance(value, list):
+        return value, None
+    return None, {
+        "code": "managed_output_readback_invalid",
+        "message": "managed-output readback returned an invalid page",
+        "details": {"task_id": task_id},
+    }
+
+
+def _wait_for_kernel_task(
+    client: Any,
+    *,
+    task_id: str,
+    run_id: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+    read_managed_outputs: bool = False,
+) -> tuple[dict[str, Any], bool, str]:
+    """Follow one admitted task to a terminal runtime-owned result."""
+    if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
+        raise CapabilityValidationError("wait timeout_seconds must be positive")
+    if not math.isfinite(float(poll_seconds)) or poll_seconds <= 0:
+        raise CapabilityValidationError("wait poll_seconds must be positive")
+    tasks = getattr(client, "tasks", None)
+    show = getattr(tasks, "show", None)
+    if not callable(show):
+        raise CapabilityInvocationError(
+            "runtime client does not expose task status for synchronous invocation"
+        )
+
+    deadline = time.monotonic() + float(timeout_seconds)
+    while True:
+        observed = show(task_id)
+        observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
+        data = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
+        if not observed_ok or not isinstance(data, Mapping):
+            error = getattr(observed, "error", None)
+            if hasattr(error, "as_dict"):
+                error = error.as_dict()
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "error": {
+                    "code": "task_status_unavailable",
+                    "message": "render task status could not be read",
+                    "details": dict(error) if isinstance(error, Mapping) else {},
+                },
+            }, False, ""
+
+        task = dict(data)
+        state = str(task.get("state") or task.get("status") or "").lower()
+        attempt_id = str(task.get("attempt_id") or "")
+        if state in {"succeeded", "completed"}:
+            settled = task.get("result")
+            settled = dict(settled) if isinstance(settled, Mapping) else {}
+            output_rows = settled.get("outputs")
+            completed = {
+                "ok": True,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": attempt_id,
+                "state": "completed",
+                "task": task,
+                "result": settled,
+                "outputs": {
+                    "artifacts": list(output_rows)
+                    if isinstance(output_rows, list)
+                    else []
+                },
+            }
+            if read_managed_outputs:
+                managed_outputs, read_error = _read_task_managed_outputs(client, task_id)
+                if read_error is not None:
+                    completed["error"] = read_error
+                    completed["ok"] = False
+                    return completed, False, attempt_id
+                completed["managed_outputs"] = managed_outputs or []
+            return completed, True, attempt_id
+        if state in {"failed", "cancelled"}:
+            settled = task.get("result")
+            settled = dict(settled) if isinstance(settled, Mapping) else {}
+            failure = settled.get("error")
+            if isinstance(failure, Mapping):
+                message = str(failure.get("message") or f"render task {state}")
+            else:
+                message = str(failure or f"render task {state}")
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": attempt_id,
+                "state": state,
+                "task": task,
+                "error": {
+                    "code": f"task_{state}",
+                    "message": message,
+                    "details": {"state": state, "result": settled},
+                },
+            }, False, attempt_id
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": attempt_id,
+                "state": state or "unknown",
+                "task": task,
+                "error": {
+                    "code": "task_wait_timeout",
+                    "message": "render task did not reach a terminal state before the wait timeout",
+                    "details": {
+                        "state": state or "unknown",
+                        "timeout_seconds": float(timeout_seconds),
+                    },
+                },
+            }, False, attempt_id
+        time.sleep(min(float(poll_seconds), remaining))
+
+
+def _invoke_bridge_child(
+    capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
+    child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+) -> InvocationResult:
+    """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
+    from types import SimpleNamespace
+    from astrid.core.foundation.hash import executor_definition_digest
+    from ._child_bridge import _BridgeRejected, _child_request
+
+    digest = executor_definition_digest(registries[0].get(capability.id))
+    request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
+                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+    try:
+        data = bridge.submit(request)
+    except _BridgeRejected as exc:
+        error = {**exc.error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
+        return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
+                                native_kind=capability.native_kind, ok=False, error=error,
+                                raw_result={"ok": False, "error": exc.error}, executor_version=digest)
+    if (not isinstance(data, Mapping) or not isinstance(data.get("task_id"), str)
+            or not data["task_id"] or not isinstance(data.get("run_id"), str) or not data["run_id"]):
+        raise CapabilityInvocationError("child bridge admission returned an incomplete task resource")
+    run_id, task_id = data["run_id"], data["task_id"]
+    attempt_id = str(data.get("attempt_id") or "")
+    raw = {"ok": True, "run_id": run_id, "kernel_run_id": run_id,
+           "kernel_task_id": task_id, "kernel_attempt_id": attempt_id, "task": dict(data)}
+    ok = True
+    if wait:
+        deadline = time.monotonic() + float(timeout_seconds)
+        latest_status: Mapping[str, Any] = data
+
+        def status(observed_id: str) -> Any:
+            nonlocal latest_status
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return latest_status
+            try:
+                observed = bridge.status(request["child_key"], observed_id,
+                                         timeout_seconds=remaining)
+            except _BridgeRejected as exc:
+                return SimpleNamespace(ok=False, data=None, error=exc.error)
+            if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
+                raise CapabilityInvocationError("child bridge status returned a foreign task resource")
+            latest_status = observed
+            return observed
+
+        def read_outputs(observed_id: str) -> Any:
+            try:
+                return bridge.outputs(request["child_key"], observed_id,
+                                      timeout_seconds=max(0.000001, deadline - time.monotonic()))
+            except _BridgeRejected as exc:
+                return SimpleNamespace(ok=False, data=None, error=exc.error)
+
+        read_client = SimpleNamespace(tasks=SimpleNamespace(show=status, list_managed_outputs=read_outputs))
+        raw, ok, waited_attempt = _wait_for_kernel_task(
+            read_client, task_id=task_id, run_id=run_id, timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds, read_managed_outputs=True,
+        )
+        if waited_attempt:
+            attempt_id = waited_attempt
+        settled = raw.get("result", {})
+        payload = settled.get("payload", {}) if isinstance(settled, Mapping) else {}
+        if ok and isinstance(payload, Mapping) and "action_result" in payload:
+            from .actions import validate_action_output_definition
+
+            validate_action_output_definition(capability.definition, payload["action_result"])
+    raw["executor_version"] = digest
+    error = raw.get("error")
+    return InvocationResult(
+        capability_id=capability.id, capability_type=capability.capability_type,
+        native_kind=capability.native_kind, ok=ok,
+        error={**error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
+        if isinstance(error, Mapping) else None,
+        raw_result=raw, run_id=run_id, outputs=_invocation_outputs(
+            raw, manifest_path=None, capability_id=capability.id,
+        ), executor_version=digest, kernel_run_id=run_id,
+        kernel_task_id=task_id, kernel_attempt_id=attempt_id,
+    )
+
+
+def invoke(
+    capability_id: str,
+    *,
+    kind: Any,
+    project_root: str | Path | None = None,
+    extra_pack_roots: tuple[str, ...] = (),
+    banodoco_config: Any | None = None,
+    active_theme: str | Path | None = None,
+    include_missing_roots: bool = False,
+    out: Path | str | None = None,
+    project: str | None = None,
+    inputs: Mapping[str, Any] | None = None,
+    execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
+    idempotency_context: Mapping[str, Any] | None = None,
+    child_delegation: Mapping[str, Any] | None = None,
+    child_key: str | None = None,
+    outputs: Mapping[str, Any] | None = None,
+    brief: Path | str | None = None,
+    dry_run: bool = False,
+    check_binaries: bool = False,
+    python_exec: str | None = None,
+    verbose: bool = False,
+    argv: tuple[str, ...] = (),
+    orchestrator_args: tuple[str, ...] = (),
+    registry: Any | None = None,
+    client: Any | None = None,
+    wait: bool = False,
+    timeout_seconds: float = 3600.0,
+    poll_seconds: float = 1.0,
+    _include_internal: bool = False,
+    _internal_dispatch_token: object | None = None,
+) -> InvocationResult:
+    """Invoke a selected capability through Runtime or the installed host bridge.
+
+    ``child_delegation`` is parent admission policy, outside action inputs.
+    Inside an admitted action, a private host bridge handles child calls.
+    ``child_key`` identifies one logical child (and requires that bridge);
+    omitting it uses a stable key derived from exact capability and inputs.
+    """
+    from . import _child_bridge
+
+    child_mode = _child_bridge._bridge is not None or child_key is not None
+    if child_mode and child_delegation is not None:
+        raise CapabilityValidationError("child invocation cannot set child_delegation")
+    validated_child_policy = _child_bridge._validate_child_policy(child_delegation)
+    if child_mode and _child_bridge._bridge is None:
+        raise CapabilityInvocationError("child invocation requires a live host bridge")
+    if child_mode and any(value is not None for value in (
+        execution_request, idempotency_context, outputs, project, out, brief, python_exec,
+    )):
+        raise CapabilityValidationError("child invocation accepts only declared inputs and child wait controls")
+    if _include_internal and _internal_dispatch_token is not _INTERNAL_DISPATCH_TOKEN:
+        raise TypeError("private capabilities can only be invoked through internal dispatch")
+    try:
+        normalized_execution_request = normalize_execution_request(execution_request)
+    except ExecutionRequestError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+    _client = client
+    sdk_module = _sdk_module()
+    include_elements = kind == "element"
+    registries = sdk_module._load_registries(
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+        banodoco_config=banodoco_config,
+        include_missing_roots=include_missing_roots,
+        include_elements=include_elements,
+        include_internal=_include_internal,
+    )
+    # Keep the public generation entrypoint while selecting a separately
+    # bounded runtime profile for Codex (the cloud profile remains closed).
+    if capability_id == "generation.generate_image" and (inputs or {}).get("execution") == "codex":
+        capability_id = "generation.generate_image_codex"
+    capability = sdk_module.get_capability(
+        capability_id,
+        kind=kind,
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+        banodoco_config=banodoco_config,
+        include_missing_roots=include_missing_roots,
+        _registries=registries,
+    )
+    if capability.capability_type == "element":
+        raise UnsupportedCapabilityError(f"elements are not invokable via the SDK: {capability.id}")
+
+    # The unified action selector resolves a native route before admission.
+    # Runtime task kinds and existing SDK result DTOs retain their contracts.
+    if kind == "action":
+        kind = capability.capability_type
+
+    intent_modality = _generation_capability_modality(capability)
+    request_inputs = dict(inputs or {})
+    variant_context: dict[str, Any] | None = None
+    variant_of_supplied = "variant_of" in request_inputs
+    primary_supplied = "primary" in request_inputs
+    variant_of = request_inputs.pop("variant_of", None)
+    primary = request_inputs.pop("primary", "preserve")
+    if (variant_of_supplied or primary_supplied) and intent_modality is None:
+        raise CapabilityValidationError(
+            "variant_of and primary are only accepted for generation capabilities"
+        )
+    _validate_variant_controls(
+        variant_of if variant_of_supplied else None,
+        primary,
+        modality=intent_modality,
+        primary_supplied=primary_supplied,
+    )
+    if variant_of is not None:
+        # Project resolution below may use the Runtime's durable selection;
+        # defer the read-only lineage lookup until that identity is known.
+        variant_context = {"variant_of": variant_of, "primary": primary}
+    generation_intent: dict[str, Any] | None = None
+    if "generation_intent" in request_inputs:
+        if intent_modality is None and capability.id != "vibecomfy.run":
+            raise CapabilityValidationError(
+                "generation_intent is only accepted for generation capabilities"
+            )
+        if intent_modality is None:
+            raw_intent = request_inputs["generation_intent"]
+            intent_modality = (
+                raw_intent.get("modality")
+                if isinstance(raw_intent, Mapping)
+                else None
+            )
+            if intent_modality not in {"image", "video", "audio"}:
+                raise CapabilityValidationError(
+                    "vibecomfy.run generation_intent must declare image, video, or audio modality"
+                )
+        generation_intent = _validate_generation_intent(
+            request_inputs["generation_intent"],
+            modality=intent_modality,
+        )
+        # Intent is admission metadata, not an executor-facing input port.
+        request_inputs.pop("generation_intent")
+    elif not dry_run:
+        generation_intent = _automatic_generation_intent(
+            capability,
+            request_inputs,
+            modality=intent_modality,
+        )
+        if intent_modality is not None and generation_intent is None:
+            raise CapabilityValidationError(
+                f"{capability.id} requires explicit generation_intent because its "
+                "output cardinality is not safely inferable at admission"
+            )
+
+    from .actions import validate_action_inputs
+
+    effective_inputs = dict(request_inputs)
+    for port in capability.inputs if hasattr(capability, "inputs") else ():
+        if port.name not in effective_inputs and port.default is not None:
+            effective_inputs[port.name] = port.default
+    validate_action_inputs(capability, effective_inputs)
+
+    if child_mode:
+        if dry_run or capability.capability_type != "executor" or argv or orchestrator_args:
+            raise CapabilityValidationError("child bridge requires an executable action without launcher controls")
+        _child_bridge._strict_json(effective_inputs)
+        metadata = capability.definition.get("metadata", {})
+        if "action_inputs_schema" not in metadata:
+            unknown = set(effective_inputs) - {port.name for port in capability.inputs}
+            if unknown:
+                raise CapabilityValidationError("child invocation contains undeclared inputs")
+            for port in capability.inputs:
+                value = effective_inputs.get(port.name)
+                if value is None:
+                    continue
+                accepted = {"string": (str,), "path": (str,), "directory": (str,), "html": (str,),
+                            "boolean": (bool,), "integer": (int,), "number": (int, float)}.get(port.type)
+                if accepted is not None and type(value) not in accepted:
+                    raise CapabilityValidationError(f"child input {port.name!r} must match declared {port.type} type")
+        effective_inputs = _validate_manifest_preview_inputs(
+            capability, inputs=effective_inputs, orchestrator_args=(),
+        )
+        return _invoke_bridge_child(
+            capability, registries=registries, inputs=effective_inputs,
+            bridge=_child_bridge._bridge, child_key=child_key,
+            wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+        )
+
+    if isinstance(project, str) and not project.strip():
+        project = None
+    project_scope = _project_scope(capability)
+    if not dry_run and project is None and project_scope == "required":
+        project = _runtime_selected_project(_client)
+        if project is None:
+            from astrid.core.project.guidance import format_project_required_guidance
+
+            raise CapabilityPreconditionError(
+                format_project_required_guidance(
+                    operation=f"{capability.capability_type} invocation"
+                )
+            )
+    if variant_context is not None:
+        resolved_variant = _resolve_generation_variant(
+            _client,
+            project=project,
+            variant_of=variant_context["variant_of"],
+            primary=variant_context["primary"],
+        )
+        variant_context = resolved_variant
+
+    # Validate the public selector/format contract before the runner can
+    # create a ledger row or spawn a subprocess.  The runner repeats these
+    # checks for direct CLI callers, but SDK callers should get the same
+    # actionable typed error at admission time.
+    invocation_authority_context: dict[str, Any] | None = None
+    invocation_admission_metadata: dict[str, Any] | None = None
+    invocation_storage_estimate: dict[str, int] | None = None
+    if idempotency_context is not None:
+        if not isinstance(idempotency_context, Mapping):
+            raise CapabilityValidationError("idempotency_context must be an object")
+        invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
+    if capability.id == "generation.generate_image_codex":
+        count = request_inputs.get("count", 1)
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:
+            raise CapabilityValidationError("Codex count must be an integer between 1 and 4")
+        invocation_storage_estimate = {"scratch_bytes": 536870912, "output_bytes": 269484032}
+    # These are managed-authority checks, not manifest checks.  A dry-run is
+    # intentionally limited to the source ledger and therefore cannot inspect
+    # a project tree or materialize a render snapshot.
+    if not dry_run:
+        if capability.id == "rendering.timeline_visualize":
+            invocation_authority_context = _validate_timeline_visualize_inputs(
+                inputs,
+                project=project,
+                project_root=project_root,
+                out=out,
+                _client=_client,
+            )
+            transcript_input = invocation_authority_context.get("transcript_input")
+            if transcript_input is not None:
+                inputs = dict(inputs or {})
+                if inputs.get("transcript.json") not in (None, ""):
+                    raise CapabilityValidationError(
+                        "transcript input is host-owned; config.app.transcript supplies the CAS object"
+                    )
+                inputs["transcript.json"] = transcript_input
+            if invocation_authority_context.get("mode") in {"filmstrip", "input_only"}:
+                # Only preflight may turn a successful project-owned render
+                # into a file input. Public paths were rejected above.
+                inputs = dict(inputs or {})
+                authority_snapshot = (
+                    invocation_authority_context.get("filmstrip_snapshot")
+                    or invocation_authority_context.get("input_snapshot")
+                    or {}
+                )
+                inputs["project_slug"] = authority_snapshot["project_slug"]
+                if invocation_authority_context.get("mode") == "filmstrip":
+                    inputs["rendered_video"] = {
+                        "digest": invocation_authority_context["video_digest"],
+                        "object_id": invocation_authority_context["video_object_id"],
+                    }
+                inputs["filmstrip_authority"] = json.dumps(
+                    invocation_authority_context, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+            # Preflight may add host-owned transcript/video bindings. Forward
+            # those enriched inputs to kernel admission; retaining the initial
+            # caller mapping would desynchronize the filmstrip identity guard.
+            request_inputs = dict(inputs or {})
+        elif capability.id == "rendering.render":
+            inputs, invocation_authority_context = _prepare_managed_render_inputs(
+                inputs,
+                project=project,
+                _client=_client,
+            )
+            # Managed render admission adds the frozen snapshot and authority
+            # after the initial request copy above. Keep the task payload in
+            # sync so the Runtime host can materialize the attempt-local
+            # timeline before expanding the renderer command.
+            request_inputs = dict(inputs)
+            snapshot = (inputs or {}).get("timeline_snapshot")
+            snapshot_config = snapshot.get("config") if isinstance(snapshot, Mapping) else None
+            snapshot_registry = snapshot.get("registry") if isinstance(snapshot, Mapping) else None
+            if not isinstance(snapshot_config, Mapping) or not isinstance(snapshot_registry, Mapping):
+                raise CapabilityInvocationError(
+                    "managed render storage estimation requires the expanded canonical snapshot"
+                )
+            from astrid.core.rendering.storage import (
+                StorageEstimateError,
+                estimate_managed_render_storage,
+                managed_object_sizes,
+                used_effect_asset_sizes,
+            )
+            from astrid.sdk.pagination import paged_rows
+
+            media_rows = paged_rows(_client.media.list, str(project), limit=50)
+            if media_rows is None:
+                raise CapabilityInvocationError(
+                    "runtime media listing is unavailable for exact render storage estimation"
+                )
+            try:
+                exact_object_sizes = managed_object_sizes(snapshot_registry, media_rows)
+                effect_sizes = used_effect_asset_sizes(snapshot_config)
+                storage_estimate = estimate_managed_render_storage(
+                    timeline=snapshot_config,
+                    registry=snapshot_registry,
+                    object_sizes=exact_object_sizes,
+                    effect_asset_sizes=effect_sizes,
+                    requested_profile=(inputs or {}).get("profile"),
+                )
+            except StorageEstimateError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+            invocation_admission_metadata = {
+                "storage_estimate": storage_estimate,
+                "runtime_enforced": True,
+            }
+            invocation_storage_estimate = {
+                "scratch_bytes": int(storage_estimate["estimated_scratch_bytes"]),
+                "output_bytes": int(storage_estimate["estimated_output_bytes"]),
+            }
+
+    # Generation requests have a single read-only preflight for both dry-run
+    # and live invocation.  This keeps generic ``sdk.invoke`` from accepting
+    # an impossible model/mode/backend cell (or FLF request missing its end
+    # frame) and discovering the problem only after kernel admission.
+    modality = {
+        "generation.generate_image": "image",
+        "generation.generate_image_codex": "image",
+        "generation.generate_video": "video",
+        "generation.generate_audio": "audio",
+    }.get(str(capability.id))
+    if modality is not None:
+        model_registry = sdk_module._load_model_registry(
+            project_root=project_root,
+            extra_pack_roots=extra_pack_roots,
+        )
+        from astrid.core.generation.preflight import (
+            require_local_generation_readiness,
+            validate_generation_request,
+        )
+
+        if capability.id == "generation.generate_image":
+            recipe = request_inputs.get("shot_generation_recipe")
+            if recipe is not None:
+                from astrid.packs.generation.executors.generate_image.task_adapter import (
+                    GenerateImageAdapterError,
+                    validate_shot_generation_recipe,
+                )
+
+                try:
+                    validate_shot_generation_recipe(
+                        recipe,
+                        model=request_inputs.get("model"),
+                        mode=request_inputs.get("mode"),
+                        execution=request_inputs.get("execution"),
+                        resolved_settings=request_inputs,
+                    )
+                except GenerateImageAdapterError as exc:
+                    raise CapabilityValidationError(str(exc)) from exc
+
+        model_entry, _mode_spec = validate_generation_request(
+            model_registry,
+            model=request_inputs.get("model"),
+            mode=request_inputs.get("mode"),
+            execution=request_inputs.get("execution"),
+            inputs=request_inputs,
+            modality=modality,
+        )
+        if request_inputs.get("execution") == "local":
+            require_local_generation_readiness(
+                model_entry,
+                request_inputs["mode"],
+                python_executable=python_exec,
+            )
+
+    # Ledger exemption: dry_run never admitted.  The preview is built from the
+    # already resolved manifest DTO and does not import either runner or any
+    # local project/run authority.
+    if dry_run:
+        try:
+            raw_result, preview_ok = _manifest_dry_run_result(
+                capability,
+                inputs=request_inputs,
+                outputs=outputs,
+                brief=brief,
+                python_exec=python_exec,
+                out=out,
+                orchestrator_args=tuple(orchestrator_args),
+            )
+        except AstridSDKError:
+            raise
+        except Exception as exc:
+            mapped = _sdk_error_from_exception(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise CapabilityInvocationError(
+                f"failed to invoke {capability.capability_type} {capability.id!r}"
+            ) from exc
+        error = raw_result.get("error") if isinstance(raw_result.get("error"), Mapping) else None
+        manifest_path = None
+        run_id_raw = None
+        run_root_raw = None
+        executor_version_raw = raw_result.get("executor_version")
+        return InvocationResult(
+            capability_id=capability.id,
+            capability_type=capability.capability_type,
+            native_kind=capability.native_kind,
+            ok=preview_ok,
+            error=error,
+            manifest_path=manifest_path,
+            raw_result=raw_result,
+            run_id=run_id_raw if isinstance(run_id_raw, str) and run_id_raw else None,
+            run_root=str(Path(run_root_raw).expanduser().resolve())
+            if isinstance(run_root_raw, str) and run_root_raw
+            else None,
+            outputs={},
+            executor_version=executor_version_raw
+            if isinstance(executor_version_raw, str) and executor_version_raw
+            else None,
+            kernel_run_id=None,
+            kernel_task_id=None,
+            kernel_attempt_id=None,
+        )
+
+    if capability.capability_type == "orchestrator":
+        if validated_child_policy is not None:
+            raise CapabilityValidationError("child_delegation requires a Runtime-admitted executor action")
+        # The Runtime task registry is the executor/worker surface.  A
+        # parent orchestrator is the public launcher that coordinates those
+        # registered child tasks and owns the caller's output directory.
+        return _invoke_local_orchestrator(
+            capability,
+            project=project,
+            inputs=request_inputs,
+            outputs=outputs,
+            out=out,
+            brief=brief,
+            python_exec=python_exec,
+            verbose=verbose,
+            orchestrator_args=tuple(orchestrator_args),
+        )
+
+    # Project requirements were resolved above. Public knowledge reads may
+    # enter the same runtime admission path without a project association.
+    kernel_capability_version: str | None = None
+    if capability.capability_type == "executor":
+        from astrid.core.foundation.hash import executor_definition_digest
+
+        executor_registry, _, _ = registries
+        kernel_capability_version = executor_definition_digest(executor_registry.get(capability.id))
+        invocation_authority_context = dict(invocation_authority_context or {})
+        invocation_authority_context["executor_version"] = kernel_capability_version
+    kr = kt = ka = ""
+    try:
+        # Keep the private seam backwards-compatible for callers that replace
+        # it with a narrow test double, while still forwarding an explicitly
+        # composed registry for long-lived clients.  ``None`` means the
+        # kernel will build its normal standard composition; passing it as a
+        # keyword adds no information and needlessly breaks older doubles.
+        kernel_kwargs: dict[str, Any] = {
+            "kind": kind,
+            "project": project,
+            "inputs": request_inputs,
+            "outputs": outputs,
+            "out": out,
+            "brief": brief,
+            "python_exec": python_exec,
+            "orchestrator_args": tuple(orchestrator_args),
+            "extra_pack_roots": extra_pack_roots,
+            "idempotency_context": invocation_authority_context,
+            "admission_metadata": invocation_admission_metadata,
+            "storage_estimate": invocation_storage_estimate,
+        }
+        if generation_intent is not None:
+            kernel_kwargs["generation_intent"] = generation_intent
+        if variant_context is not None:
+            kernel_kwargs["variant_context"] = variant_context
+        if normalized_execution_request is not None:
+            kernel_kwargs["execution_request"] = normalized_execution_request
+        if validated_child_policy is not None:
+            kernel_kwargs["child_delegation"] = validated_child_policy
+        if registry is not None:
+            kernel_kwargs["registry"] = registry
+        kr, kt, ka, mpath, raw_result, ok, _ = _kernel_invoke(
+            capability,
+            **kernel_kwargs,
+            _client=_client,
+        )
+        if wait and ok:
+            raw_result, ok, waited_attempt_id = _wait_for_kernel_task(
+                _client,
+                task_id=kt,
+                run_id=kr,
+                timeout_seconds=timeout_seconds,
+                poll_seconds=poll_seconds,
+                read_managed_outputs=(
+                    capability.capability_type == "executor"
+                    and intent_modality is not None
+                ),
+            )
+            if waited_attempt_id:
+                ka = waited_attempt_id
+        run_id_raw = raw_result.get("run_id") if isinstance(raw_result, dict) else None
+        run_root_raw = raw_result.get("run_root") if isinstance(raw_result, dict) else None
+        raw_result = dict(raw_result) if isinstance(raw_result, dict) else {}
+        if kernel_capability_version is not None:
+            raw_result.setdefault("executor_version", kernel_capability_version)
+        executor_version_raw = raw_result.get("executor_version")
+        raw_result.setdefault("kernel_run_id", kr)
+        raw_result.setdefault("kernel_task_id", kt)
+        raw_result.setdefault("kernel_attempt_id", ka)
+        manifest_path = (
+            str(mpath) if mpath else _discover_invocation_manifest_path(raw_result, out=out)
+        )
+        if (wait and ok and capability.id == "rendering.timeline_visualize"
+                and (invocation_authority_context or {}).get("mode") in {"filmstrip", "input_only"}):
+            manifest_path = _materialize_filmstrip_outputs(
+                raw_result,
+                _client,
+                project=project,
+            )
+        return InvocationResult(
+            capability_id=capability.id,
+            capability_type=capability.capability_type,
+            native_kind=capability.native_kind,
+            ok=ok,
+            # Preserve the kernel's typed handler failure on the primary
+            # result surface.  Historically this was only available under
+            # ``raw_result.error`` and task events, forcing callers to make a
+            # second ledger query to understand a failed invocation.
+            error=(
+                {
+                    **dict(raw_result.get("error")),
+                    "sdk_error": "CapabilityRuntimeError",
+                    "sdk_category": "runtime",
+                }
+                if isinstance(raw_result.get("error"), Mapping)
+                else None
+            ),
+            manifest_path=manifest_path,
+            raw_result=raw_result,
+            run_id=run_id_raw if isinstance(run_id_raw, str) and run_id_raw else kr,
+            # Kernel-managed invocations publish through private staging and
+            # then remove it. Only propagate a run_root explicitly supplied
+            # by a durable/custom kernel result; never synthesize the projects
+            # root or leak the attempt staging path.
+            run_root=(
+                str(Path(run_root_raw).expanduser().resolve())
+                if isinstance(run_root_raw, str) and run_root_raw
+                else None
+            ),
+            outputs=_invocation_outputs(
+                raw_result,
+                manifest_path=manifest_path,
+                capability_id=capability.id,
+            ),
+            executor_version=executor_version_raw
+            if isinstance(executor_version_raw, str) and executor_version_raw
+            else None,
+            kernel_run_id=kr,
+            kernel_task_id=kt,
+            kernel_attempt_id=ka,
+        )
+    except AstridSDKError:
+        raise
+    except Exception as exc:
+        mapped = _sdk_error_from_exception(exc)
+        if mapped is not None:
+            raise mapped from exc
+        raise CapabilityInvocationError(
+            f"failed to invoke {capability.capability_type} {capability.id!r}: "
+            f"{type(exc).__name__}: {_redact_message(str(exc))}",
+            details={
+                "cause_type": type(exc).__name__,
+                "cause_message": _redact_message(str(exc)),
+                "kernel_run_id": kr if isinstance(kr, str) and kr else None,
+                "kernel_task_id": kt if isinstance(kt, str) and kt else None,
+                "kernel_attempt_id": ka if isinstance(ka, str) and ka else None,
+            },
+        ) from exc
+
+
+def invoke_result(
+    capability_id: str,
+    *,
+    kind: Any,
+    **kwargs: Any,
+) -> InvocationResult:
+    """Invoke while keeping typed preflight failures in the result contract.
+
+    ``invoke`` remains the exception-oriented API for callers that want typed
+    recovery branches.  Maker-facing agents that need one uniform JSON-safe
+    branch can use this sibling: validation/precondition failures raised before
+    kernel admission become an ``InvocationResult(ok=False)`` with the same
+    ``error`` mapping used by a post-admission failure.  No run, task, staging
+    directory, network call, or provider request is created by this adapter.
+    """
+
+    if "_include_internal" in kwargs:
+        raise TypeError("_include_internal is reserved for Astrid's private dispatch")
+    return _invoke_result(capability_id, kind=kind, include_internal=False, kwargs=kwargs)
+
+
+def _invoke_internal_result(
+    capability_id: str,
+    *,
+    kind: Any,
+    **kwargs: Any,
+) -> InvocationResult:
+    """Invoke a private backend used by a canonical product operation."""
+    return _invoke_result(capability_id, kind=kind, include_internal=True, kwargs=kwargs)
+
+
+def _invoke_result(
+    capability_id: str,
+    *,
+    kind: Any,
+    include_internal: bool,
+    kwargs: Mapping[str, Any],
+) -> InvocationResult:
+    try:
+        return invoke(
+            capability_id,
+            kind=kind,
+            _include_internal=include_internal,
+            _internal_dispatch_token=(
+                _INTERNAL_DISPATCH_TOKEN if include_internal else None
+            ),
+            **dict(kwargs),
+        )
+    except AstridSDKError as exc:
+        category = getattr(exc, "category", "invocation")
+        error = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "sdk_error": type(exc).__name__,
+            "sdk_category": category,
+        }
+        details = getattr(exc, "details", None)
+        if isinstance(details, Mapping) and details:
+            error["details"] = _json_safe(dict(details))
+            if category == "validation":
+                error["validation"] = _json_safe(dict(details))
+        return InvocationResult(
+            capability_id=capability_id,
+            capability_type=kind if kind in ("executor", "orchestrator") else "executor",
+            native_kind="unknown",
+            ok=False,
+            error=error,
+            raw_result={"ok": False, "error": error},
+            run_id=details.get("kernel_run_id") if isinstance(details, Mapping) else None,
+            kernel_run_id=details.get("kernel_run_id") if isinstance(details, Mapping) else None,
+            kernel_task_id=details.get("kernel_task_id") if isinstance(details, Mapping) else None,
+            kernel_attempt_id=details.get("kernel_attempt_id") if isinstance(details, Mapping) else None,
+        )

@@ -19,7 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from astrid.packs.editorial.executors.quality_zones.run import compute
+from astrid.packs.editorial.actions.quality_zones.run import compute
 
 
 class _MutatingReadBytes:
@@ -69,7 +69,7 @@ class QualityZonesShaTocTouTest(unittest.TestCase):
             source.write_bytes(mutated_bytes)
 
             with patch(
-                "astrid.packs.editorial.executors.quality_zones.run._run_ffmpeg",
+                "astrid.packs.editorial.actions.quality_zones.run._run_ffmpeg",
                 return_value="",
             ):
                 report = compute(source, source_sha256=caller_sha)
@@ -85,7 +85,7 @@ class QualityZonesShaTocTouTest(unittest.TestCase):
             source.write_bytes(content)
             expected = hashlib.sha256(content).hexdigest()
             with patch(
-                "astrid.packs.editorial.executors.quality_zones.run._run_ffmpeg",
+                "astrid.packs.editorial.actions.quality_zones.run._run_ffmpeg",
                 return_value="",
             ):
                 report = compute(source)

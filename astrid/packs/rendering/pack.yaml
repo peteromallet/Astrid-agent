@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 id: rendering
 name: Astrid Rendering
 version: 1.0.0
@@ -8,13 +8,14 @@ stability: stable
 support: core
 visibility: visible
 permissions:
-  - id: subprocess
-    reason: Runs Remotion render process and ffmpeg sprite processing.
-  - id: project_files
-    reason: Reads timeline, asset, and theme files; writes rendered video.
-  - id: network
-    reason: Sprite sheet executor calls OpenAI GPT Image API.
-description: Author, inspect, preview, and render runtime-owned timelines; visualize them as deterministic evidence packs; generate GPT-Image sprite sheets; and supply render-time animation/transition/effect elements.
+- id: subprocess
+  reason: Runs Remotion render process and ffmpeg sprite processing.
+- id: project_files
+  reason: Reads timeline, asset, and theme files; writes rendered video.
+- id: network
+  reason: Sprite sheet executor calls OpenAI GPT Image API.
+description: Author, inspect, preview, and render runtime-owned timelines; visualize them as deterministic evidence
+  packs; generate GPT-Image sprite sheets; and supply render-time animation/transition/effect elements.
 keywords:
 - render
 - remotion
@@ -31,23 +32,1118 @@ capabilities:
 - generate_sprite_sheet
 - scaffold_html_canvas_effect
 agent:
-  purpose: Choose this pack for runtime-owned timeline authoring and inspection, candidate preview/publication, finished video rendering, deterministic visual evidence, GPT Image sprite sheets, or canvas/WebGL post-processing effects.
+  purpose: Choose this pack for runtime-owned timeline authoring and inspection, candidate preview/publication,
+    finished video rendering, deterministic visual evidence, GPT Image sprite sheets, or canvas/WebGL post-processing
+    effects.
   do_not_use_for: Publishing rendered output to external services.
   normal_entrypoints:
   - rendering.render
   - rendering.sprite_sheet
-content:
-  executors: executors
-  elements: elements
-extensions:
-  rendering:
-    renderers:
-      - backends/remotion/renderer.yaml
-      - backends/ffmpeg/renderer.yaml
-      - backends/threejs/renderer.yaml
-    finalizers:
-      - finalizers/ffmpeg/finalizer.yaml
-      - finalizers/compositor/finalizer.yaml
 documentation:
   kind: skill
-  path: skill/SKILL.md
+  path: docs/SKILL.md
+actions:
+  assemble_timeline:
+    name: Assemble Canonical Timeline
+    version: '1.0'
+    short_description: Author a canonical two-child timeline from runtime-resolved visual outputs.
+    description: Validate a fenced two-child runtime continuation and emit a deterministic canonical timeline authoring
+      proposal. Timeline mutation and rendering remain runtime-owned.
+    keywords:
+    - timeline
+    - assemble
+    - continuation
+    - runtime
+    - canonical
+    - video
+    inputs:
+    - name: resolved_children
+      type: json
+      required: true
+      artifact_type: runtime/resolved-children
+      description: Runtime-resolved continuation graph, terminal child outputs, and ordered CAS aggregation.
+    outputs:
+    - name: timeline
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/timeline.json'
+      artifact_type: timeline
+      description: Deterministic canonical TimelineConfig proposal.
+    - name: assets
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/assets.json'
+      artifact_type: timeline/assets
+      description: Runtime-managed media registry proposal for the timeline clips.
+    - name: authoring_proposal
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/authoring-proposal.json'
+      artifact_type: timeline/authoring-proposal
+      description: Typed runtime publication handoff containing the timeline and registry.
+    graph:
+      consumes:
+      - runtime/resolved-children
+      provides:
+      - timeline
+      - timeline/assets
+      - timeline/authoring-proposal
+    cache:
+      mode: none
+    isolation:
+      mode: subprocess
+      network: false
+    metadata:
+      runtime_entrypoint: main
+      runtime_file: actions/assemble_timeline/run.py
+      runtime_module: astrid.packs.rendering.actions.assemble_timeline.run
+      output_result_manifest: true
+      requires_timeline: false
+      mutation_authority: workspace_runtime
+      continuation_shape: two-child-ordered-cas-v1
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.assemble_timeline.run
+        - --resolved-children
+        - '{resolved_children}'
+        - --out
+        - '{out}'
+    resources:
+    - kind: implementation
+      path: actions/assemble_timeline/run.py
+  timeline_visualize:
+    name: Timeline Visualize
+    version: '1.0'
+    short_description: Private backend for composed timeline visualization.
+    description: Internal managed executor used by the canonical timelines.visualize operation to inspect an exact
+      admitted render and produce paired filmstrip, source-decoding, waveform, or playback evidence. This backend
+      is not a public capability and must not be invoked directly.
+    keywords:
+    - timeline
+    - visualize
+    - evidence
+    - agent
+    - png
+    inputs:
+    - name: project_slug
+      type: string
+      required: false
+      description: Owning Astrid project slug. In a project-scoped SDK invocation this is derived from project=<slug>;
+        pass it for a standalone runner invocation.
+    - name: timeline_slug
+      type: string
+      required: false
+      description: Managed timeline reference by slug, UUID, or ULID; omission selects the project default.
+    - name: shot
+      type: string
+      required: false
+      description: Authored pinnedShotGroups[].shotId to focus.
+    - name: range
+      type: string
+      required: false
+      description: Closed-open START..END window; times are seconds or [HH:]MM:SS[.fff].
+    - name: at
+      type: string
+      required: false
+      description: Timestamp to inspect, in seconds or [HH:]MM:SS[.fff].
+    - name: clip
+      type: string
+      required: false
+      description: Authored clip id to focus.
+    - name: asset
+      type: string
+      required: false
+      description: Canonical asset key to inspect with every timeline use.
+    - name: show
+      type: string
+      required: false
+      description: 'Add synchronized components (repeatable/comma-separated): output, text, audio, or inputs.'
+    - name: hide
+      type: string
+      required: false
+      description: Hide synchronized components (repeatable/comma-separated).
+    - name: track
+      type: string
+      required: false
+      description: Restrict input lanes to one or more track ids.
+    - name: detail
+      type: boolean
+      required: false
+      default: false
+      description: Request detail treatment for the shared current selection.
+    - name: context
+      type: number
+      required: false
+      default: 3
+      description: Symmetric context seconds for clip or timestamp focus.
+    - name: neighbors
+      type: integer
+      required: false
+      default: 0
+      description: Previous and next clips retained on a focused clip's track.
+    - name: formats
+      type: string
+      required: false
+      description: Optional presentation format list. Choices are png or md (default png,md). Core machine artifacts
+        are always written.
+    - name: rendered_video
+      type: file
+      required: false
+      description: Host-injected attempt-local rendered video; callers select it with render_run.
+    - name: materialized_root
+      type: file
+      required: false
+      description: Host-owned attempt-local managed object root.
+    - name: materialized_objects
+      type: json
+      required: false
+      description: Host-owned object-id to attempt-local path handoff.
+    - name: transcript.json
+      type: file
+      required: false
+      description: Host-staged bytes for the hash-bound config.app.transcript declaration; callers cannot provide
+        this path.
+    - name: view
+      type: string
+      required: false
+      description: 'Presentation: the paired rendered filmstrip as static PNG/Markdown/JSON evidence (the only supported
+        view).'
+      default: filmstrip
+    - name: sample
+      type: string
+      required: false
+      description: 'Filmstrip sampling: interval (default), clips (picture clips), cuts (cut boundaries), or shots
+        (authored story beats).'
+    - name: every
+      type: number
+      required: false
+      description: Filmstrip interval in seconds (default 0.5 when every_frames is absent).
+    - name: every_frames
+      type: integer
+      required: false
+      description: Positive integer rendered frame interval, mutually exclusive with every.
+    - name: include_cuts
+      type: boolean
+      required: false
+      default: false
+      description: For interval sampling, explicitly include visual cut-neighbor frames.
+    - name: render_run
+      type: string
+      required: false
+      description: Exact successful rendering.render run id, or latest; filmstrip defaults to latest matching timeline
+        render.
+    - name: include_media
+      type: boolean
+      required: false
+      default: false
+      description: Explicitly include a relative, digest-verified copy of the admitted rendered video for offline
+        playback.
+    - name: columns
+      type: integer
+      required: false
+      description: Filmstrip contact sheet columns, default 5.
+    - name: page_size
+      type: integer
+      required: false
+      description: Filmstrip static page card count, default 50.
+    - name: resolution
+      type: string
+      required: false
+      description: Optional exact filmstrip frame resolution WIDTHxHEIGHT; recorded separately and applied by the
+        frame extractor.
+    - name: filmstrip_authority
+      type: string
+      required: false
+      description: Internal SDK-injected trusted filmstrip snapshot manifest. Public caller values are rejected.
+    outputs:
+    - name: pack_root
+      type: directory
+      mode: create_or_replace
+      path_template: '{out}/filmstrip-view'
+      artifact_type: evidence/timeline-visualization
+      description: Browsable deterministic evidence-pack directory. Kernel SDK invocations materialize this as a
+        durable, non-authoritative project cache; use manifest_path for navigation authority.
+    - name: manifest_path
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/filmstrip-view/manifest.json'
+      artifact_type: metadata/result-manifest
+      description: Durable managed result manifest and authoritative agent navigation handle.
+    - name: filmstrip_bundle
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/filmstrip-bundle.zip'
+      artifact_type: archive/filmstrip
+      description: Rendered filmstrip delivery artifact; produced for view=filmstrip.
+    - name: filmstrip_manifest
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/filmstrip-view/manifest.json'
+      artifact_type: metadata/result-manifest
+      description: Rendered filmstrip delivery artifact; produced for view=filmstrip.
+    cache:
+      mode: none
+    conditions: []
+    graph:
+      consumes:
+      - runtime_timeline_documents
+      depends_on: []
+      provides:
+      - timeline_visualization_evidence
+    isolation:
+      mode: subprocess
+      network: false
+      binaries:
+      - ffmpeg
+      requirements: []
+    metadata:
+      visibility: internal
+      runtime_entrypoint: run_sdk
+      runtime_file: actions/timeline_visualize/run.py
+      runtime_module: astrid.packs.rendering.actions.timeline_visualize.run
+      output_result_manifest: true
+      requires_timeline: false
+      run_metadata:
+        evidence: true
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.timeline_visualize.run
+        - --out
+        - '{out}'
+        input_args:
+        - input: formats
+          flag: --format
+          repeatable: true
+          optional: true
+        - input: materialized_root
+          flag: --materialized-root
+          optional: true
+        - input: materialized_objects
+          flag: --materialized-objects
+          optional: true
+        - input: transcript.json
+          flag: --transcript-file
+          optional: true
+        - input: filmstrip_authority
+          flag: --filmstrip-authority
+          optional: true
+        - input: project_slug
+          flag: --project-slug
+          optional: true
+        - input: timeline_slug
+          flag: --timeline-slug
+          optional: true
+        - input: shot
+          flag: --shot
+          optional: true
+        - input: range
+          flag: --range
+          optional: true
+        - input: at
+          flag: --at
+          optional: true
+        - input: clip
+          flag: --clip
+          optional: true
+        - input: asset
+          flag: --asset
+          optional: true
+        - input: show
+          flag: --show
+          repeatable: true
+          optional: true
+        - input: hide
+          flag: --hide
+          repeatable: true
+          optional: true
+        - input: track
+          flag: --track
+          repeatable: true
+          optional: true
+        - input: detail
+          flag: --detail
+          optional: true
+        - input: context
+          flag: --context
+          optional: true
+        - input: neighbors
+          flag: --neighbors
+          optional: true
+        - input: rendered_video
+          flag: --rendered-video
+          optional: true
+        - input: view
+          flag: --view
+          optional: true
+        - input: sample
+          flag: --sample
+          optional: true
+        - input: every
+          flag: --every
+          optional: true
+        - input: every_frames
+          flag: --every-frames
+          optional: true
+        - input: include_cuts
+          flag: --include-cuts
+          optional: true
+        - input: render_run
+          flag: --render-run
+          optional: true
+        - input: columns
+          flag: --columns
+          optional: true
+        - input: page_size
+          flag: --page-size
+          optional: true
+        - input: resolution
+          flag: --resolution
+          optional: true
+        - input: include_media
+          flag: --include-media
+          optional: true
+    resources:
+    - kind: documentation
+      path: actions/timeline_visualize/STAGE.md
+    - kind: implementation
+      path: actions/timeline_visualize/__init__.py
+    - kind: implementation
+      path: actions/timeline_visualize/assets.py
+    - kind: implementation
+      path: actions/timeline_visualize/audio_analysis.py
+    - kind: implementation
+      path: actions/timeline_visualize/emit.py
+    - kind: implementation
+      path: actions/timeline_visualize/evidence_pack.py
+    - kind: implementation
+      path: actions/timeline_visualize/filmstrip_cards.py
+    - kind: implementation
+      path: actions/timeline_visualize/filmstrip_execution.py
+    - kind: implementation
+      path: actions/timeline_visualize/filmstrip_options.py
+    - kind: asset
+      path: actions/timeline_visualize/fonts/NotoEmoji-Regular.ttf
+    - kind: asset
+      path: actions/timeline_visualize/fonts/NotoSansSC-Regular.ttf
+    - kind: asset
+      path: actions/timeline_visualize/fonts/PowerGrotesk-Regular.ttf
+    - kind: documentation
+      path: actions/timeline_visualize/fonts/README.md
+    - kind: implementation
+      path: actions/timeline_visualize/frozen.py
+    - kind: implementation
+      path: actions/timeline_visualize/ids.py
+    - kind: implementation
+      path: actions/timeline_visualize/inspection_contract.py
+    - kind: asset
+      path: actions/timeline_visualize/inspector_assets/inspector.css
+    - kind: asset
+      path: actions/timeline_visualize/inspector_assets/inspector.js
+    - kind: implementation
+      path: actions/timeline_visualize/inspector_navigation.py
+    - kind: implementation
+      path: actions/timeline_visualize/inspector_viewer.py
+    - kind: implementation
+      path: actions/timeline_visualize/layout.py
+    - kind: implementation
+      path: actions/timeline_visualize/model.py
+    - kind: implementation
+      path: actions/timeline_visualize/navigation.py
+    - kind: implementation
+      path: actions/timeline_visualize/render_png.py
+    - kind: implementation
+      path: actions/timeline_visualize/render_svg.py
+    - kind: implementation
+      path: actions/timeline_visualize/run.py
+    - kind: implementation
+      path: actions/timeline_visualize/schemas/__init__.py
+    - kind: schema
+      path: actions/timeline_visualize/schemas/_defs.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/action-index.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/asset-index.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/diagnostics.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/ground-truth.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/manifest.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/metric-definitions.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/transcript-index.json
+    - kind: schema
+      path: actions/timeline_visualize/schemas/view-map.json
+    - kind: implementation
+      path: actions/timeline_visualize/scope.py
+    - kind: implementation
+      path: actions/timeline_visualize/scorer.py
+    - kind: implementation
+      path: actions/timeline_visualize/select.py
+    - kind: implementation
+      path: actions/timeline_visualize/shot_selector.py
+    - kind: implementation
+      path: actions/timeline_visualize/snapshot_digest.py
+    - kind: implementation
+      path: actions/timeline_visualize/speech_projection.py
+    - kind: implementation
+      path: actions/timeline_visualize/thumbnails.py
+    - kind: implementation
+      path: actions/timeline_visualize/transcript_attach.py
+    - kind: implementation
+      path: actions/timeline_visualize/transcripts.py
+    - kind: implementation
+      path: actions/timeline_visualize/validate.py
+  html_canvas_effect:
+    name: HTML Canvas Effect
+    version: '1.0'
+    short_description: Scaffold a local Remotion HTML-in-canvas effect element.
+    description: Create a user-editable local effect element that wraps DOM content in Remotion HtmlInCanvas for
+      optional canvas/WebGL-style post-processing.
+    keywords:
+    - html
+    - canvas
+    - remotion
+    - effect
+    - element
+    - shader
+    inputs:
+    - name: effect_id
+      type: string
+      description: Bare effect id to create under the local pack, e.g. glass-product-card.
+    outputs:
+    - name: report
+      type: file
+      path_template: '{out}/html_canvas_effect.report.json'
+    - name: timeline
+      type: file
+      path_template: '{out}/timeline.json'
+      artifact_type: timeline
+    - name: assets
+      type: file
+      path_template: '{out}/assets.json'
+    cache:
+      mode: none
+    isolation:
+      mode: subprocess
+      network: false
+    metadata:
+      output_result_manifest: true
+      requires_timeline: false
+      runtime_module: astrid.packs.rendering.actions.html_canvas_effect.run
+      runtime_file: actions/html_canvas_effect/run.py
+      creates: astrid/packs/local/rendering/elements/effects/<effect_id>
+      render_path: rendering.render remains the final Remotion compositor.
+      remotion_min_version: 4.0.455
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.html_canvas_effect.run
+        - --effect-id
+        - '{effect_id}'
+        - --out
+        - '{report}'
+        - --timeline
+        - '{timeline}'
+        - --assets
+        - '{assets}'
+    resources:
+    - kind: documentation
+      path: actions/html_canvas_effect/STAGE.md
+    - kind: implementation
+      path: actions/html_canvas_effect/run.py
+    - kind: asset
+      path: actions/html_canvas_effect/templates/card/component.tsx
+  timeline_storyboard:
+    name: Timeline Storyboard
+    version: '1.0'
+    short_description: Build a static visual storyboard of image inputs associated with timeline shots.
+    description: Read a timeline and asset registry, resolve each pinned shot's ordered image inputs, and write
+      a read-only JSON view model plus static HTML storyboard.
+    keywords:
+    - timeline
+    - storyboard
+    - preview
+    - image
+    - shot
+    - range
+    - input
+    inputs:
+    - name: timeline
+      type: file
+      required: true
+      artifact_type: timeline
+      description: Timeline JSON containing clips and pinnedShotGroups.
+    - name: assets_registry
+      type: file
+      required: true
+      artifact_type: timeline/assets
+      description: Asset registry JSON used to resolve input image references.
+    - name: shot_id
+      type: string
+      required: false
+      description: Optional pinned shot id to preview; all pinned shots are included when omitted.
+    outputs:
+    - name: preview_json
+      type: file
+      path_template: '{out}/preview.json'
+      description: Normalized read-only storyboard view model.
+    - name: preview_png
+      type: file
+      path_template: '{out}/preview.png'
+      description: Deterministic two-column contact sheet of resolved input images.
+    - name: preview_html
+      type: file
+      path_template: '{out}/preview.html'
+      description: Static visual storyboard with clickable input images.
+    cache:
+      mode: none
+    isolation:
+      mode: subprocess
+      network: false
+    metadata:
+      runtime_entrypoint: main
+      runtime_file: actions/timeline_storyboard/run.py
+      runtime_module: astrid.packs.rendering.actions.timeline_storyboard.run
+      output_result_manifest: true
+      requires_timeline: false
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.timeline_storyboard.run
+        - --timeline
+        - '{timeline}'
+        - --assets-registry
+        - '{assets_registry}'
+        - --out
+        - '{out}'
+        input_args:
+        - flag: --shot-id
+          input: shot_id
+          optional: true
+          repeatable: false
+    resources:
+    - kind: documentation
+      path: actions/timeline_storyboard/STAGE.md
+    - kind: implementation
+      path: actions/timeline_storyboard/__init__.py
+    - kind: implementation
+      path: actions/timeline_storyboard/run.py
+  render:
+    cache:
+      always_run: false
+      mode: sentinel
+      per_brief: true
+      sentinels:
+      - hype.mp4
+    clip_kinds_supported:
+    - video
+    - image
+    - audio
+    - text
+    - effect
+    conditions: []
+    description: Render the brief timeline through the selected backend. Opaque output defaults to MP4; explicitly
+      alpha-stamped layers may publish ProRes 4444 MOV.
+    graph:
+      consumes: []
+      depends_on:
+      - editorial.transcribe
+      - editorial.scenes
+      - editorial.quality_zones
+      - editorial.shots
+      - editorial.triage
+      - understanding.scene_describe
+      - editorial.quote_scout
+      - training.pool_build
+      - training.pool_merge
+      - editorial.arrange
+      - video_editing.cut
+      - editorial.refine
+      provides:
+      - rendered_video
+    inputs:
+    - description: Optional file-mode timeline document, admitted and materialized through the normal file-input
+        boundary; mutually exclusive with timeline_ref.
+      name: timeline
+      required: false
+      type: file
+      artifact_type: timeline/document
+    - description: Explicit canonical runtime timeline slug, UUID, or ULID.
+      name: timeline_ref
+      required: false
+      type: string
+    - description: Optional CAS pin for managed timeline_ref mode; stale values fail before run admission.
+      name: expected_version
+      required: false
+      type: integer
+    - description: Kernel-resolved timeline identity and content hashes stamped into render provenance.
+      name: timeline_authority
+      required: false
+      type: json
+    - description: ''
+      name: assets_registry
+      required: false
+      type: file
+      artifact_type: timeline/assets
+    - description: One separately admitted media file for a registry bound to media_dependency. Its CAS identity
+        and byte size must match every registry media asset.
+      name: media_dependency
+      required: false
+      type: file
+    - description: ''
+      name: theme
+      required: false
+      type: file
+    - description: 'Qualified renderer id: rendering.remotion, rendering.ffmpeg, or rendering.threejs.'
+      name: selector
+      required: false
+      type: string
+    - description: JSON object keyed by qualified backend id with per-backend configuration. The facade forwards
+        only the selected implementation's namespace.
+      name: backend_config
+      required: false
+      type: json
+    - description: Requested render profile mapping. The selected backend validates it against the media it can
+        actually produce.
+      name: profile
+      required: false
+      type: json
+    - description: Plain output filename with no separators or traversal. Defaults to hype.mp4. A timeline stamped
+        metadata.astrid_layer.alpha=true may request .mov for ProRes 4444/PCM output; an explicit profile must match
+        that alpha mux.
+      name: output_name
+      required: false
+      type: string
+      default: hype.mp4
+    - description: Preserve previous provenance-linked hype.mp4 outputs for the same timeline.
+      name: keep_previous_renders
+      required: false
+      type: boolean
+    - description: Host-owned attempt-local managed object root.
+      name: materialized_root
+      required: false
+      type: file
+    - description: Host-owned object-id to attempt-local path handoff.
+      name: materialized_objects
+      required: false
+      type: json
+    - name: review
+      type: boolean
+      required: false
+      description: Render-only shot-name and timeline-clock overlay.
+    - name: review_context
+      type: json
+      required: false
+      description: Admission-owned snapshot of registered shot names and timeline ranges.
+    - name: speech_annotations
+      type: json
+      required: false
+      description: Explicit verified speech annotations retained in the immutable render envelope.
+    - name: speech_occurrences
+      type: json
+      required: false
+      description: Explicit render occurrences linked to verified speech annotations.
+    - name: source_audio_digest
+      type: string
+      required: false
+      description: Hash-bound source media digest for frozen speech projection.
+    - name: transcript_digest
+      type: string
+      required: false
+      description: Hash-bound transcript digest for frozen speech projection.
+    - name: annotation_digest
+      type: string
+      required: false
+      description: Hash-bound annotation-source digest for frozen speech projection.
+    - name: correction_version
+      type: integer
+      required: false
+      description: Frozen correction revision for the verified speech annotation set.
+    - name: timing_method
+      type: string
+      required: false
+      description: Frozen timing method for explicit speech projection.
+    - name: speech_coverage
+      type: json
+      required: false
+      description: Frozen speech projection coverage summary.
+    isolation:
+      binaries: []
+      mode: subprocess
+      network: false
+      requirements: []
+    keywords:
+    - render
+    - video
+    - timeline
+    - hype
+    - mp4
+    - backend
+    metadata:
+      auto_forward_skip:
+      - timeline_ref
+      - expected_version
+      - speech_annotations
+      - speech_occurrences
+      - source_audio_digest
+      - transcript_digest
+      - annotation_digest
+      - correction_version
+      - timing_method
+      - speech_coverage
+      requires_remotion: true
+      requires_timeline: false
+      command_builder: astrid.packs.video_editing.actions.hype.run.build_pool_steps
+      pipeline_step: render
+      pipeline_step_order: 12
+      runtime_entrypoint: main
+      runtime_file: actions/render/run.py
+      runtime_module: astrid.packs.rendering.actions.render.run
+    name: Render
+    outputs:
+    - description: ''
+      mode: create_or_replace
+      name: video
+      path_template: '{out}/{output_name}'
+      type: file
+      artifact_type: clip/visual
+    - description: Render provenance sidecar for the video output.
+      mode: create_or_replace
+      name: provenance
+      path_template: '{out}/{output_name}.provenance.json'
+      type: file
+      artifact_type: metadata/provenance
+    pipeline_requirements:
+    - timeline
+    - assets
+    - theme
+    short_description: Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected
+      backend.
+    version: '1.0'
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.render.run
+        - --timeline
+        - '{timeline}'
+        - --out
+        - '{out}/{output_name}'
+        input_args:
+        - input: assets_registry
+          flag: --assets
+          optional: true
+          before: --out
+        - input: media_dependency
+          flag: --media-dependency
+          optional: true
+        - input: theme
+          flag: --theme
+          optional: true
+        - input: selector
+          flag: --selector
+          optional: true
+        - input: backend_config
+          flag: --backend-config
+          optional: true
+        - input: profile
+          flag: --profile
+          optional: true
+        - input: output_name
+          flag: --output-name
+          optional: true
+        - input: keep_previous_renders
+          flag: --keep-previous-renders
+          optional: true
+        - input: timeline_authority
+          flag: --timeline-authority
+          optional: true
+        - input: materialized_root
+          flag: --materialized-root
+          optional: true
+        - input: materialized_objects
+          flag: --materialized-objects
+          optional: true
+        - input: review
+          flag: --review
+          optional: true
+        - input: review_context
+          flag: --review-context
+          optional: true
+    resources:
+    - kind: documentation
+      path: actions/render/STAGE.md
+    - kind: implementation
+      path: actions/render/__init__.py
+    - kind: implementation
+      path: actions/render/audio_reactive_colour.py
+    - kind: implementation
+      path: actions/render/managed_timeline.py
+    - kind: implementation
+      path: actions/render/run.py
+    - kind: implementation
+      path: actions/render/task_adapter.py
+  sprite_sheet:
+    cache:
+      mode: none
+    description: Generate, slice, and preview GPT Image sprite sheets.
+    inputs:
+    - description: Animation to depict across frames.
+      name: animation
+      type: string
+    - description: Character or object being animated.
+      name: subject
+      type: string
+    - default: ''
+      description: Optional reference image for preserving the character/object identity while generating the sprite
+        sheet.
+      name: reference_image
+      required: false
+      type: path
+      artifact_type: image
+    isolation:
+      binaries:
+      - ffmpeg
+      mode: subprocess
+      network: true
+    keywords:
+    - image
+    - sprite
+    - openai
+    - gpt-image
+    - slice
+    - batch
+    metadata:
+      output_result_manifest: true
+      requires_timeline: false
+      runtime_file: actions/sprite_sheet/run.py
+      runtime_module: astrid.packs.rendering.actions.sprite_sheet.run
+      network_policy:
+        allowed_protocols:
+        - dns
+        - tcp
+        allowed_destinations:
+        - api.openai.com:443
+        - queue.fal.run:443
+        - fal.run:443
+        - storage.fal.run:443
+        allow_redirects: false
+    name: Sprite Sheet
+    outputs:
+    - description: Manifest for generated sprite assets.
+      name: sprite_manifest
+      path_template: '{out}/sprite_manifest.json'
+      type: file
+    - description: Generated sprite atlas.
+      name: sprite_sheet
+      path_template: '{out}/sprite_sheet.png'
+      type: file
+      artifact_type: image
+    - description: Alpha-processed sprite atlas.
+      name: sprite_sheet_alpha
+      path_template: '{out}/sprite_sheet_alpha.png'
+      type: file
+      artifact_type: image
+    - description: MP4 preview of the sliced animation.
+      name: preview
+      path_template: '{out}/sprite_preview.mp4'
+      type: file
+      artifact_type: video/clip
+    short_description: Generate, slice, and preview GPT Image sprite sheets for batch image work.
+    version: '1.0'
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.rendering.actions.sprite_sheet.run
+        - --animation
+        - '{animation}'
+        - --subject
+        - '{subject}'
+        - --reference-image
+        - '{reference_image}'
+        - --out-dir
+        - '{out}'
+    resources:
+    - kind: documentation
+      path: actions/sprite_sheet/STAGE.md
+    - kind: implementation
+      path: actions/sprite_sheet/__init__.py
+    - kind: implementation
+      path: actions/sprite_sheet/png_io.py
+    - kind: implementation
+      path: actions/sprite_sheet/run.py
+    - kind: implementation
+      path: actions/sprite_sheet/sheet.py
+    - kind: implementation
+      path: actions/sprite_sheet/upscale.py
+    - kind: implementation
+      path: actions/sprite_sheet/web_outputs.py
+rendering:
+  ffmpeg:
+    type: renderer
+    path: rendering/renderers/ffmpeg/renderer.yaml
+    resources:
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/__init__.py
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/audio_reactive_colour.py
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/command.py
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/run.py
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/support.py
+    - kind: implementation
+      path: rendering/renderers/ffmpeg/text.py
+  remotion:
+    type: renderer
+    path: rendering/renderers/remotion/renderer.yaml
+    resources:
+    - kind: implementation
+      path: rendering/renderers/remotion/__init__.py
+    - kind: implementation
+      path: rendering/renderers/remotion/lock.py
+    - kind: implementation
+      path: rendering/renderers/remotion/run.py
+  threejs:
+    type: renderer
+    path: rendering/renderers/threejs/renderer.yaml
+    resources:
+    - kind: implementation
+      path: rendering/renderers/threejs/__init__.py
+    - kind: implementation
+      path: rendering/renderers/threejs/run.py
+  ffmpeg-compositor:
+    type: finalizer
+    path: rendering/finalizers/compositor/finalizer.yaml
+    resources:
+    - kind: implementation
+      path: rendering/finalizers/compositor/__init__.py
+    - kind: implementation
+      path: rendering/finalizers/compositor/run.py
+  ffmpeg-finalizer:
+    type: finalizer
+    path: rendering/finalizers/ffmpeg/finalizer.yaml
+    resources:
+    - kind: implementation
+      path: rendering/finalizers/ffmpeg/__init__.py
+    - kind: implementation
+      path: rendering/finalizers/ffmpeg/run.py
+  animations/fade:
+    type: element
+    path: rendering/elements/animations/fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/fade/component.tsx
+  animations/fade-up:
+    type: element
+    path: rendering/elements/animations/fade-up/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/fade-up/component.tsx
+  animations/scale-in:
+    type: element
+    path: rendering/elements/animations/scale-in/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/scale-in/component.tsx
+  animations/slide-left:
+    type: element
+    path: rendering/elements/animations/slide-left/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/slide-left/component.tsx
+  animations/slide-up:
+    type: element
+    path: rendering/elements/animations/slide-up/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/slide-up/component.tsx
+  animations/type-on:
+    type: element
+    path: rendering/elements/animations/type-on/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/type-on/component.tsx
+  effects/audio-reactive-colour:
+    type: element
+    path: rendering/elements/effects/audio-reactive-colour/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/effects/audio-reactive-colour/component.tsx
+  effects/text-card:
+    type: element
+    path: rendering/elements/effects/text-card/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/effects/text-card/component.tsx
+  transitions/cross-fade:
+    type: element
+    path: rendering/elements/transitions/cross-fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/transitions/cross-fade/component.tsx
+  transitions/fade:
+    type: element
+    path: rendering/elements/transitions/fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/transitions/fade/component.tsx
+ui:
+  live-scenes:
+    type: editor
+    entry: ui/live-scenes/extension.tsx
+    target: video-editor
+    compatibility:
+      sdk: '1'
+    resources:
+    - kind: support
+      path: ui/live-scenes/SceneSurface.tsx
+    - kind: support
+      path: ui/live-scenes/authoring.ts
+    - kind: support
+      path: ui/live-scenes/diagnostics.ts
+    - kind: support
+      path: ui/live-scenes/identity.ts
+    - kind: support
+      path: ui/live-scenes/runtime.ts
+resources:
+- kind: support
+  path: shared/element_contracts.ts
+- kind: support
+  path: shared/live_scenes/__init__.py
+- kind: support
+  path: shared/live_scenes/maple.py
+- kind: support
+  path: shared/live_scenes/package.py
+- kind: support
+  path: shared/rendering_backend/__init__.py
+- kind: support
+  path: shared/runtime_stitch.py
+- kind: implementation
+  path: run.py
+- kind: support
+  path: editor/catalog.ts
+- kind: support
+  path: elements/catalog.ts

@@ -35,7 +35,7 @@ def offline_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect)
     monkeypatch.setattr(socket, "create_connection", connect)
-    validator = importlib.import_module("astrid.packs.vibecomfy.executors.validate.run")
+    validator = importlib.import_module("astrid.packs.vibecomfy.actions.validate.run")
     return validator, (launch, shutdown, network, connect)
 
 

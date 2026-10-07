@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # We test the module's main function directly (avoiding the entrypoint guard)
-from astrid.packs.iteration.executors.experiment_prepare.run import main as prepare_main
+from astrid.packs.iteration.actions.experiment_prepare.run import main as prepare_main
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "experiments"
 

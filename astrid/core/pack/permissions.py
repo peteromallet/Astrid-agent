@@ -129,6 +129,7 @@ def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
         "elements",
         "timeline",
         "rendering",
+        "editor",
         "schemas",
         "artifact_types",
     }
@@ -156,6 +157,11 @@ def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
         normalized["rendering"] = _normalize_rendering_extensions(
             data["rendering"],
             path=f"{path}.rendering",
+        )
+    if "editor" in data:
+        normalized["editor"] = _normalize_editor_extensions(
+            data["editor"],
+            path=f"{path}.editor",
         )
     if "schemas" in data:
         normalized["schemas"] = _normalize_json_object(
@@ -185,6 +191,21 @@ def _normalize_rendering_extensions(value: Any, *, path: str) -> dict[str, Any]:
                 path=f"{path}.{key}",
             )
     return normalized
+
+def _normalize_editor_extensions(value: Any, *, path: str) -> dict[str, Any]:
+    data = _require_mapping(value, path)
+    allowed_keys = {"entries"}
+    unknown_keys = sorted(set(data) - allowed_keys)
+    if unknown_keys:
+        raise PackValidationError(f"{path} has unknown field(s): {', '.join(unknown_keys)}")
+    if "entries" not in data:
+        raise PackValidationError(f"{path} must declare entries")
+    return {
+        "entries": _normalize_rendering_manifest_paths(
+            data["entries"],
+            path=f"{path}.entries",
+        )
+    }
 
 
 def _normalize_rendering_manifest_paths(value: Any, *, path: str) -> list[str]:

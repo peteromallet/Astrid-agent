@@ -428,6 +428,7 @@ def test_discover_loads_registries_in_dependency_order_and_flattens_results(
         "project_root": tmp_path,
         "extra_pack_roots": ("extra/packs",),
         "banodoco_config": banodoco_config,
+        "include_internal": False,
     }
     assert calls[1][1] == {
         "executor_registry": executor_registry,

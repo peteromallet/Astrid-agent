@@ -258,6 +258,12 @@ def load_default_registry(
     extra_pack_roots: tuple[str, ...] = (),
 ) -> OrchestratorRegistry:
     active_executor_registry = executor_registry
+    if active_executor_registry is None:
+        active_executor_registry = load_default_executor_registry(
+            banodoco_config=banodoco_config,
+            project_root=project_root,
+            extra_pack_roots=extra_pack_roots,
+        )
     packs = _discover_orchestrator_packs(
         project_root=project_root,
         extra_pack_roots=extra_pack_roots,

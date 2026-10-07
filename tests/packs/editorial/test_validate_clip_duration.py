@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from astrid.packs.editorial.executors.validate.run import clip_timeline_duration_sec
+from astrid.packs.editorial.actions.validate.run import clip_timeline_duration_sec
 
 
 def test_clip_duration_accepts_raw_json_from_alias() -> None:

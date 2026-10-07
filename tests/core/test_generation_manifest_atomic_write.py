@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
-from astrid.packs.generation.executors.generate_image.run import generate_core as generate_image_core
-from astrid.packs.generation.executors.generate_video.run import generate_core as generate_video_core
-from astrid.packs.generation.executors.generate_image_openai.run import (
+from astrid.packs.generation.actions.generate_image.run import generate_core as generate_image_core
+from astrid.packs.generation.actions.generate_video.run import generate_core as generate_video_core
+from astrid.packs.generation.actions.generate_image_openai.run import (
     build_parser as openai_build_parser,
     generate as openai_generate,
 )
@@ -37,17 +37,17 @@ class TestGenerateImageManifestAtomic:
         manifest_path = out / "manifest.json"
 
         with patch(
-            "astrid.packs.generation.executors.generate_image.run.write_json_atomic"
+            "astrid.packs.generation.actions.generate_image.run.write_json_atomic"
         ) as mock_write:
             # Use a dry-run-like minimal invocation that reaches manifest emit.
             # generate_core writes manifest.json at the end of a successful run.
             # We mock the backend adapter to avoid real generation.
             with patch(
-                "astrid.packs.generation.executors.generate_image.run.load_default_generation_backend_registry"
+                "astrid.packs.generation.actions.generate_image.run.load_default_generation_backend_registry"
             ), patch(
-                "astrid.packs.generation.executors.generate_image.run.ModelRegistry.load_default"
+                "astrid.packs.generation.actions.generate_image.run.ModelRegistry.load_default"
             ), patch(
-                "astrid.packs.generation.executors.generate_image.run.embed_png_text"
+                "astrid.packs.generation.actions.generate_image.run.embed_png_text"
             ):
                 # This will fail because we can't fully mock the whole pipeline without
                 # a real model registry. Instead, directly test that the manifest
@@ -56,7 +56,7 @@ class TestGenerateImageManifestAtomic:
 
         # Direct test: monkey-patch the manifest write and verify
         # write_json_atomic is used.
-        import astrid.packs.generation.executors.generate_image.run as gi_mod
+        import astrid.packs.generation.actions.generate_image.run as gi_mod
 
         with patch.object(gi_mod, "write_json_atomic") as mock_write:
             # Simulate just the manifest write path
@@ -95,7 +95,7 @@ class TestGenerateVideoManifestAtomic:
         """Prove write_json_atomic is used for generate_video manifest writes."""
         manifest_path = tmp_path / "manifest.json"
 
-        import astrid.packs.generation.executors.generate_video.run as gv_mod
+        import astrid.packs.generation.actions.generate_video.run as gv_mod
 
         with patch.object(gv_mod, "write_json_atomic") as mock_write:
             manifest = {"test": "video_data", "schema_version": 2}
@@ -131,7 +131,7 @@ class TestGenerateImageOpenAIManifestAtomic:
         """Prove write_json_atomic is used for generate_image_openai manifest writes."""
         manifest_path = tmp_path / "manifest.json"
 
-        import astrid.packs.generation.executors.generate_image_openai.run as goai_mod
+        import astrid.packs.generation.actions.generate_image_openai.run as goai_mod
 
         with patch.object(goai_mod, "write_json_atomic") as mock_write:
             manifest = [{"prompt": "test", "outputs": ["test.png"]}]
@@ -140,7 +140,7 @@ class TestGenerateImageOpenAIManifestAtomic:
 
     def test_openai_dry_run_does_not_write_manifest(self) -> None:
         """Dry-run should not call write_json_atomic (manifest file not created)."""
-        import astrid.packs.generation.executors.generate_image_openai.run as goai_mod
+        import astrid.packs.generation.actions.generate_image_openai.run as goai_mod
 
         with patch.object(goai_mod, "write_json_atomic") as mock_write:
             # Simulate dry-run path: the guard `if args.manifest and not args.dry_run`

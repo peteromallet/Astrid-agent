@@ -43,11 +43,43 @@ class HermesAdapter(HarnessAdapter):
             return self.skills_dir / "astrid"
         return self.skills_dir / f"astrid-{descriptor.pack_id}"
 
+    @staticmethod
+    def _external_dir_for_descriptor(descriptor: SkillDescriptor) -> Path:
+        """Return the immediate parent containing composed pack skill dirs.
+
+        ``skills sync --mechanism external-dir`` passes descriptors whose
+        ``skill_dir`` is ``<state>/skills/<harness>/packs/<pack-id>``.  Hermes
+        must register that disposable composed view, not the checkout root;
+        direct legacy installs retain the historical checkout fallback.
+        """
+        candidate = descriptor.skill_dir.parent
+        if candidate.name == "packs":
+            return candidate.resolve()
+        # The composed gateway lives at the view root while its pack routes
+        # live below ``<view>/packs``.  Check/verify visits the gateway too,
+        # so derive the same external directory from that descriptor instead
+        # of falling back to the checkout tree.
+        composed_packs = descriptor.skill_dir / "packs"
+        if composed_packs.is_dir():
+            return composed_packs.resolve()
+        return PACKS_DIR_FOR_EXTERNAL.resolve()
+
+    def _external_dir_for(self, descriptors: Iterable[SkillDescriptor]) -> Path:
+        candidates = {
+            self._external_dir_for_descriptor(descriptor)
+            for descriptor in descriptors
+            if descriptor.pack_id != "_core"
+        }
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return PACKS_DIR_FOR_EXTERNAL.resolve()
+
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         mechanism = opts.get("mechanism") or "symlink"
+        descriptors = list(descriptors)
         steps: list[PlannedStep] = []
         if mechanism == "external-dir":
-            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+            entry = str(self._external_dir_for(descriptors))
             verb = "add" if action == "install" else "remove"
             steps.append(
                 PlannedStep(
@@ -67,8 +99,9 @@ class HermesAdapter(HarnessAdapter):
     def apply(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         mechanism = opts.get("mechanism") or "symlink"
         force = bool(opts.get("force"))
+        descriptors = list(descriptors)
         if mechanism == "external-dir":
-            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+            entry = str(self._external_dir_for(descriptors))
             changed = self._rewrite_config(action, entry)
             verb = "registered" if action == "install" else "removed"
             return [
@@ -116,7 +149,7 @@ class HermesAdapter(HarnessAdapter):
             return False, f"{target} missing and {self.config_path} not present"
         cfg = self._load_config()
         external_dirs = list((cfg.get("skills") or {}).get("external_dirs") or [])
-        wanted = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+        wanted = str(self._external_dir_for_descriptor(descriptor))
         if wanted in external_dirs:
             return True, "ok (external-dir)"
         return False, f"{target} missing and {wanted} not in skills.external_dirs"
@@ -134,7 +167,7 @@ class HermesAdapter(HarnessAdapter):
         if self.config_path.exists():
             cfg = self._load_config()
             external_dirs = list((cfg.get("skills") or {}).get("external_dirs") or [])
-            if str(PACKS_DIR_FOR_EXTERNAL.resolve()) in external_dirs:
+            if str(self._external_dir_for_descriptor(descriptor)) in external_dirs:
                 return InstallRecord(
                     pack_id=descriptor.pack_id,
                     target=self.config_path,

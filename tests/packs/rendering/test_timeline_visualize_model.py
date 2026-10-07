@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skip(reason="legacy filesystem fixture superseded by ru
 pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core.timeline.snapshot import TimelineSnapshot, snapshot_from_runtime
-from astrid.packs.rendering.executors.timeline_visualize.model import (
+from astrid.packs.rendering.actions.timeline_visualize.model import (
     ClipModel,
     IntervalFrames,
     IntervalSeconds,
@@ -25,8 +25,8 @@ from astrid.packs.rendering.executors.timeline_visualize.model import (
     transition_effective_intervals,
     transition_mounted_intervals,
 )
-from astrid.packs.rendering.executors.timeline_visualize.scope import Scope, select_scope
-from astrid.packs.rendering.executors.timeline_visualize.snapshot_digest import (
+from astrid.packs.rendering.actions.timeline_visualize.scope import Scope, select_scope
+from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
     canonical_json_bytes,
     sha256_bytes,
 )
@@ -191,7 +191,7 @@ def test_visualization_resolution_import_is_local_authority_free() -> None:
         [
             sys.executable,
             "-c",
-            "import sys; import astrid.packs.rendering.executors.timeline_visualize.run; "
+            "import sys; import astrid.packs.rendering.actions.timeline_visualize.run; "
             "print('sqlite3' in sys.modules); "
             "print(any(name.startswith('astrid.core.repositories') for name in sys.modules))",
         ],
@@ -521,7 +521,7 @@ def test_model_and_scope_import_graph_has_no_repair_or_mutation_api() -> None:
         / "astrid"
         / "packs"
         / "rendering"
-        / "executors"
+        / "actions"
         / "timeline_visualize"
     )
     imported: set[str] = set()

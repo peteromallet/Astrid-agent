@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from astrid.packs.understanding.executors.visual_understand.run import (
+from astrid.packs.understanding.actions.visual_understand.run import (
     OrderedImageEvidence,
 )
 

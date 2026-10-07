@@ -76,6 +76,7 @@ def test_external_discovery_is_source_local_extra_env_only(
 ) -> None:
     extra = tmp_path / "extra"
     _pack(extra, "extra_pack")
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(tmp_path / "absent-source-state.json"))
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(extra))
     discovered = discover_canonical_pack_metadata(project_root=tmp_path, extra_pack_roots=(extra,))
     assert [(item.id, item.source_kind) for item in discovered] == [("extra_pack", "extra")]

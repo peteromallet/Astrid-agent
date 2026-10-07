@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import frozen
+from astrid.packs.rendering.actions.timeline_visualize import frozen
 
 
 def test_frozen_view_has_no_local_run_authority_import() -> None:

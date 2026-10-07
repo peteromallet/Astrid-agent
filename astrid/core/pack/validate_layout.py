@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -47,6 +48,8 @@ _CANONICAL_PACK_ROOT_DIRS = {
 }
 _CANONICAL_COMPONENT_SUPPORT_FILES = {"STAGE.md"}
 _CANONICAL_COMPONENT_SUPPORT_DIRS = {"skill"}
+_V3_ROLE_ROOTS = {"actions", "ui", "rendering", "shared"}
+_V3_SUPPORT_ROOTS = {"build", "docs", "examples", "fixtures", "golden", "schemas"}
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,11 @@ class LayoutValidationIssue:
 
 CANONICAL_PACK_LAYOUT_RULES: tuple[CanonicalLayoutRule, ...] = (
     CanonicalLayoutRule("pack.yaml|pack.yml|pack.json", "pack manifest at the pack root"),
+    CanonicalLayoutRule("actions/<name>/...", "callable action implementation directories"),
+    CanonicalLayoutRule("ui/<name>/...", "existing-host UI contribution directories"),
+    CanonicalLayoutRule("rendering/<name>/...", "renderer, planner, finalizer, or element directories"),
+    CanonicalLayoutRule("shared/...", "explicitly shared support files"),
+    CanonicalLayoutRule("docs/SKILL.md", "the one authored pack skill, when declared"),
     CanonicalLayoutRule("skill/SKILL.md", "optional pack-level skill guidance"),
     CanonicalLayoutRule("executors/<name>/...", "executor capability directories"),
     CanonicalLayoutRule("orchestrators/<name>/...", "orchestrator capability directories"),
@@ -101,7 +109,7 @@ CANONICAL_PACK_LAYOUT_RULES: tuple[CanonicalLayoutRule, ...] = (
 #   _core/
 #       class:       skill_only_shell
 #       defer_to:    permanent (not a pack — skill documentation surface)
-#       reason:      Contains only ``skill/SKILL.md`` providing the root
+#       reason:      Contains only ``docs/SKILL.md`` providing the root
 #                    Astrid skill description for agent harnesses.  No
 #                    ``pack.yaml``, executors, or orchestrators exist.
 #                    Discovered via ``astrid.skills.discovery``, not via
@@ -132,6 +140,8 @@ def is_canonical_pack_path(relpath: str) -> bool:
         return True
     if not parts:
         return False
+    if parts[0] in _V3_ROLE_ROOTS | _V3_SUPPORT_ROOTS:
+        return len(parts) >= 2
     if parts[0] in {"fixtures", "golden", "build", "docs", "examples", "schemas"}:
         return True
     if len(parts) >= 2 and parts[0] in {"executors", "orchestrators"}:
@@ -154,6 +164,44 @@ def is_canonical_pack_path(relpath: str) -> bool:
     if parts[0] in _CANONICAL_PACK_ROOT_DIRS:
         return True
     return False
+
+
+def validate_pack_layout(
+    pack_root: Path,
+    pack_data: dict[str, Any],
+) -> list[LayoutValidationIssue]:
+    """Validate v3-only physical layout invariants.
+
+    Canonical admission validates every declared path. This function checks
+    only pack-wide skill authority, leaving ordinary supporting files free to
+    live beside their owning declaration. It does not require any role folder
+    to exist, so action/UI/rendering-only packs need no placeholder folders.
+    """
+    if pack_data.get("schema_version") != 3:
+        return []
+
+    issues: list[LayoutValidationIssue] = []
+    skill_paths = sorted(
+        path.relative_to(pack_root).as_posix()
+        for path in pack_root.rglob("SKILL.md")
+        if not path.is_symlink()
+    )
+    documentation = pack_data.get("documentation")
+    declared_skill = (
+        isinstance(documentation, dict)
+        and documentation.get("kind") == "skill"
+        and documentation.get("path") == "docs/SKILL.md"
+    )
+    for path in skill_paths:
+        if path != "docs/SKILL.md" or not declared_skill:
+            issues.append(
+                LayoutValidationIssue(
+                    path,
+                    "v3 packs allow one authored skill at docs/SKILL.md declared by pack.yaml; "
+                    "nested or legacy SKILL.md files are not separate metadata authorities",
+                )
+            )
+    return issues
 
 
 def parse_layout_exceptions(
@@ -418,4 +466,5 @@ __all__ = [
     "PackLayoutException",
     "is_canonical_pack_path",
     "parse_layout_exceptions",
+    "validate_pack_layout",
 ]

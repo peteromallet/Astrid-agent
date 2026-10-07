@@ -22,9 +22,9 @@ from PIL import Image, ImageFont
 
 from astrid.core.media import ffprobe_metadata_strict
 from astrid.core.rendering.contracts import SCHEMA_VERSION, RenderRequest
-from astrid.packs.rendering.backends.ffmpeg import command
-from astrid.packs.rendering.backends.ffmpeg import run as ffmpeg_run
-from astrid.packs.rendering.backends.ffmpeg import text as ffmpeg_text
+from astrid.packs.rendering.rendering.renderers.ffmpeg import command
+from astrid.packs.rendering.rendering.renderers.ffmpeg import run as ffmpeg_run
+from astrid.packs.rendering.rendering.renderers.ffmpeg import text as ffmpeg_text
 
 
 def _skip_if_no_font(bold: bool = False) -> ImageFont.FreeTypeFont:

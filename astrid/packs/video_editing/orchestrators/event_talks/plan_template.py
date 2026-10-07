@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from astrid.packs.video_editing.orchestrators._plan_v2 import (
+from astrid.packs.video_editing.shared._plan_v2 import (
     build_leaf_template,
     build_plan_template,
     cost_entry,

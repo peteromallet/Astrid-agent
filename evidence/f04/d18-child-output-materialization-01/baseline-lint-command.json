@@ -1,0 +1,92 @@
+[
+  {
+    "command": [
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+      "-B",
+      "-m",
+      "ruff",
+      "check",
+      "--no-cache",
+      "--output-format",
+      "json",
+      "--stdin-filename",
+      "astrid/sdk/_child_bridge.py",
+      "-"
+    ],
+    "input_file": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/_child_bridge.py",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+      "-B",
+      "-m",
+      "ruff",
+      "check",
+      "--no-cache",
+      "--output-format",
+      "json",
+      "--stdin-filename",
+      "astrid/sdk/invocation.py",
+      "-"
+    ],
+    "input_file": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/invocation.py",
+    "exit_code": 1,
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+      "-B",
+      "-m",
+      "ruff",
+      "check",
+      "--no-cache",
+      "--output-format",
+      "json",
+      "--stdin-filename",
+      "astrid/sdk/results.py",
+      "-"
+    ],
+    "input_file": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/results.py",
+    "exit_code": 1,
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+      "-B",
+      "-m",
+      "ruff",
+      "check",
+      "--no-cache",
+      "--output-format",
+      "json",
+      "--stdin-filename",
+      "astrid/sdk/__init__.py",
+      "-"
+    ],
+    "input_file": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/__init__.py",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+      "-B",
+      "-m",
+      "ruff",
+      "check",
+      "--no-cache",
+      "--output-format",
+      "json",
+      "--stdin-filename",
+      "tests/sdk/test_child_bridge_d18.py",
+      "-"
+    ],
+    "input_file": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/tests/sdk/test_child_bridge_d18.py",
+    "exit_code": 1,
+    "stderr": ""
+  }
+]

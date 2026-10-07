@@ -28,7 +28,7 @@ from astrid.core.rendering.contracts import (
     VideoArtifact,
 )
 from astrid.core.rendering.errors import RendererInvalidArtifactError
-from astrid.packs.rendering.finalizers.ffmpeg import run as ffmpeg_finalizer
+from astrid.packs.rendering.rendering.finalizers.ffmpeg import run as ffmpeg_finalizer
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -287,6 +287,7 @@ def test_manifest_registers_static_raw_command_finalizer() -> None:
         / "astrid"
         / "packs"
         / "rendering"
+        / "rendering"
         / "finalizers"
         / "ffmpeg"
         / "finalizer.yaml"
@@ -308,14 +309,14 @@ def test_manifest_registers_static_raw_command_finalizer() -> None:
         "passthrough",
         "none",
     ]
-    assert (manifest_path.parents[2] / manifest.command[1]).is_file()
+    assert (manifest_path.parents[3] / manifest.command[1]).is_file()
 
     pack = yaml.safe_load(
-        (manifest_path.parents[2] / "pack.yaml").read_text(encoding="utf-8")
+        (manifest_path.parents[3] / "pack.yaml").read_text(encoding="utf-8")
     )
-    assert "finalizers/ffmpeg/finalizer.yaml" in pack["extensions"][
-        "rendering"
-    ]["finalizers"]
+    assert pack["schema_version"] == 3
+    assert pack["rendering"]["ffmpeg-finalizer"]["type"] == "finalizer"
+    assert pack["rendering"]["ffmpeg-finalizer"]["path"] == "rendering/finalizers/ffmpeg/finalizer.yaml"
 
 
 def test_single_compatible_segment_is_stream_copied_without_reencode(

@@ -7,10 +7,10 @@ from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
-from astrid.packs.video_editing.executors.cut import run as cut
+from astrid.packs.video_editing.actions.cut import run as cut
 from astrid.core import timeline
-from astrid.packs.editorial.executors.validate import run as validate
-from astrid.packs.editorial.hype.arrangement_rules import ROLE_DURATION_BOUNDS
+from astrid.packs.editorial.actions.validate import run as validate
+from astrid.core.timeline import ROLE_DURATION_BOUNDS
 
 
 ROOT = Path(__file__).resolve().parents[2]

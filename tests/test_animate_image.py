@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from astrid.packs.video_editing.orchestrators.animate_image import run as animate_image
+from astrid.packs.video_editing.actions.animate_image import run as animate_image
 
 
 class AnimateImageDryRunTest(unittest.TestCase):

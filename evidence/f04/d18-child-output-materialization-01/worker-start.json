@@ -1,0 +1,12 @@
+{
+  "head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+  "preflight_bindings": "PASS",
+  "time": "2026-10-03T03:52:30.510449+00:00",
+  "source_hashes": {
+    "astrid/sdk/_child_bridge.py": "62f9993008b88a75c8f646b664fb285a89bfa6b86cb94713b99c220c4548df57",
+    "astrid/sdk/invocation.py": "15f3baaea21bd175fed91838f2fb8c8f3fe03f633d8e9788e1e0d61236c3f801",
+    "astrid/sdk/results.py": "20de29ae027a76d75e3860606915b391822c77a3e7bae50fa5f4ac9818c4f421",
+    "astrid/sdk/__init__.py": "a8203ec28e0d0cf510196d9cadb46ef3451afac0f415fa87819945904b0f14d0",
+    "tests/sdk/test_child_bridge_d18.py": "1965f26d355bdbfac190499f878fc9c36280d3f0e8a25da926a3e84ae03add56"
+  }
+}

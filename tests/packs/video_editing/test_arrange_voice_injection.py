@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from astrid.packs.editorial.executors.arrange import run as arrange
+from astrid.packs.editorial.actions.arrange import run as arrange
 from astrid.core import timeline
 
 
@@ -66,7 +66,7 @@ class ArrangeVoiceInjectionTest(unittest.TestCase):
         }
         client = StubClaudeClient()
 
-        with mock.patch("astrid.packs.editorial.hype.arrangement_rules.compile_arrangement_plan", return_value=[]):
+        with mock.patch("astrid.core.timeline.compile_arrangement_plan", return_value=[]):
             arrange.build_arrangement(
                 fixture_pool(),
                 "Use the first quote.",

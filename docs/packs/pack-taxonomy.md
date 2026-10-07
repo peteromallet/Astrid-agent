@@ -261,24 +261,28 @@ Not every pack directory in the repository is a runtime-discovered pack:
   `editorial`, `video_editing`, `foley`, `training`, `youtube`, `fal`,
   `vibecomfy`, `runpod`, `moirae`, `iteration`, `media`, `comfy_wrap`,
   `stream_content`, plus the dynamically-created `local` scratch
-  pack. The `_core` directory is a skill-only shell — it contains only `skill/SKILL.md`
+  pack. The `_core` directory is a skill-only shell — it contains only `docs/SKILL.md`
   and is not a pack (no `pack.yaml`).
 
-- **`examples/packs/`** — Teaching packs. These are committed reference examples
-  that demonstrate pack authoring patterns (multi-step pipelines, agent-attested
-  workflows, element components). They are **not** runtime-discovered — you will
-  not see them in `list` output even with `--show-hidden`. Validate them
-  with `python3 -m astrid.core.pack.cli validate`:
+- **`examples/packs/`** — Teaching packs. These committed references demonstrate
+  current v3 action authoring and resource declarations. They are **not**
+  runtime-discovered — you will not see them in `list` output even with
+  `--show-hidden`. Validate them with
+  `python3 -m astrid.core.pack.cli validate`:
 
   ```bash
   python3 -m astrid.core.pack.cli validate examples/packs/minimal
   python3 -m astrid.core.pack.cli validate examples/packs/file_summarizer
   ```
 
-  The example packs are: `minimal` (canonical external-pack contract),
-  `media` (pack with elements and schemas), `file_summarizer` (multi-step text
-  pipeline), `text_digest` (agent-in-the-loop text pipelines), and `text_review`
-  (machine summary + agent verdict workflow).
+  The current v3 examples are `minimal` (simple and composed actions), `media`
+  (actions plus schema, brief, and rendering resources), `file_summarizer`
+  (text inspection, summary validation, and caller-controlled verdict), and
+  `text_review` (deterministic summary followed by caller-authored judgment).
+  `text_digest` remains a separately owned v2 compatibility example. The
+  historical `astrid.core.orchestrate` modules and event goldens retained in
+  `file_summarizer` and `text_review` are outside their v3 action catalogs and
+  do not claim lifecycle parity.
 
 ### Shells and Hidden Packs
 
@@ -288,14 +292,14 @@ ordinary capability packs:
 #### `_core` — Skill-Only Shell
 
 `astrid/packs/_core/` is **not a pack**. It is an internal skill-only shell
-— a directory containing only `skill/SKILL.md` (the root Astrid gateway
+— a directory containing only `docs/SKILL.md` (the root Astrid gateway
 skill). It has no `pack.yaml`, no executors, no orchestrators, no elements,
 and is not discovered by `packs list` or `packs status`.
 
 `_core` is coupled to several internal subsystems:
 
 - **`astrid/skills/registry.py`** — writes the auto-managed pack registry
-  block into `_core/skill/SKILL.md` via `CORE_SKILL_MD`.
+  block into `_core/docs/SKILL.md` via `CORE_SKILL_MD`.
 - **`astrid/skills/discovery.py`** — explicitly skips `_core` during skill
   descriptor discovery since it is manifest-less.
 - **`astrid/skills/harnesses/`** (base, claude, codex, hermes) — all

@@ -1411,12 +1411,12 @@ class TestValidateRegistryWithGenerationTaxonomy:
         raw = _make_v2_payload(
             modes={
                 "t2i": {
-                    "supports": ["prompt", "mask_ref"],
+                    "supports": ["prompt", "vendor_mask_ref"],
                     "requires": ["prompt"],
                     "backends": {
                         "local": {
                             "template": "image/test",
-                            "param_map": {"prompt": "prompt", "mask_ref": "mask"},
+                            "param_map": {"prompt": "prompt", "vendor_mask_ref": "mask"},
                         }
                     },
                 }
@@ -1430,23 +1430,23 @@ class TestValidateRegistryWithGenerationTaxonomy:
         raw = _make_v2_payload(
             modes={
                 "t2i": {
-                    "supports": ["prompt", "mask_ref"],
+                    "supports": ["prompt", "vendor_mask_ref"],
                     "requires": ["prompt"],
                     "backends": {
                         "local": {
                             "template": "image/test",
-                            "param_map": {"prompt": "prompt", "mask_ref": "mask"},
+                            "param_map": {"prompt": "prompt", "vendor_mask_ref": "mask"},
                         }
                     },
                 }
             },
         )
         registry = GenerationTaxonomyRegistry(
-            feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),)
+            feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),)
         )
 
         entries = validate_registry_with_backends(raw, taxonomy_registry=registry)
-        assert entries[0].modes["t2i"].supports == ("prompt", "mask_ref")
+        assert entries[0].modes["t2i"].supports == ("prompt", "vendor_mask_ref")
 
     def test_synthetic_mode_rejected_without_taxonomy_registry(self) -> None:
         raw = _make_v2_payload(
@@ -1541,18 +1541,18 @@ class TestValidateRegistryWithGenerationTaxonomy:
         raw = _make_v2_payload(
             modes={
                 "storyboard": {
-                    "supports": ["prompt", "mask_ref"],
+                    "supports": ["prompt", "vendor_mask_ref"],
                     "requires": ["prompt"],
                     "backends": {
                         "studio": {
-                            "param_map": {"prompt": "prompt", "mask_ref": "mask"},
+                            "param_map": {"prompt": "prompt", "vendor_mask_ref": "mask"},
                         }
                     },
                 }
             },
         )
         registry = GenerationTaxonomyRegistry(
-            feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),),
+            feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),),
             mode_descriptors=(GenerationModeDescriptor(id="storyboard"),),
             backend_descriptors=(GenerationBackendIdDescriptor(id="studio"),),
         )
@@ -1560,7 +1560,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
         assert entries[0].id == "test-model"
         assert "storyboard" in entries[0].modes
         mode_spec = entries[0].modes["storyboard"]
-        assert "mask_ref" in mode_spec.supports
+        assert "vendor_mask_ref" in mode_spec.supports
         assert "studio" in mode_spec.backends
 
     # -- built-in validation unchanged -----------------------------------
@@ -1605,7 +1605,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
         )
         # Custom taxonomy adds extra names — built-in names should still work
         registry = GenerationTaxonomyRegistry(
-            feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),),
+            feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),),
             mode_descriptors=(GenerationModeDescriptor(id="storyboard"),),
             backend_descriptors=(GenerationBackendIdDescriptor(id="studio"),),
         )
@@ -1644,7 +1644,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
         raw = _make_v2_payload(
             modes={
                 "bogus_mode": {
-                    "supports": ["prompt", "mask_ref"],
+                    "supports": ["prompt", "vendor_mask_ref"],
                     "requires": ["prompt"],
                     "backends": {
                         "studio": {
@@ -1655,7 +1655,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
             },
         )
         registry = GenerationTaxonomyRegistry(
-            feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),),
+            feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),),
             backend_descriptors=(GenerationBackendIdDescriptor(id="studio"),),
         )
         with pytest.raises(ValueError, match="unknown image mode"):
@@ -1666,7 +1666,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
         raw = _make_v2_payload(
             modes={
                 "storyboard": {
-                    "supports": ["prompt", "mask_ref"],
+                    "supports": ["prompt", "vendor_mask_ref"],
                     "requires": ["prompt"],
                     "backends": {
                         "bogus_backend": {
@@ -1677,7 +1677,7 @@ class TestValidateRegistryWithGenerationTaxonomy:
             },
         )
         registry = GenerationTaxonomyRegistry(
-            feature_descriptors=(GenerationFeatureDescriptor(id="mask_ref"),),
+            feature_descriptors=(GenerationFeatureDescriptor(id="vendor_mask_ref"),),
             mode_descriptors=(GenerationModeDescriptor(id="storyboard"),),
         )
         with pytest.raises(ValueError, match="unknown backend key"):

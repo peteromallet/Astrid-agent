@@ -1,2 +1,0 @@
-"""Segment-map executor."""
-

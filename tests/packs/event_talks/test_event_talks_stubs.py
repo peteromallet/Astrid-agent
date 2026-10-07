@@ -3,7 +3,7 @@
 import argparse
 import pytest
 
-from astrid.packs.video_editing.orchestrators.event_talks.run import (
+from astrid.packs.video_editing.actions.event_talks.run import (
     ADOS_SUNDAY_SPEAKERS,
     _exec_render_manifest,
 )

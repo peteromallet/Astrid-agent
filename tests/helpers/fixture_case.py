@@ -4,7 +4,7 @@ import tempfile
 from argparse import Namespace
 from pathlib import Path
 
-from astrid.packs.video_editing.executors.cut import run as cut
+from astrid.packs.video_editing.actions.cut import run as cut
 from astrid.core import timeline
 
 

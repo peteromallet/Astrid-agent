@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 REMOTION = ROOT / "remotion"
-TEXT_CARD = ROOT / "astrid" / "packs" / "rendering" / "elements" / "effects" / "text-card" / "component.tsx"
+TEXT_CARD = ROOT / "astrid" / "packs" / "rendering" / "rendering" / "elements" / "effects" / "text-card" / "component.tsx"
 
 
 class RemotionAugmentationImportTest(unittest.TestCase):

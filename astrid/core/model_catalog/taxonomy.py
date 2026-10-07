@@ -41,6 +41,7 @@ IMAGE_FEATURES: tuple[Feature, ...] = (
     "upscale_factor",
     "target_resolution",
     "noise_scale",
+    "mask_ref",
 )
 
 VIDEO_FEATURES: tuple[Feature, ...] = (
@@ -115,6 +116,13 @@ BUILTIN_GENERATION_BACKEND_IDS: tuple[str, ...] = (
     LOCAL_BACKEND_ID,
     WAVESPEED_BACKEND_ID,
 )
+
+_BUILTIN_FEATURE_METADATA: dict[str, tuple[str, str]] = {
+    "mask_ref": (
+        "Mask reference",
+        "Typed CAS-backed image mask used by bounded image inpainting.",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -273,11 +281,21 @@ class GenerationTaxonomyRegistry:
 
 def _builtin_feature_descriptors(*, include_audio: bool = True) -> tuple[GenerationFeatureDescriptor, ...]:
     feature_ids = [*VIDEO_FEATURES]
+    for feature_id in IMAGE_FEATURES:
+        if feature_id not in feature_ids:
+            feature_ids.append(feature_id)
     if include_audio:
         for feature_id in AUDIO_FEATURES:
             if feature_id not in feature_ids:
                 feature_ids.append(feature_id)
-    return tuple(GenerationFeatureDescriptor(id=feature_id) for feature_id in feature_ids)
+    return tuple(
+        GenerationFeatureDescriptor(
+            id=feature_id,
+            label=_BUILTIN_FEATURE_METADATA.get(feature_id, ("", ""))[0],
+            description=_BUILTIN_FEATURE_METADATA.get(feature_id, ("", ""))[1],
+        )
+        for feature_id in feature_ids
+    )
 
 
 def _builtin_mode_descriptors() -> tuple[GenerationModeDescriptor, ...]:

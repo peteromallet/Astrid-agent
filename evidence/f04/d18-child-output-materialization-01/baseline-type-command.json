@@ -1,0 +1,28 @@
+{
+  "command": [
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+    "-B",
+    "-m",
+    "mypy",
+    "--cache-dir=/dev/null",
+    "--shadow-file",
+    "astrid/sdk/_child_bridge.py",
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/_child_bridge.py",
+    "--shadow-file",
+    "astrid/sdk/invocation.py",
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/invocation.py",
+    "--shadow-file",
+    "astrid/sdk/results.py",
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/results.py",
+    "--shadow-file",
+    "astrid/sdk/__init__.py",
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01/before/astrid/sdk/__init__.py",
+    "astrid/sdk/_child_bridge.py",
+    "astrid/sdk/invocation.py",
+    "astrid/sdk/results.py",
+    "astrid/sdk/__init__.py"
+  ],
+  "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "exit_code": 1,
+  "elapsed_seconds": 0.9522223472595215
+}

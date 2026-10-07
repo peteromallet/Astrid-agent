@@ -9,17 +9,20 @@ from astrid.skills.discovery import list_skills
 def test_list_skills_discovers_canonical_executor_skill(tmp_path: Path) -> None:
     pack_root = tmp_path / "demo_pack"
     executor_root = pack_root / "executors" / "summarize"
-    skill_root = executor_root / "skill"
+    skill_root = pack_root / "docs"
+    executor_root.mkdir(parents=True)
     skill_root.mkdir(parents=True)
     (pack_root / "pack.yaml").write_text(
         textwrap.dedent(
             """\
-            schema_version: 2
+            schema_version: 3
             id: demo_pack
             name: Demo Pack
             version: 0.1.0
-            content:
-              executors: executors
+            description: A demo pack.
+            documentation:
+              kind: skill
+              path: docs/SKILL.md
             """
         ),
         encoding="utf-8",
@@ -33,8 +36,8 @@ def test_list_skills_discovers_canonical_executor_skill(tmp_path: Path) -> None:
         textwrap.dedent(
             """\
             ---
-            name: summarize
-            description: Summarize files in the demo pack.
+            name: demo_pack
+            description: Use the Demo Pack.
             ---
             Use this skill for demo summaries.
             """
@@ -43,4 +46,4 @@ def test_list_skills_discovers_canonical_executor_skill(tmp_path: Path) -> None:
     )
 
     descriptors = list_skills(tmp_path)
-    assert [descriptor.pack_id for descriptor in descriptors] == ["demo_pack.summarize"]
+    assert [descriptor.pack_id for descriptor in descriptors] == ["demo_pack"]

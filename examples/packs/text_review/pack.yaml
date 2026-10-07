@@ -1,19 +1,66 @@
-schema_version: 2
+schema_version: 3
 id: text_review
 name: Text Review
 version: 0.1.0
 status: active
 visibility: hidden
-description: A text review pipeline that auto-generates a machine summary (line/word/char counts plus preview) and then asks an agent to attest a human-readable verdict.
-documentation:
-  kind: agents
-  path: AGENTS.md
-content:
-  executors: executors
-agent:
-  purpose: "Use when the summary step should be fully automated by code (not agent-attested) and only the final verdict requires human/agent judgment in an attested step."
+domain: general
+stability: experimental
+support: project
+description: A teaching pack separating deterministic text summaries from caller-authored review judgments.
 permissions:
-  - id: subprocess
-    reason: Runs text review pipeline executors as subprocesses.
   - id: project_files
-    reason: Reads text files for review and writes summary and verdict outputs.
+    reason: Reads the caller-selected text file.
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+agent:
+  purpose: Demonstrates deterministic summary work as one action and caller-provided review judgment as a separate action.
+  normal_entrypoints:
+    - text_review.summarize_file
+    - text_review.file_audit
+actions:
+  summarize_file:
+    name: Summarize File
+    version: "1.0"
+    description: Read a text file and return deterministic counts, average word length, first line, and preview.
+    invocation:
+      kind: python
+      path: actions/summarize_file.py
+      function: run
+    inputs:
+      - name: source
+        type: path
+        required: true
+        description: Text file to summarize.
+    outputs:
+      type: object
+      properties:
+        line_count: {type: integer}
+        word_count: {type: integer}
+        char_count: {type: integer}
+        avg_word_len: {type: number}
+        first_line: {type: string}
+        preview: {type: string}
+  file_audit:
+    name: File Audit
+    version: "1.0"
+    description: Record a caller-authored verdict after reviewing a deterministic summary.
+    invocation:
+      kind: python
+      path: actions/file_audit.py
+      function: run
+    inputs:
+      - name: summary
+        type: json
+        required: true
+        description: Summary returned by text_review.summarize_file and reviewed by the caller.
+      - name: verdict
+        type: string
+        required: true
+        description: One-line caller-authored assessment of the text.
+    outputs:
+      type: object
+      properties:
+        summary: {type: object}
+        verdict: {type: string}

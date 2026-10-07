@@ -1,0 +1,34 @@
+{
+  "schema": "megado-source-reservation/v1",
+  "reservation_id": "B05-CENTRAL-CONSUMER-RETARGET-20261007",
+  "task": "B05",
+  "owner": "Pack coordinator",
+  "status": "RELEASED_PASS_WITH_DECLARED_LIMITS",
+  "created_at_utc": "2026-10-07T01:01:16Z",
+  "source_custody": "declared Pack V3 integration worktree",
+  "write_set": [
+    "tests/core/test_generation_manifest_atomic_write.py",
+    "tests/packs/builtin/dataset_build/test_caption_validation.py",
+    "tests/packs/h3_av/test_compile.py",
+    "tests/packs/test_audio_render.py",
+    "tests/packs/foley/test_tile_video_ffprobe.py",
+    "astrid/packs/discord_local/tests/test_command.py"
+  ],
+  "pre_hashes_sha256": {
+    "tests/core/test_generation_manifest_atomic_write.py": "9405505faf598361756d7be34decf03ce9a92ce12363588777a20754dcfe5792",
+    "tests/packs/builtin/dataset_build/test_caption_validation.py": "5b4b05c748e30ff20921e940943ecbaedd5d1c05ddf4c9d2281b300ab894cc26",
+    "tests/packs/h3_av/test_compile.py": "c1724ae321cbadd2d5d90ccbe94a94574bca480e0c0443bbf826fb4e93e0fb7b",
+    "tests/packs/test_audio_render.py": "f28974717ba6280d8ee71a1b410b4ad1d73b45e8ac64c55b00e035a2527b2c48",
+    "tests/packs/foley/test_tile_video_ffprobe.py": "1cc38ad3819e3d6a08aec86ab42d72c897cba5d09ca2b08657e8587109c830f1",
+    "astrid/packs/discord_local/tests/test_command.py": "d52055f8ec4cdb0963e315eb8b38dd6129a680213108576e62edf363041dc0a3"
+  },
+  "source_edits_started": true,
+  "source_write_set_released": true,
+  "result": "evidence/first-principles-unblock-20261007/central-consumer-retarget-release-20261007.json",
+  "external_operations": false,
+  "notes": [
+    "Retargeted six active consumers from legacy executor/src imports to the admitted V3 action/shared modules.",
+    "The audio-render fixture now declares local file identities and selects rendering.ffmpeg, which is required by the V3 support contract.",
+    "This receipt does not claim all remaining B05 corpus occurrences are closed, and it does not authorize install, merge, publish, deploy, or skill sync."
+  ]
+}

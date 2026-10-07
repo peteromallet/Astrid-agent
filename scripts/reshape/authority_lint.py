@@ -41,10 +41,10 @@ Rules:
     schema-pack manifest. The neutral workspace runtime owns all DDL and
     migration application.
 
-The composition exemptions are explicit reviewed runtime mount edges:
-``astrid/core/gateway/dispatch.py`` is the generic composition root,
-``timeline/cli.py`` embeds the nested shots parser, and the media CLI embeds
-the nested references parser. Nothing else is exempt.
+    The application composition exemption is explicit: the generic
+    ``astrid/core/gateway/dispatch.py`` root may compose Runtime support. The
+    nested ``shots`` and ``references`` parsers are core-owned and therefore do
+    not create kernel-to-pack parser edges.
 """
 
 from __future__ import annotations
@@ -72,6 +72,7 @@ SUPPORTED_ENTRY_PATHS = (
     "astrid/core/cli/domain_media.py",
     "astrid/core/cli/domain_tasks.py",
     "astrid/core/cli/domain_runs.py",
+    "astrid/core/cli/domain_timelines.py",
 )
 """Supported v10 entry paths the legacy-authority rule scans."""
 
@@ -230,52 +231,10 @@ def _is_legacy_pack_module(module: str) -> bool:
 
 
 _RUNTIME_MOUNT_PACK_FAMILIES: dict[str, frozenset[str]] = {
+    "shots": frozenset({"timelines"}),
+    "references": frozenset({"media"}),
     "timeline": frozenset({"timelines"}),
-    "shots": frozenset({"shots"}),
-    "references": frozenset({"references"}),
 }
-
-
-def _kernel_cli_family(rel: str) -> str | None:
-    """The product family of an ``astrid/core/cli/domain_<family>.py`` module."""
-    prefix = "astrid/core/cli/domain_"
-    if rel.startswith(prefix) and rel.endswith(".py"):
-        return rel[len(prefix) : -3]
-    return None
-
-
-def _is_declared_cli_mount_import(
-    root: Path, rel: str, module: str, *, pack_dir_name: str | None = None
-) -> bool:
-    """Whether *module* is a reviewed nested runtime-mount import.
-
-    A kernel family module or a host pack's ``cli`` module may embed another
-    runtime mount's ``cli`` module only when the target mount's parent family
-    matches the importing
-    family (e.g. ``references: media references`` allows
-    ``astrid/core/cli/domain_media.py`` to embed the references parser, and
-    ``shots: timelines shots`` allows ``astrid/packs/timeline/cli.py`` to
-    embed the shots parser). This is declared composition, never a hidden
-    second authority: repository/schema imports stay forbidden.
-    """
-    if not (module == "astrid.packs" or module.startswith("astrid.packs.")):
-        return False
-    parts = module.split(".")
-    if len(parts) < 3:
-        return False
-    target_pack = parts[2]
-    if len(parts) > 3 and parts[3] != "cli":
-        return False
-    del root
-    mount_families = _RUNTIME_MOUNT_PACK_FAMILIES.get(target_pack, frozenset())
-    if not mount_families:
-        return False
-    if pack_dir_name is not None:
-        # Pack-to-pack: these are the two reviewed nested parser edges. They
-        # are parser composition only; all persistence stays in the runtime.
-        return (pack_dir_name, target_pack) == ("timeline", "shots")
-    family = _kernel_cli_family(rel)
-    return family is not None and family in mount_families
 
 
 def lint_import_boundaries(root: Path) -> list[str]:
@@ -303,8 +262,6 @@ def lint_import_boundaries(root: Path) -> list[str]:
                 continue
             if _is_legacy_pack_module(module):
                 continue
-            if _is_declared_cli_mount_import(root, rel, module):
-                continue
             errors.append(
                 f"{rel}: kernel-to-pack import {module!r} "
                 "(only the generic pack host is exempt)"
@@ -326,8 +283,6 @@ def lint_import_boundaries(root: Path) -> list[str]:
                     continue
                 other_pack = module.split(".")[2]
                 if other_pack == pack_dir.name:
-                    continue
-                if _is_declared_cli_mount_import(root, rel, module, pack_dir_name=pack_dir.name):
                     continue
                 errors.append(f"{rel}: pack-to-pack import {module!r} from pack {pack_dir.name!r}")
     return errors
@@ -401,9 +356,9 @@ def _is_removed_authority(module: str) -> bool:
 
 
 def _runtime_mount_pack_ids(root: Path | None = None) -> frozenset[str]:
-    """Return the runtime-backed product mount ids."""
+    """Return the remaining runtime-backed pack mount ids."""
     del root
-    return frozenset({"timeline", "shots", "references"})
+    return frozenset({"shots", "references"})
 
 
 def _is_removed_authority_product_path(root: Path, rel: str) -> bool:

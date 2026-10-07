@@ -10,8 +10,8 @@ import pytest
 
 pytest.importorskip("banodoco_timeline_schema")
 
-from astrid.packs.rendering.executors.render import managed_timeline
-from astrid.packs.rendering.executors.render.managed_timeline import (
+from astrid.packs.rendering.actions.render import managed_timeline
+from astrid.packs.rendering.actions.render.managed_timeline import (
     ManagedRenderValidationError,
     materialize_managed_render_snapshot,
     resolve_managed_render_snapshot,
@@ -19,6 +19,45 @@ from astrid.packs.rendering.executors.render.managed_timeline import (
 )
 from astrid.sdk.exceptions import CapabilityValidationError
 from astrid.sdk.invocation import _prepare_managed_render_inputs
+
+
+@pytest.mark.parametrize("location", ["config", "duplicate", "payload"])
+def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
+    from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
+    from tests.packs.rendering.test_live_scene_boundary import _package
+
+    clips = [{"id": "scene", "clipType": "com.reigh.astrid.liveScene", "track": "v1", "at": 50, "from": 63, "to": 70, "speed": 2, "app": {"liveScene": _package()}}]
+    config = {"tracks": [{"id": "v1", "kind": "visual"}], "clips": clips if location != "payload" else [], "theme": "banodoco-default", "app": {"sentinel": 1}}
+    parent = {"project_id": "project-demo", "timeline_id": "timeline-1", "revision_id": "saved", "payload": {"config": config, "clips": clips if location != "config" else [], "registry": {"assets": {}}, "occurrences": []}}
+    projected = project_runtime_parent_composition(parent, shot_revisions=[], internal_timeline_revisions=[])
+    assert projected.config["clips"] == clips
+    assert projected.config["app"]["sentinel"] == 1
+    assert projected.config["tracks"] == config["tracks"]
+
+
+def test_saved_parent_disagreeing_populated_clips_fail_closed():
+    from astrid.core.timeline.shot_composition_projection import (
+        ShotCompositionProjectionError,
+        project_runtime_parent_composition,
+    )
+
+    parent = {"project_id": "p", "timeline_id": "t", "revision_id": "r", "payload": {"config": {"clips": [{"id": "a"}]}, "clips": [{"id": "b"}], "occurrences": [], "registry": {"assets": {}}}}
+    with pytest.raises(ShotCompositionProjectionError, match="disagree"):
+        project_runtime_parent_composition(parent, shot_revisions=[], internal_timeline_revisions=[])
+
+
+def test_managed_saved_prepared_scene_validates_and_corruption_fails():
+    from tests.packs.rendering.test_live_scene_boundary import _package
+
+    runtime = _Runtime()
+    package = _package()
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [{"id": "scene", "track": "v1", "clipType": "com.reigh.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": package}}]}
+    snapshot = resolve_managed_render_snapshot(project_ref="demo", timeline_ref="main", client=runtime)
+    validate_managed_render_snapshot(snapshot)
+    package["html"] += "corrupt"
+    snapshot = resolve_managed_render_snapshot(project_ref="demo", timeline_ref="main", client=runtime)
+    with pytest.raises(ManagedRenderValidationError, match="entry digest"):
+        validate_managed_render_snapshot(snapshot)
 
 
 def _result(data: object = None, *, ok: bool = True) -> SimpleNamespace:
@@ -418,13 +457,72 @@ def test_stale_and_archived_timelines_are_rejected() -> None:
         _snapshot(_Runtime(archived=True))
 
 
-def test_managed_preflight_requires_runtime_ref_and_rejects_file_mode(tmp_path: Path) -> None:
-    with pytest.raises(CapabilityValidationError, match="requires timeline_ref"):
+def test_render_preflight_requires_a_selector_and_rejects_mixed_modes() -> None:
+    with pytest.raises(CapabilityValidationError, match="requires timeline=.*or timeline_ref"):
         _prepare_managed_render_inputs({}, project="demo")
     with pytest.raises(CapabilityValidationError, match="mutually exclusive"):
         _prepare_managed_render_inputs(
             {"timeline": "export.json", "timeline_ref": "main"},
             project="demo",
+        )
+
+
+@pytest.mark.parametrize("with_registry", [False, True])
+def test_file_mode_precedes_scope_resolution_and_preserves_descriptors(with_registry) -> None:
+    def unexpected_runtime_read(*_args, **_kwargs):
+        pytest.fail("file mode must not resolve a canonical timeline or project default")
+
+    runtime = SimpleNamespace(
+        timelines=SimpleNamespace(resolve_scope=unexpected_runtime_read),
+        projects=SimpleNamespace(current=unexpected_runtime_read, show=unexpected_runtime_read),
+    )
+    timeline = {"object_id": "sha256:" + "a" * 64, "digest": "sha256:" + "a" * 64,
+                "filename": "timeline.json"}
+    registry = {"object_id": "sha256:" + "b" * 64, "digest": "sha256:" + "b" * 64,
+                "filename": "assets.json"}
+    inputs = {"timeline": timeline, "output_name": "iteration.mp4"}
+    if with_registry:
+        inputs["assets_registry"] = registry
+    prepared, authority = _prepare_managed_render_inputs(inputs, project=None, _client=runtime)
+    assert prepared == inputs
+    assert prepared["timeline"] is timeline
+    if with_registry:
+        assert prepared["assets_registry"] is registry
+    assert authority is None
+    assert "timeline_ref" not in prepared
+    assert "timeline_authority" not in prepared
+    assert "timeline_snapshot" not in prepared
+
+
+@pytest.mark.parametrize("expected_version", [None, 1, 0, True])
+def test_file_mode_rejects_expected_version(expected_version) -> None:
+    with pytest.raises(CapabilityValidationError, match="expected_version is only valid with timeline_ref"):
+        _prepare_managed_render_inputs(
+            {"timeline": "sha256:" + "a" * 64, "expected_version": expected_version},
+            project="demo",
+        )
+
+
+@pytest.mark.parametrize("selector", [{"timeline": "sha256:" + "a" * 64}, {"timeline_ref": "main"}])
+@pytest.mark.parametrize("field", ["timeline_authority", "timeline_snapshot"])
+def test_render_preflight_rejects_caller_canonical_authority(selector, field) -> None:
+    with pytest.raises(CapabilityValidationError, match=f"caller-supplied {field}"):
+        _prepare_managed_render_inputs({**selector, field: {"authority": "kernel"}}, project="demo")
+
+
+@pytest.mark.parametrize("field", ["timeline", "assets_registry"])
+def test_file_mode_rejects_raw_paths_and_conflicting_descriptors(field) -> None:
+    for value in ("/tmp/render.json", {"object_id": "sha256:" + "b" * 64, "digest": "sha256:" + "c" * 64}):
+        with pytest.raises(CapabilityValidationError, match="requires a managed Runtime object"):
+            _prepare_managed_render_inputs(
+                {"timeline": "sha256:" + "a" * 64, field: value}, project="demo"
+            )
+
+
+def test_managed_preflight_keeps_canonical_registry_pinned() -> None:
+    with pytest.raises(CapabilityValidationError, match="assets_registry cannot be overridden"):
+        _prepare_managed_render_inputs(
+            {"timeline_ref": "main", "assets_registry": "sha256:" + "a" * 64}, project="demo"
         )
 
 

@@ -1,7 +1,8 @@
 """Public API for the multi-harness skills install layer.
 
 Three harnesses: Claude Code, Codex, Hermes. One source of truth: per-pack
-``astrid/packs/<pack>/skill/SKILL.md`` with Claude-style frontmatter.
+the path selected by each pack's singular ``documentation`` declaration,
+with Claude-style frontmatter.
 """
 
 from __future__ import annotations

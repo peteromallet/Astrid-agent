@@ -11,8 +11,8 @@ import pytest
 pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core.timeline.validators.timeline import validate_timeline
-from astrid.packs.rendering.executors.render import audio_reactive_colour
-from astrid.packs.rendering.executors.render import run as render_run
+from astrid.packs.rendering.actions.render import audio_reactive_colour
+from astrid.packs.rendering.actions.render import run as render_run
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 

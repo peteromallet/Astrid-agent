@@ -1,0 +1,61 @@
+{
+  "schema": "m05-fal-actual-receipt-followup-03/v1",
+  "task": "M05 Fal actual-receipt correction follow-up 03",
+  "preflight": {
+    "path": "evidence/m05/receiver-followup-03/preflight-01.json",
+    "control_root": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/runs/pack-authoring-convergence-20261001",
+    "sha256": "2a2c9bc8fd10975716a6480ee655189dc6db2cd8bf210b8fc7b67bffb189ac30",
+    "implementation_ready_verdict": "PASS",
+    "candidate_sha256": "9ff1dfad5677c081404e2494e220071aca56e3d4f751d042dbcfb5c4a00c5fca"
+  },
+  "source_changes": [
+    "astrid/packs/fal/actions/fal_foley/run.py",
+    "astrid/packs/fal/tests/test_fal_foley_receiver.py"
+  ],
+  "checks": [
+    {
+      "command": "python3 -m pytest -q astrid/packs/fal/tests/test_fal_foley_receiver.py astrid/packs/fal/tests/test_h3_video.py",
+      "result": "PASS; 9 passed in 0.39s; no provider or network call"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m astrid.core.pack.cli validate astrid/packs/fal --json",
+      "result": "PASS; valid=true; roots=1; invalid=0; errors=[]; warnings=[]; skill_exports=[docs/SKILL.md]"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m astrid.core.pack.cli inspect fal --pack-root astrid/packs/fal --json",
+      "result": "PASS; fal.fal_foley and fal.h3_video discovered; Foley outputs audio/audio_manifest/audio_provenance; H3 action and 16:9 default resolved"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m scripts.reshape.package_closure .",
+      "result": "PASS; ok=true"
+    },
+    {
+      "command": "ruff check astrid/packs/fal/tests/test_fal_foley_receiver.py",
+      "result": "PASS; all checks passed"
+    },
+    {
+      "command": "ruff check astrid/packs/fal/actions/fal_foley/run.py --ignore E402",
+      "result": "PASS; all non-E402 checks passed; the unignored 9 E402 diagnostics are the pre-existing guard_canonical_entrypoint import placement"
+    },
+    {
+      "command": "git diff --check -- astrid/packs/fal/actions/fal_foley/run.py astrid/packs/fal/tests/test_fal_foley_receiver.py",
+      "result": "PASS; no whitespace errors"
+    }
+  ],
+  "final_source_hashes": {
+    "astrid/packs/fal/actions/fal_foley/run.py": {
+      "sha256": "7d3ed3c26b78a01113f19b40a0486144da367d28acf79cf91824e1d8d890c5ee",
+      "bytes": 5942,
+      "lines": 187
+    },
+    "astrid/packs/fal/tests/test_fal_foley_receiver.py": {
+      "sha256": "51ad6d7a72d3722fbc88a0f417ae29c8816796feba2dd8d375d210581e86bb1c",
+      "bytes": 9718,
+      "lines": 278
+    }
+  },
+  "scope_limits": [
+    "No live Fal provider, network, credentials, GPU, install/build, central B05 test, H3 behavior change, GenericPackHost credential-readiness change, F04/F05 edit, profile mutation, merge, push, publication, deployment, or user sync.",
+    "The test uses a synthetic Fal response and patched credential, client, and audio-save seams; it does not claim the full GenericPackHost provider path or env_file-only host readiness."
+  ]
+}

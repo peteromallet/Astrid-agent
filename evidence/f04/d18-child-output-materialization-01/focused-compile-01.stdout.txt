@@ -1,0 +1,1 @@
+5 reserved Python sources compile successfully without bytecode writes

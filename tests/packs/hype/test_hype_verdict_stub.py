@@ -3,7 +3,7 @@
 import argparse
 import pytest
 
-from astrid.packs.video_editing.orchestrators.hype.run import _verdict_build_cmd
+from astrid.packs.video_editing.actions.hype.entrypoint import _verdict_build_cmd
 
 
 def test_verdict_build_cmd_raises():

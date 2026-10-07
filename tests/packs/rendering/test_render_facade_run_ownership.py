@@ -96,7 +96,7 @@ def _noop_render_subprocess_direct(monkeypatch: pytest.MonkeyPatch, commands: li
     def fake_run(argv, **kwargs):
         argv_list = [str(part) for part in argv]
         commands.append((argv_list, kwargs.get("cwd"), dict(kwargs.get("env") or {})))
-        if "astrid.packs.rendering.executors.render.run" in " ".join(argv_list):
+        if "astrid.packs.rendering.actions.render.run" in " ".join(argv_list):
             out_path = Path(argv_list[argv_list.index("--out") + 1])
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(b"fake-mp4")
@@ -180,7 +180,7 @@ def test_kernel_admitted_runner_uses_staging_without_filesystem_ledger(
     assert next(item for item in result.outputs if item["name"] == "video")["path"] == str(staging / "hype.mp4")
     assert _run_jsons(projects_root) == []
     assert not (staging / "run.json").exists()
-    assert len([command for command in commands if "astrid.packs.rendering.executors.render.run" in " ".join(command[0])]) == 1
+    assert len([command for command in commands if "astrid.packs.rendering.actions.render.run" in " ".join(command[0])]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def test_auto_resolved_project_retains_kernel_selected_staging(
     assert result.returncode == 0
     assert result.run_root is None
     assert (staging / "hype.mp4").read_bytes() == b"fake-mp4"
-    argv = next(command[0] for command in commands if "astrid.packs.rendering.executors.render.run" in " ".join(command[0]))
+    argv = next(command[0] for command in commands if "astrid.packs.rendering.actions.render.run" in " ".join(command[0]))
     out_value = argv[argv.index("--out") + 1]
     assert Path(out_value).resolve().is_relative_to(staging.resolve())
     assert _run_jsons(projects_root) == []

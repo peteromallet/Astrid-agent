@@ -14,7 +14,6 @@ from astrid.core.pack import (
     PackDefinition,
     PackValidationError,
     discover_packs,
-    iter_element_roots,
     pack_element_kind_descriptors,
     validate_element_pack_id,
 )
@@ -24,6 +23,7 @@ from astrid.core.pack.alias_resolver import (
     create_shared_alias_resolver,
 )
 from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.walkers import iter_element_manifest_paths
 from astrid.core.registry import CapabilityRegistry
 
 from .schema import (
@@ -89,24 +89,39 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         )
         return element
 
-    def get(self, kind: ElementKind, element_id: str) -> ElementDefinition:
+    def get(self, kind: ElementKind, element_id: str, *, pack_id: str | None = None) -> ElementDefinition:
         normalized_kind = self.element_kind_registry.normalize(kind, error_cls=ElementRegistryError)
         key = (normalized_kind, element_id)
         try:
-            definition = self._resolve_entry(self._entries[key])
+            candidates = self._entries[key]
+            if pack_id is not None:
+                candidates = [item for item in candidates if self._pack_id(item) == pack_id]
+                if not candidates:
+                    raise KeyError(key)
+            definition = self._resolve_entry(candidates)
         except KeyError as exc:
-            raise KeyError(f"unknown {normalized_kind} element {element_id!r}") from exc
+            owner = f" in pack {pack_id!r}" if pack_id is not None else ""
+            raise KeyError(f"unknown {normalized_kind} element {element_id!r}{owner}") from exc
         return definition
 
-    def list(self, kind: ElementKind | None = None) -> tuple[ElementDefinition, ...]:
+    @staticmethod
+    def _pack_id(element: ElementDefinition) -> str:
+        return element.metadata.get("pack_id") or element.source.removeprefix("pack:")
+
+    def list(
+        self, kind: ElementKind | None = None, *, pack_id: str | None = None,
+        include_shadowed: bool = False,
+    ) -> tuple[ElementDefinition, ...]:
         normalized_kind = None
         if kind is not None:
             normalized_kind = self.element_kind_registry.normalize(kind, error_cls=ElementRegistryError)
-        winners = [
-            self._resolve_entry(definitions)
-            for (item_kind, _), definitions in self._entries.items()
-            if normalized_kind is None or item_kind == normalized_kind
-        ]
+        winners = []
+        for (item_kind, _), definitions in self._entries.items():
+            if normalized_kind is not None and item_kind != normalized_kind:
+                continue
+            candidates = [item for item in definitions if pack_id is None or self._pack_id(item) == pack_id]
+            if candidates:
+                winners.extend(candidates if include_shadowed else [self._resolve_entry(candidates)])
         return tuple(sorted(winners, key=lambda item: (item.kind, item.id)))
 
     def conflicts(self) -> tuple[ElementConflict, ...]:
@@ -300,8 +315,6 @@ def _load_pack_elements_from_packs(
     *,
     element_kind_registry: ElementKindRegistry,
 ) -> tuple[ElementDefinition, ...]:
-    from .schema import ELEMENT_MANIFEST_NAMES
-
     elements: list[ElementDefinition] = []
     for pack in packs:
         # All discovered packs share the same priority.  Discovery order is
@@ -313,20 +326,31 @@ def _load_pack_elements_from_packs(
         # (``PackValidationError`` from ``validate_element_pack_id``) still
         # propagate — a misplaced pack_id is a packaging contract breach.
         try:
-            for kind, root in iter_element_roots(
+            for kind, manifest in iter_element_manifest_paths(
                 pack,
                 element_kind_registry=element_kind_registry,
             ):
-                if not any((root / name).is_file() for name in ELEMENT_MANIFEST_NAMES):
-                    continue
+                root = manifest.parent
                 element = load_element_definition(
                     root,
+                    manifest_path=manifest,
                     kind=kind,
                     source=f"pack:{pack.id}",
                     editable=pack.id == "local",
                     priority=priority,
                     element_kind_registry=element_kind_registry,
                 )
+                if str(pack.schema_version) == "3":
+                    expected = next(
+                        key.split("/", 1)[1]
+                        for key, item in pack.rendering.items()
+                        if item["type"] == "element" and (pack.root / item["path"]).resolve() == manifest
+                    )
+                    if element.id != expected:
+                        raise PackValidationError(
+                            f"element descriptor identity {element.id!r} must match declared {expected!r}"
+                        )
+                    element.metadata.setdefault("pack_id", pack.id)
                 validate_element_pack_id(element.metadata.get("pack_id"), pack, element_root=root)
                 elements.append(element)
         except ElementValidationError as exc:

@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+    "-B",
+    "-c",
+    "import pathlib; names=['astrid/sdk/_child_bridge.py', 'astrid/sdk/invocation.py', 'astrid/sdk/results.py', 'astrid/sdk/__init__.py', 'tests/sdk/test_child_bridge_d18.py']; [compile(pathlib.Path(n).read_bytes(), n, \"exec\") for n in names]; print(\"5 reserved Python sources compile successfully without bytecode writes\")"
+  ],
+  "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "exit_code": 0,
+  "elapsed_seconds": 0.037615060806274414
+}

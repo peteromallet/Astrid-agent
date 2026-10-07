@@ -1,0 +1,169 @@
+{
+  "schema": "f04-d18-sdk-materialization-validation/v1",
+  "recorded_at_utc": "2026-10-03T04:03:06.872465+00:00",
+  "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "head": "9be144c4f2f63216e693a1a13e42cd79d3845845",
+  "preflight_sha256": "2217801424509d03740d8a4652b6632bd9aebc685ea3005f0d0063c2e07189e7",
+  "candidate_manifest_sha256": "6dd5d133ce2f79e868d83947daa4f021f7bce97ae16b477619d0a00ed5a1c07f",
+  "candidate_verification_sha256": "d8b0c03e92600d33ed01ee5b7c3890fd6594d83d637d3f643e2bebbd2a5badc8",
+  "source_hashes_before": {
+    "astrid/sdk/_child_bridge.py": "62f9993008b88a75c8f646b664fb285a89bfa6b86cb94713b99c220c4548df57",
+    "astrid/sdk/invocation.py": "15f3baaea21bd175fed91838f2fb8c8f3fe03f633d8e9788e1e0d61236c3f801",
+    "astrid/sdk/results.py": "20de29ae027a76d75e3860606915b391822c77a3e7bae50fa5f4ac9818c4f421",
+    "astrid/sdk/__init__.py": "a8203ec28e0d0cf510196d9cadb46ef3451afac0f415fa87819945904b0f14d0",
+    "tests/sdk/test_child_bridge_d18.py": "1965f26d355bdbfac190499f878fc9c36280d3f0e8a25da926a3e84ae03add56"
+  },
+  "source_hashes_after": {
+    "astrid/sdk/_child_bridge.py": "20555350ce39c154551471d565981ee7020f87de21adb56374fc0c984891dd6f",
+    "astrid/sdk/invocation.py": "ef7e93f950e6ac80d41f39445a07fd988afa7cbeeb895c3a672dbe517e3e47c3",
+    "astrid/sdk/results.py": "364e500f9ced8879a443d4e4c4ae2066e5945ed0bf0ea6e0ec2c56adf9e54438",
+    "astrid/sdk/__init__.py": "15148692c3488c8d09067829352b802dfaf8129a3cde8dab1f9137743f360cfe",
+    "tests/sdk/test_child_bridge_d18.py": "c84d2fdcbf5510118e667f4bfb43f420efb84bf06512e984fcd96e00d384b1d3"
+  },
+  "incremental_patch_sha256": "f3e0fb8de4df1052cce5b22d3a338bd4f346b4d682ebd339c14bb72915fab10c",
+  "checks": {
+    "focused-tests-02": {
+      "command": [
+        "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+        "-B",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests/sdk/test_child_bridge_d18.py"
+      ],
+      "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+      "exit_code": 0,
+      "elapsed_seconds": 5.284538745880127,
+      "environment_overrides": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+      }
+    },
+    "focused-lint-02": {
+      "command": [
+        "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+        "-B",
+        "-m",
+        "ruff",
+        "check",
+        "--no-cache",
+        "--output-format",
+        "json",
+        "astrid/sdk/_child_bridge.py",
+        "astrid/sdk/invocation.py",
+        "astrid/sdk/results.py",
+        "astrid/sdk/__init__.py",
+        "tests/sdk/test_child_bridge_d18.py"
+      ],
+      "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+      "exit_code": 1,
+      "elapsed_seconds": 0.07169580459594727,
+      "environment_overrides": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+      }
+    },
+    "focused-type-01": {
+      "command": [
+        "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+        "-B",
+        "-m",
+        "mypy",
+        "--cache-dir=/dev/null",
+        "astrid/sdk/_child_bridge.py",
+        "astrid/sdk/invocation.py",
+        "astrid/sdk/results.py",
+        "astrid/sdk/__init__.py"
+      ],
+      "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+      "exit_code": 1,
+      "elapsed_seconds": 1.444469928741455
+    },
+    "focused-compile-02": {
+      "command": [
+        "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv/bin/python",
+        "-B",
+        "-c",
+        "import pathlib; names=['astrid/sdk/_child_bridge.py', 'astrid/sdk/invocation.py', 'astrid/sdk/results.py', 'astrid/sdk/__init__.py', 'tests/sdk/test_child_bridge_d18.py']; [compile(pathlib.Path(n).read_bytes(), n, \"exec\") for n in names]; print(\"5 reserved Python sources compile successfully without bytecode writes\")"
+      ],
+      "cwd": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+      "exit_code": 0,
+      "elapsed_seconds": 0.03800201416015625,
+      "environment_overrides": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+      }
+    }
+  },
+  "baseline_comparison": {
+    "lint_baseline_findings": 27,
+    "lint_after_findings": 27,
+    "lint_new_findings": [],
+    "type_baseline_errors": 14,
+    "type_after_errors": 14,
+    "type_output_equal_after_line_normalization": true,
+    "compile": "PASS"
+  },
+  "evidence_hashes": {
+    "baseline-comparison.json": "ef1fb147890dcc930689efeef044df5a166cdb0ef722a380ef4c68c87b9ca84c",
+    "baseline-lint-command.json": "8249dd640c18dbcb0f897c5456ab43467ac227b3127a7636d2ea3f38603e3051",
+    "baseline-lint.stdout.json": "4ba3000a847799f5db8c3b8cffd5c9589d25ad0e39e8ae9f3b6e7b518bbd1791",
+    "baseline-type-command.json": "4052c4b8c431ab5b871e77b201ce850df15096e51d9cb21b463a3bc82d5389cd",
+    "baseline-type.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "baseline-type.stdout.txt": "00aeff23059401028d7999f972f6f51fb1a1720e7b4658d1c3edd767ed0ca217",
+    "before/astrid/sdk/__init__.py": "a8203ec28e0d0cf510196d9cadb46ef3451afac0f415fa87819945904b0f14d0",
+    "before/astrid/sdk/_child_bridge.py": "62f9993008b88a75c8f646b664fb285a89bfa6b86cb94713b99c220c4548df57",
+    "before/astrid/sdk/invocation.py": "15f3baaea21bd175fed91838f2fb8c8f3fe03f633d8e9788e1e0d61236c3f801",
+    "before/astrid/sdk/results.py": "20de29ae027a76d75e3860606915b391822c77a3e7bae50fa5f4ac9818c4f421",
+    "before/tests/sdk/test_child_bridge_d18.py": "1965f26d355bdbfac190499f878fc9c36280d3f0e8a25da926a3e84ae03add56",
+    "focused-compile-01.json": "42ed94a23b027829a5e97961dd37accc8935500b09be348b57e5d16863465269",
+    "focused-compile-01.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-compile-01.stdout.txt": "bf62f148f5ecf08db75e98e38c632f7118b47e9492afe69fbcd630f6f9b2f4ea",
+    "focused-compile-02.json": "afc3dcade6913f89b7a684cca0533360efa08e8ab4b7944d59a33aa0fb876889",
+    "focused-compile-02.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-compile-02.stdout.txt": "bf62f148f5ecf08db75e98e38c632f7118b47e9492afe69fbcd630f6f9b2f4ea",
+    "focused-lint-01.json": "0b349c20cd87dabf7cb358094a83fe87d89e2461f2b1a107a0393c6703186aa5",
+    "focused-lint-01.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-lint-01.stdout.txt": "932416b1d6a8f90120f8f563b33c245765027494ef34800f7a2c17cc979ad0c8",
+    "focused-lint-02.json": "a35abf46794cea176966e46e8e197cb3b193773d807721e2c3531c130f7979c5",
+    "focused-lint-02.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-lint-02.stdout.txt": "2db9562da77bfb506f88719f5303f58ff7479bc12988b89839aefe8fef6ca054",
+    "focused-tests-01.json": "3e193a96f9b2869ec4634050c91e5f0236b142bf852a1a93f264df7f84d5bdd6",
+    "focused-tests-01.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-tests-01.stdout.txt": "4e431a1e2671d94baf789c0baf0d4ea1e8b5a1af4564c99722969d558948dca1",
+    "focused-tests-02.json": "79e66a8e3b8531ec99d9b5557e7091260a660e4cbdafd24aed9cc1ad9d68c71f",
+    "focused-tests-02.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-tests-02.stdout.txt": "7b2e79fc4ecb4acfa54967fb9aa3f8f1bc101aefe0a7dd7232b53f5f3a0c650c",
+    "focused-type-01.json": "fa0efc9e13d36b85f016f995002936cfae3d81cb62d38276a10d8e94f8581636",
+    "focused-type-01.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-type-01.stdout.txt": "bd505bdce25b5ed665ee5dd7aabdb9e66dabe24e48e4c5bdb130a394b71b6aa9",
+    "handoff.md": "20c0e716d42f7a0a2cfc4d453166682c895885292e27c9318452e277f17403c5",
+    "incremental-source.patch": "f3e0fb8de4df1052cce5b22d3a338bd4f346b4d682ebd339c14bb72915fab10c",
+    "scoped-check-00.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-00.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-01.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-01.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-02.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-02.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-03.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-03.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-04.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-04.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-05.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-05.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-06.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-check-06.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scoped-checks.json": "d46d18243930b1a1cfad89c2478fb762c10a60ce67b7fe599259da5ac98c7541",
+    "worker-start.json": "4d7c4e47d28a33a39ee03f4984fa2fbce45ef1c29c9a75ac0a07ec1598b47c45"
+  },
+  "source_writes_only": [
+    "astrid/sdk/_child_bridge.py",
+    "astrid/sdk/invocation.py",
+    "astrid/sdk/results.py",
+    "astrid/sdk/__init__.py",
+    "tests/sdk/test_child_bridge_d18.py"
+  ],
+  "host_materialization_proven": false
+}

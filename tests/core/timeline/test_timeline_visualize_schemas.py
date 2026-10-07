@@ -12,7 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-from astrid.packs.rendering.executors.timeline_visualize.schemas import (
+from astrid.packs.rendering.actions.timeline_visualize.schemas import (
     DEFS_PATH,
     SCHEMAS,
     Schema,
@@ -235,6 +235,7 @@ def _minimal_instances() -> dict[str, dict[str, Any]]:
                         "authored_visual_only_end_seconds": 0,
                         "frame_quantized_visual_end": {"frames": 0, "seconds": 0},
                         "all_track_composition": {"frames": 1, "seconds": 1 / 24},
+                        "authored_all_track_composition": {"frames": 1, "seconds": 1 / 24},
                     },
                     "tracks": [],
                     "clips": [],
@@ -901,6 +902,7 @@ def test_project_bundle_can_lock_multiple_ordered_timeline_snapshots() -> None:
                 "authored_visual_only_end_seconds": 0,
                 "frame_quantized_visual_end": {"frames": 0, "seconds": 0},
                 "all_track_composition": {"frames": 1, "seconds": 1 / 30},
+                "authored_all_track_composition": {"frames": 1, "seconds": 1 / 30},
             },
             "tracks": [],
             "clips": [],
@@ -1036,6 +1038,7 @@ def test_ground_truth_declares_accepted_and_ignored_transition_facts(
         "authored_visual_only_end_seconds": 1,
         "frame_quantized_visual_end": {"frames": 24, "seconds": 1},
         "all_track_composition": {"frames": 24, "seconds": 1},
+        "authored_all_track_composition": {"frames": 24, "seconds": 1},
     }
     documents = _schema_documents()
     assert _validate_structural("ground-truth", ground_truth, documents, _registry(documents)) == []

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from astrid.packs.rendering.executors.render import run as render_executor
+from astrid.packs.rendering.actions.render import run as render_executor
 from astrid.core import timeline
 from tests.packs.rendering._helpers import _execution_env
 
@@ -108,6 +108,7 @@ class AudioRenderTest(unittest.TestCase):
             "assets": {
                 "visual": {
                     "media_id": "silent-object",
+                    "file": str(silent_path.resolve()),
                     "content_sha256": hashlib.sha256(silent_path.read_bytes()).hexdigest(),
                     "type": "video/mp4",
                     "duration": 2.0,
@@ -116,6 +117,7 @@ class AudioRenderTest(unittest.TestCase):
                 },
                 "tone": {
                     "media_id": "tone-object",
+                    "file": str(tone_path.resolve()),
                     "content_sha256": hashlib.sha256(tone_path.read_bytes()).hexdigest(),
                     "type": "audio/mp4",
                     "duration": 2.0,
@@ -131,6 +133,7 @@ class AudioRenderTest(unittest.TestCase):
                     timeline_path,
                     assets_path,
                     out_path,
+                    selector="rendering.ffmpeg",
                     project_dir=ROOT / "remotion",
                     materialized_root=tmp_dir,
                     materialized_objects={

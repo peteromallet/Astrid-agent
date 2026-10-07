@@ -21,6 +21,9 @@ from banodoco_workspace_client.contract_metadata import (
     PROTOCOL,
     SCHEMA_DIGEST,
     SOURCE_COMMIT,
+    SOURCE_CONTRACT_METADATA_SHA256,
+    SOURCE_GENERATED_SHA256,
+    SOURCE_STATE,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,9 +36,12 @@ METADATA_PATH = ROOT / "banodoco_workspace_client" / "contract_metadata.py"
 # silently alter the shipped transport.
 PINNED_PROTOCOL = "workspace.v1"
 PINNED_COMPONENT_MANIFEST_SHA256 = "sha256:fcae767eaba85e406658ac3b14f3c3447e11073dffcb5e1256e223bdb84f51f4"
-PINNED_SCHEMA_DIGEST = "sha256:62da8b1285ba3586b3b9707d4f7ea9b1bd4c31833b7fffc6cbacd2b2a8442f0f"
-PINNED_GENERATED_SHA256 = "2d7f7d48cbbf1505559b55431506f4cc0f5ce808f73f2b92f654f1cb303b04cd"
-PINNED_METADATA_SHA256 = "e1ccb0597707377478f893857a62bd4610062731ce4fca9bd56ecd0d4917ce89"
+PINNED_SCHEMA_DIGEST = "sha256:af4962b0139cbc54b27831922486d33855fbf2fd98cf79087353bc1e7ea73df7"
+PINNED_GENERATED_SHA256 = "62091a9092fc3f95044f3d227ebbdd987223f373d7db86226e2e8a2fac667852"
+PINNED_METADATA_SHA256 = "90e40449b8e8fb39ae70037f54b2b7542388c822b06caddd16dd53c672015b0b"
+PINNED_SOURCE_STATE = "audited uncommitted candidate (D18 + B01 + F05 bounded metadata acquisition + B01 execution-request schema/document parity); accepted generated artifact SHA-256: 62091a9092fc3f95044f3d227ebbdd987223f373d7db86226e2e8a2fac667852; schema digest: sha256:af4962b0139cbc54b27831922486d33855fbf2fd98cf79087353bc1e7ea73df7; Python template SHA-256: 59c44261be3d1cf3043f02e76323ce8fd3c89d71251f94f2ab2e32b2b365c568; SOURCE_COMMIT is the selected Runtime base only, not a published candidate commit"
+PINNED_SOURCE_GENERATED_SHA256 = "62091a9092fc3f95044f3d227ebbdd987223f373d7db86226e2e8a2fac667852"
+PINNED_SOURCE_CONTRACT_METADATA_SHA256 = "1fc0f22e58a0dd7de479773804e6b3555347d20bc40e2fb44cf9e67be0f791ce"
 
 
 def _camel_to_snake(value: str) -> str:
@@ -45,10 +51,14 @@ def _camel_to_snake(value: str) -> str:
 
 def test_vendored_client_is_the_frozen_runtime_artifact() -> None:
     assert SOURCE_COMMIT == "a278cd460018976940ae21fc2cad563a29a29649"
+    assert SOURCE_STATE == PINNED_SOURCE_STATE
     assert PROTOCOL == PINNED_PROTOCOL == generated.PROTOCOL
     assert COMPONENT_MANIFEST_SHA256 == PINNED_COMPONENT_MANIFEST_SHA256
     assert SCHEMA_DIGEST == PINNED_SCHEMA_DIGEST == generated.SCHEMA_DIGEST
+    assert SOURCE_GENERATED_SHA256 == PINNED_SOURCE_GENERATED_SHA256 == PINNED_GENERATED_SHA256
     assert hashlib.sha256(GENERATED_PATH.read_bytes()).hexdigest() == PINNED_GENERATED_SHA256
+    assert SOURCE_CONTRACT_METADATA_SHA256 == PINNED_SOURCE_CONTRACT_METADATA_SHA256
+    assert SOURCE_CONTRACT_METADATA_SHA256 != PINNED_METADATA_SHA256
     assert hashlib.sha256(METADATA_PATH.read_bytes()).hexdigest() == PINNED_METADATA_SHA256
 
 

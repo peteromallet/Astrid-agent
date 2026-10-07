@@ -60,20 +60,13 @@ class ShippedPackAlignmentTest(unittest.TestCase):
                 executor = registry.get(executor_id)
                 self.assertEqual(executor.metadata["source_pack"], pack)
                 self.assertTrue(
-                    str(executor.metadata["executor_root"]).rstrip("/").endswith(
-                        f"astrid/packs/{pack}/{executor_id.split('.', 1)[1].split('.')[0]}"
-                    )
-                    or str(executor.metadata["executor_root"]).rstrip("/").endswith(
-                        f"astrid/packs/{pack}/{executor_id.split('.', 1)[1]}"
-                    )
-                    or str(executor.metadata["executor_root"]).rstrip("/").endswith(
-                        f"astrid/packs/{pack}/executors/{executor_id.split('.', 1)[1].split('.')[0]}"
-                    )
-                    or str(executor.metadata["executor_root"]).rstrip("/").endswith(
-                        f"astrid/packs/{pack}/executors/{executor_id.split('.', 1)[1]}"
+                    str(executor.metadata["pack_root"]).rstrip("/").endswith(
+                        f"astrid/packs/{pack}"
                     ),
-                    f"executor_root for {executor_id} did not land under packs/{pack}/",
+                    f"pack_root for {executor_id} did not land under packs/{pack}/",
                 )
+                self.assertIn("runtime_file", executor.metadata["action_declaration"]["metadata"])
+                self.assertIn("kind", executor.metadata["action_invocation"])
 
     def test_cli_lists_do_not_register_seinfeld_pack_ids(self) -> None:
         # The 8-family CLI no longer exposes `executors`/`orchestrators`

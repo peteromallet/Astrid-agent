@@ -10,8 +10,8 @@ from unittest import mock
 import pytest
 
 from astrid.core.rendering.remotion_runtime import RemotionRuntimeTools
-from astrid.packs.rendering.backends.remotion import lock as remotion_lock
-from astrid.packs.rendering.backends.remotion import run as remotion
+from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
+from astrid.packs.rendering.rendering.renderers.remotion import run as remotion
 from scripts import gen_effect_registry, gen_remotion_types
 
 
@@ -146,6 +146,8 @@ def test_lock_is_held_during_registry_generation_and_remotion_render(
 
     monkeypatch.setattr(remotion.subprocess, "run", fake_run)
     args, kwargs = _execute_args(tmp_path, "locked.mp4")
+    args[0].write_text(json.dumps({"theme": "banodoco-default", "tracks": [], "clips": []}), encoding="utf-8")
+    args[1].write_text(json.dumps({"assets": {}}), encoding="utf-8")
     kwargs["project_dir"].mkdir(parents=True)
 
     remotion._execute_remotion(*args, **kwargs)

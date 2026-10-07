@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from astrid.packs.timeline.cli import build_parser
+from astrid.core.cli.domain_timelines import build_parser
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.remote import RemoteTimelines
 

@@ -22,11 +22,11 @@ import pytest
 import astrid.packs
 from astrid.core.rendering.service import RenderService
 from astrid.core.timeline.snapshot import snapshot_from_runtime
-from astrid.packs.rendering.executors.timeline_visualize import select
-from astrid.packs.rendering.executors.timeline_visualize.run import (
+from astrid.packs.rendering.actions.timeline_visualize import select
+from astrid.packs.rendering.actions.timeline_visualize.run import (
     _materialize_kernel_timeline,
 )
-from astrid.packs.rendering.executors.timeline_visualize.select import KernelTimeline
+from astrid.packs.rendering.actions.timeline_visualize.select import KernelTimeline
 from astrid.sdk import invocation
 from astrid.sdk.exceptions import CapabilityValidationError
 
@@ -56,7 +56,7 @@ def test_live_import_graph_does_not_load_project_timeline_authority() -> None:
     probe = """
 import sys
 import astrid.sdk.invocation
-import astrid.packs.rendering.executors.timeline_visualize.select
+import astrid.packs.rendering.actions.timeline_visualize.select
 import astrid.core.timeline.snapshot
 for name in (
     'astrid.core.timeline.crud',
@@ -286,7 +286,7 @@ def test_pack_workers_are_result_only_and_have_no_timeline_write_binding() -> No
     worker_paths = (
         ROOT / "astrid/packs/video_editing/executors/cut/timeline_build.py",
         ROOT / "astrid/packs/iteration/executors/assemble/run.py",
-        ROOT / "astrid/packs/editorial/executors/refine/run.py",
+        ROOT / "astrid/packs/editorial/actions/refine/run.py",
     )
     forbidden = (
         "pack_write_gateway",

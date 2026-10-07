@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.rendering.executors.timeline_storyboard import run as storyboard
+from astrid.packs.rendering.actions.timeline_storyboard import run as storyboard
 
 
 def _write_json(path: Path, payload: dict) -> Path:

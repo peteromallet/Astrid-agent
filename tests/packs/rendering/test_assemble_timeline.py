@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.rendering.executors.assemble_timeline.run import (
+from astrid.packs.rendering.actions.assemble_timeline.run import (
     TimelineAuthoringError,
     build_authoring_proposal,
     derive_clip_id,

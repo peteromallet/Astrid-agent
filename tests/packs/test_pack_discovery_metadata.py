@@ -288,21 +288,23 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
         self.assertEqual([dp.id for dp in discovered], ["alpha", "gamma"])
         self.assertEqual([dp.source_kind for dp in discovered], ["source", "extra"])
 
-    def test_skill_roots_expose_pack_and_nested_content(self) -> None:
+    def test_skill_roots_expose_only_declared_pack_documentation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             packs_root = Path(tmp) / "packs"
             pack_root = write_pack(packs_root, "builtin")
             write_executor(pack_root, "sample_executor", "builtin.sample_executor")
             write_orchestrator(pack_root, "sample_orchestrator", "builtin.sample_orchestrator")
+            skill_root = pack_root / "skill"
+            skill_root.mkdir()
+            (skill_root / "SKILL.md").write_text("---\nname: builtin\ndescription: Test guidance.\n---\n")
+            manifest = pack_root / "pack.yaml"
+            manifest.write_text(manifest.read_text() + "documentation:\n  kind: skill\n  path: skill/SKILL.md\n")
             packs = discover_packs(packs_root)
             discovered = DiscoveredPack(pack=packs[0], source_kind="source", priority_index=0)
 
             skill_roots = discovered.skill_roots()
 
-        names = {(p.parent.name, p.name) for p in skill_roots}
-        self.assertIn(("builtin", "skill"), names)
-        self.assertIn(("sample_executor", "skill"), names)
-        self.assertIn(("sample_orchestrator", "skill"), names)
+        self.assertEqual(skill_roots, (skill_root.resolve(),))
 
     def test_registries_share_identical_ordering(self) -> None:
         """Executor, orchestrator, and element discovery observe the same

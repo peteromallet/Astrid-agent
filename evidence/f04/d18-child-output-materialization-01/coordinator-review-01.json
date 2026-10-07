@@ -1,0 +1,37 @@
+{
+  "schema": "megado-coordinator-review/v1",
+  "task": "F04",
+  "slice": "D18 child-output materialization SDK contract",
+  "reviewed_at_utc": "2026-10-03T04:05:00Z",
+  "disposition": "PASS_WITH_DECLARED_LIMITS",
+  "source_write_set": [
+    "astrid/sdk/_child_bridge.py",
+    "astrid/sdk/invocation.py",
+    "astrid/sdk/results.py",
+    "astrid/sdk/__init__.py",
+    "tests/sdk/test_child_bridge_d18.py"
+  ],
+  "source_hashes_match_release": true,
+  "release_receipt": "evidence/f04/d18-child-output-materialization-01/reservation-release.json",
+  "validation_manifest": "evidence/f04/d18-child-output-materialization-01/validation-manifest.json",
+  "handoff": "evidence/f04/d18-child-output-materialization-01/handoff.md",
+  "focused_tests": "316 passed",
+  "compile": "pass",
+  "scoped_patch_checks": "pass",
+  "lint_and_type": "no new findings against recorded baselines (27 Ruff findings; 14 mypy errors)",
+  "accepted_contract": {
+    "public_helper": "InvocationResult.materialize_output(association_id)",
+    "request_operation": "materialize_output",
+    "success_shape": "exact verified descriptor plus host-selected parent-relative filename",
+    "producer_file_bridge": "MaterializedChildOutput.producer_file()",
+    "private_result_binding": true,
+    "failed_non_bridge_or_unawaited_results_rejected": true,
+    "credential_or_runtime_authority_exposed": false
+  },
+  "declared_limits": [
+    "F04 proves the SDK request/result protocol only; host authenticated byte readback, confinement, materialization, accounting and idempotency belong to F05.",
+    "The 316 tests use SDK/socket fixtures and do not prove real receiver behavior or end-to-end composition."
+  ],
+  "next_owner": "F05",
+  "no_stage_commit_merge_push_publication_deployment": true
+}

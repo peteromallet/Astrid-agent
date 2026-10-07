@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skip(reason="legacy filesystem fixture superseded by ru
 pytest.importorskip("banodoco_timeline_schema")
 
 from astrid.core.timeline.snapshot import TimelineSnapshot, snapshot_from_runtime
-from astrid.packs.rendering.executors.timeline_visualize.emit import (
+from astrid.packs.rendering.actions.timeline_visualize.emit import (
     emit_action_index,
     emit_asset_index,
     emit_diagnostics,
@@ -28,21 +28,21 @@ from astrid.packs.rendering.executors.timeline_visualize.emit import (
     emit_structure_md,
     emit_transcript_index,
 )
-from astrid.packs.rendering.executors.timeline_visualize.model import (
+from astrid.packs.rendering.actions.timeline_visualize.model import (
     TimelineInspectionModel,
     build_model,
 )
-from astrid.packs.rendering.executors.timeline_visualize.navigation import (
+from astrid.packs.rendering.actions.timeline_visualize.navigation import (
     build_identity_map,
 )
-from astrid.packs.rendering.executors.timeline_visualize.schemas import (
+from astrid.packs.rendering.actions.timeline_visualize.schemas import (
     DEFS_PATH,
     SCHEMAS,
 )
-from astrid.packs.rendering.executors.timeline_visualize.scope import (
+from astrid.packs.rendering.actions.timeline_visualize.scope import (
     select_scope,
 )
-from astrid.packs.rendering.executors.timeline_visualize.snapshot_digest import (
+from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
     canonical_json_bytes,
     sha256_bytes,
 )

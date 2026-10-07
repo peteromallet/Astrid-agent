@@ -8,8 +8,11 @@ from pathlib import Path
 
 os.environ.setdefault("ASTRID_INTERNAL_INVOCATION", "1")
 
-from astrid.core.execution.executor.schema import load_executor_manifest
-from astrid.packs.fal.executors.h3_video import run
+from astrid.core.pack.canonical import validate_canonical_pack
+from astrid.packs.fal.actions.h3_video import run
+
+
+PACK_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeHttpClient:
@@ -43,17 +46,12 @@ def _downloader(_client: object, _url: str, destination: Path, _timeout: int) ->
     destination.write_bytes(b"video")
 
 
-def test_h3_executor_declares_typed_video_port_and_manifest() -> None:
-    manifest = load_executor_manifest(
-        str(
-            Path(__file__).resolve().parents[4]
-            / "astrid/packs/fal/executors/h3_video/executor.yaml"
-        )
-    )
+def test_h3_action_declares_typed_video_port_and_manifest() -> None:
+    action = validate_canonical_pack(PACK_ROOT).definition.actions["h3_video"]
 
     assert [
-        (output.name, output.type, output.artifact_type, output.path_template)
-        for output in manifest.outputs
+        (output["name"], output["type"], output.get("artifact_type"), output.get("path_template"))
+        for output in action["outputs"]
     ] == [
         ("generated_videos", "file", "video/clip", None),
         ("video_manifest", "file", None, "{out}/manifest.json"),

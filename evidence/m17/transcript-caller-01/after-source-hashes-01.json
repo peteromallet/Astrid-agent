@@ -1,0 +1,31 @@
+{
+  "candidate": {
+    "path": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/runs/pack-authoring-convergence-20261001/evidence/wave3/post-m17-youtube-scenes-accounting-candidate-manifest.json",
+    "sha256": "42387ce22a64b01b73d9bd837484cf431e5fc97719e57bb438c897a08812fd74"
+  },
+  "files": {
+    "astrid/packs/training/actions/dataset_build/budget.py": {
+      "sha256": "2832518e05eb5ea537c9f76d3b3fe0a957bfd058937a1856eeb736a17405af2d",
+      "size": 17617
+    },
+    "astrid/packs/training/actions/dataset_build/filter_stages/transcript_keyword.py": {
+      "sha256": "ec0db2c88435448e1a6f872b00666000b6988ba10c571721a4c0b40562793ea2",
+      "size": 15719
+    },
+    "astrid/packs/training/actions/dataset_build/phases.py": {
+      "sha256": "193796e9e4eb2539f2625ecdf2e1653413d622d70bc5e3fbd0cdc85685b65105",
+      "size": 29448
+    },
+    "astrid/packs/training/actions/dataset_build/services.py": {
+      "sha256": "12b163986e3b3ead023abb508d44a6b0057ba505060d3fef7db26353f1f15ac7",
+      "size": 2550
+    },
+    "tests/packs/training/test_dataset_build_child_actions.py": {
+      "sha256": "9f54770b1cd5b6e451ce14f18f0c50ededa2f3f4a75c0317021be639d6d56b9f",
+      "size": 36173
+    }
+  },
+  "reservation_id": "M17-TRANSCRIPT-KEYWORD-CHILD-01",
+  "schema": "megado-source-hashes/v1",
+  "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001"
+}

@@ -109,19 +109,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     }:
         raise ValueError(f"unsupported rendering backend id {selected!r}")
     if _selects_compositor():
-        from astrid.packs.rendering.finalizers.compositor.run import (
+        from astrid.packs.rendering.rendering.finalizers.compositor.run import (
             main as backend_main,
         )
     elif _selects_finalizer(args):
-        from astrid.packs.rendering.finalizers.ffmpeg.run import (
+        from astrid.packs.rendering.rendering.finalizers.ffmpeg.run import (
             main as backend_main,
         )
     elif _selects_ffmpeg(args):
-        from astrid.packs.rendering.backends.ffmpeg.run import main as backend_main
+        from astrid.packs.rendering.rendering.renderers.ffmpeg.run import main as backend_main
     elif selected == "rendering.threejs":
-        from astrid.packs.rendering.backends.threejs.run import main as backend_main
+        from astrid.packs.rendering.rendering.renderers.threejs.run import main as backend_main
     else:
-        from astrid.packs.rendering.backends.remotion.run import main as backend_main
+        from astrid.packs.rendering.rendering.renderers.remotion.run import main as backend_main
 
     return backend_main(args)
 

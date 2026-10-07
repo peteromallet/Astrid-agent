@@ -50,7 +50,9 @@ Notes:
 
 `examples/packs/` contains teaching packs that demonstrate pack authoring
 patterns. These packs are **not** runtime-discovered — you will not see them in
-`packs list` or `packs status` output. They are validated with `packs validate`:
+`packs list` or `packs status` output. The current authoring examples use v3;
+`text_digest` is retained separately as a v2 compatibility example. Validate
+the examples with the pack author check:
 
 ```bash
 python3 -m astrid.core.pack.cli validate examples/packs/minimal
@@ -62,20 +64,20 @@ python3 -m astrid.core.pack.cli validate examples/packs/media
 
 | Pack | Purpose |
 |---|---|
-| `minimal` | Canonical external-pack contract: one executor (`ingest_assets`) + one orchestrator (`make_trailer`). |
-| `media` | Pack with elements (project-title-card effect), schemas, and executor/orchestrator demonstrating the full component surface. |
-| `file_summarizer` | Multi-step text pipeline: read files, produce attested JSON summaries with counts, emit a verdict. |
-| `text_digest` | Agent-in-the-loop text pipelines: multiple orchestrators for reading, summarizing, and delivering verdicts on text files. |
-| `text_review` | Machine summary (auto-generated line/word/char counts) followed by an agent-attested human-readable verdict. |
+| `minimal` | Canonical small v3 action pack: a directory inventory and a composed trailer action. |
+| `media` | V3 ingestion and composed trailer actions, plus a declared schema, brief, and Remotion title-card element. |
+| `file_summarizer` | V3 text inspection, caller-authored summary validation, and verdict actions; legacy pause/ack plans remain outside the action catalog. |
+| `text_digest` | Retained v2 example of agent-in-the-loop text pipelines; not the current authoring template. |
+| `text_review` | V3 deterministic summary action followed by a separate caller-authored review verdict. |
 
 ### What these packs are NOT
 
 - **Not runtime-discovered.** They live in `examples/packs/`, not
   `astrid/packs/`. The runtime only discovers packs under `astrid/packs/`.
-- **Not clip extraction packs.** The canonical product clip extraction executor
-  is `media.clip_extract` in `astrid/packs/media/`. The example packs
-  demonstrate text-processing workflows — they do not contain media extraction
-  capabilities.
+- **Not clip extraction packs.** The canonical product clip extraction action
+  is `media.clip_extract` in `astrid/packs/media/`. The teaching `media` pack
+  demonstrates a separate directory-ingestion/trailer example; it does not
+  contain product clip-extraction capabilities.
 - **Not hidden runtime packs.** The `visibility: hidden` field in their
   `pack.yaml` manifests is historical. These packs are structurally excluded
   from discovery by their location under `examples/packs/`.

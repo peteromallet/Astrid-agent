@@ -1,0 +1,30 @@
+{
+  "schema": "f04-reservation-release/v1",
+  "task": "F04",
+  "slice": "D18 child-output materialization SDK contract",
+  "status": "worker_complete_reservation_released_to_coordinator",
+  "recorded_at_utc": "2026-10-03T04:03:06.889842+00:00",
+  "worktree": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001",
+  "source_write_set": [
+    "astrid/sdk/_child_bridge.py",
+    "astrid/sdk/invocation.py",
+    "astrid/sdk/results.py",
+    "astrid/sdk/__init__.py",
+    "tests/sdk/test_child_bridge_d18.py"
+  ],
+  "source_hashes_after": {
+    "astrid/sdk/_child_bridge.py": "20555350ce39c154551471d565981ee7020f87de21adb56374fc0c984891dd6f",
+    "astrid/sdk/invocation.py": "ef7e93f950e6ac80d41f39445a07fd988afa7cbeeb895c3a672dbe517e3e47c3",
+    "astrid/sdk/results.py": "364e500f9ced8879a443d4e4c4ae2066e5945ed0bf0ea6e0ec2c56adf9e54438",
+    "astrid/sdk/__init__.py": "15148692c3488c8d09067829352b802dfaf8129a3cde8dab1f9137743f360cfe",
+    "tests/sdk/test_child_bridge_d18.py": "c84d2fdcbf5510118e667f4bfb43f420efb84bf06512e984fcd96e00d384b1d3"
+  },
+  "evidence_root": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/f04/d18-child-output-materialization-01",
+  "validation_manifest_sha256": "960624e5ee4c0c442ec03e0b106879319e02a8d7636db039b14dc42065e807e9",
+  "handoff_sha256": "20c0e716d42f7a0a2cfc4d453166682c895885292e27c9318452e277f17403c5",
+  "incremental_patch_sha256": "f3e0fb8de4df1052cce5b22d3a338bd4f346b4d682ebd339c14bb72915fab10c",
+  "tests": "316 passed in 5.00s",
+  "next_owner": "F05 after coordinator audit",
+  "no_further_source_writes": true,
+  "blockers": []
+}

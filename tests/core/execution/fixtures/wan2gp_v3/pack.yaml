@@ -1,0 +1,139 @@
+schema_version: 3
+id: wan2gp
+name: Wan2GP v3 host-session fixture
+version: 0.1.0
+actions:
+  generate_video:
+    cache:
+      mode: none
+    conditions:
+    - input: prompt
+      kind: requires_input
+    - input: model
+      kind: requires_input
+    description: Generate a short video through the GenericPackHost-owned persistent
+      native Wan2GP session.
+    graph:
+      consumes:
+      - prompt
+      provides:
+      - generated_videos
+      - video_manifest
+    inputs:
+    - description: Text prompt for video generation.
+      name: prompt
+      required: true
+      type: string
+      artifact_type: prompt
+    - default: wan-2.2
+      description: Wan2GP model identifier (e.g. wan-2.2).
+      name: model
+      required: false
+      type: string
+    - default: ''
+      description: Negative prompt.
+      name: negative_prompt
+      required: false
+      type: string
+      artifact_type: prompt
+    - default: ''
+      description: Output resolution WxH (e.g. 1280x720).
+      name: resolution
+      required: false
+      type: string
+    - default: ''
+      description: Number of frames / video_length.
+      name: frames
+      required: false
+      type: integer
+    - default: ''
+      description: Frames per second (stringified to force_fps).
+      name: fps
+      required: false
+      type: string
+    - default: ''
+      description: Deterministic seed.
+      name: seed
+      required: false
+      type: integer
+    - default: ''
+      description: Guidance scale.
+      name: guidance_scale
+      required: false
+      type: number
+    - default: ''
+      description: Sampling steps (num_inference_steps alias).
+      name: steps
+      required: false
+      type: integer
+    - default: ''
+      description: LoRAs JSON or path.
+      name: loras
+      required: false
+      type: string
+    isolation:
+      mode: subprocess
+      requirements: []
+    keywords:
+    - wan2gp
+    - wan
+    - video
+    - generate
+    - gpu
+    metadata:
+      host_session: wan2gp
+      output_result_manifest: true
+      pack_id: wan2gp
+      runtime_file: actions/generate_video/run.py
+      runtime_module: astrid.packs.wan2gp.actions.generate_video.run
+    name: Wan2GP Generate Video
+    outputs:
+    - artifact_type: video/clip
+      description: Generated video file listed in the result manifest.
+      mode: create_or_replace
+      name: generated_videos
+      type: file
+    - description: Universal result manifest for this generation.
+      mode: create_or_replace
+      name: video_manifest
+      path_template: '{out}/manifest.json'
+      type: file
+    short_description: Host-mediated native Wan2GP video generation.
+    version: 0.1.0
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.wan2gp.actions.generate_video.run
+        input_args:
+        - input: prompt
+          flag: --prompt
+        - input: model
+          flag: --model
+          optional: true
+        - input: negative_prompt
+          flag: --negative-prompt
+          optional: true
+        - input: resolution
+          flag: --resolution
+          optional: true
+        - input: frames
+          flag: --frames
+          optional: true
+        - input: fps
+          flag: --fps
+          optional: true
+        - input: seed
+          flag: --seed
+          optional: true
+        - input: guidance_scale
+          flag: --guidance-scale
+          optional: true
+        - input: steps
+          flag: --steps
+          optional: true
+        - input: loras
+          flag: --loras
+          optional: true

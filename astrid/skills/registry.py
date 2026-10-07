@@ -26,7 +26,7 @@ END_MARKER = "<!-- PACKS:END -->"
 _HEADING = "## Installed packs"
 
 # Default registry reference; constant name retained for API compatibility.
-CORE_SKILL_MD = REPO_ROOT / "astrid/packs/_core/skill/creative-work/references/packs.md"
+CORE_SKILL_MD = REPO_ROOT / "astrid/packs/_core/docs/creative-work/references/packs.md"
 
 
 def _repo_relative(path: Path, *, view_root: Path | None = None) -> Path:

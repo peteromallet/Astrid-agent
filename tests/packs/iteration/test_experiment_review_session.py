@@ -8,6 +8,8 @@ rubric validation.  The blocking review server is exercised directly through
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import threading
@@ -15,21 +17,25 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from astrid.core.contracts.errors import AstridError
+from astrid.packs.iteration.actions.experiment_review_session import run as session_run
 
 from astrid.core.experiments.state import (
     init_experiment_review_state,
     make_initial_experiment_review_state,
 )
-from astrid.packs.editorial.executors.human_review.run import (
+from astrid.packs.editorial.actions.human_review.run import (
     _parse_mounts,
     make_handler_class,
 )
-from astrid.packs.iteration.orchestrators.experiment_review_session.run import (
+from astrid.packs.iteration.actions.experiment_review_session.run import (
     _resolve_media_mounts,
 )
-from astrid.packs.iteration.orchestrators.experiment_review_session.run import (
+from astrid.packs.iteration.actions.experiment_review_session.run import (
     main as session_main,
 )
 
@@ -109,6 +115,7 @@ class TestSessionArtifacts:
         for name in ("data.json", "review_session.html", "response_schema.json", "media_map.json", "manifest.json"):
             assert (out / name).is_file(), name
         assert (out / "prepare" / "review.json").is_file()
+        assert (out / "review.json").read_bytes() == (out / "prepare" / "review.json").read_bytes()
 
     def test_media_map_has_relative_prefix_only(self, session_inputs, tmp_path):
         exp_path, runs_dir = session_inputs
@@ -676,3 +683,365 @@ class TestServerSaveIdentityGate:
         })
         assert code == 200
         assert self._state_version(server_with_state) == 1
+
+
+# M09 bounded public-composition proof. The coordinator selects these tests;
+# real Runtime tests reuse the accepted offline transport/normal vendor fixture.
+_EXPECTED_SESSION_OUTPUTS = {
+    "review": "review.json", "data": "data.json", "session_html": "review_session.html",
+    "response_schema": "response_schema.json", "media_map": "media_map.json",
+    "state": "review.state.json", "validated_final": "review.final.validated.json",
+}
+
+
+def _session_definition():
+    from astrid.core.execution.executor.actions import action_executor_definition
+    from astrid.core.pack.discovery import DiscoveredPack
+    from astrid.core.pack.loader import load_pack_manifest
+
+    root = Path(__file__).resolve().parents[3] / "astrid/packs/iteration"
+    pack = load_pack_manifest(root / "pack.yaml")
+    return action_executor_definition(DiscoveredPack(pack, "source", 0),
+                                      "experiment_review_session", pack.actions["experiment_review_session"])
+
+
+def _child_inputs(root):
+    root.mkdir(exist_ok=True)
+    names = ("review_session.html", "data.json", "response_schema.json", "review.state.json")
+    for name in names:
+        (root / name).write_text("{}" if name.endswith("json") else "<html>review</html>")
+    return dict(html_path=root / names[0], data_path=root / names[1], schema_path=root / names[2],
+                state_path=root / names[3], out_path=root / "review.final.json", mounts={},
+                port=43210, timeout=0, no_open=True)
+
+
+def _review_child(root, *, ok=True, code=None, state="completed", task_id="review-task"):
+    payloads = {"decisions": b'{"decisions":[]}', "state_result": b'{"state_version":2}'}
+    rows = [{"association_id": "association-" + port, "output_port": port,
+             "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data),
+             "ordinal": index} for index, (port, data) in enumerate(payloads.items())]
+    materialized = []
+
+    def materialize(association_id):
+        row = next(row for row in rows if row["association_id"] == association_id)
+        destination = root / "child-outputs" / (row["output_port"] + ".json")
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_bytes(payloads[row["output_port"]])
+        materialized.append(association_id)
+        return SimpleNamespace(output=dict(row), filename=destination.relative_to(root).as_posix())
+
+    return SimpleNamespace(ok=ok, error={"code": code} if code else None,
+        raw_result={"state": state}, kernel_run_id="review-run", kernel_task_id=task_id,
+        kernel_attempt_id="review-attempt", outputs={"managed_outputs": rows if ok else []},
+        materialize_output=materialize, materialized=materialized)
+
+
+class TestPublicHumanReviewComposition:
+    def test_unlimited_wait_reuses_exact_child_and_producer_descriptors(self, tmp_path, monkeypatch):
+        args = _child_inputs(tmp_path / "session")
+        mount = tmp_path / "runs"; mount.mkdir()
+        args["mounts"] = {"/media/one": mount, "/media/two": mount}
+        initial = args["state_path"].read_bytes()
+        results = [_review_child(args["out_path"].parent, ok=False, code="task_wait_timeout", state="running")
+                   for _ in range(2)]
+        completed = _review_child(args["out_path"].parent)
+        results.append(completed)
+        calls = []
+
+        def invoke(capability, **kwargs):
+            calls.append((capability, copy.deepcopy(kwargs)))
+            assert args["state_path"].read_bytes() == initial
+            return results.pop(0)
+
+        monkeypatch.setattr(session_run.sdk, "invoke", invoke)
+        session_run._run_human_review(**args)
+        assert len(calls) == 3 and calls[0] == calls[1] == calls[2]
+        capability, kwargs = calls[0]
+        assert capability == "editorial.human_review" and kwargs["kind"] == "action"
+        assert kwargs["wait"] is True and 0 < kwargs["timeout_seconds"] < float("inf")
+        assert kwargs["child_key"] == session_run._REVIEW_CHILD_KEY
+        assert kwargs["inputs"]["serve"] == [f"/media/one={mount}", f"/media/two={mount}"]
+        assert {name: kwargs["inputs"][name]["filename"] for name in
+                ("html", "data", "response_schema", "state")} == {
+                    "html": "review_session.html", "data": "data.json",
+                    "response_schema": "response_schema.json", "state": "review.state.json"}
+        assert kwargs["inputs"]["timeout"] == 0 and kwargs["inputs"]["port"] == 43210
+        assert kwargs["inputs"]["no_open"] is True and "assets_bundle" not in kwargs["inputs"]
+        assert args["out_path"].read_bytes() == b'{"decisions":[]}'
+        assert args["state_path"].read_bytes() == b'{"state_version":2}'
+        assert len(completed.materialized) == 2
+        receipt = json.loads((args["out_path"].parent / "human_review.child.json").read_text())
+        assert receipt["waits"] == 3 and receipt["task_id"] == "review-task" and receipt["state"] == "completed"
+
+    @pytest.mark.parametrize("code,state", [("task_cancel_requested", "cancel_requested"),
+        ("task_cancelled", "cancelled"), ("task_failed", "failed"),
+        ("task_status_unavailable", "unknown"), ("child_authority_invalid", "unknown")])
+    def test_non_wait_failure_propagates_without_retry_or_materialization(self, tmp_path, monkeypatch, code, state):
+        args = _child_inputs(tmp_path / "session")
+        initial = args["state_path"].read_bytes()
+        result = _review_child(args["out_path"].parent, ok=False, code=code, state=state)
+        calls = []
+        monkeypatch.setattr(session_run.sdk, "invoke", lambda *a, **kw: calls.append(kw) or result)
+        with pytest.raises(AstridError, match="did not complete"):
+            session_run._run_human_review(**args)
+        assert len(calls) == 1 and result.materialized == []
+        assert args["state_path"].read_bytes() == initial and not args["out_path"].exists()
+        assert json.loads((args["out_path"].parent / "human_review.child.json").read_text())["error"]["code"] == code
+
+    def test_positive_timeout_is_passed_through_and_wait_timeout_is_terminal(self, tmp_path, monkeypatch):
+        args = _child_inputs(tmp_path / "session"); args["timeout"] = 7; args["no_open"] = False
+        calls = []
+        result = _review_child(args["out_path"].parent, ok=False, code="task_wait_timeout", state="running")
+        monkeypatch.setattr(session_run.sdk, "invoke", lambda *a, **kw: calls.append(kw) or result)
+        with pytest.raises(AstridError): session_run._run_human_review(**args)
+        assert len(calls) == 1 and calls[0]["inputs"]["timeout"] == 7
+        assert calls[0]["inputs"]["no_open"] is False and calls[0]["timeout_seconds"] == 67.0
+
+    def test_identity_change_between_waits_fails_closed(self, tmp_path, monkeypatch):
+        args = _child_inputs(tmp_path / "session")
+        results = [_review_child(args["out_path"].parent, ok=False, code="task_wait_timeout", state="running"),
+                   _review_child(args["out_path"].parent, task_id="foreign-child")]
+        monkeypatch.setattr(session_run.sdk, "invoke", lambda *a, **kw: results.pop(0))
+        with pytest.raises(AstridError, match="changed the admitted child identity"):
+            session_run._run_human_review(**args)
+        assert not args["out_path"].exists()
+
+    @pytest.mark.parametrize("tamper", ["missing", "duplicate", "bytes", "identity", "escape"])
+    def test_final_materialization_requires_exact_settled_output_custody(self, tmp_path, monkeypatch, tamper):
+        args = _child_inputs(tmp_path / "session")
+        result = _review_child(args["out_path"].parent)
+        rows = result.outputs["managed_outputs"]
+        if tamper == "missing": rows.pop()
+        elif tamper == "duplicate": rows.append(dict(rows[0]))
+        elif tamper == "bytes": rows[0]["digest"] = "sha256:" + "0" * 64
+        else:
+            original = result.materialize_output
+            def materialize(association_id):
+                local = original(association_id)
+                if tamper == "identity": local.output["association_id"] = "foreign"
+                else:
+                    outside = tmp_path / "outside.json"; outside.write_text("secret")
+                    local.filename = str(outside)
+                return local
+            result.materialize_output = materialize
+        monkeypatch.setattr(session_run.sdk, "invoke", lambda *a, **kw: result)
+        with pytest.raises(AstridError): session_run._run_human_review(**args)
+        assert not args["out_path"].exists() and args["state_path"].read_text() == "{}"
+
+    def test_producer_cannot_escape_output_root(self, tmp_path, monkeypatch):
+        args = _child_inputs(tmp_path / "session")
+        outside = tmp_path / "outside.html"; outside.write_text("secret")
+        args["html_path"] = outside
+        monkeypatch.setattr(session_run.sdk, "invoke", lambda *a, **kw: pytest.fail("child must not start"))
+        with pytest.raises(AstridError, match="escapes"): session_run._run_human_review(**args)
+
+
+class TestSessionNamedReceipts:
+    def test_declared_names_and_paths_match_actual_output_contract(self):
+        definition = _session_definition()
+        assert {port.name: port.path_template for port in definition.outputs} == {
+            name: "{out}/" + path for name, path in _EXPECTED_SESSION_OUTPUTS.items()}
+        assert all(port.type == "file" and port.mode == "create_or_replace" for port in definition.outputs)
+        assert definition.metadata["output_result_manifest"] is True
+
+    @pytest.mark.parametrize("finalized", [False, True])
+    def test_named_harvest_has_six_or_seven_receipts(self, session_inputs, tmp_path, finalized):
+        from astrid.core._shared.result_manifest import harvest_staged_outputs
+
+        experiment, runs = session_inputs
+        out = tmp_path / "session"
+        assert session_main(["--experiment", str(experiment), "--runs-dir", str(runs),
+            "--out", str(out), "--skip-server"]) == 0
+        # A prior final file must not become an output of skip_server.
+        (out / "review.final.validated.json").write_text("{}")
+        session_run._write_orchestrator_manifest(out, json.loads(experiment.read_text()), finalized=finalized)
+        rows = harvest_staged_outputs(out, definition=_session_definition())
+        expected = set(_EXPECTED_SESSION_OUTPUTS) - (set() if finalized else {"validated_final"})
+        assert {row["name"] for row in rows} == expected
+        assert len(rows) == (7 if finalized else 6)
+        assert all(Path(row["path"]).parent == out for row in rows)
+        assert (out / "prepare/review.json").read_bytes() == (out / "review.json").read_bytes()
+
+    def test_normal_unfiltered_public_discovery_finds_human_review(self):
+        from astrid import sdk
+
+        capability = sdk.get_capability("editorial.human_review", kind="action")
+        assert capability.id == "editorial.human_review"
+        assert {port.name for port in capability.inputs} >= {"html", "data", "serve", "state", "response_schema"}
+
+
+@pytest.fixture
+def m09_runtime_world(tmp_path, monkeypatch):
+    # Reuse the accepted, audited offline Runtime and normal vendored transport.
+    # This imports no central tests into this module's collection.
+    from tests.core.execution.test_generic_host_child_bridge_d18 import world
+
+    yield from world.__wrapped__(tmp_path, monkeypatch)
+
+
+def test_public_review_session_machine_bound_large_direct_media_and_settlement(m09_runtime_world, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    from urllib.parse import urlsplit
+
+    from astrid.core.execution.generic_host import GenericPackHost
+    from tests.core.execution.test_generic_host_child_bridge_d18 import (
+        _claim_snapshot_task, _real_receiver_url, _real_review_http, _snapshot_task, digest, resource,
+    )
+
+    world = m09_runtime_world
+    candidate = Path(__file__).resolve().parents[3]
+    roots = [candidate / "astrid/packs/iteration", candidate / "astrid/packs/editorial"]
+    parent_id, child_id = "iteration.experiment_review_session", "editorial.human_review"
+    runs = world.tmp / "runs"
+    second_id = "00123456789ABCDEFGHJKMNPQS"
+    _run_with_media(runs); _run_with_media(runs, second_id)
+    media = runs / RUN_ID / "large.mp4"
+    with media.open("wb") as stream:
+        stream.write(b"large-media")
+        stream.truncate(65 * 1024 * 1024)
+    secret = runs / "unselected"; secret.mkdir(); (secret / "secret.txt").write_text("not selected")
+    (runs / RUN_ID / "escape.txt").symlink_to(secret / "secret.txt")
+    experiment_path = _experiment_json(world.tmp / "experiment.json")
+    experiment = json.loads(experiment_path.read_text())
+    experiment["cases"].append({**experiment["cases"][0], "case_id": "case-b", "run_id": second_id})
+    experiment_path.write_text(json.dumps(experiment))
+    raw_experiment = experiment_path.read_bytes()
+    world.service.ingest(world.project, raw_experiment, media_type="application/json",
+                         original_name="experiment.json", idempotency_key="m09-experiment")
+    experiment_descriptor = {"object_id": digest(raw_experiment), "digest": digest(raw_experiment),
+                             "filename": "experiment.json"}
+    parent_host = GenericPackHost(pack_roots=roots, client=world.client, executor_id="worker",
+                                 max_concurrency=2, attempt_root=world.tmp / "m09-parent")
+    child_host = GenericPackHost(pack_roots=roots, client=world.client, executor_id="worker",
+                                max_concurrency=2, attempt_root=world.tmp / "m09-child")
+    parent_host.discover(); child_host.discover()
+    for cid in (parent_id, child_id):
+        record = parent_host.capabilities[cid]
+        world.service.register_capability({"capability_id": cid, "definition_digest": record.capability_digest})
+    world.service.register_executor({"executor_id": "worker", "capabilities": [parent_id, child_id],
+                                    "max_concurrency": 2}, idempotency_key="m09-register")
+    cap = {"capability_id": child_id, "capability_digest": parent_host.capabilities[child_id].capability_digest}
+    policy = {"capabilities": [cap], "targets": [{"kind": "default"}], "input_object_ids": [],
+              "recoverable_outputs": [{**cap, "output_ports": ["state_result"]}],
+              "limits": {"max_children": 1}}
+    machine = world.identity["execution_binding"]["actual"]
+    world.service.create_task({"project": world.project, "capability_id": parent_id,
+        "capability_digest": parent_host.capabilities[parent_id].capability_digest,
+        "input_object_ids": [digest(raw_experiment)],
+        "spec": {"inputs": {"experiment": experiment_descriptor, "runs_dir": str(runs),
+                            "timeout": 0, "no_open": True}},
+        "child_delegation": policy, "execution_request": {"schema_version": 1, "target": machine,
+            "inputs": [{"name": "experiment", **experiment_descriptor, "required": True}]},
+        "idempotency_key": "m09-parent"}, enforce_readiness=True)
+    parent_claim = _claim_snapshot_task(world, parent_id, key="m09-claim-parent")
+    parent_task = _snapshot_task(world, parent_claim)
+    parent_task["execution_binding"] = parent_claim["execution_binding"]
+    launched = threading.Event(); processes = []; child_claims = []
+    original_track = child_host._track_process
+
+    def track(process):
+        original_track(process); processes.append(process); launched.set()
+
+    monkeypatch.setattr(child_host, "_track_process", track)
+
+    def serve_child():
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            claim = None
+            with world.lock:
+                queued = world.service.store.conn.execute(
+                    "SELECT id FROM tasks WHERE capability=? AND status='queued'", (child_id,)).fetchone()
+                if queued:
+                    # Verified foreign placement must not start this mounted child.
+                    foreign = copy.deepcopy(world.identity)
+                    foreign["execution_binding"]["actual"]["id"] = "other-machine"
+                    wrong = world.service.claim_next({"executor_id": "worker", "capability_ids": [child_id],
+                        "runtime_epoch": 1, "target": machine}, idempotency_key="m09-foreign-claim", identity=foreign)
+                    assert set(wrong) == {"task", "waiting_reason"}
+                    assert wrong["waiting_reason"] == "execution_binding_mismatch"
+                    assert wrong["task"]["task_id"] == queued["id"]
+                    assert wrong["task"]["state"] == "queued"
+                    assert wrong["task"]["attempt_id"] is None
+                    assert wrong["task"].get("lease_id") is None
+                    unclaimed = world.service.task(queued["id"])["task"]
+                    assert unclaimed["status"] == "queued"
+                    assert unclaimed["attempt_id"] is None and unclaimed["lease_token"] is None
+                    assert world.service.store.conn.execute(
+                        "SELECT COUNT(*) FROM attempts WHERE task_id=?", (queued["id"],)).fetchone()[0] == 0
+                    claim = _claim_snapshot_task(world, child_id, key="m09-claim-child")
+                    assert claim["task_id"] == queued["id"]
+                    child_claims.append(claim)
+                    task = _snapshot_task(world, claim)
+                    task["execution_binding"] = claim["execution_binding"]
+            if claim is not None:
+                return child_host.run_task({"task": task}, lease_token=claim["lease_id"],
+                    attempt_id=claim["attempt_id"], fence=claim["fence"])
+            time.sleep(0.01)
+        raise AssertionError("public product caller did not admit Human Review")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        child_future = pool.submit(serve_child)
+        parent_future = pool.submit(parent_host.run_task, {"task": parent_task},
+            lease_token=parent_claim["lease_id"], attempt_id=parent_claim["attempt_id"], fence=parent_claim["fence"])
+        try:
+            url = _real_receiver_url(launched, processes, child_future)
+            base = "http://" + urlsplit(url).netloc
+            request = urllib.request.Request(base + f"/media/{RUN_ID}/large.mp4", headers={"Range": "bytes=0-3"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 206 and response.read() == b"larg"
+                assert response.headers["Content-Range"] == f"bytes 0-3/{media.stat().st_size}"
+            assert _real_review_http(url, f"/media/{second_id}/out.png")[0] == 200
+            assert _real_review_http(url, "/media/unselected/secret.txt")[0] == 404
+            assert _real_review_http(url, f"/media/{RUN_ID}/escape.txt")[0] == 403
+            status, raw = _real_review_http(url, "/save", {
+                "experiment_id": "session-test", "base_state_version": 0,
+                "draft": {"case-a.notes": "acknowledged"}})
+            assert status == 200 and json.loads(raw)["state_version"] == 1
+            status, saved = _real_review_http(url, "/state.json")
+            assert status == 200 and json.loads(saved)["draft"]["case-a.notes"] == "acknowledged"
+            assert _real_review_http(url, "/state.json") == (status, saved)  # browser reload
+            final = {"schema_version": 1, "experiment_id": "session-test",
+                "reviewer": {"type": "human", "id": "reviewer"}, "decisions": [
+                    {"case_id": cid, "scores": {"quality": 4}, "verdict": "iterate",
+                     "created": "2026-07-27T00:00:00Z"} for cid in ("case-a", "case-b")]}
+            assert _real_review_http(url, "/submit", final) == (204, b"")
+            assert child_future.result(timeout=15)
+            assert parent_future.result(timeout=15)
+        finally:
+            if not parent_future.done() or not child_future.done():
+                with world.lock:
+                    world.service.cancel_task_canonical(parent_claim["task_id"], {}, idempotency_key="m09-cleanup")
+                parent_host.shutdown(); child_host.shutdown()
+            else:
+                parent_host.shutdown(); child_host.shutdown()
+
+    assert len(child_claims) == 1
+    delegated = [body for _, path, body in world.calls if path == "/v1/delegated-tasks"]
+    assert len(delegated) == 1
+    values = delegated[0]["task"]["spec"]["inputs"]
+    assert values["serve"] == [f"/media/{RUN_ID}={runs / RUN_ID}", f"/media/{second_id}={runs / second_id}"]
+    assert "assets_bundle" not in values
+    from astrid.core.execution._child_bridge import task_resource
+
+    parent = task_resource(world.client.task(parent_claim["task_id"]))
+    child = task_resource(world.client.task(child_claims[0]["task_id"]))
+    assert parent["state"] == child["state"] == "succeeded"
+    assert parent["execution_binding"]["status"] == child["execution_binding"]["status"] == "released"
+    assert parent["execution_binding"]["actual_target"] == child["execution_binding"]["actual_target"] == machine
+    rows, cursor = world.client.generated.list_managed_outputs(parent_claim["task_id"])
+    rows = [resource(row) for row in rows]
+    parent_results = [row for row in rows if row["task_id"] == parent_claim["task_id"]
+                      and row["attempt_id"] == parent_claim["attempt_id"] and row["role"] == "result"]
+    assert cursor is None and len(parent_results) == len(_EXPECTED_SESSION_OUTPUTS)
+    assert {row["output_port"] for row in parent_results} == set(_EXPECTED_SESSION_OUTPUTS)
+    for row in rows:
+        data = world.client.get_object(row["digest"][7:])
+        assert len(data) == row["size"] and digest(data) == row["digest"]
+    state_rows = [row for row in parent_results if row["output_port"] == "state"]
+    assert len(state_rows) == 1
+    assert world.client.get_object(state_rows[0]["digest"][7:]) == saved
+    assert all(path.stat().st_size < 64 * 1024 * 1024
+               for spool in (parent_host.attempt_root, child_host.attempt_root)
+               for path in spool.rglob("*") if path.is_file())
+    assert media.stat().st_size == 65 * 1024 * 1024

@@ -9,30 +9,37 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 from datetime import datetime, timezone
 import hashlib
 import heapq
 import hmac
 import importlib.util
+import io
 import json
 import mimetypes
 import os
+import queue
+import select
 import re
 import secrets as secrets_module
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
+from astrid.core._shared.capability_common import _output_value, _stringify_value
 from astrid.core._shared.result_manifest import (
     HarvestError,
     harvest_staged_outputs,
@@ -54,14 +61,21 @@ from astrid.core.execution.guards import (
     ExecutionGuardError,
     ExecutionGuardPolicy,
 )
+from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
     CapabilityDescriptor,
+    AdmissionToken,
+    StaleAdmissionError,
     ManagedToolSession,
     SessionBinding,
 )
 from astrid.core.execution.process_group import (
+    CleanupUncertainError,
     _process_snapshot,
+    observe_tree,
     popen_owned_group,
+    terminate_tree,
+    verify_tree_absent,
 )
 from astrid.core.execution.process_group import (
     group_exists as _owned_group_exists,
@@ -147,7 +161,12 @@ _RUNTIME_OUTPUT_NAMESPACES = frozenset(
     (
         "images",
         "videos",
+        "video-windows",
         "audio",
+        "tiles",
+        "frames",
+        "cache",
+        "segments",
         "outputs",
         "artifacts",
         "agent-view",
@@ -382,6 +401,300 @@ class _ManagedVibeSessionAdapter:
             evidence, kind="released", native_key="released", reason=reason
         )
 
+
+class _ManagedWanChildAdapter:
+    """One MTS-owned interpreter, using the existing owned-process/JSONL seam."""
+
+    MAX_FRAME_BYTES = 1048576
+
+    def __init__(self, *, spec: Mapping[str, Any], binding: SessionBinding,
+                 readiness_timeout: float, release_timeout: float,
+                 track: Callable[[subprocess.Popen], None],
+                 untrack: Callable[[subprocess.Popen], None]) -> None:
+        self.spec = dict(spec)
+        self.binding = binding
+        self.readiness_timeout = readiness_timeout
+        self.release_timeout = release_timeout
+        self.track = track
+        self.untrack = untrack
+        self.process: subprocess.Popen | None = None
+        self.ready = False
+        self.fenced = threading.Event()
+        self._buffer = bytearray()
+        self._command_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._active_identity: dict[str, Any] | None = None
+        self._native_job_id: str | None = None
+        self._cancel_requested = False
+        self._terminal_frame: dict[str, Any] | None = None
+        self._owner_lock: Any = None
+        self._diagnostic: Any = None
+
+    def start(self) -> None:
+        import fcntl
+
+        owner_dir = Path(self.spec["owner_dir"])
+        owner_dir.mkdir(parents=True, exist_ok=True)
+        from astrid.packs.wan2gp.src.driver import _custody_directory
+
+        # A fresh process birth owns a fresh spool, never owner/spool from a
+        # predecessor process. Native result lists supply file attribution.
+        spool = owner_dir / self.binding.process_birth_id / "spool"
+        with _custody_directory(spool, create=True):
+            pass
+        self.spec["init"]["output_dir"] = str(spool)
+        # Inherited by the child: a host crash cannot unlock a live orphan.
+        # Never read a PID file, adopt an orphan, or terminate a foreign child.
+        fd = os.open(owner_dir / "wan-child.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        self._owner_lock = os.fdopen(fd, "a+b")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self._owner_lock.close()
+            self._owner_lock = None
+            raise HostError("Wan child ownership is occupied; reconcile the prior host") from exc
+        self._diagnostic = (owner_dir / f"wan-{self.binding.process_birth_id}.stderr").open("xb")
+        environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if key in os.environ}
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+        self.process = popen_owned_group(
+            [self.spec["python"], "-m", "astrid.core.execution.generic_host_worker", "--wan-session"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._diagnostic,
+            env=environment, pass_fds=(fd,), cwd=owner_dir,
+        )
+        self.track(self.process)
+        os.set_blocking(self.process.stdin.fileno(), False)
+        deadline = time.monotonic() + self.readiness_timeout
+        self._write({"birth": self.binding.process_birth_id, "root": self.spec["root"],
+                     "init": self.spec["init"]}, deadline)
+        frame = self._read(deadline)
+        if frame.get("kind") != "ready" or frame.get("pid") != self.process.pid:
+            raise HostError(f"Wan child readiness failed: {frame.get('error', 'invalid readiness')}")
+        self.ready = True
+
+    def _write(self, frame: Mapping[str, Any], deadline: float) -> None:
+        data = json.dumps(frame, sort_keys=True).encode() + b"\n"
+        if len(data) > self.MAX_FRAME_BYTES:
+            raise HostError("Wan control frame exceeds bound")
+        if self.process is None or self.process.stdin is None:
+            raise HostError("Wan child is absent")
+        with self._write_lock:
+            fd = self.process.stdin.fileno()
+            while data:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Wan child write timed out")
+                if self.process.poll() is not None:
+                    raise HostError("Wan child exited before command")
+                if select.select([], [fd], [], min(0.05, remaining))[1]:
+                    try:
+                        data = data[os.write(fd, data):]
+                    except BlockingIOError:
+                        pass
+
+    def _read(self, deadline: float) -> dict[str, Any]:
+        if self.process is None or self.process.stdout is None:
+            raise HostError("Wan child is absent")
+        while b"\n" not in self._buffer:
+            if self.fenced.is_set():
+                raise HostError("Wan invocation cancelled or fenced")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Wan child observation timed out")
+            fd = self.process.stdout.fileno()
+            if select.select([fd], [], [], min(0.05, remaining))[0]:
+                data = os.read(fd, 65536)
+                if not data:
+                    raise HostError("Wan child exited without terminal evidence")
+                self._buffer.extend(data)
+                if len(self._buffer) > self.MAX_FRAME_BYTES:
+                    raise HostError("Wan child frame exceeds bound")
+        line, _, remainder = self._buffer.partition(b"\n")
+        self._buffer = bytearray(remainder)
+        frame = json.loads(line)
+        if not isinstance(frame, dict) or frame.get("birth") != self.binding.process_birth_id:
+            raise HostError("stale Wan child session frame")
+        return frame
+
+    @staticmethod
+    def _event_progress(event: Mapping[str, Any]) -> dict[str, Any] | None:
+        if event.get("kind") != "progress":
+            return None
+        data = event.get("data")
+        if not isinstance(data, Mapping):
+            return None
+        progress: dict[str, Any] = {}
+        for key in ("phase", "status"):
+            if data.get(key) is not None:
+                progress[key] = str(data[key])
+        for key in ("progress", "current_step", "total_steps"):
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                progress[{"progress": "percent", "current_step": "current", "total_steps": "total"}[key]] = value
+        return progress or None
+
+    def _record_event(self, frame: Mapping[str, Any], progress_path: Path | None) -> None:
+        if frame.get("identity") != self._active_identity:
+            raise HostError("stale or unexpected Wan invocation frame")
+        native_job_id = frame.get("native_job_id")
+        if not isinstance(native_job_id, str) or not native_job_id:
+            raise HostError("Wan frame lacks native job identity")
+        if frame.get("kind") == "job_started":
+            if self._native_job_id is not None:
+                raise HostError("duplicate native Wan job start")
+            self._native_job_id = native_job_id
+        elif native_job_id != self._native_job_id:
+            raise HostError("native Wan job identity changed during invocation")
+        if progress_path is not None:
+            event = frame.get("event")
+            if isinstance(event, Mapping):
+                progress = self._event_progress(event)
+                if progress:
+                    progress_path.parent.mkdir(parents=True, exist_ok=True)
+                    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+
+    @staticmethod
+    def identity(token: AdmissionToken) -> dict[str, Any]:
+        return {"token_id": token.token_id, "invocation_id": token.invocation_id,
+                "session_id": token.session_id,
+                "generation": token.generation, "binding_identity": list(token.binding_identity)}
+
+    def invoke(self, token: AdmissionToken, settings: Mapping[str, Any], *, timeout: float,
+               cancelled: Callable[[], bool], progress_path: str | Path | None = None) -> dict[str, Any]:
+        if not self._command_lock.acquire(blocking=False):
+            raise HostError("Wan child already has an executing command")
+        try:
+            if cancelled() or self.observe(binding=self.binding).get("ok") is not True:
+                raise HostError("Wan child is not admissible")
+            identity = self.identity(token)
+            self._active_identity = identity
+            self._native_job_id = None
+            self._cancel_requested = False
+            self._terminal_frame = None
+            progress = Path(progress_path).expanduser().resolve() if progress_path is not None else None
+            events: list[dict[str, Any]] = []
+            deadline = time.monotonic() + timeout
+            self._write({"birth": self.binding.process_birth_id, "op": "run",
+                         "identity": identity, "settings": dict(settings)}, deadline)
+            while True:
+                if cancelled() and not self._cancel_requested:
+                    self._send_cancel(identity, deadline)
+                    self._cancel_requested = True
+                read_deadline = min(deadline, time.monotonic() + 0.1)
+                try:
+                    frame = self._read(read_deadline)
+                except TimeoutError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    # Keep the control pipe responsive while native result()
+                    # is still running so a Runtime cancellation can reach
+                    # SessionJob.cancel cooperatively.
+                    continue
+                kind = frame.get("kind")
+                if kind in {"job_started", "event", "event_error", "cancel_requested"}:
+                    self._record_event(frame, progress)
+                    if kind == "event":
+                        events.append(dict(frame))
+                    continue
+                if frame.get("identity") != identity or kind not in {"result", "error"}:
+                    raise HostError("stale or unexpected Wan invocation frame")
+                if kind == "result" or self._native_job_id is not None:
+                    self._record_event(frame, None)
+                self._terminal_frame = frame
+                result = frame.get("result") if kind == "result" else {
+                    "success": False,
+                    "errors": [frame.get("error", "native Wan job failed")],
+                    "generated_files": [],
+                }
+                return {**identity, "native_job_id": self._native_job_id,
+                        "events": events, "result": result,
+                        "birth": self.binding.process_birth_id,
+                        "process_id": self.process.pid,
+                        # The retained child stays alive; this is the native
+                        # command's terminal status, not a child exit code.
+                        "returncode": 0 if kind == "result" and isinstance(result, Mapping)
+                        and result.get("success") is True else 1,
+                        "terminal": kind == "result",
+                        "source_root": self.spec["init"]["output_dir"],
+                        "output_snapshots": frame.get("output_snapshots"),
+                        "native_error": frame.get("error")}
+        finally:
+            self._active_identity = None
+            self._command_lock.release()
+
+    def _send_cancel(self, identity: Mapping[str, Any], deadline: float) -> None:
+        self._write({"birth": self.binding.process_birth_id, "op": "cancel",
+                     "identity": dict(identity)}, deadline)
+
+    def observe(self, *, binding: SessionBinding) -> dict[str, Any]:
+        return {"ok": self.ready and not self.fenced.is_set()
+                and binding == self.binding and self.process is not None and self.process.poll() is None}
+
+    def fence(self, *, reason: str) -> dict[str, Any]:
+        self.fenced.set()
+        return {"ok": True, "fenced": True, "reason": reason}
+
+    def cancel(self, *, reason: str) -> dict[str, Any]:
+        identity = self._active_identity
+        if identity is None:
+            terminal = self._terminal_frame
+            result = terminal.get("result") if isinstance(terminal, Mapping) else None
+            cancelled = isinstance(result, Mapping) and not result.get("success", False)
+            return {"ok": bool(cancelled), "cancelled": bool(cancelled), "reason": reason,
+                    "native_job_id": self._native_job_id}
+        try:
+            self._send_cancel(identity, time.monotonic() + self.release_timeout)
+            self._cancel_requested = True
+            # The host remains fenced by ManagedToolSession until the native
+            # terminal result is observed by the invocation reader.
+            return {"ok": False, "cancelled": False, "cancel_requested": True,
+                    "reason": reason, "native_job_id": self._native_job_id}
+        except (HostError, OSError, TimeoutError):
+            self.fence(reason=reason)
+            return {"ok": False, "cancelled": False, "reason": reason}
+
+    def release(self, *, reason: str) -> dict[str, Any]:
+        self.fence(reason=reason)
+        process = self.process
+        if process is not None:
+            if process.poll() is None:
+                try:
+                    self._write({"birth": self.binding.process_birth_id, "op": "close"},
+                                time.monotonic() + self.release_timeout)
+                    process.wait(timeout=self.release_timeout)
+                except (OSError, ValueError, HostError, TimeoutError, subprocess.TimeoutExpired):
+                    _terminate_process_group(process, grace_seconds=self.release_timeout)
+            _release_owned_group(process)
+            # Close() or a clean leader exit alone cannot prove group release.
+            snapshot = _process_snapshot()
+            if not snapshot:
+                raise HostError("Wan child release census unavailable")
+            ps = subprocess.run(["/bin/ps", "-axo", "pid=,pgid="], capture_output=True, timeout=1, check=False)
+            if ps.returncode != 0:
+                raise HostError("Wan child release census failed")
+            members = [row.split() for row in ps.stdout.decode().splitlines()]
+            group_live = any(len(row) == 2 and row[1] == str(process.pid) for row in members)
+            if process.poll() is None or group_live or any(info.pgid == process.pid for info in snapshot.values()):
+                return {"ok": False, "released": False, "reason": reason}
+            # Retire the reader before closing/reusing pipe descriptors. The
+            # command may be unwinding concurrently with MTS replacement.
+            if not self._command_lock.acquire(timeout=self.release_timeout):
+                return {"ok": False, "released": False, "reason": reason}
+            try:
+                self.untrack(process)
+                for pipe in (process.stdin, process.stdout):
+                    if pipe is not None:
+                        pipe.close()
+            finally:
+                self._command_lock.release()
+        if self._diagnostic is not None:
+            self._diagnostic.close()
+        if self._owner_lock is not None:
+            self._owner_lock.close()
+            self._owner_lock = None
+        self.ready = False
+        return {"ok": True, "released": True, "exit_code": process.returncode if process else None}
+
 class HostRegistrationError(HostError):
     """A typed, request-correlated executor registration failure."""
 
@@ -564,6 +877,46 @@ def _completed_process_evidence(
     }
 
 
+def _bind_host_owned_command_outputs(
+    record: "CapabilityRecord", values: dict[str, Any], *, output_root: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep command inputs intact and resolve separate host-owned harvest paths."""
+    root = output_root.resolve()
+    outputs = record.definition.outputs
+    names = {name for output in outputs for name in (output.name, output.placeholder) if name}
+    if names & {"out", "run_root", "python_exec"}:
+        raise HostError(f"capability {record.id!r}: output binding overlaps a host runtime value")
+    effective = dict(values)
+    for port in record.definition.inputs:
+        if port.default is not None:
+            effective.setdefault(port.name, port.default)
+    if any(output.name == "video" for output in outputs):
+        effective.setdefault("output_name", "hype.mp4")
+    declared_inputs = {}
+    for port in record.definition.inputs:
+        if port.name in effective:
+            declared_inputs[port.name] = effective[port.name]
+    # Legitimate declared inputs can supply output-template values. Raw caller
+    # output-only names/aliases cannot choose destinations. Earlier resolved
+    # outputs replace the seed for later templates, matching the runner.
+    bound = {name: value for name, value in effective.items() if name not in names}
+    bound.update(declared_inputs)
+    placeholders = {name: _stringify_value(value) for name, value in bound.items() if value is not None}
+    request = SimpleNamespace(out=root, outputs={})
+    for output in outputs:
+        path = Path(_output_value(output, request, placeholders, error_cls=HostError)).expanduser()
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_relative_to(root):
+            raise HostError(f"capability {record.id!r}: declared output {output.name!r} escapes output root")
+        value = str(path)
+        bound[output.name] = placeholders[output.name] = value
+        if output.placeholder:
+            bound[output.placeholder] = placeholders[output.placeholder] = value
+    # The runner restores inputs for command binding but keeps resolved outputs
+    # for harvesting. expand_command also derives input aliases from port names.
+    return {**bound, **declared_inputs}, bound
+
+
 def _bind_host_owned_command_values(
     record: "CapabilityRecord",
     values: dict[str, Any],
@@ -645,7 +998,7 @@ def _prepare_vibecomfy_execution_identity(
     readiness_profile: Mapping[str, Any] | None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
-    from astrid.packs.vibecomfy.executors._bundle_inputs import staged_workflow_path
+    from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
     from astrid.packs.vibecomfy.production_engine import (
         load_workflow_path,
         loaded_workflow_execution_identity,
@@ -809,7 +1162,17 @@ def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float 
     ``waitpid``-reaped here; killing the owned session is the relevant
     containment guarantee.
     """
+    if hasattr(process, "_astrid_tree_members") or hasattr(process, "_astrid_tree_uncertain"):
+        try:
+            terminate_tree(process, grace_seconds=grace_seconds)
+        except BaseException:
+            # Best-effort cleanup of the private group cannot certify absence
+            # of detached writers, nor erase a failed earlier tree census.
+            _terminate_owned_group(process, grace_seconds=grace_seconds)
+            raise
     _terminate_owned_group(process, grace_seconds=grace_seconds)
+    if hasattr(process, "_astrid_tree_members"):
+        verify_tree_absent(process)
 
 
 def _confined_cwd(
@@ -1032,6 +1395,77 @@ def _tcp_broker_supports(policy: Mapping[str, Any] | None) -> bool:
     if isinstance(protocols, str):
         protocols = (protocols,)
     return not any(str(protocol).lower() in {"udp", "quic"} for protocol in (protocols or ()))
+
+
+_STRICT_NETWORK_HOOK_SOURCE = (
+    "def install_host_network(policy, broker_required):\n"
+    "    return policy.install_from_environment(strict=True, broker_required=broker_required)\n"
+)
+
+# -I -S keeps automatic site/pack imports out of this admission prerequisite.
+# Load only the exact host policy and hook; restore dependency paths afterwards.
+_STRICT_NETWORK_STARTUP = r"""
+import hashlib, importlib.machinery, json, os, pathlib, sys, types
+try:
+    config = json.loads(sys.argv[1])
+    hook_path = pathlib.Path(config['hook'])
+    search = [os.getcwd(), *config['imports'], *sys.path]
+    found = importlib.machinery.PathFinder.find_spec('sitecustomize', search)
+    if found is None or pathlib.Path(found.origin).resolve() != hook_path.resolve():
+        raise RuntimeError('missing or shadowed host hook')
+    hook_source = hook_path.read_bytes()
+    if hashlib.sha256(hook_source).hexdigest() != config['hook_sha256']:
+        raise RuntimeError('host hook changed')
+    policy_path = pathlib.Path(config['policy'])
+    policy_source = policy_path.read_bytes()
+    if hashlib.sha256(policy_source).hexdigest() != config['policy_sha256']:
+        raise RuntimeError('host policy changed')
+    name = 'astrid.core.execution.network_policy'
+    policy = types.ModuleType(name)
+    policy.__file__ = str(policy_path)
+    sys.modules[name] = policy
+    exec(compile(policy_source, str(policy_path), 'exec'), policy.__dict__)
+    hook = {}
+    exec(compile(hook_source, str(hook_path), 'exec'), hook)
+    if hook['install_host_network'](policy, config['broker_required']) is not True:
+        raise RuntimeError('network hook did not install')
+except BaseException:
+    os.write(2, b'astrid network startup failed\n')
+    os._exit(78)
+# Recreate the admitted interpreter dependency setup after network startup.
+# site.main restores venv paths without running another customizable hook.
+import site
+site.execsitecustomize = lambda: None
+site.execusercustomize = lambda: None
+site.main()
+sys.path[:0] = list(dict.fromkeys(config['imports']))
+sys.path.insert(0, os.getcwd())
+import runpy
+sys.argv = [config['module'], *sys.argv[2:]]
+runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
+"""
+
+
+def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool) -> list[str]:
+    """Host-selected strict D18 startup, independent of action environment flags."""
+    arguments = list(argv[1:])
+    flags = []
+    while arguments and arguments[0] in {"-u", "-B"}:
+        flags.append(arguments.pop(0))
+    if len(arguments) < 2 or arguments[0] != "-m" or arguments[1] != "astrid.core.execution.generic_host_worker":
+        raise HostError("strict network startup requires the host Python worker")
+    policy_path = Path(__file__).with_name("network_policy.py").resolve()
+    config = {
+        "hook": str(attempt / ".astrid-network-hook" / "sitecustomize.py"),
+        "hook_sha256": hashlib.sha256(_STRICT_NETWORK_HOOK_SOURCE.encode()).hexdigest(),
+        "policy": str(policy_path),
+        "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+        "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
+        "module": arguments[1],
+        "broker_required": broker_required,
+    }
+    return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
+            json.dumps(config, sort_keys=True), *arguments[2:]]
 
 
 def _network_sandbox_argv(argv: list[str], attempt: Path, endpoint: str | None) -> list[str]:
@@ -1396,25 +1830,29 @@ def _execution_contract(
     # no carried contract there is nothing to validate here; preserve that
     # compatibility path and let the ordinary capability checks continue.
     if envelope is None:
+        if task_data.get("execution_request") is not None:
+            raise HostError("execution_request requires its immutable spec envelope")
         return None
     if not isinstance(envelope, Mapping):
         raise HostError("runtime task is missing its immutable spec envelope")
-    request = envelope.get("execution_request")
+    request = task_data.get("execution_request")
     nested = _admitted_spec_envelope(envelope)
-    nested_request = nested.get("execution_request")
-    if request is None:
-        request = nested_request
-    elif nested_request is not None and request != nested_request:
-        raise HostError("runtime task has conflicting execution_request values")
+    for carried in (envelope.get("execution_request"), nested.get("execution_request")):
+        if request is None:
+            request = carried
+        elif carried is not None and _canonical_digest(request) != _canonical_digest(carried):
+            raise HostError("runtime task has conflicting execution_request values")
     if request is None:
         return None
+    if not envelope or ("inputs" in nested and not isinstance(nested["inputs"], Mapping)):
+        raise HostError("execution_request requires a usable immutable spec envelope")
     try:
         normalized = normalize_execution_request(request)
     except ValueError as exc:
         raise HostError(f"invalid execution_request: {exc}") from exc
     if normalized is None or not isinstance(request, Mapping):
         raise HostError("invalid execution_request")
-    if dict(request) != normalized:
+    if _canonical_digest(dict(request)) != _canonical_digest(normalized):
         raise HostError("runtime task execution_request is not normalized")
 
     declared = normalized.get("inputs", [])
@@ -1522,6 +1960,1346 @@ def _execution_contract(
             raise HostError(f"task target binding {key} disagrees with execution_request")
     _assert_verified_placement_binding(binding, target)
     return normalized
+
+
+@dataclass
+class _ReviewIntervalAccounting:
+    """Credit only gaps bracketed by two complete, matching live readbacks."""
+
+    verify: Callable[[], frozenset[tuple[str, ...]]]
+    credited_seconds: float = 0.0
+    previous_claims: frozenset[tuple[str, ...]] = frozenset()
+    previous_end: float | None = None
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+    _generation: int = field(default=0, init=False, repr=False)
+    _inflight: int = field(default=0, init=False, repr=False)
+
+    def sample(self, *, executing: bool) -> None:
+        cycle_start = time.monotonic()
+        # Reserve local state only. Runtime reads and callbacks must be able to
+        # reenter or overlap without waiting for this sample's verification.
+        with self._lock:
+            overlapping = self._inflight != 0
+            self._generation += 1
+            generation = self._generation
+            self._inflight += 1
+            if overlapping:
+                self.previous_claims = frozenset()
+                self.previous_end = None
+            previous_claims, previous_end = self.previous_claims, self.previous_end
+        try:
+            claims = self.verify()
+            cycle_end = time.monotonic()
+        except BaseException:
+            # A failure invalidates every outstanding result, including a late
+            # success. Propagate the original failure after releasing the lock.
+            with self._lock:
+                self._inflight -= 1
+                self._generation += 1
+                self.previous_claims = frozenset()
+                self.previous_end = None
+            raise
+        with self._lock:
+            self._inflight -= 1
+            if overlapping or generation != self._generation:
+                # Neither an overlapping success nor an older result can revive
+                # continuity. A later independent cycle must establish it anew.
+                self._generation += 1
+                self.previous_claims = frozenset()
+                self.previous_end = None
+                return
+            if (executing and previous_end is not None
+                    and previous_claims.intersection(claims)):
+                # Count a union, even when several reviews overlap. Initial
+                # admission, verification and uncertain terminal tails cost time.
+                self.credited_seconds += max(0.0, cycle_start - previous_end)
+            self.previous_claims = claims if executing else frozenset()
+            self.previous_end = cycle_end if executing else None
+
+
+@dataclass
+class _AttemptLifetime:
+    """One host-owned decision; only admitted execution can outlive setup."""
+
+    policy: ExecutionGuardPolicy
+    started_at: float
+    runtime_limit: float | None
+    authority: Callable[[], None] | None = None
+    phase: str = "setup"
+    collection_deadline: float | None = None
+    collection_seconds: float | None = None
+    review: _ReviewIntervalAccounting | None = None
+
+    def deadline(self) -> float | None:
+        ordinary = self.started_at + self.policy.deadline_seconds
+        if self.review is not None and self.phase != "setup":
+            ordinary += self.review.credited_seconds
+        if self.authority is not None and self.phase == "execution":
+            deadline = None
+        elif self.authority is not None and self.phase == "collection":
+            deadline = self.collection_deadline
+        else:
+            deadline = ordinary
+        if self.runtime_limit is not None:
+            absolute = self.started_at + self.runtime_limit
+            deadline = absolute if deadline is None else min(deadline, absolute)
+        if self.collection_deadline is not None:
+            deadline = self.collection_deadline if deadline is None else min(deadline, self.collection_deadline)
+        return deadline
+
+    def assert_authority(self) -> None:
+        if self.authority is not None:
+            self.authority()
+        if self.review is not None:
+            self.review.sample(executing=self.phase == "execution")
+
+    def expired(self) -> bool:
+        deadline = self.deadline()
+        return deadline is not None and self.policy.deadline_expired(deadline)
+
+    def assert_deadline(self) -> None:
+        self.assert_authority()
+        deadline = self.deadline()
+        if deadline is not None:
+            self.policy.assert_deadline(deadline)
+
+    def begin_execution(self) -> None:
+        self.assert_deadline()
+        self.phase = "execution"
+
+    def begin_collection(self, collection_limit: float | None) -> None:
+        # Freeze once at execution completion, never on a poll or SDK wait.
+        if self.phase != "execution":
+            raise HostError("invalid attempt lifetime phase")
+        self.assert_deadline()
+        self.phase = "collection"
+        if collection_limit is not None or self.authority is not None or self.review is not None:
+            self.collection_seconds = collection_limit if collection_limit is not None else self.policy.deadline_seconds
+            self.collection_deadline = time.monotonic() + self.collection_seconds
+
+    def receipt(self) -> dict[str, Any]:
+        return {
+            "lifetime": ("lease_bound_interactive" if self.authority is not None else
+                         "verified_review_intervals" if self.review is not None else "bounded"),
+            "deadline_seconds": (self.runtime_limit if self.authority is not None else
+                                 min(self.policy.deadline_seconds, self.runtime_limit)
+                                 if self.runtime_limit is not None else self.policy.deadline_seconds),
+            "setup_seconds": min(self.policy.deadline_seconds, self.runtime_limit)
+            if self.runtime_limit is not None else self.policy.deadline_seconds,
+            "collection_seconds": self.collection_seconds,
+            **({"verified_review_seconds": self.review.credited_seconds} if self.review is not None else {}),
+        }
+
+
+def _interactive_admission_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Pin admission while allowing only Runtime's top-level registry updates."""
+    if not isinstance(spec, Mapping):
+        raise HostError("invalid interactive admission spec")
+    return {key: value for key, value in spec.items() if key != "derived_input_registry"}
+
+
+def _interactive_review_authority(
+    host: Any, task: Mapping[str, Any], record: CapabilityRecord, *,
+    attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
+) -> Callable[[], None] | None:
+    """Fail closed unless public Runtime reads prove the entire M09 conjunction.
+
+    Private lineage stays in this closure. No worker input or environment carries
+    it, and no authority issuance or parent heartbeat is needed by a child.
+    """
+    from ._child_bridge import _snapshot_grant, task_resource
+    from astrid.sdk._child_bridge import _validate_child_policy
+
+    parent_id = "iteration.experiment_review_session"
+    child_id = "editorial.human_review"
+    if record.id not in {parent_id, child_id}:
+        return None
+
+    def effective(value: Mapping[str, Any], capability: CapabilityRecord) -> dict[str, Any]:
+        inputs = _admitted_task_spec(value).get("inputs", {})
+        if not isinstance(inputs, Mapping):
+            raise HostError("invalid interactive inputs")
+        result = {port.name: port.default for port in capability.definition.inputs if port.default is not None}
+        result.update(inputs)
+        return result
+
+    def live(value: Mapping[str, Any], expected: Mapping[str, Any], capability: CapabilityRecord) -> Mapping[str, Any]:
+        binding = value.get("execution_binding")
+        spec = value.get("spec")
+        if (not isinstance(binding, Mapping) or binding.get("status") != "claimed"
+                or not isinstance(spec, Mapping)
+                or value.get("state", value.get("status")) != "running"
+                or value.get("task_id", value.get("id")) != expected["task_id"]
+                or value.get("attempt_id") != expected["attempt_id"]
+                or type(value.get("runtime_epoch")) is not int or value["runtime_epoch"] != runtime_epoch
+                or type(value.get("lease_fence")) is not int or value["lease_fence"] != expected["fence"]
+                or value.get("capability_id", value.get("capability")) != capability.id
+                or value.get("capability_digest") != capability.capability_digest
+                or spec.get("capability_digest") != capability.capability_digest
+                or spec.get("delegation_closed_attempt_id") == expected["attempt_id"]):
+            raise HostError("interactive attempt authority changed")
+        for name, pinned in expected.items():
+            if binding.get(name) != pinned or (name in {"fence", "runtime_epoch"}
+                                               and type(binding.get(name)) is not int):
+                raise HostError("interactive attempt fence changed")
+        expiry = value.get("lease_expires_at")
+        if type(expiry) is not str:
+            raise HostError("missing interactive lease deadline")
+        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+            raise HostError("interactive lease ended")
+        contract = _execution_contract(value)
+        target = contract.get("target") if contract else None
+        if (not isinstance(target, Mapping) or target.get("kind") != "machine"
+                or type(target.get("id")) is not str or not target["id"]
+                or binding.get("placement_version") is None
+                or type(binding["placement_version"]) is not int
+                or binding["placement_version"] < 0):
+            raise HostError("interactive review requires verified machine placement")
+        _assert_verified_placement_binding(binding, target)
+        return binding
+
+    try:
+        if type(runtime_epoch) is not int or runtime_epoch < 1 or type(fence) is not int:
+            return None
+        parent_record = host.capabilities[parent_id]
+        child_record = host.capabilities[child_id]
+        if record.capability_digest != task.get("capability_digest", task.get("spec", {}).get("capability_digest")):
+            return None
+        own_id = task.get("task_id", task.get("id"))
+        own_expected = {"task_id": own_id, "attempt_id": attempt_id, "lease_id": lease_id,
+                        "fence": fence, "runtime_epoch": runtime_epoch}
+        own = task_resource(host.client.task(own_id))
+        own_binding = live(own, own_expected, record)
+        if (_canonical_digest(_interactive_admission_spec(own.get("spec")))
+                != _canonical_digest(_interactive_admission_spec(task.get("spec")))
+                or _canonical_digest(own_binding) != _canonical_digest(task.get("execution_binding"))):
+            return None
+        own_inputs = effective(own, record)
+        if type(own_inputs.get("timeout")) is not int or own_inputs["timeout"] != 0:
+            return None
+        lineage = own["spec"].get("delegated_parent") if record.id == child_id else None
+        if record.id == child_id:
+            if (not isinstance(lineage, Mapping) or set(lineage) != {
+                    "parent_task_id", "parent_attempt_id", "parent_lease_id", "parent_fence", "runtime_epoch",
+                    "executor_id", "parent_placement", "parent_effective_target", "parent_placement_version",
+                    "project_id", "policy_digest"}
+                    or type(lineage.get("parent_fence")) is not int
+                    or type(lineage.get("runtime_epoch")) is not int
+                    or type(lineage.get("parent_placement_version")) is not int
+                    or not all(type(lineage.get(k)) is str and lineage[k] for k in (
+                        "parent_task_id", "parent_attempt_id", "parent_lease_id", "executor_id", "policy_digest"))):
+                return None
+            parent_expected = {"task_id": lineage["parent_task_id"], "attempt_id": lineage["parent_attempt_id"],
+                               "lease_id": lineage["parent_lease_id"], "fence": lineage["parent_fence"],
+                               "runtime_epoch": lineage["runtime_epoch"], "executor_id": lineage["executor_id"]}
+            parent = task_resource(host.client.task(lineage["parent_task_id"]))
+        else:
+            parent, parent_expected = own, own_expected
+        parent_binding = live(parent, parent_expected, parent_record)
+        parent_inputs = effective(parent, parent_record)
+        if (type(parent_inputs.get("timeout")) is not int or parent_inputs["timeout"] != 0
+                or parent_inputs.get("skip_server") is not False):
+            return None
+        runs_dir = parent_inputs.get("runs_dir")
+        if type(runs_dir) is not str or not Path(runs_dir).is_absolute() or not Path(runs_dir).is_dir():
+            return None
+        policy = _validate_child_policy(parent["spec"].get("child_delegation"))
+        required_limits = {"max_children", "max_active_children", "max_derived_objects", "max_derived_bytes",
+                           "max_child_inputs", "max_child_bytes", "max_recoverable_snapshots",
+                           "max_recoverable_bytes", "max_snapshot_bytes"}
+        if policy is None or set(policy.get("limits", {})) != required_limits:
+            return None
+        # These are the admitted D18 readback ceilings, not execution defaults.
+        ceilings = {"max_children": 4096, "max_active_children": 64, "max_derived_objects": 1024,
+                    "max_derived_bytes": 4 * 1024**3, "max_child_inputs": 256, "max_child_bytes": 256 * 1024**2,
+                    "max_recoverable_snapshots": 1024, "max_recoverable_bytes": 4 * 1024**3,
+                    "max_snapshot_bytes": 64 * 1024**2}
+        if any(policy["limits"][key] > ceilings[key] for key in required_limits):
+            return None
+        caps = policy["capabilities"]
+        if any(not isinstance(cap, Mapping) or set(cap) != {"capability_id", "capability_digest"}
+               or type(cap.get("capability_id")) is not str or not cap["capability_id"]
+               or type(cap.get("capability_digest")) is not str
+               or re.fullmatch(r"sha256:[0-9a-f]{64}", cap["capability_digest"]) is None for cap in caps):
+            return None
+        if len({cap["capability_id"] for cap in caps}) != len(caps):
+            return None
+        for target in policy["targets"]:
+            normalized = normalize_execution_request({"schema_version": 1, "target": target})
+            if _canonical_digest(target) != _canonical_digest(normalized["target"]):
+                return None
+        roots = policy["input_object_ids"]
+        if (any(type(oid) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", oid) is None for oid in roots)
+                or len(set(roots)) != len(roots) or not set(roots) <= set(parent.get("input_object_ids", []))):
+            return None
+        grant = {"capability_id": child_id, "capability_digest": child_record.capability_digest,
+                 "output_ports": ["state_result"]}
+        if policy.get("recoverable_outputs") != [grant]:
+            return None
+        if record.id == child_id:
+            frozen = _snapshot_grant(own)
+            expected_grant = {**grant, "limits": {key: policy["limits"][key] for key in (
+                "max_snapshot_bytes", "max_recoverable_bytes", "max_recoverable_snapshots")},
+                "parent_attempt_id": parent_expected["attempt_id"], "policy_digest": _canonical_digest(policy)}
+            placement = {"actual": parent_binding["actual_target"], "verification": parent_binding["verification"],
+                         "executor_incarnation": parent_binding["executor_incarnation"]}
+            if (frozen != expected_grant or lineage["policy_digest"] != _canonical_digest(policy)
+                    or lineage["runtime_epoch"] != runtime_epoch
+                    or lineage["project_id"] != parent.get("project_id") or own.get("project_id") != parent.get("project_id")
+                    or lineage["parent_placement"] != placement
+                    or lineage["parent_effective_target"] != parent_binding.get("effective_target")
+                    or lineage["parent_placement_version"] != parent_binding["placement_version"]
+                    or own_binding["actual_target"] != parent_binding["actual_target"]
+                    or own_binding.get("resolved_target") != parent_binding.get("effective_target")):
+                return None
+        # Pin immutable admission and binding, while allowing the live expiry to
+        # advance on the parent's own heartbeats. Different executors are valid.
+        pinned = [(own_id, own_expected, record, json.loads(json.dumps(_interactive_admission_spec(own["spec"]))),
+                   json.loads(json.dumps(own_binding)), own.get("execution_request"), own.get("project_id"))]
+        if record.id == child_id:
+            pinned.append((parent_expected["task_id"], parent_expected, parent_record,
+                           json.loads(json.dumps(_interactive_admission_spec(parent["spec"]))), json.loads(json.dumps(parent_binding)),
+                           parent.get("execution_request"), parent.get("project_id")))
+        pinned = [(tid, expected, capability, spec, binding, json.loads(json.dumps(request)), project)
+                  for tid, expected, capability, spec, binding, request, project in pinned]
+
+        def validate() -> None:
+            health = host.client.health()
+            epoch = health.get("runtime_epoch") if isinstance(health, Mapping) else getattr(health, "runtime_epoch", None)
+            if type(epoch) is not int or epoch != runtime_epoch:
+                raise HostError("interactive Runtime epoch changed")
+            for tid, expected, capability, admitted_spec, admitted_binding, admitted_request, project in pinned:
+                current = task_resource(host.client.task(tid))
+                binding = live(current, expected, capability)
+                if (_canonical_digest(_interactive_admission_spec(current["spec"])) != _canonical_digest(admitted_spec)
+                        or _canonical_digest(binding) != _canonical_digest(admitted_binding)
+                        or _canonical_digest(current.get("execution_request")) != _canonical_digest(admitted_request)
+                        or current.get("project_id") != project):
+                    raise HostError("interactive admission or placement changed")
+
+        validate()
+        return validate
+    except Exception:
+        # Missing/malformed admission or failed initial readback gets the
+        # ordinary bound. Once admitted, any later loss cancels the attempt.
+        return None
+
+
+class _DiscoveryCollection:
+    """Private metadata preparation under one persisted discovery grant.
+
+    The collection-local client caps metadata acquisition before generated typed
+    projection, including HTTP errors. Finite reads admit at most the remaining
+    byte budget plus one sentinel byte; this is not a process-memory bound.
+    No object authority, action input or new transport operation is created here.
+    """
+
+    def __init__(self, client: Any, parent: Mapping[str, Any], *, attempt_id: str,
+                 lease_id: str, fence: int, runtime_epoch: int,
+                 cancelled: Callable[[], bool]):
+        from astrid.sdk._child_bridge import _validate_child_policy
+
+        spec = parent.get("spec")
+        if not isinstance(spec, Mapping) or "delegated_parent" in spec:
+            raise HostError("discovery requires an admitted root parent")
+        try:
+            policy = _validate_child_policy(spec.get("child_delegation"))
+        except Exception as exc:
+            raise HostError("invalid persisted discovery policy") from exc
+        if policy is None or "discovery_grant" not in policy:
+            raise HostError("discovery requires a persisted finite grant")
+        self.grant = copy.deepcopy(policy["discovery_grant"])
+        if (parent.get("project_id") != self.grant["project_id"]
+                or parent.get("capability_id", parent.get("capability")) != self.grant["capability_id"]
+                or parent.get("capability_digest") != self.grant["capability_digest"]
+                or spec.get("capability_digest") != self.grant["capability_digest"]
+                or type(fence) is not int or fence < 1
+                or type(runtime_epoch) is not int or runtime_epoch < 1
+                or any(type(value) is not str or not value for value in (attempt_id, lease_id))):
+            raise HostError("discovery grant disagrees with parent identity")
+        self.parent = json.loads(json.dumps(parent, allow_nan=False))
+        self.expected = {"task_id": self._id(parent, "task_id", "id"),
+                         "attempt_id": attempt_id, "lease_id": lease_id,
+                         "fence": fence, "runtime_epoch": runtime_epoch}
+        self.cancelled = cancelled
+        self.failed = False
+        self.read_attempts = 0
+        self.examined_rows = 0
+        self.raw_metadata_bytes = 0
+        self.canonical_metadata_bytes = 0
+        self.rejected_read: dict[str, int | str] | None = None
+        self._raw: dict[str, Any] | None = None
+        self._collected_outputs: tuple[str, ...] | None = None
+        self._verified_objects: dict[str, bytes] = {}
+        self._prepared_objects: tuple[str, ...] | None = None
+        self._object_read = False
+        self.acquired_object_bytes = 0
+        # Never patch the shared authenticated client used by heartbeat/custody.
+        self._reader = copy.copy(client.generated)
+        original_request = self._reader._request
+
+        def observed_request(*args: Any, **kwargs: Any) -> Any:
+            self._active()
+            self.read_attempts += 1
+            if not self._object_read:
+                limit = self.grant["limits"]["max_discovery_metadata_bytes"]
+                if type(limit) is not int or limit <= self.raw_metadata_bytes:
+                    self._stop("invalid or exhausted discovery raw metadata budget")
+                remaining = limit - self.raw_metadata_bytes
+
+                def metadata_reader(stream: Any) -> bytes:
+                    chunks: list[bytes] = []
+                    acquired = 0
+                    while True:
+                        self._active()
+                        chunk = stream.read(min(65536, remaining + 1 - acquired))
+                        if type(chunk) is not bytes:
+                            chunks.clear()
+                            chunk = b""
+                            self._stop("invalid discovery response body", size=acquired)
+                        acquired += len(chunk)
+                        if acquired > remaining:
+                            chunks.clear()
+                            chunk = b""
+                            self._stop("discovery raw metadata budget exceeded", size=acquired)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    self.raw_metadata_bytes += acquired
+                    body = b"".join(chunks)
+                    chunks.clear()
+                    try:
+                        self._observe_metadata(body)
+                    except Exception:
+                        body = b""
+                        raise
+                    return body
+
+                kwargs["response_reader"] = metadata_reader
+            try:
+                response = original_request(*args, **kwargs)
+            except Exception:
+                self.failed = True
+                raise
+            self._active()
+            body = response[2]
+            if type(body) is not bytes:
+                self._stop("invalid discovery response body")
+            if self._object_read:
+                # Binary bodies are not discovery JSON metadata. The generated
+                # transport still acquires them in full before this observer.
+                self.acquired_object_bytes += len(body)
+                return response
+            return response
+
+        self._reader._request = observed_request
+
+    def _observe_metadata(self, body: bytes) -> None:
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in items:
+                if key in value:
+                    raise ValueError("duplicate discovery JSON key")
+                value[key] = item
+            return value
+
+        valid = True
+        try:
+            value = json.loads(body, object_pairs_hook=pairs,
+                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+        except (ValueError, UnicodeDecodeError):
+            valid = False
+        body = b""
+        if not valid:
+            # Raise outside the decoder's exception context; never retain its
+            # truncated document in the terminal policy exception.
+            self._stop("invalid discovery metadata JSON")
+        if type(value) is not dict:
+            self._stop("invalid discovery metadata object")
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.canonical_metadata_bytes += len(canonical)
+        if "items" in value:
+            if (type(value["items"]) is not list or "next_cursor" not in value
+                    or value["next_cursor"] is not None
+                    and (type(value["next_cursor"]) is not str or not value["next_cursor"])):
+                self._stop("invalid discovery metadata page")
+            rows = len(value["items"])
+        else:
+            rows = 1
+        self.examined_rows += rows
+        if self.examined_rows > self.grant["limits"]["max_discovery_rows"]:
+            self._stop("discovery row budget exceeded")
+        self._raw = value
+
+    @staticmethod
+    def _id(value: Mapping[str, Any], key: str, alias: str) -> str:
+        result = value.get(key, value.get(alias))
+        if (type(result) is not str or not result or "*" in result
+                or key in value and alias in value and value[key] != value[alias]):
+            raise HostError("invalid discovery resource identity")
+        return result
+
+    def _stop(self, reason: str, *, size: int = 0) -> None:
+        self.failed = True
+        if self.rejected_read is None:
+            self.rejected_read = {"reason": reason, "attempted_call_index": self.read_attempts,
+                                  "accepted_bytes_before_rejection": self.raw_metadata_bytes,
+                                  "raw_metadata_bytes_lower_bound": self.raw_metadata_bytes + size}
+        raise HostError(reason)
+
+    def _active(self) -> None:
+        if self.failed:
+            raise HostError("discovery collection already ended")
+        if self.cancelled():
+            self._stop("discovery parent cancelled")
+
+    def _read(self, operation: str, identifier: str) -> dict[str, Any]:
+        self._active()
+        self._raw = None
+        try:
+            getattr(self._reader, operation)(identifier)
+            if self._raw is None:
+                self._stop("discovery response was not observed")
+            return self._raw
+        except Exception:
+            # Generated parsing, transport and identity failures are terminal;
+            # no best-effort retry may bypass a failed budget or cancellation.
+            self.failed = True
+            raise
+
+    def _parent_authority(self) -> None:
+        current = self._read("get_task", self.expected["task_id"])
+        binding = current.get("execution_binding")
+        spec = current.get("spec")
+        if (self._id(current, "task_id", "id") != self.expected["task_id"]
+                or current.get("state", current.get("status")) != "running"
+                or current.get("attempt_id") != self.expected["attempt_id"]
+                or type(current.get("runtime_epoch")) is not int
+                or current["runtime_epoch"] != self.expected["runtime_epoch"]
+                or type(current.get("lease_fence")) is not int
+                or current["lease_fence"] != self.expected["fence"]
+                or not isinstance(spec, Mapping) or not isinstance(binding, Mapping)
+                or binding.get("status") != "claimed"
+                or any(binding.get(key) != value or key in {"fence", "runtime_epoch"}
+                       and type(binding.get(key)) is not int for key, value in self.expected.items())
+                or spec.get("delegation_closed_attempt_id") == self.expected["attempt_id"]
+                or any(current.get(key) != self.parent.get(key) for key in (
+                    "project_id", "run_id", "capability_id", "capability_digest", "execution_request"))
+                or _canonical_digest(_interactive_admission_spec(spec))
+                != _canonical_digest(_interactive_admission_spec(self.parent["spec"]))
+                or _canonical_digest(binding) != _canonical_digest(self.parent.get("execution_binding"))):
+            self._stop("discovery parent authority changed")
+        try:
+            expiry = current.get("lease_expires_at")
+            if type(expiry) is not str:
+                raise ValueError("missing lease expiry")
+            deadline = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if deadline.tzinfo is None or deadline <= datetime.now(timezone.utc):
+                raise ValueError("expired lease")
+        except ValueError:
+            self._stop("discovery parent lease ended")
+
+    def collect_metadata(self) -> dict[str, Any]:
+        """Resolve only the granted tuple; return private, unprojected metadata.
+
+        Output identities are authoritative historical associations. A newer
+        current source-task attempt does not invalidate the granted attempt.
+        Staging, byte verification and consumer wiring remain separate steps.
+        """
+        try:
+            self._parent_authority()
+            project = self._read("get_project", self.grant["project_id"])
+            run = self._read("get_run", self.grant["run_id"])
+            source = self._read("get_task", self.grant["task_id"])
+            ids = run.get("task_ids")
+            if (self._id(project, "project_id", "id") != self.grant["project_id"]
+                    or self._id(run, "run_id", "id") != self.grant["run_id"]
+                    or run.get("project_id") != self.grant["project_id"]
+                    or type(ids) is not list or any(type(value) is not str or not value or "*" in value for value in ids)
+                    or len(set(ids)) != len(ids) or self.grant["task_id"] not in ids
+                    or self._id(source, "task_id", "id") != self.grant["task_id"]
+                    or source.get("run_id") != self.grant["run_id"]
+                    or source.get("project_id") != self.grant["project_id"]):
+                self._stop("discovery selected ownership changed")
+            page = self._read("list_managed_outputs", self.grant["task_id"])
+            # This generated operation has no cursor parameter. Never fabricate
+            # a custom path or silently accept an incomplete association set.
+            if set(page) != {"items", "next_cursor"} or page["next_cursor"] is not None:
+                self._stop("discovery managed outputs require a complete page")
+            selected = []
+            seen: dict[str, dict[str, Any]] = {}
+            for row in page["items"]:
+                if (type(row) is not dict or any(row.get(key) != self.grant[key]
+                        for key in ("project_id", "run_id", "task_id"))
+                        or type(row.get("attempt_id")) is not str or not row["attempt_id"]):
+                    self._stop("foreign discovery output association")
+                association = self._id(row, "association_id", "association_id")
+                if association in seen and seen[association] != row:
+                    self._stop("discovery association identity changed")
+                if association in seen:
+                    continue
+                seen[association] = row
+                if row["attempt_id"] == self.grant["attempt_id"]:
+                    exact = self._read("get_managed_output", association)
+                    if exact != row:
+                        self._stop("discovery association readback changed")
+                    selected.append(row)
+            self._parent_authority()
+            captured = tuple(json.dumps(row, sort_keys=True, separators=(",", ":"),
+                                        allow_nan=False) for row in selected)
+            if self._collected_outputs is not None and self._collected_outputs != captured:
+                self._stop("discovery collected identities changed")
+            self._collected_outputs = captured
+            return {"project": project, "run": run, "task": source, "outputs": selected}
+        except Exception:
+            self.failed = True
+            raise
+
+    def prepare_objects(self, bridge: Any, *, selected_association_ids: Sequence[str] | None = None) -> tuple[dict[str, Any], ...]:
+        """Verify and stage only internally captured historical associations.
+
+        Returned private descriptors carry current-attempt staging provenance,
+        not child authority. Later upload/admission must use the existing signed
+        Runtime path. Neither source filenames nor caller maps select a path.
+        """
+        from ._child_bridge import _DIGEST, _MAX_OBJECT
+
+        try:
+            self._active()
+            if self._collected_outputs is None:
+                self._stop("discovery objects require completed collection")
+            context = {**self.expected, "project_id": self.parent["project_id"],
+                       "run_id": self.parent["run_id"]}
+            if bridge.context != context:
+                self._stop("discovery staging belongs to a different parent attempt")
+            rows = [json.loads(row) for row in self._collected_outputs]
+            if selected_association_ids is not None:
+                if (type(selected_association_ids) not in (tuple, list)
+                        or any(type(value) is not str for value in selected_association_ids)):
+                    self._stop("discovery selected associations are not retained")
+                selected = set(selected_association_ids)
+                if (not selected or len(selected) != len(selected_association_ids)
+                        or any(type(value) is not str for value in selected)
+                        or not selected <= {row["association_id"] for row in rows}):
+                    self._stop("discovery selected associations are not retained")
+                rows = [row for row in rows if row["association_id"] in selected]
+            objects: dict[str, dict[str, Any]] = {}
+            associations: dict[str, list[str]] = {}
+            for row in rows:
+                oid, size, media = row.get("object_id"), row.get("size"), row.get("media_type")
+                lifecycle = row.get("lifecycle")
+                if (type(oid) is not str or not _DIGEST.fullmatch(oid) or row.get("digest") != oid
+                        or type(size) is not int or not 0 <= size <= _MAX_OBJECT
+                        or type(media) is not str or not media or any(ord(c) < 32 for c in media)
+                        or row.get("durability") != "durable" or not isinstance(lifecycle, Mapping)
+                        or lifecycle.get("state") not in {"available", "promoted"}
+                        or row.get("state") != lifecycle["state"]
+                        or type(row.get("role")) is not str or not row["role"]
+                        or row["role"] in {"derived_input", "recoverable_snapshot"}):
+                    self._stop("discovery object descriptor or lifecycle is invalid")
+                if oid in objects and any(objects[oid][key] != row[key] for key in ("size", "media_type")):
+                    self._stop("discovery CAS identity has conflicting metadata")
+                objects[oid] = row
+                associations.setdefault(oid, []).append(row["association_id"])
+            limits = self.grant["limits"]
+            if (len(objects) > limits["max_selected_output_objects"]
+                    or sum(row["size"] for row in objects.values()) > limits["max_selected_output_bytes"]):
+                self._stop("discovery selected object budget exceeded")
+            # Revalidate every association, including those sharing a payload.
+            for row in rows:
+                self._parent_authority()
+                if self._read("get_managed_output", row["association_id"]) != row:
+                    self._stop("discovery association changed before object acquisition")
+            for oid, row in objects.items():
+                self._parent_authority()
+                if oid not in self._verified_objects:
+                    self._object_read = True
+                    try:
+                        response = self._reader.get_object(oid)
+                    finally:
+                        self._object_read = False
+                    data = response.data
+                    if (response.status != 200 or type(data) is not bytes or len(data) != row["size"]
+                            or "sha256:" + hashlib.sha256(data).hexdigest() != oid):
+                        self._stop("discovery object bytes failed verification")
+                    self._verified_objects[oid] = data
+                self._parent_authority()
+            for row in rows:
+                if self._read("get_managed_output", row["association_id"]) != row:
+                    self._stop("discovery association changed during object acquisition")
+            prepared = []
+            for oid, row in objects.items():
+                self._parent_authority()
+                descriptor = bridge._stage_discovery_object(
+                    self._verified_objects[oid], object_id=oid, size=row["size"],
+                    media_type=row["media_type"], expected_context=context,
+                    authority=self._parent_authority)
+                prepared.append({**descriptor, "source_association_ids": tuple(associations[oid])})
+            for row in rows:
+                if self._read("get_managed_output", row["association_id"]) != row:
+                    self._stop("discovery association changed during staging")
+            self._parent_authority()
+            self._prepared_objects = tuple(json.dumps(row, sort_keys=True, separators=(",", ":"),
+                                                       allow_nan=False) for row in prepared)
+            return tuple(prepared)
+        except Exception:
+            self.failed = True
+            raise
+
+    def submit_prepared_child(self, bridge: Any, request: Mapping[str, Any], *,
+                              media_bindings: Mapping[str, str], verify_supplied_media: bool = False) -> dict[str, Any]:
+        """Private adapter into the existing producer-file submission path.
+
+        Bind declared child file-port names to internally captured association
+        IDs, never to caller-supplied descriptors or authority. Historical IDs
+        remain host provenance; uploads use the current bridge attempt.
+        """
+        from ._child_bridge import _KEY, _snapshot
+
+        try:
+            self._active()
+            if self._prepared_objects is None or type(media_bindings) is not dict or not media_bindings:
+                self._stop("prepared child submission requires retained internal objects")
+            if bridge.context != {**self.expected, "project_id": self.parent["project_id"],
+                                  "run_id": self.parent["run_id"]}:
+                self._stop("prepared child submission belongs to a different parent attempt")
+            if bridge.policy is None or bridge.policy.get("discovery_grant") != self.grant:
+                self._stop("prepared child submission grant changed")
+            adapted = copy.deepcopy(dict(request))
+            if (set(adapted) != {"v", "request_id", "op", "child", "inputs", "input_descriptors",
+                                "child_key", "wait", "timeout_seconds", "poll_seconds"}
+                    or adapted["op"] != "submit" or type(adapted["inputs"]) is not dict
+                    or type(adapted["input_descriptors"]) is not list or type(adapted["child"]) is not dict
+                    or type(adapted["v"]) is not int or adapted["v"] != 1
+                    or type(adapted["request_id"]) is not int or adapted["request_id"] < 0
+                    or type(adapted["child_key"]) is not str or not _KEY.fullmatch(adapted["child_key"])
+                    or type(adapted["wait"]) is not bool
+                    or any(type(adapted[key]) not in (int, float) or not 0 < adapted[key] < float("inf")
+                           for key in ("timeout_seconds", "poll_seconds"))):
+                self._stop("invalid prepared child submission request")
+            record = bridge.host.capabilities.get(adapted["child"].get("capability_id"))
+            if record is None:
+                self._stop("prepared child capability is not admitted")
+            ports = {port.name: port for port in record.definition.inputs if port.type == "file"}
+            captured = [json.loads(value) for value in self._prepared_objects]
+            by_association = {association: value for value in captured
+                              for association in value["source_association_ids"]}
+            bindings = adapted["input_descriptors"]
+            if any(type(value) is not dict for value in bindings):
+                self._stop("invalid existing producer binding")
+            existing = {value.get("name"): value for value in bindings}
+            if len(existing) != len(bindings):
+                self._stop("duplicate existing producer binding")
+            prepared = {}
+            for name, association in media_bindings.items():
+                if (type(name) is not str or name not in ports
+                        or type(association) is not str or association not in by_association):
+                    self._stop("prepared child selection is outside retained associations")
+                descriptor = copy.deepcopy(by_association[association])
+                if verify_supplied_media:
+                    supplied = existing.get(name)
+                    if (type(supplied) is not dict or set(supplied) != {
+                            "name", "kind", "filename", "output_port", "media_type"}
+                            or supplied["kind"] != "producer_file" or supplied["output_port"] != name
+                            or supplied["media_type"] != descriptor["media_type"]
+                            or adapted["inputs"].get(name) != {key: supplied[key] for key in (
+                                "filename", "output_port", "media_type")}):
+                        self._stop("supplied prepared media is not an exact producer binding")
+                    self._parent_authority()
+                    data = _snapshot(bridge.output_root, supplied["filename"], descriptor["size"],
+                                     attempt_fd=bridge._attempt_fd)
+                    if (len(data) != descriptor["size"] or data != self._verified_objects[descriptor["object_id"]]
+                            or "sha256:" + hashlib.sha256(data).hexdigest() != descriptor["object_id"]):
+                        self._stop("supplied prepared media bytes disagree with retained identity")
+                elif name in adapted["inputs"] or name in existing:
+                    self._stop("prepared child selection is outside retained associations")
+                descriptor["selected_association_id"] = association
+                prepared[name] = descriptor
+                value = {"filename": descriptor["filename"], "output_port": name,
+                         "media_type": descriptor["media_type"]}
+                adapted["inputs"][name] = value
+                existing[name] = {"name": name, "kind": "producer_file", **value}
+            if set(existing) - set(ports):
+                self._stop("prepared child binding is not a declared file port")
+            if (len(prepared) > self.grant["limits"]["max_child_media_bindings"]
+                    or sum(value["size"] for value in prepared.values())
+                    > self.grant["limits"]["max_child_media_bytes"]):
+                self._stop("prepared child media budget exceeded")
+            adapted["input_descriptors"] = [existing[name] for name in ports if name in existing]
+            source_rows = {row["association_id"]: row for row in map(json.loads, self._collected_outputs or ())}
+
+            def authority() -> None:
+                self._parent_authority()
+                for association in {association for value in prepared.values()
+                                    for association in value["source_association_ids"]}:
+                    if self._read("get_managed_output", association) != source_rows[association]:
+                        self._stop("prepared child source association changed")
+                self._active()
+
+            authority()
+            return bridge._submit(adapted, prepared=prepared, authority=authority)
+        except Exception:
+            self.failed = True
+            raise
+
+
+def _iteration_video_discovery(
+    host: Any, task: Mapping[str, Any], record: CapabilityRecord, bridge: Any,
+    inputs: dict[str, Any], *, attempt_id: str, lease_id: str, fence: int,
+    runtime_epoch: int, cancelled: Callable[[], bool],
+) -> _DiscoveryCollection | None:
+    """Bind one already-admitted frozen CAS document to private discovery custody.
+
+    No pack helper or producer-created locator supplies authority. The command
+    receives the retained media file, and only its rendering child is adapted.
+    """
+    from ._child_bridge import _DIGEST, _MAX_OBJECT, _snapshot
+
+    if record.id != "video_editing.iteration_video":
+        return None
+    if bridge is None or getattr(bridge, "_iteration_video_submit", None) is not None:
+        raise HostError("iteration video requires one claimed child bridge")
+    admitted = _admitted_task_spec(task).get("inputs")
+    descriptor = admitted.get("frozen_inputs") if isinstance(admitted, Mapping) else None
+    try:
+        document_id = managed_file_digest(descriptor, "frozen_inputs")
+    except ValueError as exc:
+        raise HostError("iteration video requires an already-admitted frozen_inputs CAS file") from exc
+    roots = task.get("input_object_ids")
+    if (not isinstance(roots, (list, tuple)) or document_id not in {
+            "sha256:" + value.removeprefix("sha256:") for value in roots if type(value) is str}):
+        raise HostError("iteration frozen document is not an admitted input object")
+    path = inputs.get("frozen_inputs")
+    input_root = bridge.output_root.parent / "inputs"
+    if type(path) is not str or not Path(path).is_absolute():
+        raise HostError("iteration frozen document was not materialized by this host")
+    try:
+        relative = Path(path).relative_to(input_root).as_posix()
+    except ValueError as exc:
+        raise HostError("iteration frozen document escaped the current attempt") from exc
+    data = _snapshot(input_root, relative, _MAX_OBJECT, attempt_fd=bridge._attempt_fd)
+    if "sha256:" + hashlib.sha256(data).hexdigest() != document_id:
+        raise HostError("iteration frozen document bytes disagree with admitted CAS identity")
+    if isinstance(descriptor, Mapping) and "size" in descriptor and (
+            type(descriptor["size"]) is not int or descriptor["size"] != len(data)):
+        raise HostError("iteration frozen document size disagrees with admission")
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate frozen JSON key")
+            result[key] = value
+        return result
+
+    try:
+        frozen = json.loads(data, object_pairs_hook=pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite frozen JSON")))
+    except (ValueError, RecursionError) as exc:
+        raise HostError("invalid admitted frozen document") from exc
+    collection = _DiscoveryCollection(host.client, task, attempt_id=attempt_id, lease_id=lease_id,
+                                      fence=fence, runtime_epoch=runtime_epoch, cancelled=cancelled)
+    grant = collection.grant
+    if (type(frozen) is not dict or set(frozen) != {
+            "schema_version", "project", "target_run_id", "manifest", "quality", "media_bindings"}
+            or type(frozen["schema_version"]) is not int or frozen["schema_version"] != 1
+            or frozen["project"] != grant["project_id"] or frozen["target_run_id"] != grant["run_id"]
+            or inputs.get("project_id") != grant["project_id"] or inputs.get("target_run_id") != grant["run_id"]
+            or type(frozen["media_bindings"]) is not list or len(frozen["media_bindings"]) != 1):
+        raise HostError("iteration frozen identity or singular binding disagrees with discovery grant")
+    binding = frozen["media_bindings"][0]
+    if (type(binding) is not dict or set(binding) != {
+            "name", "object_id", "sha256", "size", "media_type", "filename", "associations"}
+            or type(binding["object_id"]) is not str or not _DIGEST.fullmatch(binding["object_id"])
+            or binding["sha256"] != binding["object_id"][7:]
+            or type(binding["size"]) is not int or not 0 <= binding["size"] <= _MAX_OBJECT
+            or type(binding["media_type"]) is not str or not binding["media_type"]
+            or type(binding["associations"]) is not list or not binding["associations"]):
+        raise HostError("invalid iteration frozen media binding")
+    manifest, quality = frozen["manifest"], frozen["quality"]
+    for document in (manifest, quality):
+        if (type(document) is not dict or document.get("target_run_id") != grant["run_id"]
+                or type(document.get("authority")) is not dict
+                or document["authority"].get("project") != grant["project_id"]
+                or document["authority"].get("kind") != "runtime"):
+            raise HostError("iteration frozen content identity disagrees with discovery grant")
+    runs = manifest.get("runs")
+    if (type(runs) is not list or any(type(run) is not dict or type(run.get("run_id")) is not str for run in runs)
+            or len({run["run_id"] for run in runs}) != len(runs)):
+        raise HostError("invalid iteration frozen run identities")
+    by_run = {run["run_id"]: run for run in runs}
+    captured = collection.collect_metadata()
+    by_association = {row["association_id"]: row for row in captured["outputs"]}
+    selected, references = [], set()
+    for association in binding["associations"]:
+        if (type(association) is not dict or set(association) - {
+                "project", "run_id", "artifact_index", "task_id", "output_id", "source_association_id"}
+                or association.get("project") != grant["project_id"]
+                or association.get("run_id") != grant["run_id"]
+                or association.get("task_id") != grant["task_id"]
+                or type(association.get("artifact_index")) is not int or association["artifact_index"] < 0
+                or type(association.get("source_association_id")) is not str
+                or association["source_association_id"] not in by_association):
+            collection._stop("iteration frozen association is outside authenticated discovery")
+        row = by_association[association["source_association_id"]]
+        run = by_run.get(association["run_id"], {})
+        artifacts = run.get("output_artifacts")
+        index = association["artifact_index"]
+        if type(artifacts) is not list or index >= len(artifacts) or type(artifacts[index]) is not dict:
+            collection._stop("iteration frozen association has no exact artifact")
+        artifact = artifacts[index]
+        reference = (association["run_id"], index)
+        if (reference in references or any(row.get(key) != binding[key] for key in ("object_id", "size", "media_type"))
+                or row.get("digest") != binding["object_id"]
+                or any(artifact.get(key) != association.get(key) for key in ("task_id", "source_association_id"))
+                or "output_id" in artifact and artifact["output_id"] != association.get("output_id")
+                or "output_id" in row and row["output_id"] != association.get("output_id")
+                or any(key in artifact and artifact[key] != binding[key] for key in (
+                    "object_id", "sha256", "size", "media_type"))):
+            collection._stop("iteration frozen media identity disagrees with authenticated association")
+        references.add(reference)
+        selected.append(row["association_id"])
+    prepared = collection.prepare_objects(bridge, selected_association_ids=tuple(dict.fromkeys(selected)))
+    if len(prepared) != 1 or prepared[0]["object_id"] != binding["object_id"]:
+        collection._stop("iteration discovery did not retain one exact media object")
+    inputs["media_dependency"] = str(bridge.output_root / prepared[0]["filename"])
+
+    def submit(request: Mapping[str, Any]) -> dict[str, Any]:
+        if request.get("child", {}).get("capability_id") != "rendering.render":
+            collection._stop("iteration discovery adapter requires rendering.render")
+        collection._parent_authority()
+        if _snapshot(input_root, relative, _MAX_OBJECT, attempt_fd=bridge._attempt_fd) != data:
+            collection._stop("iteration admitted frozen document changed before child submission")
+        return collection.submit_prepared_child(bridge, request,
+            media_bindings={"media_dependency": selected[0]}, verify_supplied_media=True)
+
+    collection._parent_authority()
+    bridge._iteration_video_submit = submit
+    return collection
+
+
+_TRAINING_REVIEW_ARCHIVE_BYTES = 64 * 1024**2
+_TRAINING_REVIEW_ARCHIVE_ENTRIES = 4096
+_TRAINING_REVIEW_SCOPE_CACHE_ENTRIES = 64
+
+
+def _training_review_media_scope(
+    parent: Mapping[str, Any], child: Mapping[str, Any], admission: Any,
+    client: Any, file_ports: Sequence[Any],
+) -> tuple[str, ...] | None:
+    """Verify the admitted immutable bundle/data closure, without local reads.
+
+    Live claim/lease authority belongs to _training_review_authority. Admission
+    task_json predates the claim and is never required to carry its attempt ID.
+    Map lineage describes the captured inputs, not historical acquisition or
+    completeness of an earlier canonical dataset.
+    """
+    from ._child_bridge import _MAX_OBJECT, _producer_registration_filename
+
+    def strict_json(payload: Any) -> Any:
+        def pairs(rows: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in rows:
+                if key in result:
+                    raise ValueError("duplicate JSON key")
+                result[key] = value
+            return result
+        return json.loads(payload, object_pairs_hook=pairs,
+                          parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+
+    def relative(name: Any) -> str:
+        if (type(name) is not str or not name or "\\" in name
+                or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                or PurePosixPath(name).is_absolute() or name != PurePosixPath(name).as_posix()
+                or any(part in {"", ".", ".."} for part in name.split("/"))):
+            raise ValueError("unsafe archive member")
+        return name
+
+    def digest(payload: bytes) -> str:
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def identity(value: Any) -> None:
+        if (type(value) is not dict or set(value) != {"digest", "size"}
+                or type(value["digest"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", value["digest"]) is None
+                or type(value["size"]) is not int or value["size"] < 0):
+            raise ValueError("invalid content identity")
+
+    try:
+        original = strict_json(admission.task_json)
+        inputs = strict_json(admission.inputs_json)
+        descriptors = strict_json(admission.descriptors_json)
+        if (type(inputs) is not dict or type(descriptors) is not list
+                or type(inputs.get("timeout")) is not int or inputs["timeout"] != 0):
+            return None
+        absent = lambda value: value is None or (type(value) is str and value in {"", "__none__", "none", "None", "null"})
+        if not absent(inputs.get("html")) or not absent(inputs.get("serve")):
+            return None
+        eligible = {"assets_bundle", "data", "state", "state_schema_bundle"}
+        ports = [port for port in file_ports if port.name in eligible]
+        names = [port.name for port in ports]
+        if (set(names) != eligible or len(names) != 4
+                or any(not absent(inputs.get(port.name)) for port in file_ports if port.name not in eligible)
+                or [row.get("name") for row in descriptors if type(row) is dict] != names
+                or len(descriptors) != 4):
+            return None
+        policy = parent["spec"]["child_delegation"]
+        limits = policy["limits"]
+        if len(descriptors) > limits["max_child_inputs"]:
+            return None
+        total = 0
+        by_name = {}
+        projected_inputs = dict(inputs)
+        transport_names = set()
+        for port, row in zip(ports, descriptors):
+            producer = inputs.get(port.name)
+            if (type(producer) is not dict or set(producer) != {"filename", "output_port", "media_type"}
+                    or not all(type(producer[key]) is str and producer[key] for key in producer)
+                    or set(row) != {"name", "filename", "output_port", "media_type", "object_id", "size", "required"}
+                    or row["filename"] != _producer_registration_filename(producer["filename"])
+                    or row["output_port"] != producer["output_port"] or row["media_type"] != producer["media_type"]
+                    or type(row["required"]) is not bool or row["required"] != port.required
+                    or type(row["object_id"]) is not str
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", row["object_id"]) is None
+                    or type(row["size"]) is not int or not 0 <= row["size"] <= _MAX_OBJECT):
+                return None
+            if row["filename"] in transport_names:
+                return None
+            transport_names.add(row["filename"])
+            total += row["size"]
+            by_name[port.name] = row
+            # RuntimeProtocolClient.admit_child replaces producer metadata with
+            # its ordinary immutable object-reference projection in task.spec.
+            projected_inputs[port.name] = {"object_id": row["object_id"], "digest": row["object_id"],
+                                          "filename": row["filename"]}
+        if (_canonical_digest(_admitted_task_spec(child).get("inputs")) != _canonical_digest(projected_inputs)
+                or _canonical_digest(_admitted_task_spec(original).get("inputs")) != _canonical_digest(projected_inputs)):
+            return None
+        if total > min(limits["max_child_bytes"], limits["max_derived_bytes"]):
+            return None
+        for value in (original, child):
+            if set(value.get("input_object_ids", [])) != {row["object_id"] for row in descriptors}:
+                return None
+        if (by_name["assets_bundle"]["media_type"] != "application/zip"
+                or by_name["data"]["media_type"] != "application/json"
+                or by_name["assets_bundle"]["size"] > _TRAINING_REVIEW_ARCHIVE_BYTES):
+            return None
+
+        def fetch(name: str) -> bytes:
+            row = by_name[name]
+            data = client.get_object(row["object_id"][7:])
+            if not isinstance(data, (bytes, bytearray)):
+                data = getattr(data, "data", None)
+            if not isinstance(data, (bytes, bytearray)) or len(data) != row["size"] or len(data) > _MAX_OBJECT:
+                raise ValueError("object size mismatch")
+            payload = bytes(data)
+            if digest(payload) != row["object_id"]:
+                raise ValueError("object digest mismatch")
+            return payload
+
+        bundle, data_bytes = fetch("assets_bundle"), fetch("data")
+        members: dict[str, bytes] = {}
+        directories = set()
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            entries = archive.infolist()
+            if len(entries) > _TRAINING_REVIEW_ARCHIVE_ENTRIES:
+                return None
+            extracted = 0
+            seen = set()
+            for entry in entries:
+                name = entry.filename
+                if entry.orig_filename != name:
+                    return None
+                canonical = relative(name[:-1] if entry.is_dir() else name)
+                if name in seen or canonical in seen or canonical + "/" in seen:
+                    return None
+                seen.add(name)
+                mode = entry.external_attr >> 16
+                kind = stat.S_IFMT(mode)
+                if (entry.flag_bits & 1 or kind not in {0, stat.S_IFREG, stat.S_IFDIR}
+                        or (kind == stat.S_IFDIR) != entry.is_dir() and kind != 0):
+                    return None
+                if entry.is_dir():
+                    if name not in {"ui/", "media/"}:
+                        return None
+                    directories.add(name)
+                elif (name not in {"human-review-assets.json", "review-media-map.json",
+                                   "ui/index.html", "ui/app.js", "ui/styles.css"}
+                      and not name.startswith("media/")):
+                    return None
+                extracted += entry.file_size
+                if entry.file_size < 0 or extracted > _TRAINING_REVIEW_ARCHIVE_BYTES:
+                    return None
+                # Read metadata and directory bytes too; CRC/corruption and every
+                # entry count towards the same extracted closure ceiling.
+                with archive.open(entry) as stream:
+                    payload = stream.read(_TRAINING_REVIEW_ARCHIVE_BYTES + 1)
+                if len(payload) != entry.file_size:
+                    return None
+                if entry.is_dir():
+                    if payload:
+                        return None
+                else:
+                    members[name] = payload
+        if any("/".join(PurePosixPath(name).parts[:index]) in members
+               for name in members for index in range(1, len(PurePosixPath(name).parts))):
+            return None
+        fixed = {"human-review-assets.json", "review-media-map.json", "ui/index.html", "ui/app.js", "ui/styles.css"}
+        if not fixed <= set(members) or directories != {"ui/", "media/"}:
+            return None
+        if strict_json(members["human-review-assets.json"]) != {"html_root": "ui", "mounts": {"/media": "media"}}:
+            return None
+        media_map = strict_json(members["review-media-map.json"])
+        data = strict_json(data_bytes)
+        if (type(media_map) is not dict or set(media_map) != {"schema", "data", "canonical_data", "items"}
+                or media_map["schema"] != "training-review-media-map/v1"
+                or type(media_map["items"]) is not list or type(data) is not dict or type(data.get("items")) is not list):
+            return None
+        identity(media_map["data"])
+        identity(media_map["canonical_data"])
+        if media_map["data"] != {"digest": digest(data_bytes), "size": len(data_bytes)}:
+            return None
+        rows = {}
+        for row in data["items"]:
+            if type(row) is not dict or type(row.get("item_id")) is not str or not row["item_id"] or row["item_id"] in rows:
+                return None
+            rows[row["item_id"]] = row
+        referenced = set()
+        mapped = set()
+        required_source = ("source_type", "source_id", "source_url", "acquired_at", "content_hash", "media_type")
+        source_fields = (*required_source, "source_metadata", "derived_from", "scene_index", "clip_start_s", "clip_end_s")
+        for item in media_map["items"]:
+            if (type(item) is not dict or set(item) != {"item_id", "source", "source_media_path", "media_path", "archive_member", "digest", "size"}
+                    or type(item["item_id"]) is not str or item["item_id"] not in rows or item["item_id"] in mapped):
+                return None
+            row = rows[item["item_id"]]
+            if (any(type(row.get(key)) is not str or not row[key] for key in required_source)
+                    or re.fullmatch(r"[0-9a-f]{64}", row["content_hash"]) is None
+                    or _canonical_digest(item["source"]) != _canonical_digest({key: row[key] for key in source_fields if key in row})):
+                return None
+            relative(item["source_media_path"])
+            member = relative(item["archive_member"])
+            if not member.startswith("media/") or member in referenced or member not in members:
+                return None
+            url = "/media/" + "/".join(quote(part, safe="") for part in member[6:].split("/"))
+            if item["media_path"] != url or row.get("media_path") != url:
+                return None
+            identity({"digest": item["digest"], "size": item["size"]})
+            if digest(members[member]) != item["digest"] or len(members[member]) != item["size"]:
+                return None
+            mapped.add(item["item_id"])
+            referenced.add(member)
+        if mapped != set(rows) or set(members) != fixed | referenced:
+            return None
+        return (admission.admission_identity, _canonical_digest(descriptors),
+                by_name["assets_bundle"]["object_id"], by_name["data"]["object_id"],
+                digest(members["review-media-map.json"]), _canonical_digest(media_map["items"]))
+    except Exception:
+        return None
+
+
+def _training_review_authority(
+    host: Any, task: Mapping[str, Any], record: CapabilityRecord, bridge: Any, *,
+    attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
+) -> _ReviewIntervalAccounting | None:
+    """Observe only this bridge's exact Training admissions through public reads."""
+    from ._child_bridge import _child_wire_id, _snapshot_grant, task_resource
+    from astrid.sdk._child_bridge import _validate_child_policy
+
+    if record.id != "training.dataset_build" or bridge is None:
+        return None
+    child_record = host.capabilities.get("editorial.human_review")
+    if child_record is None or type(fence) is not int or type(runtime_epoch) is not int or runtime_epoch < 1:
+        return None
+    parent_id = task.get("task_id", task.get("id"))
+    expected = {"task_id": parent_id, "attempt_id": attempt_id, "lease_id": lease_id,
+                "fence": fence, "runtime_epoch": runtime_epoch}
+
+    def live(value: Mapping[str, Any], identity: Mapping[str, Any], capability: Any) -> Mapping[str, Any]:
+        binding = value.get("execution_binding")
+        spec = value.get("spec")
+        if (not isinstance(binding, Mapping) or binding.get("status") != "claimed"
+                or value.get("state", value.get("status")) != "running"
+                or value.get("task_id", value.get("id")) != identity["task_id"]
+                or value.get("attempt_id") != identity["attempt_id"]
+                or type(value.get("lease_fence")) is not int or value["lease_fence"] != identity["fence"]
+                or type(value.get("runtime_epoch")) is not int or value["runtime_epoch"] != runtime_epoch
+                or value.get("capability_id", value.get("capability")) != capability.id
+                or value.get("capability_digest") != capability.capability_digest
+                or not isinstance(spec, Mapping) or spec.get("capability_digest") != capability.capability_digest
+                or spec.get("delegation_closed_attempt_id") == identity["attempt_id"]):
+            raise HostError("Training review authority changed")
+        for key, pinned in identity.items():
+            if binding.get(key) != pinned or (key in {"fence", "runtime_epoch"} and type(binding.get(key)) is not int):
+                raise HostError("Training review claim changed")
+        expiry = value.get("lease_expires_at")
+        if type(expiry) is not str:
+            raise HostError("Training review lease deadline missing")
+        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+            raise HostError("Training review lease ended")
+        contract = _execution_contract(value)
+        target = contract.get("target") if contract else None
+        if (not isinstance(target, Mapping) or target.get("kind") != "machine"
+                or type(binding.get("placement_version")) is not int or binding["placement_version"] < 0):
+            raise HostError("Training review machine placement missing")
+        _assert_verified_placement_binding(binding, target)
+        return binding
+
+    try:
+        parent = task_resource(host.client.task(parent_id))
+        parent_binding = live(parent, expected, record)
+        parent_spec = _interactive_admission_spec(parent["spec"])
+        if (_canonical_digest(parent_spec) != _canonical_digest(_interactive_admission_spec(task["spec"]))
+                or _canonical_digest(parent_binding) != _canonical_digest(task.get("execution_binding"))):
+            return None
+        policy = _validate_child_policy(parent["spec"].get("child_delegation"))
+        grant = {"capability_id": child_record.id, "capability_digest": child_record.capability_digest,
+                 "output_ports": ["state_result"]}
+        if (policy is None or {"capability_id": child_record.id, "capability_digest": child_record.capability_digest}
+                not in policy["capabilities"] or policy.get("recoverable_outputs") != [grant]):
+            return None
+        policy_digest = _canonical_digest(policy)
+        parent_pin = _canonical_digest({"spec": parent_spec, "binding": parent_binding,
+                                       "request": parent.get("execution_request"), "project": parent.get("project_id")})
+        placement = {"actual": parent_binding["actual_target"], "verification": parent_binding["verification"],
+                     "executor_incarnation": parent_binding["executor_incarnation"]}
+        lineage = {"parent_task_id": parent_id, "parent_attempt_id": attempt_id, "parent_lease_id": lease_id,
+                   "parent_fence": fence, "runtime_epoch": runtime_epoch, "executor_id": parent_binding["executor_id"],
+                   "project_id": parent.get("project_id"), "policy_digest": policy_digest,
+                   "parent_placement": placement, "parent_effective_target": parent_binding.get("effective_target"),
+                   "parent_placement_version": parent_binding["placement_version"]}
+        frozen_grant = {**grant, "parent_attempt_id": attempt_id, "policy_digest": policy_digest,
+                        "limits": {key: policy["limits"][key] for key in (
+                            "max_snapshot_bytes", "max_recoverable_bytes", "max_recoverable_snapshots")}}
+    except Exception:
+        return None
+
+    qualified: dict[str, tuple[str, ...]] = {}
+    media_cache: dict[str, tuple[str, ...]] = {}
+
+    def verify() -> frozenset[tuple[str, ...]]:
+        snapshot = bridge.admitted_children_snapshot()
+        if snapshot.closed or snapshot.revoked:
+            media_cache.clear()
+            if qualified:
+                raise HostError("Training child bridge authority ended")
+            return frozenset()
+        health = host.client.health()
+        epoch = health.get("runtime_epoch") if isinstance(health, Mapping) else getattr(health, "runtime_epoch", None)
+        if type(epoch) is not int or epoch != runtime_epoch:
+            media_cache.clear()
+            raise HostError("Training Runtime epoch changed")
+        current_parent = task_resource(host.client.task(parent_id))
+        binding = live(current_parent, expected, record)
+        if _canonical_digest({"spec": _interactive_admission_spec(current_parent["spec"]), "binding": binding,
+                              "request": current_parent.get("execution_request"),
+                              "project": current_parent.get("project_id")}) != parent_pin:
+            raise HostError("Training parent admission changed")
+        active = set()
+        observed = set()
+        cache_keys = set()
+        for admitted in snapshot.children:
+            original = json.loads(admitted.task_json)
+            tid = original.get("task_id", original.get("id"))
+            if (original.get("capability_id", original.get("capability")) != child_record.id
+                    or original.get("capability_digest") != child_record.capability_digest):
+                continue
+            observed.add(tid)
+            # A failed read is uncertain authority, never forward-projected credit.
+            child = task_resource(host.client.task(tid))
+            try:
+                wire_id = _child_wire_id(project_id=parent.get("project_id"),
+                                         parent_task_id=parent_id, parent_attempt_id=attempt_id,
+                                         logical_child_key=admitted.child_key)
+                if (child.get("task_id", child.get("id")) != tid or child.get("run_id") != original.get("run_id")
+                        or child.get("idempotency_key") != wire_id
+                        or original.get("idempotency_key") != wire_id
+                        or child.get("project_id") != parent.get("project_id")
+                        or json.loads(admitted.parent_context_json) != {
+                            "task_id": parent_id, "run_id": parent.get("run_id"), "project_id": parent.get("project_id"),
+                            "attempt_id": attempt_id, "lease_id": lease_id, "fence": fence, "runtime_epoch": runtime_epoch}):
+                    raise HostError("Training child admission identity changed")
+                state = child.get("state", child.get("status"))
+                if state in {"completed", "succeeded", "failed", "cancelled"}:
+                    if tid in qualified:
+                        pinned = qualified[tid]
+                        terminal_binding = child.get("execution_binding", {})
+                        if (child.get("attempt_id") != pinned[3] or terminal_binding.get("lease_id") != pinned[4]
+                                or type(child.get("lease_fence")) is not int or str(child["lease_fence"]) != pinned[5]
+                                or type(child.get("runtime_epoch")) is not int or str(child["runtime_epoch"]) != pinned[6]
+                                or child.get("capability_id", child.get("capability")) != child_record.id
+                                or child.get("capability_digest") != child_record.capability_digest):
+                            raise HostError("Training child claim changed at completion")
+                    qualified.pop(tid, None)
+                    continue
+                if state != "running":
+                    if tid in qualified:
+                        raise HostError("Training child lost its running claim")
+                    continue
+                own = child.get("execution_binding", {})
+                identity = {"task_id": tid, "attempt_id": child.get("attempt_id"), "lease_id": own.get("lease_id"),
+                            "fence": child.get("lease_fence"), "runtime_epoch": runtime_epoch}
+                if not all(type(identity[key]) is str and identity[key] for key in ("task_id", "attempt_id", "lease_id")):
+                    raise HostError("Training child claim incomplete")
+                child_binding = live(child, identity, child_record)
+                if (_canonical_digest(_interactive_admission_spec(child["spec"]))
+                        != _canonical_digest(_interactive_admission_spec(original["spec"]))
+                        or child["spec"].get("delegated_parent") != lineage
+                        or _snapshot_grant(child) != frozen_grant
+                        or child_binding["actual_target"] != parent_binding["actual_target"]
+                        or child_binding.get("resolved_target") != parent_binding.get("effective_target")):
+                    raise HostError("Training child grant, lineage or placement changed")
+                inputs = {port.name: port.default for port in child_record.definition.inputs if port.default is not None}
+                admitted_inputs = _admitted_task_spec(child).get("inputs", {})
+                inputs.update(admitted_inputs)
+                if (type(admitted_inputs.get("timeout")) is not int or admitted_inputs["timeout"] != 0
+                        or type(inputs.get("timeout")) is not int or inputs["timeout"] != 0):
+                    raise HostError("Training child timeout is not exact integer zero")
+                cache_key = _canonical_digest({
+                    "admission": [admitted.child_key, admitted.admission_identity, admitted.task_json,
+                                  admitted.inputs_json, admitted.descriptors_json, admitted.parent_context_json],
+                    "claim": identity, "runtime_epoch": runtime_epoch,
+                })
+                cache_keys.add(cache_key)
+                media = media_cache.get(cache_key)
+                if media is None:
+                    media = _training_review_media_scope(current_parent, child, admitted, host.client,
+                        [port for port in child_record.definition.inputs if port.type == "file"])
+                    if media is not None:
+                        if len(media_cache) >= _TRAINING_REVIEW_SCOPE_CACHE_ENTRIES:
+                            media_cache.pop(next(iter(media_cache)))
+                        media_cache[cache_key] = media
+                if media is None:
+                    if tid in qualified:
+                        raise HostError("Training review media custody changed")
+                    continue
+                claim = (admitted.child_key, admitted.admission_identity, tid, identity["attempt_id"],
+                         identity["lease_id"], str(identity["fence"]), str(runtime_epoch),
+                         _canonical_digest(child_binding), _canonical_digest(child.get("execution_request")),
+                         _canonical_digest(media))
+                if tid in qualified and qualified[tid] != claim:
+                    raise HostError("Training review claim changed after qualification")
+                qualified[tid] = claim
+                active.add(claim)
+            except Exception:
+                if tid in qualified:
+                    raise
+                # Incomplete initial conjunction keeps the ordinary allowance.
+        for stale in set(media_cache) - cache_keys:
+            media_cache.pop(stale, None)
+        if set(qualified) - observed:
+            raise HostError("Training qualified child admission disappeared")
+        if active:
+            completed_snapshot = bridge.admitted_children_snapshot()
+            if completed_snapshot.closed or completed_snapshot.revoked:
+                media_cache.clear()
+                raise HostError("Training child bridge closed during verification")
+        return frozenset(active)
+
+    return _ReviewIntervalAccounting(verify)
 
 
 def _contract_queue_age(task_data: Mapping[str, Any]) -> float:
@@ -1770,6 +3548,11 @@ def process_birth_identity(pid: int | None = None) -> str:
 
 def _admitted_source_roots(root: Path, definition: Any) -> tuple[Path, ...]:
     """Return every executable root admitted for one capability."""
+    if definition.metadata.get("action_invocation"):
+        pack_root = Path(str(definition.metadata["pack_root"])).expanduser().resolve()
+        if root.resolve() != pack_root:
+            raise HostError("action source root does not match its pack root")
+        return (pack_root,)
     roots: list[Path] = [root.resolve()]
     pack_root = _pack_root_for_executor(root)
     if pack_root is not None and str(definition.kind) == "external":
@@ -1785,6 +3568,10 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
     root (rather than an ancestor) keeps imports useful without admitting an
     unrelated checkout or ambient directory.
     """
+    invocation = definition.metadata.get("action_invocation")
+    if isinstance(invocation, Mapping) and invocation.get("kind") == "python":
+        # Private pack imports use a contained namespace, never PYTHONPATH.
+        return ()
     pack_root = _pack_root_for_executor(root)
     if pack_root is None or str(getattr(definition, "kind", "")) != "external":
         return ()
@@ -1799,6 +3586,27 @@ def _source_digest_for_roots(roots: tuple[Path, ...] | list[Path]) -> str:
         {"root": str(root.resolve()), "digest": _source_digest(root.resolve())}
         for root in roots
     ])
+
+
+def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[str, Any]) -> None:
+    """Tie Python source authority to the exact admitted whole-pack root."""
+    metadata = definition.get("metadata", {})
+    invocation = metadata.get("action_invocation") if isinstance(metadata, Mapping) else None
+    if not isinstance(invocation, Mapping) or invocation.get("kind") != "python":
+        return
+    raw_root = metadata.get("pack_root")
+    if not isinstance(raw_root, str) or not raw_root:
+        raise HostError("Python action requires an admitted pack root")
+    root = Path(raw_root).expanduser().resolve()
+    roots = tuple(Path(str(value)).expanduser().resolve() for value in admission.get("source_roots", ()))
+    if (not root.is_dir() or roots != (root,)
+            or Path(str(admission.get("source_root") or "")).expanduser().resolve() != root):
+        raise HostError("Python action pack root does not match the admission source fence")
+    if (not admission.get("source_digest") or not admission.get("capability_digest")
+            or _capability_digest(definition) != admission["capability_digest"]):
+        raise HostError("Python action requires a matching admitted definition digest")
+    if admission.get("python_path_roots"):
+        raise HostError("Python action pack imports must use the contained namespace")
 
 
 def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
@@ -1952,6 +3760,58 @@ class CapabilityRecord:
         }
 
 
+def _prepare_review_resume_input(client: Any, *, source_task_id: str, source_attempt_id: str,
+                                 association_id: str, revision: int, expected_project_id: str,
+                                 expected_capability_digest: str) -> dict[str, str]:
+    """Fresh trusted controller preparation, before ordinary input admission.
+
+    The controller supplies the exact browser-acknowledged historical selector.
+    No lease or inherited bridge is used or returned. Failure returns no descriptor.
+    """
+    from ._child_bridge import (
+        ChildBridgeError, _DIGEST, _snapshot_grant, _verify_snapshot_row, resource, task_resource,
+    )
+
+    if (any(type(value) is not str or not value for value in (
+            source_task_id, source_attempt_id, association_id, expected_project_id))
+            or type(revision) is not int or not 0 < revision <= 9007199254740991
+            or type(expected_capability_digest) is not str
+            or not _DIGEST.fullmatch(expected_capability_digest)):
+        raise ChildBridgeError("invalid acknowledged snapshot selector")
+    generated = client.generated
+    task = task_resource(generated.get_task(source_task_id))
+    if (task.get("task_id", task.get("id")) != source_task_id
+            or task.get("project_id") != expected_project_id
+            or task.get("capability_id", task.get("capability")) != "editorial.human_review"
+            or task.get("capability_digest") != expected_capability_digest):
+        raise ChildBridgeError("snapshot source capability or project changed")
+    grant = _snapshot_grant(task)
+    if grant is None or grant["output_ports"] != ["state_result"]:
+        raise ChildBridgeError("source has no exact review snapshot grant")
+    rows, cursor = generated.list_managed_outputs(source_task_id)
+    if cursor is not None or type(rows) is not list or len(rows) > 256:
+        raise ChildBridgeError("snapshot output page exceeds bound")
+    rows = [resource(row) for row in rows]
+    ids = [row.get("association_id") for row in rows]
+    if any(type(value) is not str or not value for value in ids) or len(set(ids)) != len(ids):
+        raise ChildBridgeError("invalid snapshot association listing")
+    matches = [row for row in rows if row["association_id"] == association_id]
+    if len(matches) != 1:
+        raise ChildBridgeError("acknowledged snapshot is absent from bounded listing")
+    row = matches[0]
+    if resource(generated.get_managed_output(association_id)) != row:
+        raise ChildBridgeError("snapshot list/get metadata changed")
+    _verify_snapshot_row(row, task=task, attempt_id=source_attempt_id,
+                         project_id=expected_project_id, grant=grant, revision=revision, output_port="state_result")
+    data = generated.get_object(row["object_id"]).data
+    if (type(data) is not bytes or len(data) != row["size"]
+            or "sha256:" + hashlib.sha256(data).hexdigest() != row["object_id"]):
+        raise ChildBridgeError("snapshot object bytes failed verification")
+    if resource(generated.get_managed_output(association_id)) != row:
+        raise ChildBridgeError("snapshot association changed during readback")
+    return {"object_id": row["object_id"], "digest": row["object_id"], "filename": "review-state.json"}
+
+
 class RuntimeProtocolClient:
     """Host adapter composed over the generated workspace client.
 
@@ -1972,6 +3832,7 @@ class RuntimeProtocolClient:
         "handshake",
         "worker:register",
         "worker:execute",
+        "projects:read",
         "tasks:read",
         "objects:read",
         "objects:write",
@@ -2011,13 +3872,22 @@ class RuntimeProtocolClient:
         self._attempt_runtime_epochs: dict[str, int] = {}
         self._heartbeat_session = secrets_module.token_hex(8)
         self._heartbeat_sequence = 0
-        self._heartbeat_lock = threading.Lock()
+        self._heartbeat_lock = threading.RLock()
+        # A Runtime child authority pins the exact current lease deadline.
+        # Only issuance/admission and heartbeat share this lock; child polls
+        # never hold it.
         # Registration is the runtime's executor liveness pulse.  Keep one
         # stable nonce for retries, then rotate it only for an intentional
         # renewal so a new host session cannot replay an old registration
         # receipt while transport retries remain idempotent.
         self._registration_session = secrets_module.token_hex(8)
         self._registration_refresh_deadline = 0.0
+
+    def fork_for_host_slot(self) -> RuntimeProtocolClient:
+        """Give one serving slot private transport, lease and heartbeat state."""
+        client = RuntimeProtocolClient(self.endpoint, self.credential, timeout=self.timeout)
+        client.executor_id = self.executor_id
+        return client
 
     def health(self):
         """Read protocol/schema/runtime epoch through the generated client."""
@@ -2164,7 +4034,8 @@ class RuntimeProtocolClient:
         }
         if progress is not None:
             payload["progress"] = dict(progress)
-        return self.generated.heartbeat_attempt(attempt_id, **payload)
+        with self._heartbeat_lock:
+            return self.generated.heartbeat_attempt(attempt_id, **payload)
 
     def claim(self, task_id: str, worker_id: str, lease_token: str):
         raise HostError("per-task claim is not a canonical operation; use claim_task")
@@ -2186,6 +4057,82 @@ class RuntimeProtocolClient:
 
     def task(self, task_id: str):
         return self.generated.get_task(task_id)
+
+    def upload_child_input(self, data: bytes, *, descriptor: Mapping[str, Any],
+                           project_id: str | None, run_id: str, task_id: str,
+                           attempt_id: str, lease_id: str, fence: int, runtime_epoch: int):
+        """Publish an immutable intermediate snapshot, without inline settlement."""
+        if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
+            raise HostError("child input upload epoch disagrees with claim")
+        if not self.executor_id or not all((run_id, task_id, attempt_id, lease_id)):
+            raise HostError("child input upload provenance is incomplete")
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        if descriptor.get("object_id") != digest or descriptor.get("size") != len(data):
+            raise HostError("child input snapshot identity changed")
+        binding = {"project_id": project_id, "run_id": run_id, "task_id": task_id,
+                   "attempt_id": attempt_id, "executor_id": self.executor_id,
+                   "lease_id": lease_id, "fence": fence, "runtime_epoch": runtime_epoch,
+                   "output_key": descriptor["name"], "output_port": descriptor["output_port"],
+                   "filename": descriptor["filename"], "digest": digest, "size": len(data),
+                   "media_type": descriptor["media_type"]}
+        return self.generated.ingest_object(
+            data, media_type=binding["media_type"], filename=binding["filename"],
+            upload_binding=binding, idempotency_key="output-" + _canonical_digest(binding))
+
+    def admit_child(self, *, child: Mapping[str, Any], inputs: Mapping[str, Any],
+                    ordered_inputs: list[Mapping[str, Any]], derived_inputs: list[Mapping[str, Any]],
+                    task_id: str, attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
+                    run_id: str, project_id: str | None):
+        """Exact D18 issuance/admission pair; signed receipt stays in this frame."""
+        from ._child_bridge import ChildBridgeError, resource
+
+        with self._heartbeat_lock:
+            self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
+            if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
+                raise HostError("child admission epoch disagrees with claim")
+            receipt = resource(self.generated.issue_child_authority(
+                attempt_id, lease_id=lease_id, fence=fence, runtime_epoch=runtime_epoch,
+                child=dict(child), derived_inputs=[dict(ref) for ref in derived_inputs]))
+            refs = receipt.get("derived_inputs")
+            if (receipt.get("child") != child or receipt.get("parent_task_id") != task_id
+                    or receipt.get("parent_attempt_id") != attempt_id or type(refs) is not list
+                    or len(refs) != len(derived_inputs) or not isinstance(receipt.get("authority"), str)):
+                raise ChildBridgeError("foreign child authority receipt")
+            for supplied, ref in zip(derived_inputs, refs):
+                if (not isinstance(ref, Mapping) or any(ref.get(k) != v for k, v in supplied.items())
+                        or ref.get("parent_attempt_id") != attempt_id or not ref.get("association_id")):
+                    raise ChildBridgeError("derived receipt identity or order changed")
+            by_name = {ref["name"]: ref for ref in refs}
+            descriptors = []
+            child_inputs = dict(inputs)
+            for original in ordered_inputs:
+                required = original.get("required")
+                if type(required) is not bool:
+                    raise ChildBridgeError("host ordered input requiredness must be boolean")
+                ref = by_name.get(original["name"], original)
+                descriptor = {k: ref[k] for k in ("name", "object_id", "filename")}
+                descriptor["digest"] = ref["object_id"]
+                descriptor["required"] = required
+                descriptors.append(descriptor)
+                child_inputs[ref["name"]] = {k: descriptor[k] for k in ("object_id", "digest", "filename")}
+            task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
+                    "input_object_ids": [ref["object_id"] for ref in descriptors],
+                    "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs}}
+            if descriptors:
+                task["execution_request"] = normalize_execution_request({
+                    "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
+                })
+            return self.generated.admit_delegated_task(
+                authority=receipt["authority"], task=task, idempotency_key=child["child_id"])
+
+    def child_outputs(self, task_id: str):
+        rows, cursor = self.generated.list_managed_outputs(task_id)
+        if cursor is not None:
+            raise HostError("child managed outputs exceed one bounded page")
+        return rows
+
+    def child_output(self, association_id: str):
+        return self.generated.get_managed_output(association_id)
 
     def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None):
         if not attempt_id or fence is None:
@@ -2537,6 +4484,7 @@ class GenericPackHost:
 
         self._active_processes: set[subprocess.Popen] = set()
         self._process_lock = threading.RLock()
+        self._child_bridges: set[Any] = set()
         self._shutdown = threading.Event()
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
@@ -2550,6 +4498,8 @@ class GenericPackHost:
         self._vibecomfy_warmth_hint: str | None = None
         self._vibecomfy_current_warmth_hint: str | None = None
         self._vibecomfy_requested_warmth_hint: str | None = None
+        self._claim_slots: tuple[GenericPackHost, ...] = ()
+        self._claim_loop_lock = threading.Lock()
 
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
@@ -2573,6 +4523,8 @@ class GenericPackHost:
     def _cleanup_ephemeral_attempt_or_latch(self, root: Path) -> None:
         """Delete one owned root, latching uncertainty if observation fails."""
         try:
+            if self._cleanup_uncertain:
+                raise HostError("process cleanup uncertainty; attempt retained")
             _cleanup_ephemeral_attempt(root)
         except Exception as exc:
             self._cleanup_uncertain = True
@@ -2597,9 +4549,117 @@ class GenericPackHost:
         with self._process_lock:
             self._active_processes.discard(process)
 
+    def prepare_wan_session(
+        self, *, owner_dir: str | Path, root: str | Path, python: str | Path,
+        source_digest: str, config_digest: str, readiness_timeout: float,
+        release_timeout: float, init_options: Mapping[str, Any] | None = None,
+    ) -> SessionBinding:
+        """Prepare one retained child in the host, before admission.
+
+        W2.2 calls this after Runtime claim/attestation, then admits its Runtime
+        invocation through this host's MTS. owner_dir must be the deployment's
+        stable host-local custody directory across host restarts (not an attempt
+        directory). No source discovery, orphan adoption or native install here.
+        """
+        if self._shutdown.is_set() or self._cleanup_uncertain:
+            raise HostError("Wan child requires an active host")
+        if readiness_timeout <= 0 or release_timeout <= 0:
+            raise ValueError("Wan lifecycle deadlines must be positive")
+        options = dict(init_options or {})
+        if set(options) - {"config_path", "cli_args", "console_isatty"}:
+            raise ValueError("unsupported Wan initialization options")
+        owner = Path(owner_dir).expanduser().resolve()
+        engine_root = Path(root).expanduser().resolve()
+        # Preserve the venv executable path: resolving its symlink would select
+        # the base interpreter and lose the independently installed environment.
+        interpreter = Path(python).expanduser().absolute()
+        if not engine_root.is_dir() or not interpreter.is_file():
+            raise HostError("Wan child requires explicit source and interpreter paths")
+        spec = {"owner_dir": str(owner), "root": str(engine_root), "python": str(interpreter),
+                "source_digest": source_digest, "config_digest": config_digest,
+                "runtime_instance_id": str(self.runtime_state.get("runtime_instance_id") or self.executor_id),
+                "init": {**options, "root": str(engine_root), "output_dir": str(owner / "spool"),
+                         "console_output": False}}
+        spec = json.loads(json.dumps(spec, sort_keys=True))
+        identity = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+        manager = self.managed_tool_session
+        current = manager.current_adapter
+        if (manager.active and isinstance(current, _ManagedWanChildAdapter)
+                and current.binding.execution_identity == identity):
+            manager.observe(current.binding)
+            return current.binding
+        birth = secrets_module.token_hex(16)
+        binding = SessionBinding(
+            session_id=str(owner), runtime_instance_id=spec["runtime_instance_id"],
+            process_birth_id=birth, endpoint="pipe:" + birth,
+            source_digest=source_digest, config_digest=config_digest,
+            execution_identity=identity, launch_generation=birth, engine_birth_id=birth,
+        )
+        # Construction is inert. MTS releases the previous slot before start()
+        # can allocate any native state, and retains failed startup custody.
+        adapter = _ManagedWanChildAdapter(
+            spec=spec, binding=binding, readiness_timeout=readiness_timeout,
+            release_timeout=release_timeout, track=self._track_process,
+            untrack=self._untrack_process,
+        )
+        manager.open(capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
+                     binding=binding, adapter=adapter, start=adapter.start)
+        manager.observe(binding)
+        return binding
+
+
+    def invoke_wan_session(
+        self, token: AdmissionToken, settings: Mapping[str, Any], *,
+        timeout: float, cancelled: Callable[[], bool], progress_path: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Return fenced native evidence; caller retains admission until custody.
+
+        This does not claim, retry, publish or settle Runtime work. Failure or
+        cancellation fences the current session; release/replacement remains MTS
+        responsibility and must observe exit before another child starts.
+        """
+        if timeout <= 0:
+            raise ValueError("Wan invocation deadline must be positive")
+        manager = self.managed_tool_session
+        adapter = manager.adapter_for(token, begin=True)
+        if not isinstance(adapter, _ManagedWanChildAdapter):
+            raise HostError("invocation does not own a Wan child")
+        try:
+            evidence = adapter.invoke(
+                token,
+                settings,
+                timeout=timeout,
+                cancelled=cancelled,
+                progress_path=progress_path,
+            )
+            manager.adapter_for(token)
+            return evidence
+        except BaseException:
+            # A late failure from an old generation cannot poison its successor.
+            try:
+                manager.fence_admission(token, reason="wan_invocation_failed_or_cancelled")
+            except StaleAdmissionError:
+                pass
+            raise
+
+
     def shutdown(self) -> None:
         """Stop the host and every currently owned capability process."""
         self._shutdown.set()
+        # Fence every serving slot before any session release can block or
+        # report uncertainty. A failed release must not leave a sibling live.
+        for slot in self._claim_slots:
+            slot._shutdown.set()
+        for slot in self._claim_slots:
+            try:
+                slot.shutdown()
+            except Exception:
+                slot._cleanup_uncertain = True
+                self._cleanup_uncertain = True
+        with self._process_lock:
+            bridges = tuple(self._child_bridges)
+        for bridge in bridges:
+            bridge.revoke()
         self.managed_tool_session.close(reason="host_shutdown")
         with self._process_lock:
             active = tuple(self._active_processes)
@@ -2696,6 +4756,35 @@ class GenericPackHost:
                 matrix_entry = self.matrix.get(definition.id, {})
                 source_roots = _admitted_source_roots(executor_root, definition)
                 record = CapabilityRecord(definition=definition, capability_digest=_capability_digest(definition.to_dict()), source_digest=_source_digest_for_roots(source_roots), source_root=executor_root, manifest_path=manifest, matrix=matrix_entry)
+                records[record.id] = record
+        # Use the SDK's exact static projection, preserving host-configured
+        # source authority even when shared discovery also sees managed/env roots.
+        from astrid.core.pack.discovery import discover_pack_metadata
+        from astrid.sdk.actions import action_executor_definition
+
+        discovered_packs = discover_pack_metadata(
+            project_root=self.pack_roots[0] if self.pack_roots else Path.cwd(),
+            extra_pack_roots=tuple(str(root) for root in self.pack_roots),
+        )
+        for discovered_pack in discovered_packs:
+            pack = discovered_pack.pack
+            pack_root = pack.root.resolve()
+            if not any(pack_root == root or pack_root.is_relative_to(root) for root in self.pack_roots):
+                continue
+            for local_id, declaration in pack.actions.items():
+                try:
+                    definition = action_executor_definition(discovered_pack, local_id, declaration)
+                    source_roots = _admitted_source_roots(pack_root, definition)
+                    record = CapabilityRecord(
+                        definition=definition,
+                        capability_digest=_capability_digest(definition.to_dict()),
+                        source_digest=_source_digest_for_roots(source_roots),
+                        source_root=pack_root,
+                        manifest_path=pack_root / "pack.yaml",
+                        matrix=self.matrix.get(definition.id, {}),
+                    )
+                except (ExecutorValidationError, OSError, ValueError):
+                    continue
                 records[record.id] = record
         if self.matrix:
             discovered = set(records)
@@ -3208,6 +5297,28 @@ class GenericPackHost:
                 values[key] = spec[key]
             if key in input_spec and not values.get(key):
                 values[key] = input_spec[key]
+        if bounded_policy is None:
+            # Validate caller-owned file values before any attempt writes or
+            # Runtime fetches. Paths synthesized below are host-owned, not
+            # caller file inputs; bounded image profiles retain their policy.
+            def declared_file_digest(value: Any, name: str) -> str:
+                try:
+                    digest = managed_file_digest(value, name)
+                except ValueError as exc:
+                    raise HostError(str(exc)) from exc
+                require_authorized(digest, name)
+                return digest
+
+            for name, value in list(values.items()):
+                if name in file_input_names:
+                    digest = declared_file_digest(value, str(name))
+                    values[name] = {**dict(value), "digest": digest} if isinstance(value, Mapping) else {"digest": digest}
+            # Legacy named digest descriptors are inserted below, after host
+            # snapshot synthesis. Validate now without changing that precedence.
+            input_digests = input_spec.get("input_digests", ())
+            for item in input_digests if isinstance(input_digests, list) else ():
+                if isinstance(item, Mapping) and item.get("name") and str(item["name"]) in file_input_names:
+                    declared_file_digest(item, str(item["name"]))
         if cas_param_ports is not None:
             for name in tuple(str(value) for value in cas_param_ports):
                 candidate = values.get(name)
@@ -3538,6 +5649,8 @@ class GenericPackHost:
         attempt: Path,
         admission: Mapping[str, Any],
         inputs: Mapping[str, Any] | None = None,
+        *,
+        private_runtime_context: bool = False,
     ) -> _NetworkBrokerContext | None:
         """Start a strict host-owned broker when the manifest requests one.
 
@@ -3561,7 +5674,12 @@ class GenericPackHost:
         # Bind the concrete dynamic destinations into the signed admission so
         # route evidence cannot be replayed under a different URL input.
         admission["allowed_routes"] = list(routes)
-        broker = ObservableNetworkBroker(response_body=None)
+        # D18 keeps the complete admission and signed observations in host
+        # memory until the action and its contained descendants have ended.
+        if private_runtime_context:
+            evidence_path.unlink(missing_ok=True)
+            (attempt / "network-evidence.json").unlink(missing_ok=True)
+        broker = ObservableNetworkBroker(response_body=None, defer_evidence=private_runtime_context)
         if record.id == "generation.generate_image_codex":
             broker.tunnel_idle_seconds = min(600, max(15, int((inputs or {}).get("timeout") or 600)))
         broker.register_admission(
@@ -4001,6 +6119,7 @@ class GenericPackHost:
         admission: Mapping[str, Any] | None = None,
         network_broker: _NetworkBrokerContext | None = None,
         network_policy: Mapping[str, Any] | None = None,
+        allow_runtime_connection: bool = True,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -4091,7 +6210,7 @@ class GenericPackHost:
         # environment boundary instead of asking the child to rediscover it.
         runtime_endpoint = getattr(self.client, "endpoint", None)
         runtime_credential = getattr(self.client, "credential", None)
-        if runtime_endpoint and runtime_credential:
+        if allow_runtime_connection and runtime_endpoint and runtime_credential:
             explicit["BANODOCO_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
             secrets["BANODOCO_RUNTIME_CREDENTIAL"] = str(runtime_credential)
             declared_secrets = (*declared, "BANODOCO_RUNTIME_CREDENTIAL")
@@ -4115,11 +6234,24 @@ class GenericPackHost:
             secret_values=secrets,
             declared_secrets=declared_secrets,
         )
+        if not allow_runtime_connection:
+            # A D18 parent has only its inherited three-operation channel.
+            # Also remove manifest passthrough aliases of the worker secret.
+            for name in ("ASTRID_NETWORK_ADMISSION", "ASTRID_NETWORK_BROKER_EVIDENCE",
+                         "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE",
+                         "ASTRID_NETWORK_BROKER_TOKEN"):
+                env.pop(name, None)
+            for name, value in tuple(env.items()):
+                if name in {"BANODOCO_RUNTIME_ENDPOINT", "BANODOCO_RUNTIME_CREDENTIAL"} or (
+                    runtime_credential and value == str(runtime_credential)
+                ):
+                    env.pop(name, None)
         policy = network_broker.policy if network_broker is not None else (dict(network_policy) if network_policy is not None else _network_policy(record))
         if policy is not None:
             hook_root = attempt / ".astrid-network-hook"
             hook_root.mkdir(parents=True, exist_ok=True)
             (hook_root / "sitecustomize.py").write_text(
+                _STRICT_NETWORK_HOOK_SOURCE if not allow_runtime_connection else
                 "from astrid.core.execution.network_policy import install_from_environment\ninstall_from_environment()\n",
                 encoding="utf-8",
             )
@@ -4130,7 +6262,19 @@ class GenericPackHost:
             # boundary.  The host/broker evidence signing key never does.
             if network_broker is not None:
                 env["ASTRID_NETWORK_BROKER_TOKEN"] = network_broker.auth_token
-            env["ASTRID_NETWORK_ADMISSION"] = json.dumps(dict(admission or {}), sort_keys=True, separators=(",", ":"))
+            if not allow_runtime_connection:
+                for name in ("ASTRID_NETWORK_ADMISSION", "ASTRID_NETWORK_BROKER_EVIDENCE",
+                             "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE"):
+                    env.pop(name, None)
+                if network_broker is not None:
+                    env["ASTRID_NETWORK_ADMISSION_DIGEST"] = network_broker.broker.expected_admission_digest
+                    env["ASTRID_NETWORK_NONCE"] = network_broker.broker.expected_nonce
+                if isinstance(policy.get("broker"), Mapping):
+                    policy = {**dict(policy), "broker": {key: value for key, value in policy["broker"].items()
+                                                        if key != "evidence_path"}}
+                    env["ASTRID_NETWORK_POLICY"] = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            else:
+                env["ASTRID_NETWORK_ADMISSION"] = json.dumps(dict(admission or {}), sort_keys=True, separators=(",", ":"))
             env["PYTHONPATH"] = str(hook_root) + os.pathsep + env.get("PYTHONPATH", "")
             proxy = policy.get("proxy")
             if isinstance(proxy, str) and proxy:
@@ -4148,7 +6292,7 @@ class GenericPackHost:
                 # name rather than trusting ambient proxy variables.
                 env["ASTRID_BROKER_PROXY"] = proxy
             broker = policy.get("broker")
-            if isinstance(broker, Mapping) and broker.get("evidence_path"):
+            if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
                 env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
         return env, secrets
 
@@ -4276,9 +6420,9 @@ class GenericPackHost:
                 descriptor["size"] = len(data)
                 descriptor["kind"] = "object"
                 descriptor["data_base64"] = base64.b64encode(data).decode("ascii")
-                # Result-manifest metadata (ordinal/role/primary) is local
-                # harvest evidence.  Runtime 70872d03 accepts only the
-                # canonical settlement Output fields plus inline bytes.
+                # The validated ordinal is Runtime-bound output identity,
+                # even without generation selectors. Role/primary metadata
+                # remains separate from the canonical object fields.
                 uploaded_row = {
                     key: descriptor[key]
                     for key in (
@@ -4298,7 +6442,7 @@ class GenericPackHost:
                 for field in generation_metadata:
                     if field in descriptor:
                         uploaded_row[field] = descriptor[field]
-                if any(field in descriptor for field in generation_metadata) and "ordinal" in descriptor:
+                if "ordinal" in descriptor:
                     uploaded_row["ordinal"] = descriptor["ordinal"]
                 uploaded_row.update(
                     {
@@ -4355,15 +6499,12 @@ class GenericPackHost:
                     if field in descriptor
                 }
             )
-            if any(
-                field in descriptor
-                for field in ("output_port", "group_key", "variant_key", "selector")
-            ) and "ordinal" in descriptor:
+            if "ordinal" in descriptor:
                 uploaded_row["ordinal"] = descriptor["ordinal"]
             uploaded.append(uploaded_row)
         return uploaded
 
-    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None) -> Any:
+    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None, child_bridge: Any | None = None, allow_runtime_connection: bool = True) -> Any:
         """Run a manifest command without importing Astrid's project authority.
 
         Built-in pipeline steps and command capabilities are both runnable from
@@ -4395,6 +6536,11 @@ class GenericPackHost:
         for port in record.definition.inputs:
             if port.name not in values and port.default is not None:
                 values[port.name] = port.default
+        if record.definition.metadata.get("action_invocation"):
+            from astrid.sdk.actions import validate_action_inputs_definition
+            effective_inputs = {port.name: port.default for port in record.definition.inputs if port.default is not None}
+            effective_inputs.update(inputs)
+            validate_action_inputs_definition(record.definition, effective_inputs)
         values = _bind_host_owned_command_values(
             record,
             values,
@@ -4434,6 +6580,7 @@ class GenericPackHost:
         for output in record.definition.outputs:
             if output.name == "video" and "output_name" not in values:
                 values["output_name"] = "hype.mp4"
+        values, _ = _bind_host_owned_command_outputs(record, values, output_root=output_root)
         try:
             binding = expand_command(
                 command,
@@ -4461,6 +6608,7 @@ class GenericPackHost:
             authority_context=authority_context,
             admission=admission,
             network_broker=network_broker,
+            allow_runtime_connection=allow_runtime_connection and child_bridge is None,
             explicit_env={
                 "PYTHONPATH": os.pathsep.join((package_parent, *_dependency_pythonpath())),
                 ASTRID_INTERNAL_INVOCATION: "1",
@@ -4498,6 +6646,25 @@ class GenericPackHost:
             values=values,
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
+        inherited_fds = ()
+        if child_bridge is not None:
+            # Bootstrap in the action interpreter before pack code. Private
+            # launch arguments contain a descriptor and command, no authority.
+            if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                raise HostError("delegating commands require the admitted Python interpreter")
+            arguments = argv[1:]
+            flags = []
+            while arguments and arguments[0] in {"-u", "-B"}:
+                flags.append(arguments[0])
+                arguments = arguments[1:]
+            if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
+                    or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
+                raise HostError("unsupported delegating Python command flags")
+            inherited_fds = (child_bridge.inherited_fd(),)
+            argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
+                    "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+        if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+            argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
         process = popen_owned_group(
             _network_sandbox_argv(argv, attempt, broker_endpoint),
             cwd=str(cwd),
@@ -4505,10 +6672,15 @@ class GenericPackHost:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            pass_fds=inherited_fds,
         )
+        if child_bridge is not None:
+            child_bridge.launched()
         self._track_process(process)
         try:
+            observe_tree(process)
             while process.poll() is None:
+                observe_tree(process)
                 _assert_live_storage_envelope(storage_estimate, attempt, output_root)
                 if cancelled is not None and cancelled():
                     _terminate_process_group(process)
@@ -4561,13 +6733,22 @@ class GenericPackHost:
                 returncode=returncode,
                 process_id=process_id,
             )
+        except BaseException as exc:
+            # The first census may fail before tree_members exists. Latch
+            # before the finalizer can select a successful group-only fallback.
+            if isinstance(exc, CleanupUncertainError) or hasattr(process, "_astrid_tree_uncertain"):
+                self._cleanup_uncertain = True
+            raise
         finally:
-            if process.poll() is None:
+            try:
                 _terminate_process_group(process)
-            self._untrack_process(process)
-            _release_owned_group(process)
-            env.clear()
-            secrets.clear()
+            except BaseException as exc:
+                self._cleanup_uncertain = True
+                raise HostError(f"owned command cleanup uncertain: {exc}") from exc
+            finally:
+                self._untrack_process(process)
+                env.clear()
+                secrets.clear()
 
     def invoke_capability(
         self,
@@ -4580,7 +6761,10 @@ class GenericPackHost:
         definition: Mapping[str, Any] | None = None,
         admission: Mapping[str, Any] | None = None,
         child_env: Mapping[str, str] | None = None,
+        require_network_startup: bool = False,
+        network_broker_required: bool = False,
         storage_estimate: Mapping[str, int] | None = None,
+        child_bridge: Any | None = None,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -4615,6 +6799,8 @@ class GenericPackHost:
                     source_root=source_root,
                     values=request,
                 )
+        if definition is not None:
+            _verify_action_admission(definition, admission or {})
         if admission is not None:
             _verify_admitted_source(admission)
         request_path = attempt_path / ".astrid-capability-request.json"
@@ -4647,25 +6833,35 @@ class GenericPackHost:
                 )
                 for raw_root in raw_import_roots:
                     import_root = Path(str(raw_root)).expanduser().resolve()
-                    if not import_root.is_dir() or (
-                        source_roots
-                        and not any(source_root.is_relative_to(import_root) for source_root in source_roots)
-                    ):
+                    if not import_root.is_dir() or import_root not in source_roots:
                         raise HostError("admitted Python import root is outside the source fence")
                     import_roots.append(str(import_root))
+        # Preserve the host-created sitecustomize hook when replacing the
+        # worker import path; arbitrary child PYTHONPATH is still excluded.
+        network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
         env["PYTHONPATH"] = os.pathsep.join(
-            dict.fromkeys((package_parent, *_dependency_pythonpath(), *import_roots))
+            dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
         )
         env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
         broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
+        argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
+        inherited_fds = ()
+        if child_bridge is not None:
+            inherited_fds = (child_bridge.inherited_fd(),)
+            argv.extend(("--child-bridge", str(inherited_fds[0])))
+        if require_network_startup:
+            argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
         process = popen_owned_group(
-            _network_sandbox_argv([sys.executable, "-m", "astrid.core.execution.generic_host_worker", str(request_path)], attempt_path, broker_endpoint),
+            _network_sandbox_argv(argv, attempt_path, broker_endpoint),
             cwd=str(attempt_path),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            pass_fds=inherited_fds,
         )
+        if child_bridge is not None:
+            child_bridge.launched()
         self._track_process(process)
         try:
             while process.poll() is None:
@@ -4820,6 +7016,102 @@ class GenericPackHost:
             idempotency_key=idempotency_key,
         )
 
+    def _wan_session_context(self, task_data: Mapping[str, Any]) -> dict[str, Any]:
+        """Read the explicitly admitted Wan source/config/interpreter tuple."""
+        raw = task_data.get("wan_session")
+        if raw is None and isinstance(task_data.get("spec"), Mapping):
+            raw = task_data["spec"].get("wan_session")
+        if not isinstance(raw, Mapping):
+            raise HostError(
+                "wan2gp.generate_video requires an explicit wan_session admission "
+                "with root, config_path, python, owner_dir and identity digests"
+            )
+        required = (
+            "root",
+            "config_path",
+            "python",
+            "owner_dir",
+            "source_digest",
+            "config_digest",
+        )
+        missing = [key for key in required if not isinstance(raw.get(key), str) or not str(raw[key]).strip()]
+        for key in ("readiness_timeout", "release_timeout"):
+            value = raw.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                missing.append(key)
+        if missing:
+            raise HostError("Wan session admission is missing explicit fields: " + ", ".join(missing))
+        root = Path(str(raw["root"])).expanduser().resolve()
+        config = Path(str(raw["config_path"])).expanduser().resolve()
+        python = Path(str(raw["python"])).expanduser().absolute()
+        owner = Path(str(raw["owner_dir"])).expanduser().resolve()
+        if root.is_symlink() or not root.is_dir() or not (root / "shared" / "api.py").is_file():
+            raise HostError("Wan session source root is not an explicit upstream checkout")
+        if config.is_symlink() or not config.is_file():
+            raise HostError("Wan session config_path is not an explicit regular file")
+        if not python.is_file():
+            raise HostError("Wan session python is not an explicit interpreter file")
+        options = {"config_path": str(config)}
+        for key in ("cli_args", "console_isatty"):
+            if key in raw:
+                options[key] = raw[key]
+        return {
+            "owner_dir": owner,
+            "root": root,
+            "python": python,
+            "source_digest": str(raw["source_digest"]),
+            "config_digest": str(raw["config_digest"]),
+            "readiness_timeout": float(raw.get("readiness_timeout", 30.0)),
+            "release_timeout": float(raw.get("release_timeout", 30.0)),
+            "init_options": options,
+        }
+
+    def _run_wan_session(
+        self,
+        *,
+        inputs: Mapping[str, Any],
+        output_root: Path,
+        attempt: Path,
+        managed_token: AdmissionToken,
+        execution_deadline: float,
+        cancelled: Callable[[], bool],
+    ) -> Any:
+        from astrid.packs.wan2gp.src.driver import compile_host_settings, materialize_host_result
+
+        settings = compile_host_settings(inputs)
+        evidence = self.invoke_wan_session(
+            managed_token,
+            settings,
+            timeout=max(0.1, execution_deadline - time.monotonic()),
+            cancelled=cancelled,
+            progress_path=attempt / ".astrid-progress.json",
+        )
+        result = evidence.get("result") if isinstance(evidence, Mapping) else None
+        if not isinstance(result, Mapping) or result.get("success") is not True:
+            if cancelled():
+                return SimpleNamespace(payload={"wan_native": dict(evidence)})
+            errors = result.get("errors", []) if isinstance(result, Mapping) else []
+            if not errors and isinstance(evidence.get("native_error"), str):
+                errors = [evidence["native_error"]]
+            raise HostError(
+                "native Wan2GP job failed: " + "; ".join(str(item) for item in errors)
+            )
+        if cancelled():
+            raise HostCancelled("Wan attempt cancelled before output custody")
+        manager = self.managed_tool_session
+        manager.adapter_for(managed_token)
+        mapped = materialize_host_result(
+            evidence, attempt_root=output_root, inputs=inputs,
+            expected_identity=_ManagedWanChildAdapter.identity(managed_token),
+        )
+        manager.adapter_for(managed_token)
+        return SimpleNamespace(
+            payload={"wan_native": dict(evidence), "wan_mapping": mapped},
+            process_id=evidence.get("process_id"),
+            returncode=evidence.get("returncode"),
+            output_root=output_root,
+        )
+
     def run_task(
         self,
         task: Mapping[str, Any],
@@ -4951,18 +7243,19 @@ class GenericPackHost:
             )
             raise HostError(str(exc)) from exc
         spec = task_data.get("spec", {})
+        private_runtime_context = isinstance(spec, Mapping) and (
+            "child_delegation" in spec or "delegated_parent" in spec or "delegated_recoverable_outputs" in spec)
         authorized_input_object_ids = task_data.get("input_object_ids")
         ephemeral_attempt_root = self.attempt_root is None and self.attempt_base is None
         # ``attempt_root`` is intentionally an exact caller-owned spool for
         # debug/single-attempt callers. Long-lived hosts use ``attempt_base``
         # so sequential tasks get isolated namespaces.
         root = self._allocate_attempt_root(task_id, attempt_id)
-        execution_deadline = self.execution_policy.deadline_from_now()
         runtime_limit = contract_limits.get("max_runtime_seconds")
-        if runtime_limit is not None:
-            execution_deadline = min(execution_deadline, time.monotonic() + runtime_limit)
+        lifetime = _AttemptLifetime(self.execution_policy, time.monotonic(), runtime_limit)
+        # Noninteractive native sessions still need their finite submission bound.
+        execution_deadline = lifetime.deadline()
         collection_limit = contract_limits.get("collection_seconds")
-        collection_deadline: float | None = None
         warm_receipt = self.execution_policy.warm_expectation()
         evidence_receipt: dict[str, Any] | None = None
         deadline_exceeded = False
@@ -5059,10 +7352,12 @@ class GenericPackHost:
         def cancelled():
             nonlocal deadline_exceeded, evidence_cap_exceeded
             nonlocal evidence_failure_receipt
-            if self.execution_policy.deadline_expired(execution_deadline) or (
-                collection_deadline is not None
-                and self.execution_policy.deadline_expired(collection_deadline)
-            ):
+            try:
+                lifetime.assert_authority()
+            except Exception:
+                cancel_signal.set()
+                return True
+            if lifetime.expired():
                 deadline_exceeded = True
                 cancel_signal.set()
                 return True
@@ -5173,6 +7468,7 @@ class GenericPackHost:
                     if heartbeat_progress is not None:
                         heartbeat_kwargs["progress"] = heartbeat_progress
                     self.client.heartbeat(task_id, lease_token, **heartbeat_kwargs)
+                    lifetime.assert_authority()
                     current = self.client.task(task_id)
                     current_task = current.get("task", current) if isinstance(current, Mapping) else current
                     state = current_task.get("status") if isinstance(current_task, Mapping) else getattr(current_task, "state", None)
@@ -5189,7 +7485,24 @@ class GenericPackHost:
             daemon=True,
         )
         pump_thread.start()
+        child_bridge = None
         try:
+            # Admission readback is bounded transport work under the lease pump.
+            # Decide exactly once, retaining the original start and setup bound.
+            lifetime.authority = _interactive_review_authority(
+                self, task_data, record, attempt_id=attempt_id, lease_id=lease_token,
+                fence=fence, runtime_epoch=claim_epoch)
+            if isinstance(spec, Mapping) and ("child_delegation" in spec or "delegated_recoverable_outputs" in spec):
+                from ._child_bridge import HostChildBridge
+
+                child_bridge = HostChildBridge(
+                    self, task_data, attempt_id=attempt_id, lease_id=lease_token, fence=fence,
+                    runtime_epoch=claim_epoch, output_root=root / "outputs", cancelled=cancelled)
+                with self._process_lock:
+                    self._child_bridges.add(child_bridge)
+                lifetime.review = _training_review_authority(
+                    self, task_data, record, child_bridge, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=claim_epoch)
             raw_task_param_ports = record.definition.metadata.get("hc04_param_ports")
             task_param_ports = (
                 tuple(str(value) for value in raw_task_param_ports)
@@ -5231,6 +7544,9 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            _iteration_video_discovery(
+                self, task_data, record, child_bridge, inputs, attempt_id=attempt_id,
+                lease_id=lease_token, fence=fence, runtime_epoch=claim_epoch, cancelled=cancelled)
             if record.definition.metadata.get("storage_policy_version") in {
                 "astrid.cloud-i2i.z-image.v1",
                 "astrid.cloud-edit.qwen-source.v1",
@@ -5292,7 +7608,7 @@ class GenericPackHost:
                     self.execution_policy.immutable_input_baseline(input_root)
                 )
             evidence_root = root
-            self.execution_policy.assert_deadline(execution_deadline)
+            lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
                 execution_identity, model_id, template_id, workflow_session_requirements = (
                     _prepare_vibecomfy_execution_identity(
@@ -5470,11 +7786,21 @@ class GenericPackHost:
                     if self._vibecomfy_warmth_hint == current_warmth_hint
                     else None
                 )
-            self.managed_tool_session.open(
-                capability=managed_capability,
-                binding=managed_binding,
-                adapter=managed_adapter,
-            )
+            if capability_id == "wan2gp.generate_video":
+                managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
+                managed_adapter = self.managed_tool_session.current_adapter
+                managed_capability = CapabilityDescriptor(
+                    capability_id=capability_id,
+                    residency_support="unknown",
+                    resources_claimed=tuple(record.resource_keys),
+                    warm_reuse_expected=True,
+                )
+            else:
+                self.managed_tool_session.open(
+                    capability=managed_capability,
+                    binding=managed_binding,
+                    adapter=managed_adapter,
+                )
             managed_opened = True
             self.managed_tool_session.observe(managed_binding)
             managed_token = self.managed_tool_session.admit(
@@ -5504,10 +7830,12 @@ class GenericPackHost:
                     self._pending_provider_grants.pop(task_id, None)
                 except ProviderRouteGrantError as exc:
                     raise HostError(str(exc)) from exc
-            network_broker = self._start_network_broker(record, root, network_admission, inputs)
+            worker_admission = network_admission
+            network_broker = self._start_network_broker(record, root, network_admission, inputs,
+                                                        private_runtime_context=private_runtime_context)
             output_root = root / "outputs"
             output_root.mkdir(parents=True, exist_ok=True)
-            self.execution_policy.assert_deadline(execution_deadline)
+            lifetime.assert_deadline()
             try:
                 # Setup/attestation may be slow, but a lost claim must never
                 # reach native queue submission or child launch.
@@ -5515,7 +7843,20 @@ class GenericPackHost:
                     handle_guard_abort()
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
-                if record.definition.command is not None:
+                lifetime.begin_execution()
+                if capability_id == "wan2gp.generate_video":
+                    result = self._run_wan_session(
+                        inputs=inputs,
+                        output_root=output_root,
+                        attempt=root,
+                        managed_token=managed_token,
+                        execution_deadline=execution_deadline,
+                        cancelled=cancelled,
+                    )
+                    effective_output_root = getattr(result, "output_root", None)
+                    if isinstance(effective_output_root, (str, Path)):
+                        output_root = Path(effective_output_root).expanduser().resolve()
+                elif record.definition.command is not None:
                     result = self._run_command_definition(
                         record,
                         inputs,
@@ -5537,6 +7878,8 @@ class GenericPackHost:
                         admission=network_admission,
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
+                        child_bridge=child_bridge,
+                        allow_runtime_connection=not private_runtime_context,
                     )
                     # Checkout-server VibeComfy commands run inside the
                     # attested HC-03 output root. Carry that effective root
@@ -5551,7 +7894,12 @@ class GenericPackHost:
                     # admitted definition is serialized for the child so a
                     # registry reload cannot silently select a different pack.
                     worker_admission = network_admission
-                    worker_env, worker_secrets = self._child_environment(record, root, admission=worker_admission, network_broker=network_broker)
+                    if private_runtime_context:
+                        worker_admission = {key: value for key, value in network_admission.items()
+                                            if key not in {"task_id", "attempt_id", "fence", "network_nonce", "allowed_routes"}}
+                    worker_env, worker_secrets = self._child_environment(
+                        record, root, admission=network_admission, network_broker=network_broker,
+                        allow_runtime_connection=not private_runtime_context)
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -5562,7 +7910,7 @@ class GenericPackHost:
                                 "project": task_data.get("project_id"),
                                 "project_was_auto_resolved": True,
                                 "python_exec": sys.executable,
-                                "run_id": task_id,
+                                "run_id": None if private_runtime_context else task_id,
                                 "run_root": str(root),
                                 "invocation": "runtime",
                             },
@@ -5571,7 +7919,10 @@ class GenericPackHost:
                             definition=record.definition.to_dict(),
                             admission=worker_admission,
                             child_env=worker_env,
+                            require_network_startup=private_runtime_context and _network_policy(record) is not None,
+                            network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
+                            child_bridge=child_bridge,
                         )
                     finally:
                         worker_env.clear()
@@ -5580,8 +7931,9 @@ class GenericPackHost:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
                 pass
-            if collection_limit is not None:
-                collection_deadline = time.monotonic() + collection_limit
+            lifetime.begin_collection(collection_limit)
+            if child_bridge is not None:
+                child_bridge.finish()
             # The periodic lease pump may not get another turn after a fast
             # command writes its terminal checkpoint. Persist that final
             # checkpoint before harvesting and settling so a completed task
@@ -5605,12 +7957,19 @@ class GenericPackHost:
                 cancelled_attempt = True
                 return {"task_id": task_id, "status": "cancelled", "cancelled": True}
             harvest_values = {**inputs, "out": str(output_root), "run_root": str(root), "python_exec": sys.executable}
+            if record.definition.command is not None:
+                _, harvest_values = _bind_host_owned_command_outputs(record, harvest_values, output_root=output_root)
+            if capability_id == "wan2gp.generate_video":
+                from astrid.packs.wan2gp.src.driver import verify_host_result
+
+                self.managed_tool_session.adapter_for(managed_token)
+                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             try:
                 evidence_receipt = self.execution_policy.assert_evidence_cap(
                     root,
                     immutable_inputs=immutable_input_baseline,
                 )
-                self.execution_policy.assert_deadline(execution_deadline)
+                lifetime.assert_deadline()
             except ExecutionGuardError as exc:
                 if isinstance(exc, EvidenceCapError):
                     evidence_failure_receipt = evidence_failure_diagnostic(exc)
@@ -5705,6 +8064,8 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
+            if capability_id == "wan2gp.generate_video":
+                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or
             # uploaded. Never publish a completed settlement after that point.
             if cancelled():
@@ -5730,7 +8091,7 @@ class GenericPackHost:
                 payload["thumbnail_diagnostics"] = thumbnail_diagnostics
             network_evidence = self._network_evidence(
                 root,
-                admission=worker_admission if record.definition.command is None else network_admission,
+                admission=network_admission,
                 # Provider egress requires host-owned signed broker evidence.
                 # A local-generation adapter may have ``isolation.network``
                 # solely because it talks to the host-owned Comfy daemon on
@@ -5757,11 +8118,7 @@ class GenericPackHost:
                 retained_owner = "generic-pack-host"
             payload["execution_guards"] = {
                 "evidence": evidence_receipt,
-                "deadline_seconds": min(
-                    self.execution_policy.deadline_seconds,
-                    runtime_limit if runtime_limit is not None else self.execution_policy.deadline_seconds,
-                ),
-                "collection_seconds": collection_limit,
+                **lifetime.receipt(),
                 "warm_expectation": warm_receipt,
                 "evidence_budget": {
                     "run_observed_bytes": self.execution_policy.evidence_budget.charged_bytes,
@@ -5796,6 +8153,8 @@ class GenericPackHost:
             managed_envelope = self.managed_tool_session.settle(
                 managed_token,
                 result_evidence={
+                    "token_id": managed_token.token_id,
+                    "invocation_id": managed_token.invocation_id,
                     "generation": managed_token.generation,
                     "binding_identity": list(managed_token.binding_identity),
                     "outputs": outputs,
@@ -5848,6 +8207,10 @@ class GenericPackHost:
         finally:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
+            if child_bridge is not None:
+                child_bridge.revoke()
+                with self._process_lock:
+                    self._child_bridges.discard(child_bridge)
             if pump_stop is not None:
                 pump_stop.set()
             if pump_thread is not None:
@@ -5891,7 +8254,10 @@ class GenericPackHost:
                         cleanup_errors.append(f"managed fence: {exc}")
             if managed_opened:
                 retain_persistent_session = (
-                    isinstance(managed_adapter, _ManagedVibeSessionAdapter)
+                    (
+                        isinstance(managed_adapter, _ManagedVibeSessionAdapter)
+                        or isinstance(managed_adapter, _ManagedWanChildAdapter)
+                    )
                     and managed_settled
                     and settled
                 )
@@ -5923,6 +8289,11 @@ class GenericPackHost:
                     (root / "codex-home" / "auth.json").unlink(missing_ok=True)
                 except OSError as exc:
                     cleanup_errors.append(f"Codex credential cleanup: {exc}")
+            # An unverified session release may still own a writer. Latch
+            # before deciding whether the attempt can be deleted, sharing the
+            # scene process-census retention boundary.
+            if cleanup_errors:
+                self._cleanup_uncertain = True
             if keep_attempt:
                 try:
                     retained_exists = _strict_root_exists(root)
@@ -6047,6 +8418,7 @@ class GenericPackHost:
             "project_id": getattr(claim, "project_id", None),
             "expected_effect": getattr(claim, "expected_effect", None),
             "generation_intent": getattr(claim, "generation_intent", None),
+            "execution_request": getattr(claim, "execution_request", None),
             "execution_binding": getattr(claim, "execution_binding", None),
             "queued_at": getattr(claim, "queued_at", None),
             "admitted_at": getattr(claim, "admitted_at", None),
@@ -6077,15 +8449,17 @@ class GenericPackHost:
             task_data = {
                 "id": getattr(task, "task_id", task_id),
                 "run_id": getattr(task, "run_id", None),
+                "attempt_id": getattr(task, "attempt_id", None),
                 "capability": getattr(task, "capability_id", ""),
+                "capability_id": getattr(task, "capability_id", None),
+                "capability_digest": getattr(task, "capability_digest", None),
                 "project_id": getattr(task, "project_id", None),
                 "runtime_epoch": getattr(task, "runtime_epoch", claim_data.get("runtime_epoch")),
-                "input_object_ids": list(
-                    getattr(task, "input_object_ids", claim_data.get("input_object_ids", ())) or ()
-                ),
-                "spec": getattr(task, "spec", claim_data.get("spec") or {}),
+                "input_object_ids": getattr(task, "input_object_ids", None),
+                "spec": getattr(task, "spec", None),
                 "expected_effect": getattr(task, "expected_effect", claim_data.get("expected_effect")),
                 "generation_intent": getattr(task, "generation_intent", claim_data.get("generation_intent")),
+                "execution_request": getattr(task, "execution_request", None),
                 "execution_binding": getattr(task, "execution_binding", claim_data.get("execution_binding")),
                 "storage_estimate": getattr(task, "storage_estimate", claim_data.get("storage_estimate")),
                 "required_facts": getattr(task, "required_facts", claim_data.get("required_facts")),
@@ -6105,28 +8479,22 @@ class GenericPackHost:
 
         if task_data.get("id") not in (None, task_id):
             fail_claim_handoff("claimed task_id disagrees with task read")
-        claim_spec = claim_data.get("spec")
-        read_spec = task_data.get("spec")
-        if isinstance(claim_spec, Mapping) and isinstance(read_spec, Mapping):
-            claim_nested = claim_spec.get("spec")
-            read_nested = read_spec.get("spec")
-            claim_request = claim_spec.get("execution_request") or (
-                claim_nested.get("execution_request") if isinstance(claim_nested, Mapping) else None
-            )
-            read_request = read_spec.get("execution_request") or (
-                read_nested.get("execution_request") if isinstance(read_nested, Mapping) else None
-            )
-            if claim_request != read_request and (claim_request is not None or read_request is not None):
-                fail_claim_handoff("claim and task read disagree on execution_request")
-            if claim_request is not None:
-                claim_ids = claim_data.get("input_object_ids")
-                read_ids = task_data.get("input_object_ids")
-                if claim_ids is not None and read_ids is not None and (
-                    not isinstance(claim_ids, (list, tuple))
-                    or not isinstance(read_ids, (list, tuple))
-                    or list(claim_ids) != list(read_ids)
-                ):
-                    fail_claim_handoff("claim and task read disagree on input_object_ids")
+        # Validate both envelopes independently before retaining the claim.
+        # Falsy malformed requests are present-invalid, never a fallback.
+        try:
+            claim_request = _execution_contract(
+                claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+            read_request = _execution_contract(
+                task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+        except Exception as exc:
+            fail_claim_handoff(str(exc))
+        if _canonical_digest(claim_request) != _canonical_digest(read_request):
+            fail_claim_handoff("claim and task read disagree on execution_request")
+        if claim_request is not None:
+            claim_ids = claim_data.get("input_object_ids")
+            read_ids = task_data.get("input_object_ids")
+            if claim_ids != read_ids:
+                fail_claim_handoff("claim and task read disagree on input_object_ids")
         claim_binding = claim_data.get("execution_binding") or claim_data.get("placement_binding") or claim_data.get("binding")
         read_binding = task_data.get("execution_binding") or task_data.get("placement_binding") or task_data.get("binding")
         if claim_binding is not None and read_binding is not None and claim_binding != read_binding:
@@ -6134,6 +8502,7 @@ class GenericPackHost:
         task_data.update(
             {
                 "id": task_id,
+                "capability": task_data.get("capability", task_data.get("capability_id")),
                 "attempt_id": claim_data.get("attempt_id"),
                 "lease_id": claim_data.get("lease_id"),
                 "executor_id": claim_data.get("executor_id") or getattr(self, "executor_id", None),
@@ -6157,6 +8526,8 @@ class GenericPackHost:
         # handoff).
         if claim_data.get("spec") is not None:
             task_data["spec"] = claim_data["spec"]
+        if claim_request is not None:
+            task_data["execution_request"] = claim_request
         if claim_data.get("expected_effect") is not None:
             task_data["expected_effect"] = claim_data["expected_effect"]
         if claim_data.get("generation_intent") is not None:
@@ -6194,6 +8565,10 @@ class GenericPackHost:
                         "provider route preparation failed and could not be recorded"
                     ) from runtime_exc
                 raise HostError(f"provider route preparation failed: {exc}") from exc
+        if self._shutdown.is_set():
+            self.client.fail(task_id, lease_id, "host shutdown before execution",
+                             retryable=False, attempt_id=attempt_id, fence=int(fence))
+            return None
         return self.run_task(
             {"task": task_data},
             lease_token=lease_id,
@@ -6204,6 +8579,8 @@ class GenericPackHost:
 
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
+        if not once and self.max_concurrency > 1:
+            return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
@@ -6248,6 +8625,156 @@ class GenericPackHost:
                 break
             self._shutdown.wait(max(0.0, float(poll_seconds)))
         return results
+
+    def _new_claim_slot(self) -> GenericPackHost:
+        """Retain session warmth in a slot without sharing attempt custody."""
+        fork = getattr(self.client, "fork_for_host_slot", None)
+        if not callable(fork):
+            raise HostError("parallel serving requires a client with private host-slot transport")
+        slot = GenericPackHost(
+            pack_roots=list(self.pack_roots), client=fork(), executor_id=self.executor_id,
+            max_concurrency=self.max_concurrency, attempt_base=self.attempt_base,
+            capability_matrix=self.capability_matrix_path, credential_source=self.credential_source,
+            source_inventory_identity=self.source_inventory_identity,
+            boot_manifest_path=self.boot_manifest_path, boot_manifest_hash=self.boot_manifest_hash,
+            execution_policy=self.execution_policy,
+        )
+        # Records are replaced by preflight, never modified in place. The
+        # aggregate evidence budget is deliberately shared and already locked.
+        slot.capabilities = dict(self.capabilities)
+        slot.source_epoch = self.source_epoch
+        slot.runtime_state = dict(self.runtime_state)
+        slot._credential_source_is_explicit = self._credential_source_is_explicit
+        return slot
+
+    def _run_claim_slots(self, *, poll_seconds: float, max_tasks: int | None) -> list[Mapping[str, Any]]:
+        """Dispatch at most one attempt per isolated, reusable serving slot.
+
+        The coordinator alone renews registration. A slot is unavailable until
+        claim_once has returned, including lease pumping, settlement and owned
+        cleanup. In-flight claims reserve result allowance before acquisition.
+        """
+        if self.attempt_root is not None:
+            raise HostError("parallel serving requires attempt_base or ephemeral attempt roots")
+        if self._cleanup_uncertain:
+            raise HostError("generic host admissions are blocked by cleanup uncertainty")
+        if not self._claim_loop_lock.acquire(blocking=False):
+            raise HostError("generic host claim loop is already running")
+        completed: queue.SimpleQueue = queue.SimpleQueue()
+        active: dict[int, threading.Thread] = {}
+        results: list[Mapping[str, Any]] = []
+        failures: dict[int, int] = {}
+        retry_at: dict[int, float] = {}
+        refresh_retry_at = 0.0
+        refresh_failures = 0
+        slots: tuple[GenericPackHost, ...] = ()
+        poll_delay = max(0.01, float(poll_seconds))
+
+        def serve(index: int) -> None:
+            try:
+                result = slots[index].claim_once()
+            except BaseException as exc:
+                completed.put((index, None, exc))
+            else:
+                completed.put((index, result, None))
+
+        def backoff(count: int) -> float:
+            return min(30.0, max(0.05, float(poll_seconds)) * (2 ** min(count - 1, 10)))
+
+        def report_failure(exc: BaseException, count: int) -> None:
+            if count == 1 or not (count & (count - 1)):
+                print(f"generic host claim failed ({count} consecutive): "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+        try:
+            if self._shutdown.is_set() or (max_tasks is not None and max_tasks <= 0):
+                return results
+            # Do not create more retained sessions than a finite run can use.
+            count = min(self.max_concurrency, max_tasks) if max_tasks is not None else self.max_concurrency
+            slots = tuple(self._new_claim_slot() for _ in range(count))
+            self._claim_slots = slots
+            while not self._shutdown.is_set():
+                now = time.monotonic()
+                while not completed.empty():
+                    index, result, exc = completed.get()
+                    active.pop(index).join()
+                    slot = slots[index]
+                    if slot._cleanup_uncertain:
+                        self._cleanup_uncertain = True
+                        self._last_cleanup_receipt = slot.last_cleanup_receipt
+                        raise HostError("serving slot cleanup is uncertain; admissions fenced") from exc
+                    if exc is not None:
+                        if not isinstance(exc, Exception):
+                            raise exc
+                        failures[index] = failures.get(index, 0) + 1
+                        report_failure(exc, failures[index])
+                        retry_at[index] = now + backoff(failures[index])
+                    else:
+                        failures[index] = 0
+                        if result is not None:
+                            results.append(result)
+                        retry_at[index] = now if result is not None else now + poll_delay
+                if max_tasks is not None and len(results) >= max_tasks:
+                    break
+                if now >= max(self._registration_refresh_deadline, refresh_retry_at):
+                    try:
+                        self._renew_executor_registration()
+                    except Exception as exc:
+                        refresh_failures += 1
+                        report_failure(exc, refresh_failures)
+                        refresh_retry_at = now + backoff(refresh_failures)
+                    else:
+                        refresh_failures = 0
+                        refresh_retry_at = 0.0
+                # A failed registration refresh blocks new claims while the
+                # existing attempts continue their independent lease pumps.
+                if refresh_failures == 0:
+                    for index, slot in enumerate(slots):
+                        if self._shutdown.is_set():
+                            break
+                        if index in active or now < retry_at.get(index, 0.0):
+                            continue
+                        if max_tasks is not None and len(results) + len(active) >= max_tasks:
+                            break
+                        slot.capabilities = dict(self.capabilities)
+                        slot.source_epoch = self.source_epoch
+                        slot.runtime_state = dict(self.runtime_state)
+                        worker = threading.Thread(target=serve, args=(index,),
+                                                  name=f"astrid-claim-slot-{index}", daemon=True)
+                        active[index] = worker
+                        worker.start()
+                self._shutdown.wait(min(0.05, poll_delay))
+            return results
+        finally:
+            # Shutdown fences each slot's bridge/session/process census, then
+            # await one common deadline. Never discard a still-live owner.
+            # Fence all admissions first: an earlier session close may block
+            # while a sibling's outstanding claim returns with a new lease.
+            for slot in slots:
+                slot._shutdown.set()
+            cleanup_errors = []
+            for slot in slots:
+                try:
+                    slot.shutdown()
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+            deadline = time.monotonic() + 5.0
+            for worker in active.values():
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            if any(worker.is_alive() for worker in active.values()):
+                cleanup_errors.append("serving slot did not terminate within five seconds")
+            for slot in slots:
+                if slot._cleanup_uncertain:
+                    cleanup_errors.append("serving slot retained uncertain owned cleanup")
+                    self._last_cleanup_receipt = slot.last_cleanup_receipt
+            if not cleanup_errors:
+                self._claim_slots = ()
+            else:
+                self._cleanup_uncertain = True
+            self._claim_loop_lock.release()
+            if cleanup_errors:
+                raise HostError("claim-loop cleanup incomplete: " + "; ".join(cleanup_errors))
+
     def persistent_supervisor(
         self,
         state_path: str | Path,

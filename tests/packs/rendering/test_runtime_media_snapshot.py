@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import run as run_module
+from astrid.packs.rendering.actions.timeline_visualize import run as run_module
 
 
 class _PagedRuntime:
@@ -181,7 +181,7 @@ module.page_pair = lambda value: (
 )
 sys.modules[module.__name__] = module
 
-from astrid.packs.rendering.executors.timeline_visualize.run import _runtime_media_snapshot
+from astrid.packs.rendering.actions.timeline_visualize.run import _runtime_media_snapshot
 assert _runtime_media_snapshot("demo") == []
 assert "sqlite3" not in sys.modules
 """

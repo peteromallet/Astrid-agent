@@ -1161,7 +1161,7 @@ def test_validate_repo_structure_authority_exemptions_stay_green(
     _write(
         tmp_path,
         "astrid/core/gateway/dispatch.py",
-        "import astrid.packs.timeline.cli\n",
+        "import astrid.packs.shots.conformance\n",
     )
     # Legacy files stay in-tree and are never scanned for authority markers.
     _write(

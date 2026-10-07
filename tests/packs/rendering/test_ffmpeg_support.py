@@ -20,12 +20,12 @@ from astrid.core.rendering.contracts import (
     RenderRequest,
     RenderResult,
 )
-from astrid.packs.rendering.backends.ffmpeg import audio_reactive_colour, command
-from astrid.packs.rendering.backends.ffmpeg import run as ffmpeg
-from astrid.packs.rendering.backends.ffmpeg.support import support as evaluate_support
+from astrid.packs.rendering.rendering.renderers.ffmpeg import audio_reactive_colour, command
+from astrid.packs.rendering.rendering.renderers.ffmpeg import run as ffmpeg
+from astrid.packs.rendering.rendering.renderers.ffmpeg.support import support as evaluate_support
 
 support_module = importlib.import_module(
-    "astrid.packs.rendering.backends.ffmpeg.support"
+    "astrid.packs.rendering.rendering.renderers.ffmpeg.support"
 )
 
 

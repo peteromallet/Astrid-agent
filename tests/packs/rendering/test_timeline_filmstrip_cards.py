@@ -8,9 +8,9 @@ import subprocess
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize import filmstrip_cards
-from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import plan_filmstrip, build_filmstrip_pack, _attach_input_navigation
-from astrid.packs.rendering.executors.timeline_visualize.filmstrip_options import filmstrip_options
+from astrid.packs.rendering.actions.timeline_visualize import filmstrip_cards
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import plan_filmstrip, build_filmstrip_pack, _attach_input_navigation
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
 
 
 def snapshot(**changes):
@@ -322,7 +322,7 @@ def test_filtered_sampling_jumps_to_short_clip_in_long_movie():
 
 
 def test_static_captions_are_bounded_and_full_script_preserved():
-    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import _static_lines
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import _static_lines
     text = 'Long script. ' * 100000
     card = plan_filmstrip(snapshot(scripts=[dict(start=0, end=4, text=text)]), {})['cards'][0]
     lines = _static_lines(card)

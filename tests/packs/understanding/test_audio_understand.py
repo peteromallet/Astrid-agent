@@ -6,7 +6,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from astrid.packs.understanding.executors.audio_understand.run import main
+from astrid.packs.understanding.actions.audio_understand.run import main
 
 
 def _write_tone(path: Path, *, freq: float = 440.0, duration: float = 0.35, sample_rate: int = 16000) -> None:
@@ -75,10 +75,10 @@ def test_audio_understand_writes_universal_result_manifest(capsys, tmp_path):
     out_path = out_dir / "result.json"
 
     with patch(
-        "astrid.packs.understanding.executors.audio_understand.run.load_api_key",
+        "astrid.packs.understanding.actions.audio_understand.run.load_api_key",
         return_value="test-key",
     ), patch(
-        "astrid.packs.understanding.executors.audio_understand.run._call_audio_model",
+        "astrid.packs.understanding.actions.audio_understand.run._call_audio_model",
         return_value={
             "choices": [
                 {

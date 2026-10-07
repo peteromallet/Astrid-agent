@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parents[3]
 RENDERING_PACK = ROOT / "astrid" / "packs" / "rendering"
 REMOTION_PROJECT = ROOT / "remotion"
 BACKEND_MODULE_PREFIXES = (
-    "astrid.packs.rendering.backends.remotion",
-    "astrid.packs.rendering.backends.ffmpeg",
-    "astrid.packs.rendering.finalizers.ffmpeg",
+    "astrid.packs.rendering.rendering.renderers.remotion",
+    "astrid.packs.rendering.rendering.renderers.ffmpeg",
+    "astrid.packs.rendering.rendering.finalizers.ffmpeg",
 )
 
 
@@ -348,7 +348,7 @@ def test_real_remotion_render_through_registered_backend(
     candidate = renderers.get("rendering.remotion")
 
     remotion_backend = importlib.import_module(
-        "astrid.packs.rendering.backends.remotion.run"
+        "astrid.packs.rendering.rendering.renderers.remotion.run"
     )
     asset_servers: list[object] = []
     real_server = remotion_backend.InvocationAssetServer

@@ -3,7 +3,7 @@
 import argparse
 import pytest
 
-from astrid.packs.video_editing.orchestrators.thumbnail_maker.run import (
+from astrid.packs.video_editing.actions.thumbnail_maker.run import (
     _exec_discover_video_evidence,
     _exec_build_reference_pack,
     _exec_generate_thumbnails,

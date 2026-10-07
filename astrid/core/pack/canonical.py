@@ -1,4 +1,4 @@
-"""Strict, read-only canonical pack v2 capability catalog.
+"""Strict, read-only canonical pack v2/v3 capability catalog.
 
 The neutral workspace runtime owns product state, schemas, and migrations.
 This module therefore admits only executable capability, documentation, and
@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -37,11 +37,14 @@ def reject_symlinked_path(path: str | Path) -> Path:
 
 CANONICAL_MANIFEST_NAME = "pack.yaml"
 LEGACY_MANIFEST_NAMES = frozenset({"pack.yml", "pack.json", "schema-" + "pack.yaml"})
-_SCHEMA_PATH = Path(__file__).with_name("schemas") / "v2" / "pack.json"
+_SCHEMA_ROOT = Path(__file__).with_name("schemas")
 _IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
 _QUALIFIED = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _RELEASE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+_LOCAL_ID = re.compile(r"^[a-z][a-z0-9_-]*$")
+_V3_QUALIFIED = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_-]*$")
+_ELEMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class CanonicalPackError(ValueError):
@@ -49,7 +52,7 @@ class CanonicalPackError(ValueError):
 
 
 class CanonicalPackValidationError(CanonicalPackError):
-    """A manifest or its declared resource tree violates v2."""
+    """A manifest or its declared resource tree violates its pack schema."""
 
 
 def _mapping(value: Any, path: str) -> dict[str, Any]:
@@ -214,6 +217,10 @@ class CanonicalPackDefinition:
     astrid_version: str | None
     resources: tuple[ResourceDeclaration, ...]
     authoring_only: tuple[AuthoringExclusion, ...]
+    actions: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    ui: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    rendering: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    documents: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -257,7 +264,24 @@ class CanonicalPackDefinition:
             }
         if self.astrid_version:
             result["astrid_version"] = self.astrid_version
+        if self.schema_version == 3:
+            result.pop("content")
+            result.pop("extensions")
+            result.update({
+                name: _thaw(getattr(self, name))
+                for name in ("actions", "ui", "rendering", "documents")
+            })
         return result
+
+    def declaration_id(self, section: str, key: str) -> str:
+        """Qualify a declared local identity without another authored ID."""
+        if section not in {"actions", "ui", "rendering", "documents"}:
+            raise KeyError(section)
+        if key not in getattr(self, section):
+            raise KeyError(key)
+        if section == "rendering" and self.rendering[key]["type"] == "element":
+            return key
+        return f"{self.id}.{key}"
 
     @property
     def normalized(self) -> Mapping[str, Any]:
@@ -280,6 +304,10 @@ class CapabilityProjection:
     extensions: Mapping[str, Any]
     aliases: tuple[Mapping[str, str], ...]
     permissions: tuple[PackPermission, ...]
+    actions: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    ui: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    rendering: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    documents: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +348,8 @@ class CanonicalPackEntry:
     def capability_projection(self) -> CapabilityProjection:
         d = self.definition
         return CapabilityProjection(
-            d.id, d.capabilities, d.content, d.extensions, d.aliases, d.permissions
+            d.id, d.capabilities, d.content, d.extensions, d.aliases, d.permissions,
+            d.actions, d.ui, d.rendering, d.documents,
         )
 
     @property
@@ -356,13 +385,17 @@ def _read_manifest(path: Path) -> dict[str, Any]:
 
 
 def _validate_schema(data: dict[str, Any], path: Path) -> None:
+    version = data.get("schema_version")
+    if type(version) is not int or version not in {2, 3}:
+        raise CanonicalPackValidationError(f"{path}: schema_version must be integer 2 or 3")
+    schema_path = _SCHEMA_ROOT / f"v{version}" / "pack.json"
     try:
-        schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise CanonicalPackError(f"cannot read canonical schema {_SCHEMA_PATH}: {exc}") from exc
+        raise CanonicalPackError(f"cannot read canonical schema {schema_path}: {exc}") from exc
     errors = sorted(
         jsonschema.Draft202012Validator(schema).iter_errors(data),
-        key=lambda e: list(e.absolute_path),
+        key=lambda e: tuple(str(item) for item in e.absolute_path),
     )
     if errors:
         error = errors[0]
@@ -370,7 +403,63 @@ def _validate_schema(data: dict[str, Any], path: Path) -> None:
         raise CanonicalPackValidationError(f"{path}: {location}: {error.message}")
 
 
+def _role_path(value: Any, location: str, role: str) -> str:
+    path = _relative(value, location)
+    if not path.startswith(role + "/"):
+        raise CanonicalPackValidationError(f"{location} must be beneath {role}/")
+    return path
+
+
+def _normalize_declarations(data: dict[str, Any]) -> dict[str, Mapping[str, Any]]:
+    result: dict[str, Mapping[str, Any]] = {}
+    identities: set[str] = set()
+    for section in ("actions", "ui", "rendering", "documents"):
+        declarations: dict[str, Any] = {}
+        for key, raw in sorted(data.get(section, {}).items()):
+            location = f"{section}.{key}"
+            item = dict(raw)
+            element = section == "rendering" and item["type"] == "element"
+            if element:
+                parts = key.split("/")
+                valid_key = (len(parts) == 2 and _LOCAL_ID.fullmatch(parts[0])
+                             and _ELEMENT_ID.fullmatch(parts[1]))
+            else:
+                valid_key = _LOCAL_ID.fullmatch(key)
+            if not valid_key:
+                raise CanonicalPackValidationError(f"{location} has invalid local identity")
+            identity = key if element else f"{data['id']}.{key}"
+            if identity in identities:
+                raise CanonicalPackValidationError(f"{location} duplicates public identity {identity!r}")
+            identities.add(identity)
+            if section == "actions":
+                invocation = dict(item["invocation"])
+                if invocation["kind"] == "python":
+                    invocation["path"] = _role_path(
+                        invocation["path"], f"{location}.invocation.path", "actions"
+                    )
+                item["invocation"] = invocation
+                for slot in ("inputs", "outputs"):
+                    if isinstance(item[slot], str):
+                        item[slot] = _relative(item[slot], f"{location}.{slot}")
+                    elif isinstance(item[slot], list):
+                        names = [port["name"] for port in item[slot]]
+                        if len(names) != len(set(names)):
+                            raise CanonicalPackValidationError(f"{location}.{slot} contains duplicate port names")
+            elif section == "ui":
+                item["entry"] = _role_path(item["entry"], f"{location}.entry", "ui")
+            elif section == "rendering":
+                item["path"] = _role_path(item["path"], f"{location}.path", "rendering")
+            elif isinstance(item["schema"], str):
+                item["schema"] = _relative(item["schema"], f"{location}.schema")
+            for resource in item.get("resources", []):
+                _relative(resource["path"], f"{location}.resources.path")
+            declarations[key] = item
+        result[section] = _freeze(declarations, section)
+    return result
+
+
 def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
+    schema_version = data["schema_version"]
     pack_id = _text(data.get("id"), "id")
     if not _IDENT.fullmatch(pack_id):
         raise CanonicalPackValidationError("id has invalid canonical pack identifier")
@@ -394,13 +483,14 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
             )
         )
     aliases: list[Mapping[str, str]] = []
+    qualified = _V3_QUALIFIED if schema_version == 3 else _QUALIFIED
     for i, item in enumerate(data.get("aliases", [])):
         x = _mapping(item, f"aliases[{i}]")
         alias = _text(x.get("alias"), f"aliases[{i}].alias")
         target = _text(x.get("canonical_id"), f"aliases[{i}].canonical_id")
         if (
-            not _QUALIFIED.fullmatch(alias)
-            or not _QUALIFIED.fullmatch(target)
+            not qualified.fullmatch(alias)
+            or not qualified.fullmatch(target)
             or alias == target
             or alias.split(".")[0] != pack_id
             or target.split(".")[0] != pack_id
@@ -448,8 +538,22 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
             )
         )
     ext = _freeze(data.get("extensions", {}), "extensions")
+    declarations = _normalize_declarations(data) if schema_version == 3 else {}
+    if schema_version == 3:
+        public_ids = {
+            f"{pack_id}.{key}"
+            for section, entries in declarations.items()
+            for key, item in entries.items()
+            if section != "rendering" or item["type"] != "element"
+        }
+        for alias in aliases:
+            if alias["alias"] in public_ids:
+                raise CanonicalPackValidationError(
+                    f"aliases duplicates public identity {alias['alias']!r}"
+                )
+            public_ids.add(alias["alias"])
     return CanonicalPackDefinition(
-        2,
+        schema_version,
         pack_id,
         _text(data.get("name"), "name"),
         version,
@@ -467,19 +571,23 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
         tuple(sorted(aliases, key=lambda a: (a["kind"], a["alias"]))),
         _freeze(agent_norm, "agent"),
         documentation,
-        tuple(),
+        tuple(_freeze(item, "secrets") for item in data.get("secrets", [])) if schema_version == 3 else (),
         MappingProxyType(
             {
                 k: _strings(
                     _mapping(data.get("dependencies", {}), "dependencies").get(k, []),
                     f"dependencies.{k}",
                 )
-                for k in ("python", "npm", "system")
+                for k in (
+                    sorted({"python", "npm", "system"} | set(data.get("dependencies", {})))
+                    if schema_version == 3 else ("python", "npm", "system")
+                )
             }
         ),
         _text(data["astrid_version"], "astrid_version") if "astrid_version" in data else None,
         tuple(sorted(resources, key=lambda r: r.path)),
         tuple(sorted(authoring, key=lambda a: a.path)),
+        **declarations,
     )
 
 
@@ -490,10 +598,54 @@ def _declared_paths(definition: CanonicalPackDefinition) -> tuple[tuple[str, str
         paths.append((definition.documentation.path, "documentation"))
     paths += [(r.path, f"resource:{r.kind}") for r in definition.resources]
     paths += [(a.path, f"authoring_only:{a.kind}") for a in definition.authoring_only]
+    for key, action in definition.actions.items():
+        role = f"actions.{key}"
+        if action["invocation"]["kind"] == "python":
+            paths.append((action["invocation"]["path"], f"{role}.invocation.path"))
+        for slot in ("inputs", "outputs"):
+            if isinstance(action[slot], str):
+                paths.append((action[slot], f"{role}.{slot}"))
+    paths += [(item["entry"], f"ui.{key}.entry") for key, item in definition.ui.items()]
+    paths += [(item["path"], f"rendering.{key}.path") for key, item in definition.rendering.items()]
+    paths += [
+        (item["schema"], f"documents.{key}.schema")
+        for key, item in definition.documents.items() if isinstance(item["schema"], str)
+    ]
+    for section in ("actions", "ui", "rendering", "documents"):
+        for key, item in getattr(definition, section).items():
+            paths += [
+                (r["path"], f"{section}.{key}.resource:{r['kind']}")
+                for r in item.get("resources", ())
+            ]
     for path, role in paths:
         if path == CANONICAL_MANIFEST_NAME:
             raise CanonicalPackValidationError(f"{role} cannot declare {CANONICAL_MANIFEST_NAME!r}")
     return tuple(sorted(paths))
+
+
+def _validate_rendering_identities(root: Path, definition: CanonicalPackDefinition) -> None:
+    # Read descriptors as data only. Their execution/render protocols and
+    # implementation loading stay with the existing host-specific owners.
+    from astrid.core.pack.registry import ELEMENT_KIND_REGISTRY
+
+    for key, item in definition.rendering.items():
+        location = f"rendering.{key}.path"
+        descriptor = _read_manifest(root / item["path"])
+        if item["type"] == "element":
+            kind = ELEMENT_KIND_REGISTRY.normalize(
+                _text(descriptor.get("kind"), location + ".kind"),
+                error_cls=CanonicalPackValidationError,
+            )
+            identity = f"{kind}/{_text(descriptor.get('id'), location + '.id')}"
+            metadata = _mapping(descriptor.get("metadata", {}), location + ".metadata")
+            owner = descriptor.get("pack_id", metadata.get("pack_id"))
+            if owner is not None and owner != definition.id:
+                raise CanonicalPackValidationError(f"{location}: descriptor pack_id must be {definition.id!r}")
+        else:
+            identity = _text(descriptor.get("id"), location + ".id")
+        expected = definition.declaration_id("rendering", key)
+        if identity != expected:
+            raise CanonicalPackValidationError(f"{location}: descriptor identity {identity!r} must match {expected!r}")
 
 
 def _resource_handle(root: Path, path: str, kind: str) -> ResourceHandle:
@@ -533,6 +685,11 @@ def _resolve_resources(
                 f"runtime resource {path!r} overlaps authoring-only path"
             )
         handle = _resource_handle(root, path, role)
+        file_role = role == "documentation" or role.endswith(
+            (".invocation.path", ".entry", ".path", ".inputs", ".outputs", ".schema")
+        )
+        if definition.schema_version == 3 and file_role and handle.file_kind != "file":
+            raise CanonicalPackValidationError(f"{role} must name a regular file: {path!r}")
         if role.startswith("content:"):
             for child in sorted(handle.resolved.rglob("*"), key=lambda p: p.as_posix()):
                 rel = child.relative_to(root).as_posix()
@@ -601,8 +758,6 @@ def _admit(
             f"{path}: database contributions are forbidden; the neutral workspace runtime owns persistence"
         )
     _validate_schema(data, path)
-    if data.get("schema_version") != 2 or type(data.get("schema_version")) is not int:
-        raise CanonicalPackValidationError(f"{path}: schema_version must be exactly integer 2")
     definition = _normalize_definition(data)
     if expected_pack_id is not None and definition.id != expected_pack_id:
         raise CanonicalPackValidationError(
@@ -621,6 +776,8 @@ def _admit(
         ).encode()
     ).hexdigest()
     resources = _resolve_resources(root, definition) if resolve_resources else ()
+    if resolve_resources and definition.schema_version == 3:
+        _validate_rendering_identities(root, definition)
     manifest = ResourceHandle(
         CANONICAL_MANIFEST_NAME,
         root,

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
 
-from astrid.packs.understanding.executors.visual_understand.run import main
+from astrid.packs.understanding.actions.visual_understand.run import main
 
 
 def test_visual_understand_builds_numbered_contact_sheet(capsys, tmp_path):
@@ -83,6 +83,8 @@ def test_visual_understand_crop_variants_contact_sheet(capsys, tmp_path):
             "left,center,right",
             "--contact-sheet",
             str(sheet),
+            "--out-dir",
+            str(tmp_path / "out"),
             "--dry-run",
         ]
     )
@@ -101,10 +103,10 @@ def test_visual_understand_writes_universal_result_manifest(capsys, tmp_path):
     out_path = out_dir / "result.json"
 
     with patch(
-        "astrid.packs.understanding.executors.visual_understand.run.load_api_key",
+        "astrid.packs.understanding.actions.visual_understand.run.load_api_key",
         return_value="test-key",
     ), patch(
-        "astrid.packs.understanding.executors.visual_understand.run._call_responses_api",
+        "astrid.packs.understanding.actions.visual_understand.run._call_responses_api",
         return_value={"output_text": "Minimal composition with centered subject.", "usage": {"total_tokens": 9}},
     ):
         code = main(
@@ -130,7 +132,14 @@ def test_visual_understand_writes_universal_result_manifest(capsys, tmp_path):
     assert payload["kind"] == "understanding.visual_understand"
     assert manifest["kind"] == "understanding.visual_understand"
     assert manifest["inputs"]["images"] == [str(image)]
-    assert manifest["outputs"][-1]["path"] == str(out_path)
-    assert manifest["outputs"][-1]["type"] == "file"
-    assert "content_hash" in manifest["outputs"][-1]
-    assert any(Path(item["path"]).name == "single.jpg" for item in manifest["outputs"])
+    assert manifest["inputs"]["image_hashes"] == [
+        hashlib.sha256(image.read_bytes()).hexdigest()
+    ]
+    assert [entry["name"] for entry in manifest["outputs"]] == ["result"]
+    assert manifest["outputs"][0]["output_port"] == "result"
+    assert manifest["outputs"][0]["path"] == "result.json"
+    assert manifest["outputs"][0]["type"] == "file"
+    assert manifest["outputs"][0]["role"] == "result"
+    assert manifest["outputs"][0]["is_primary"] is True
+    assert "content_hash" in manifest["outputs"][0]
+    assert not any(item["path"] == str(image) for item in manifest["outputs"])

@@ -11,9 +11,8 @@ runtime semantics:
 - **authority lint** over the live tree (kernel-to-pack imports,
   pack-to-pack imports, writers outside the kernel store, legacy
   authorities on supported entry paths, and the neutral-runtime schema
-  boundary), with the two reviewed nested-mount parser edges (timelines→shots,
-  media→references) recorded as documented composition exemptions — any
-  other error fails closed;
+  boundary); the nested Runtime mount parsers are core-owned, so no
+  kernel-to-pack parser exemption remains — any error fails closed;
 - **forbidden drift rejection**: local schema-host/migration composition drift
   (Astrid must not contain a schema host; the neutral runtime owns DDL),
   product surface drift (exactly five top-level families, two
@@ -130,19 +129,10 @@ PRIMARY_PYTHON_ALLOWED = ((3, 11), (3, 12))
 # application-composition root. These are static, manifest-declared edges
 # (``REQUIRED_RUNTIME_MOUNTS`` / ``FAMILY_PARSER_MODULES``), never dynamic
 # discovery, and the imported modules are pure argparse builders with no
-# SQL or repository logic. The gate records them as accepted exemptions;
-# any other authority-lint error fails closed. (The static lint module
-# itself is outside T37's write set, so the exemption is enforced here.)
-CLI_MOUNT_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # The shots pack parser embedded beneath the timelines family.
-        ("astrid/packs/timeline/cli.py", "astrid.packs.shots"),
-        ("astrid/packs/timeline/cli.py", "astrid.packs.shots.cli"),
-        # The references pack parser embedded beneath the media family.
-        ("astrid/core/cli/domain_media.py", "astrid.packs.references"),
-        ("astrid/core/cli/domain_media.py", "astrid.packs.references.cli"),
-    }
-)
+# The nested Runtime mount parsers are core-owned, so no kernel-to-pack parser
+# exemptions remain. The generic dispatch composition root remains enforced by
+# ``authority_lint`` itself.
+CLI_MOUNT_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset()
 
 _IMPORT_ERROR_RE = re.compile(
     r"^(?P<rel>[^:]+): (?:kernel-to-pack|pack-to-pack) import "
@@ -518,8 +508,8 @@ def _classify_authority_errors(
 def _run_authority_lint() -> tuple[bool, list[str], list[str]]:
     """Run the deterministic live-tree authority lint.
 
-    Returns ``(ok, violations, exemptions)`` where *exemptions* are the
-    exactly-two documented nested-mount parser composition edges.
+    Returns ``(ok, violations, exemptions)``; the list is retained for the
+    stable gate receipt shape and is empty after the core parser cutover.
     """
     from scripts.reshape.authority_lint import run_authority_lint
 
@@ -616,7 +606,7 @@ def _check_cli_surface() -> tuple[bool, list[str], dict[str, object]]:
     # The timeline adapter is the reviewed parser authority; do not inspect a
     # deleted dispatch-side verb table.
     try:
-        from astrid.packs.timeline.cli import COMMANDS
+        from astrid.core.cli.domain_timelines import COMMANDS
 
         verbs = {spec.name for spec in COMMANDS}
     except Exception as exc:  # noqa: BLE001 - malformed parser source
@@ -942,9 +932,8 @@ def run_gate(
         "errors": list(authority_errors),
         "exemptions": list(authority_exemptions),
         "exemption_note": (
-            "the recorded exemptions are the two manifest-declared "
-            "nested-mount parser composition edges (timelines->shots, "
-            "media->references), mirroring the dispatch.py composition root"
+            "nested Runtime mount parsers are core-owned; no kernel-to-pack "
+            "parser exemption remains"
         ),
     }
 

@@ -8,7 +8,7 @@ import wave
 
 import pytest
 
-from astrid.packs.rendering.executors.timeline_visualize.audio_analysis import (
+from astrid.packs.rendering.actions.timeline_visualize.audio_analysis import (
     AudioAnalysisError,
     analyze_audio,
     project_waveform,

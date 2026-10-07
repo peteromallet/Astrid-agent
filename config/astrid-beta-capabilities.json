@@ -242,6 +242,18 @@
    "required_packages": []
   },
   {
+   "id": "foley.foley_map",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "foley.foley_review",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/media capability covered by the generic host.",
@@ -423,6 +435,20 @@
    "required_packages": []
   },
   {
+   "id": "h3_av.transform",
+   "disposition": "optional",
+   "evidence_reason": "Optional provider-backed H3 orchestration; VibeComfy and managed-worker readiness are explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
    "id": "iteration.assemble",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
@@ -462,6 +488,18 @@
    "id": "iteration.experiment_review",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.experiment_review_session",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/interactive iteration review capability covered by the generic host.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -680,6 +718,22 @@
    "required_packages": []
   },
   {
+   "id": "stream_content.distill",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe",
+    "tesseract"
+   ],
+   "required_packages": []
+  },
+  {
    "id": "stream_content.segment_map",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
@@ -708,6 +762,18 @@
    "required_packages": []
   },
   {
+   "id": "training.dataset_build",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/training orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "training.pool_merge",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/training utility capability covered by the generic host.",
@@ -718,6 +784,20 @@
    "required_env": [],
    "required_binaries": [],
    "required_packages": []
+  },
+  {
+   "id": "training.training_run",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed training orchestration; package and config-declared credential readiness are explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "jsonschema"
+   ]
   },
   {
    "id": "training.search_loras",

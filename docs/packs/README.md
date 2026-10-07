@@ -1,7 +1,8 @@
 # Pack Documentation
 
-This directory is the canonical home for pack documentation. The pack contract
-defines the model; authoring and reference guides build on it.
+This directory contains the pack contract and protocol/reference material. The
+current new-pack walkthrough lives in
+[When and how to create a pack](../guides/create-a-pack.md).
 
 ## Canonical Pack Contract
 
@@ -11,9 +12,10 @@ defines the model; authoring and reference guides build on it.
 
 ## Authoring & Reference
 
-All pack authoring and reference docs live in this directory:
+Reference docs in this directory include:
 
-- **[creating-packs.md](creating-packs.md)** — Authoring guide: scaffold,
-  populate, and validate packs.
+- **[creating-packs.md](creating-packs.md)** — Legacy v1 pack protocol,
+  manifests, and migration reference. Use the current guide above for new
+  packs.
 - **[pack-taxonomy.md](pack-taxonomy.md)** — Machine-readable pack
   classification fields (maturity, domain, origin, stability).

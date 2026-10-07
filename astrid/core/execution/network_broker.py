@@ -39,7 +39,7 @@ class _BrokerHandler(socketserver.StreamRequestHandler):
             digest = parts[2] if len(parts) > 2 else ""
             nonce = parts[3] if len(parts) > 3 else ""
             auth_token = parts[4] if len(parts) > 4 else ""
-            allowed = broker._admission_allowed(digest, nonce, auth_token)
+            allowed = len(parts) == 5 and broker._admission_allowed(digest, nonce, auth_token)
             broker._record("handshake", f"{digest}:{nonce}", allowed=allowed)
             self.wfile.write(("ASTRID-BROKER/1 OK\n" if allowed else "ASTRID-BROKER/1 REJECT\n").encode("ascii"))
             self.wfile.flush()
@@ -181,6 +181,7 @@ class ObservableNetworkBroker:
     evidence_path: Path | None = None
     evidence_key: str = ""
     auth_token: str = ""
+    defer_evidence: bool = False
     tunnel_idle_seconds: float = 15.0
     _stopping: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _strict: bool = field(default=False, init=False, repr=False)
@@ -212,11 +213,15 @@ class ObservableNetworkBroker:
 
     def _record(self, kind: str, detail: str, *, allowed: bool = True) -> None:
         self.events.append(BrokerEvent(kind, f"{detail}|allowed={str(allowed).lower()}"))
-        self._write_evidence()
+        if not self.defer_evidence:
+            self._write_evidence()
 
     def _admission_allowed(self, digest: str, nonce: str, auth_token: str) -> bool:
         if not self._strict:
             return bool(digest)
+        if not all(value.isascii() and value and len(value) <= 256 and not any(c.isspace() for c in value)
+                   for value in (digest, nonce, auth_token)):
+            return False
         return bool(
             self.expected_admission_digest
             and hmac.compare_digest(digest, self.expected_admission_digest)

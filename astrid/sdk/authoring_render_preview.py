@@ -16,14 +16,14 @@ from astrid.core.timeline.authoring_bundle import (
     _digest as authoring_digest,
 )
 from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
-from astrid.packs.rendering.executors.render.managed_timeline import (
+from astrid.packs.rendering.actions.render.managed_timeline import (
     ManagedRenderSnapshot,
     _exact_mapping,
     _exact_revision_reader,
     _render_compatible_projection,
     _runtime_snapshot_registry,
 )
-from astrid.packs.rendering.executors.render.managed_timeline import (
+from astrid.packs.rendering.actions.render.managed_timeline import (
     _digest as render_digest,
 )
 

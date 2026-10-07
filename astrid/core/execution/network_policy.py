@@ -136,7 +136,7 @@ def _write_evidence() -> None:
         "proxy": bool(_POLICY.get("proxy")),
     }}
     broker_path = os.environ.get("ASTRID_NETWORK_BROKER_EVIDENCE", "")
-    if broker_path:
+    if broker_path and "admission_digest" not in _ADMISSION:
         try:
             broker_value = json.loads(Path(broker_path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -367,15 +367,19 @@ def _broker_handshake() -> None:
     parsed = urlsplit(raw_proxy)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.port is None:
         raise NetworkPolicyError("network policy proxy must be an explicit host:port URL")
-    admission_digest = hashlib.sha256(
+    admission_digest = str(_ADMISSION.get("admission_digest", "")) if "admission_digest" in _ADMISSION else hashlib.sha256(
         json.dumps(_ADMISSION, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     ).hexdigest()
     nonce = str(_ADMISSION.get("network_nonce") or _ADMISSION.get("nonce") or "")
+    auth_token = os.environ.get("ASTRID_NETWORK_BROKER_TOKEN", "")
+    if (len(admission_digest) != 64 or any(c not in "0123456789abcdef" for c in admission_digest)
+            or not all(value and value.isascii() and len(value) <= 256
+                       and all(c.isalnum() or c in "_-" for c in value) for value in (nonce, auth_token))):
+        raise NetworkPolicyError("network policy broker admission material is malformed")
     try:
         with socket.create_connection((parsed.hostname, parsed.port), timeout=3) as connection:
             # The digest binds the complete host admission; the nonce makes a
             # replayed handshake from another attempt fail closed.
-            auth_token = os.environ.get("ASTRID_NETWORK_BROKER_TOKEN", "")
             connection.sendall(f"ASTRID-BROKER/1 HELLO {admission_digest} {nonce} {auth_token}\n".encode("ascii"))
             response = connection.recv(64).decode("ascii", "replace").strip()
     except OSError as exc:
@@ -399,34 +403,48 @@ def install(policy: Mapping[str, Any], evidence_path: str | Path, *, admission: 
     del evidence_key
     _EVIDENCE_KEY = ""
     _ADMISSION = dict(admission or {})
-    _INSTALLED = True
     originals: dict[tuple[Any, str], Any] = {}
     _patch_socket(originals)
     _patch_redirects(originals)
     _patch_native_descendants(originals)
     _broker_handshake()
+    _INSTALLED = True
     atexit.register(_write_evidence)
 
 
-def install_from_environment() -> None:
+def install_from_environment(*, strict: bool = False, broker_required: bool = False) -> bool:
+    """Return proven installation; strict D18 callers treat absence as fatal."""
     raw = os.environ.get("ASTRID_NETWORK_POLICY")
     evidence = os.environ.get("ASTRID_NETWORK_EVIDENCE")
     if not raw or not evidence:
-        return
+        if strict:
+            raise NetworkPolicyError("network policy startup configuration is missing")
+        return False
     try:
         policy = json.loads(raw)
-    except ValueError:
-        return
+    except ValueError as exc:
+        if strict:
+            raise NetworkPolicyError("network policy startup configuration is malformed") from exc
+        return False
+    if strict and (not isinstance(policy, Mapping) or broker_required and not policy.get("proxy")):
+        raise NetworkPolicyError("network policy startup configuration cannot install required broker")
     admission_raw = os.environ.get("ASTRID_NETWORK_ADMISSION", "{}")
     try:
         admission = json.loads(admission_raw)
     except ValueError:
         admission = {}
+    if "ASTRID_NETWORK_ADMISSION" not in os.environ:
+        admission = {"admission_digest": os.environ.get("ASTRID_NETWORK_ADMISSION_DIGEST", ""),
+                     "network_nonce": os.environ.get("ASTRID_NETWORK_NONCE", "")}
     # This token authenticates the child to a host-owned broker.  It is not
     # the broker's evidence signing secret.
     key = os.environ.get("ASTRID_NETWORK_BROKER_TOKEN", "")
     if isinstance(policy, Mapping) and isinstance(admission, Mapping):
         install(policy, evidence, admission=admission, evidence_key=key)
+        return _INSTALLED
+    if strict:
+        raise NetworkPolicyError("network policy startup admission is malformed")
+    return False
 
 
 __all__ = ["NetworkPolicyError", "install", "install_from_environment"]

@@ -1,30 +1,44 @@
 # Media Production Pack
 
-A realistic media production pack for video trailer creation with AI-assisted workflows.
+A v3 teaching pack showing declared media actions, action composition, a
+JSON Schema, an example brief, and a Remotion rendering element.
 
-## Overview
+## Public actions
 
-This pack provides all the components needed for a media production pipeline:
-- Asset ingestion and validation
-- Trailer orchestration and assembly
-- Visual effects via Remotion components
+`media.ingest_assets` lists files in a source directory. `media.make_trailer`
+calls that public action and returns a trailer build manifest.
 
-## Usage
+Invoke the ingestion action through the public SDK (from the repository root):
 
-```bash
-# Validate the pack
-astrid packs validate examples/packs/media
+```python
+from astrid import sdk
 
-# Run the asset ingestion executor
-python3 executors/ingest_assets/run.py --source /path/to/assets --out /path/to/output
-
-# Run the trailer orchestrator
-python3 orchestrators/make_trailer/run.py --out /path/to/output --brief /path/to/brief.txt
+result = sdk.invoke(
+    "media.ingest_assets",
+    kind="action",
+    extra_pack_roots=("examples/packs/media",),
+    inputs={"source": "/path/to/assets"},
+)
 ```
 
-## Requirements
+Invoke the composed trailer action the same way, with the optional brief:
 
-- Python 3.10+
-- ffmpeg
-- OpenAI API key
-- Node.js (for Remotion components)
+```python
+result = sdk.invoke(
+    "media.make_trailer",
+    kind="action",
+    extra_pack_roots=("examples/packs/media",),
+    inputs={"source": "/path/to/assets", "brief": "A warm, energetic launch."},
+)
+```
+
+The action returns its result through `result.raw_result["payload"]["action_result"]`.
+Validate the static pack contract with:
+
+```bash
+python3 -m astrid.core.pack.cli validate examples/packs/media
+```
+
+See `docs/SKILL.md` and `actions/make_trailer/STAGE.md` for the pack and
+composition guidance. The example brief, schema, and title-card rendering
+resource remain in the pack.

@@ -55,17 +55,53 @@ class RuntimeRemoteActivationOwner:
             raise RemoteActivationUncertain("Runtime task has no exact execution binding")
         target = binding.get("effective_target", binding.get("resolved_target"))
         original = request.get("target")
-        if (not isinstance(target, Mapping) or target.get("kind") != "runpod"
-                or not target.get("pod_id") or not target.get("provider_account_ref")
-                or not isinstance(original, Mapping) or original.get("kind") != "runpod"):
-            raise RemoteActivationUncertain("task has no exact RunPod placement")
+        if not isinstance(target, Mapping) or not isinstance(original, Mapping):
+            raise RemoteActivationUncertain("task has no exact placement")
+        if target.get("kind") == "runpod":
+            if (not target.get("pod_id") or not target.get("provider_account_ref")
+                    or original.get("kind") != "runpod"):
+                raise RemoteActivationUncertain("task has no exact RunPod placement")
+        elif target.get("kind") == "machine":
+            if (not isinstance(target.get("id"), str) or not target["id"]
+                    or original.get("kind") != "machine"
+                    or original.get("id") != target["id"]):
+                raise RemoteActivationUncertain("task has no exact machine placement")
+        else:
+            raise RemoteActivationUncertain("task placement is unsupported")
+        recovery = binding.get("placement_recovery")
+        replacement = recovery.get("qualification") if isinstance(recovery, Mapping) else None
+        recovered = bool(
+            task.state in {"failed", "cancelled"}
+            and target.get("kind") == "runpod"
+            and binding.get("status") == "prepared"
+            and isinstance(binding.get("placement_version"), int) and binding["placement_version"] > 0
+            and bool(binding.get("recovery_decision_digest"))
+            and isinstance(recovery, Mapping) and isinstance(replacement, Mapping)
+            and recovery.get("task_id") == task_id and recovery.get("run_id") == task.run_id
+            and recovery.get("task_version") == task.version
+            and recovery.get("placement_version") == binding.get("placement_version")
+            and recovery.get("decision_digest") == binding.get("recovery_decision_digest")
+            and recovery.get("original_target") == original
+            and recovery.get("replacement_target") == target
+            and replacement.get("target") == target and replacement.get("verified") is True
+            and replacement.get("evidence_digest") == qualification.get("evidence_digest")
+            and replacement.get("executor_incarnation") == qualification.get("executor_incarnation")
+            and qualification.get("authorized_child_lineage", {}).get("placement_version")
+            == binding.get("placement_version")
+        )
         if (task.task_id != task_id or task.run_id != qualification.get("run_id")
-                or task.state != "queued"
+                or (task.state != "queued" and not recovered)
                 or qualification.get("task_id") != task_id
                 or qualification.get("effective_target") != target
                 or qualification.get("runtime_session_id") != self.runtime_session_id
                 or qualification.get("runtime_epoch") != self.runtime_epoch):
             raise RemoteActivationUncertain("activation is foreign to current task or placement")
+
+    def assert_remote_activation_admissible(self, task_id: str,
+                                            qualification: Mapping[str, Any]) -> None:
+        # Resident provision/record repeat these checks and enforce actual
+        # attempts/reservations quiescence; this HTTP adapter cannot infer it.
+        self._assert_task(task_id, qualification)
 
     def control_remote_credential(self, task_id: str,
                                   control: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -117,6 +153,11 @@ class RuntimeRemoteActivationOwner:
     def record_remote_activation(self, task_id: str,
                                  qualification: Mapping[str, Any], *,
                                  identity: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        """Carry the launcher's owner acceptance callback on the existing RPC.
+
+        The resident response means qualification and acceptance committed before
+        the preparer sends its receipt. Credentials remain disabled here.
+        """
         if identity != {"actor": "owner", "scopes": ["admin"]}:
             raise ValueError("Runtime owner identity is required")
         self._assert_task(task_id, qualification)

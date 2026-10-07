@@ -30,25 +30,28 @@ FIXTURES = {
 }
 RENDERING_MANIFESTS = {
     "packs/rendering/pack.yaml",
-    "packs/rendering/backends/ffmpeg/renderer.yaml",
-    "packs/rendering/backends/remotion/renderer.yaml",
-    "packs/rendering/backends/threejs/renderer.yaml",
-    "packs/rendering/elements/animations/fade-up/element.yaml",
-    "packs/rendering/elements/animations/fade/element.yaml",
-    "packs/rendering/elements/animations/scale-in/element.yaml",
-    "packs/rendering/elements/animations/slide-left/element.yaml",
-    "packs/rendering/elements/animations/slide-up/element.yaml",
-    "packs/rendering/elements/animations/type-on/element.yaml",
-    "packs/rendering/elements/effects/audio-reactive-colour/element.yaml",
-    "packs/rendering/elements/effects/text-card/element.yaml",
-    "packs/rendering/elements/transitions/cross-fade/element.yaml",
-    "packs/rendering/elements/transitions/fade/element.yaml",
-    "packs/rendering/executors/html_canvas_effect/executor.yaml",
-    "packs/rendering/executors/render/executor.yaml",
-    "packs/rendering/executors/sprite_sheet/executor.yaml",
-    "packs/rendering/executors/timeline_storyboard/executor.yaml",
-    "packs/rendering/finalizers/ffmpeg/finalizer.yaml",
-    "packs/rendering/finalizers/compositor/finalizer.yaml",
+    "packs/rendering/rendering/renderers/ffmpeg/renderer.yaml",
+    "packs/rendering/rendering/renderers/remotion/renderer.yaml",
+    "packs/rendering/rendering/renderers/threejs/renderer.yaml",
+    "packs/rendering/rendering/elements/animations/fade-up/element.yaml",
+    "packs/rendering/rendering/elements/animations/fade/element.yaml",
+    "packs/rendering/rendering/elements/animations/scale-in/element.yaml",
+    "packs/rendering/rendering/elements/animations/slide-left/element.yaml",
+    "packs/rendering/rendering/elements/animations/slide-up/element.yaml",
+    "packs/rendering/rendering/elements/animations/type-on/element.yaml",
+    "packs/rendering/rendering/elements/effects/audio-reactive-colour/element.yaml",
+    "packs/rendering/rendering/elements/effects/text-card/element.yaml",
+    "packs/rendering/rendering/elements/transitions/cross-fade/element.yaml",
+    "packs/rendering/rendering/elements/transitions/fade/element.yaml",
+    "packs/rendering/rendering/finalizers/ffmpeg/finalizer.yaml",
+    "packs/rendering/rendering/finalizers/compositor/finalizer.yaml",
+}
+
+RENDERING_DOCS = {
+    "packs/rendering/docs/SKILL.md",
+    "packs/rendering/docs/references/live-scenes-authoring.md",
+    "packs/rendering/docs/references/timeline-cookbook.md",
+    "packs/rendering/docs/templates/two-shot-threejs.ts",
 }
 
 
@@ -68,7 +71,7 @@ def test_rendering_manifests_are_package_resources_and_discoverable() -> None:
     root = resources.files("astrid")
     missing = [
         path
-        for path in sorted(RENDERING_MANIFESTS)
+        for path in sorted(RENDERING_MANIFESTS | RENDERING_DOCS)
         if not root.joinpath(*path.split("/")).is_file()
     ]
     assert not missing

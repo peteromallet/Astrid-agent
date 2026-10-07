@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from astrid.packs.video_editing.orchestrators._plan_v2 import (
+from astrid.packs.video_editing.shared._plan_v2 import (
     build_group_template,
     build_leaf_template,
     build_plan_template,

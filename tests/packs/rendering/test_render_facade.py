@@ -14,7 +14,7 @@ import pytest
 
 from astrid.core.rendering.contracts import RenderRequest
 from astrid.core.rendering.errors import RendererProtocolError, raise_unsupported_error
-from astrid.packs.rendering.executors.render import run as render_run
+from astrid.packs.rendering.actions.render import run as render_run
 
 
 class _FakeService:
@@ -325,7 +325,7 @@ def test_review_metadata_is_render_only(fake_service, tmp_path, review):
 
 def test_ffmpeg_review_rejects_in_support_before_render(tmp_path):
     import json
-    from astrid.packs.rendering.backends.ffmpeg.run import support
+    from astrid.packs.rendering.rendering.renderers.ffmpeg.run import support
     request = RenderRequest.from_dict({'schema_version': 1, 'timeline_path': str(tmp_path / 'timeline.json'), 'output_name': 'review.mp4', 'metadata': {'review': json.dumps({'shots': []})}})
     report = support(request, workspace=tmp_path)
     assert not report.supported
@@ -334,7 +334,7 @@ def test_ffmpeg_review_rejects_in_support_before_render(tmp_path):
 
 def test_remotion_lock_handoff_keeps_review_context(monkeypatch, tmp_path):
     from contextlib import nullcontext
-    from astrid.packs.rendering.backends.remotion import run as backend
+    from astrid.packs.rendering.rendering.renderers.remotion import run as backend
     captured = {}
     monkeypatch.setattr(backend.remotion_lock, 'remotion_render_lock', lambda: nullcontext())
     def locked(*args, **kwargs):

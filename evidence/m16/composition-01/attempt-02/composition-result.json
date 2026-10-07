@@ -1,0 +1,45 @@
+{
+  "schema": "m16-composition-attempt-02/v1",
+  "status": "FAIL",
+  "started_at_utc": "2026-10-03T22:16:04.053847+00:00",
+  "sources": {
+    "astrid_generic_host": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/astrid/core/execution/generic_host.py",
+    "runtime_service": "/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001/runtime_protocol/service.py",
+    "vendored_workspace_client": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/banodoco_workspace_client/generated.py"
+  },
+  "fixture": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/fixture-76503",
+  "parent_capability": "stream_content.distill",
+  "required_child_capabilities": [
+    "editorial.transcribe",
+    "editorial.scenes",
+    "media.clip_extract"
+  ],
+  "readiness": {
+    "stream_content.distill": {
+      "ready": true,
+      "adapter": "cpu",
+      "digest": "sha256:a075b3ac4f1df8a50455440bf0bd1900580af26cbbf364b3a8cef532754f1197"
+    },
+    "editorial.transcribe": {
+      "ready": true,
+      "adapter": "provider",
+      "digest": "sha256:ea262a7ceb9ceb5c026fd63a2ad164f6289650c337bbaf64caf5b9ab6159a5ae"
+    },
+    "editorial.scenes": {
+      "ready": true,
+      "adapter": "cpu",
+      "digest": "sha256:d328e865bd81e87fea6788b113d8b15d396b8c987925eddff5aac8566e065914"
+    },
+    "media.clip_extract": {
+      "ready": true,
+      "adapter": "cpu",
+      "digest": "sha256:5bc31dafa1257071348688ed45a9be032c57782999c75aa009c1eefebadb1eee"
+    }
+  },
+  "error": {
+    "type": "AuthorizationError",
+    "message": "worker credential is not bound to executor",
+    "traceback": "Traceback (most recent call last):\n  File \"/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/pack-authoring-convergence-20261001/evidence/m16/composition-01/attempt-02/composition-proof.py\", line 284, in <module>\n    claim = service.claim_next({\"executor_id\": EXECUTOR_ID, \"capability_ids\": [PARENT], \"runtime_epoch\": epoch, \"target\": {\"kind\": \"default\"}}, idempotency_key=f\"claim-parent-{os.getpid()}\", identity=identity)\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001/runtime_protocol/service.py\", line 419, in wrapped\n    result = function(self, *args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001/runtime_protocol/service.py\", line 6090, in claim_next\n    self._assert_executor_identity(identity, executor_id)\n  File \"/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/pack-authoring-convergence-20261001/runtime_protocol/service.py\", line 649, in _assert_executor_identity\n    raise AuthorizationError(\"worker credential is not bound to executor\", details={\"executor_id\": executor_id, \"actor_id\": actor})\nruntime_protocol.errors.AuthorizationError: worker credential is not bound to executor\n"
+  },
+  "ended_at_utc": "2026-10-03T22:16:05.206630+00:00"
+}
