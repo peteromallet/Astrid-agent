@@ -152,12 +152,16 @@ def test_latest_selection_skips_newer_unpublished_candidate_preview():
     assert result['render_run_id'] == 'run'
 
 
-def test_matching_render_fails_closed_without_exact_timeline_identity():
-    class UnpinnedClient(FakeClient):
-        def list_timelines(self, project, **kwargs):
-            return [[{'timeline_id': 'tl', 'slug': 'cut'}], None]
+def test_matching_render_fails_closed_without_exact_timeline_identity(monkeypatch):
+    import astrid.sdk.project_render as project_render
 
-    client = UnpinnedClient()
+    monkeypatch.setattr(project_render, "_lookup_managed_output", lambda **kwargs: {"verified": True})
+    client = FakeClient()
+    assert matching_composed_render(
+        client,
+        project_id='p',
+        timeline={'timeline_id': 'tl', 'config_version': 1},
+    ) == 'run'
     assert matching_composed_render(client, project_id='p', timeline={'timeline_id': 'tl'}) is None
     assert matching_composed_render(
         client,
