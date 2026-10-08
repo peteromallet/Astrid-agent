@@ -378,6 +378,95 @@ def _human_dispatch_lines(clip: Mapping[str, Any]) -> list[str]:
     return [f"         compositor dispatch: {kind or 'unknown'} track {track_id}"]
 
 
+def _human_dispatch_group_presentation(
+    clips: list[Mapping[str, Any]],
+) -> tuple[str | None, dict[int, list[str]]]:
+    """Hoist controls shared by one resolved dispatch track to its exact heading."""
+    resolved: list[tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], str, str]] = []
+    for clip in clips:
+        dispatch = clip.get("compositor_dispatch")
+        if not isinstance(dispatch, Mapping) or dispatch.get("status") != "resolved":
+            return None, {}
+        track = dispatch.get("track") if isinstance(dispatch.get("track"), Mapping) else {}
+        controls = dispatch.get("controls") if isinstance(dispatch.get("controls"), Mapping) else {}
+        kind = str(track.get("kind") or "unknown")
+        track_id = str(track.get("id") or "unknown")
+        resolved.append((clip, dispatch, track, kind, track_id))
+
+    if not resolved:
+        return None, {}
+
+    _first_clip, first_dispatch, first_track, kind, track_id = resolved[0]
+    first_controls = first_dispatch.get("controls", {})
+    first_controls = first_controls if isinstance(first_controls, Mapping) else {}
+
+    def shared_track_controls(
+        track: Mapping[str, Any], controls: Mapping[str, Any], dispatch_kind: str
+    ) -> list[str]:
+        values: list[str] = []
+        if dispatch_kind == "audio":
+            if track.get("muted") is True or track.get("mute") is True:
+                values.append("muted")
+            parent_volume = track.get("volume", track.get("gain"))
+            if isinstance(parent_volume, (int, float)) and parent_volume != 1:
+                values.append(f"parent volume {parent_volume:g}")
+        elif dispatch_kind == "visual":
+            track_opacity = controls.get("track_opacity_multiplier")
+            if isinstance(track_opacity, (int, float)) and track_opacity != 1:
+                values.append(
+                    f"effective track opacity {track_opacity * 100:g}%"
+                    if 0 <= track_opacity <= 1 else f"effective track opacity {track_opacity:g}%"
+                )
+            blend = track.get("blend", track.get("blend_mode", track.get("blendMode")))
+            if blend not in (None, "", "normal"):
+                values.append(f"blend {blend}")
+        return values
+
+    shared = shared_track_controls(first_track, first_controls, kind)
+    for _clip, dispatch, track, candidate_kind, candidate_id in resolved[1:]:
+        controls = dispatch.get("controls", {})
+        controls = controls if isinstance(controls, Mapping) else {}
+        if (
+            candidate_kind != kind
+            or candidate_id != track_id
+            or shared_track_controls(track, controls, candidate_kind) != shared
+        ):
+            return None, {}
+
+    per_clip: dict[int, list[str]] = {}
+    if kind == "audio":
+        base_gains = []
+        for _clip, dispatch, _track, _kind, _track_id in resolved:
+            controls = dispatch.get("controls") if isinstance(dispatch.get("controls"), Mapping) else {}
+            base_gains.append(controls.get("base_gain"))
+        numeric_gains = [value for value in base_gains if isinstance(value, (int, float))]
+        if (
+            len(numeric_gains) == len(base_gains)
+            and numeric_gains
+            and all(value == numeric_gains[0] for value in numeric_gains)
+        ):
+            shared.append(f"effective base gain {numeric_gains[0]:g}")
+        elif numeric_gains:
+            for (clip, *_rest), base_gain in zip(resolved, base_gains):
+                if isinstance(base_gain, (int, float)):
+                    per_clip[id(clip)] = [f"         compositor dispatch clip controls: effective base gain {base_gain:g}"]
+    elif kind == "visual":
+        for clip, dispatch, _track, _kind, _track_id in resolved:
+            controls = dispatch.get("controls") if isinstance(dispatch.get("controls"), Mapping) else {}
+            clip_opacity = controls.get("clip_opacity_multiplier")
+            if isinstance(clip_opacity, (int, float)) and clip_opacity != 1:
+                label = (
+                    f"effective clip opacity {clip_opacity * 100:g}%"
+                    if 0 <= clip_opacity <= 1 else f"effective clip opacity {clip_opacity:g}%"
+                )
+                per_clip[id(clip)] = [f"         compositor dispatch clip controls: {label}"]
+
+    dispatch_label = f"compositor dispatch: {kind} track {track_id}"
+    if shared:
+        dispatch_label += f" [{', '.join(shared)}]"
+    return dispatch_label, per_clip
+
+
 def _human_track_identity(clip: Mapping[str, Any]) -> tuple[str, str, str]:
     """Return the exact scoped track key, with a stable unassigned fallback."""
     reference = clip.get("track_ref") if isinstance(clip.get("track_ref"), Mapping) else {}
@@ -625,7 +714,9 @@ def _render_timeline_human(result: object) -> str:
                 heading += f" · {track_label}"
             controls = _human_track_controls(track) if isinstance(track, Mapping) else []
             suffix = f" [authored track controls: {', '.join(controls)}]" if controls else ""
-            lines.append(f"  {heading}{suffix}")
+            dispatch_heading, dispatch_clip_lines = _human_dispatch_group_presentation(group)
+            dispatch_suffix = f" [{dispatch_heading}]" if dispatch_heading else ""
+            lines.append(f"  {heading}{suffix}{dispatch_suffix}")
             if isinstance(track, Mapping):
                 lines.extend(_human_omission_lines(
                     track.get("omitted_fields"), summary=summary, scope=scope,
@@ -645,7 +736,10 @@ def _render_timeline_human(result: object) -> str:
                 controls = _human_clip_controls(clip)
                 suffix = f" [{', '.join(controls)}]" if controls else ""
                 lines.append(f"    {display_index}. {start}–{end}  {_human_clip_name(clip)}{label}{suffix}")
-                lines.extend(_human_dispatch_lines(clip))
+                if dispatch_heading:
+                    lines.extend(dispatch_clip_lines.get(id(clip), []))
+                else:
+                    lines.extend(_human_dispatch_lines(clip))
                 for change in _human_motion_lines(clip, detail=query.get("detail") is True):
                     lines.append(f"         {change}")
                 occurrence = occurrence_lookup.get(str(clip.get("occurrence_id"))) if clip.get("occurrence_id") is not None else None

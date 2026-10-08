@@ -1366,9 +1366,81 @@ def test_timelines_show_uses_compositor_dispatch_for_human_classification_and_co
     else:
         assert "Track shared (internal_timeline/child-b) [authored track controls: muted, gain 0.1]" in output
         assert "room.wav · occ-audio-visual/child-audio [authored gain 0.5]" in output
-        assert "compositor dispatch: visual track outer-visual [effective track opacity 30%, effective clip opacity 60%, blend screen]" in output
+        assert "compositor dispatch: visual track outer-visual [effective track opacity 30%, blend screen]" in output
+        assert "compositor dispatch clip controls: effective clip opacity 60%" in output
         assert "opacity multiplier 0% → 100%" in output
         assert "gain multiplier" not in output
+
+
+def test_timelines_show_places_shared_muted_dispatch_once_on_exact_track_heading(capsys) -> None:
+    clips = [
+        {
+            "occurrence_id": f"occ-{suffix}", "clip_id": f"clip-{suffix}", "clip_type": "media",
+            "track_ref": {"scope": "internal_timeline", "scope_id": "child-audio", "track_id": "shared"},
+            "track": {"id": "shared", "kind": "visual", "opacity": 0.3, "blendMode": "screen"},
+            "start": [index * 2, 1], "duration": [1, 1], "media_name": f"room-{suffix}.wav",
+            "compositor_dispatch": {
+                "status": "resolved", "control_contract": "audio_track",
+                "track": {"id": "outer-audio", "kind": "audio", "muted": True, "volume": 0.4},
+                "controls": {"base_gain": 0},
+            },
+        }
+        for index, suffix in enumerate(("a", "b"))
+    ]
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-shared-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": clips, "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    dispatch = "compositor dispatch: audio track outer-audio [muted, parent volume 0.4, effective base gain 0]"
+    heading = "Track shared (internal_timeline/child-audio) [authored track controls: opacity 30%, blend screen]"
+    assert output.count(dispatch) == 1
+    assert f"{heading} [{dispatch}]" in output
+    assert output.index(f"{heading} [{dispatch}]") < output.index("room-a.wav · occ-a/clip-a")
+    assert "room-b.wav · occ-b/clip-b" in output
+
+
+def test_timelines_show_clip_specific_effective_gain_on_each_row(capsys) -> None:
+    clips = [
+        {
+            "occurrence_id": f"occ-{suffix}", "clip_id": f"clip-{suffix}", "clip_type": "audio",
+            "track_ref": {"scope": "internal_timeline", "scope_id": "child-audio", "track_id": "shared"},
+            "track": {"id": "shared", "kind": "audio"}, "volume": volume,
+            "start": [index * 2, 1], "duration": [1, 1], "media_name": f"sound-{suffix}.wav",
+            "compositor_dispatch": {
+                "status": "resolved", "control_contract": "audio_track",
+                "track": {"id": "outer-audio", "kind": "audio", "volume": 0.4},
+                "controls": {"base_gain": base_gain},
+            },
+        }
+        for index, (suffix, volume, base_gain) in enumerate((("a", 0.5, 0.2), ("b", 0.7, 0.28)))
+    ]
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-clip-gains-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": clips, "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert output.count("compositor dispatch: audio track outer-audio [parent volume 0.4]") == 1
+    assert "compositor dispatch clip controls: effective base gain 0.2" in output
+    assert "compositor dispatch clip controls: effective base gain 0.28" in output
+    assert "sound-a.wav · occ-a/clip-a [authored gain 0.5]" in output
+    assert "sound-b.wav · occ-b/clip-b [authored gain 0.7]" in output
 
 
 def test_timelines_show_names_unresolved_compositor_dispatch(capsys) -> None:
