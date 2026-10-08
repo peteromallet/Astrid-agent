@@ -660,6 +660,7 @@ def _transition_id(transition: Mapping[str, Any]) -> str:
 
 def _transition_interval_maps(
     model: TimelineInspectionModel,
+    *, declarations: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, IntervalFrames], dict[str, IntervalSeconds]]:
     """Return v0.0.6 mounted and non-transition intervals per clip.
 
@@ -693,31 +694,49 @@ def _transition_interval_maps(
             from_clip = clips[index]
             to_clip = clips[index + 1] if index + 1 < len(clips) else None
             transition = from_clip.transition
+            declaration = {"from_clip_id": from_clip.clip_id, "to_clip_id": to_clip.clip_id if to_clip else None,
+                           "transition": transition, "status": "unresolved"}
+            if transition is not None and declarations is not None:
+                declarations.append(declaration)
             if transition is None or to_clip is None:
+                declaration["reason"] = "no following clip on compositor track"
                 index += 1
                 continue
             if from_clip.kind == "effect-layer" or to_clip.kind == "effect-layer":
+                declaration["reason"] = "effect-layer excluded from compositor transition grouping"
                 index += 1
                 continue
             from_start = from_clip.frames.start_frame
             from_end = from_clip.frames.end_frame
             to_start = to_clip.frames.start_frame
             if to_start < from_start or to_start > from_end:
+                declaration["reason"] = "following clip does not overlap or abut source"
                 index += 1
                 continue
 
-            transition_id = _transition_id(transition)
+            try:
+                transition_id = _transition_id(transition)
+            except ValueError as exc:
+                if declarations is None:
+                    raise
+                declaration["reason"] = str(exc)
+                index += 1
+                continue
             from_duration = from_clip.frames.duration_frames
             to_duration = to_clip.frames.duration_frames
             registered_default = _PINNED_TRANSITION_DEFAULTS[transition_id]
-            duration = resolve_transition_duration_frames(
-                transition,
-                from_duration,
-                to_duration,
-                registered_default,
-                fps=model.fps,
-            )
+            try:
+                duration = resolve_transition_duration_frames(
+                    transition, from_duration, to_duration, registered_default, fps=model.fps,
+                )
+            except ValueError as exc:
+                if declarations is None:
+                    raise
+                declaration["reason"] = str(exc)
+                index += 1
+                continue
             if duration is None:
+                declaration["reason"] = "duration non-positive or exceeds either clip"
                 index += 1
                 continue
 
@@ -747,6 +766,12 @@ def _transition_interval_maps(
                 to_effective_start / model.fps,
                 scheduled_to_end / model.fps,
             )
+            declaration.update(status="resolved", start_frame=to_mounted_start,
+                               end_frame=min(composition_end, from_start + from_duration), fps=model.fps)
+            if to_clip.transition is not None and declarations is not None:
+                declarations.append({"from_clip_id": to_clip.clip_id, "to_clip_id": None,
+                                     "transition": to_clip.transition, "status": "unresolved",
+                                     "reason": "clip consumed as destination of previous transition group"})
             index += 2
 
     return mounted, effective

@@ -462,7 +462,9 @@ def _human_motion_lines(clip: Mapping[str, Any], *, detail: bool = False) -> lis
         key = (tuple(change["start"]), tuple(change["end"]), change["kind"], change.get("hold", False))
         grouped.setdefault(key, []).append(change)
     changes = []
-    for (start, end, kind, hold), rows in grouped.items():
+    for (start, end, kind, hold), rows in sorted(
+        grouped.items(), key=lambda item: (Fraction(*item[0][0]), Fraction(*item[0][1]), item[0][2], item[0][3])
+    ):
         values = []
         for row in rows:
             before, after = row["before"], row["after"]
