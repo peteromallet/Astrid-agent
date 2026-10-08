@@ -164,13 +164,43 @@ def _fade_values(effects):
     return values
 
 
-def _fades(clip, start_frame, end_frame, raw_duration_frames, fps):
+def _compositor_dispatch(clip, context):
+    """Resolve expanded IDs in the compositor's parent tracks, never local tracks."""
+    timing = clip.get("render_timing")
+    if not isinstance(timing, Mapping):
+        return {"status": "unknown", "reason": clip.get("render_timing_unknown", "managed render dispatch unavailable")}
+    matches = [row for row in context.get("tracks", []) if isinstance(row, Mapping)
+               and row.get("id") == timing.get("track") and row.get("kind") in {"visual", "audio"}]
+    if len(matches) != 1:
+        return {"status": "unknown", "reason": "compositor dispatch track unresolved or ambiguous; fade/control contract unavailable"}
+    track = dict(matches[0])
+    kind = timing.get("clipType", _raw(clip).get("clipType", clip.get("clip_type", "media")))
+    audio = track["kind"] == "audio"
+    media = kind in {"media", "video", "image", "overlay", "audio"}
+    result = {"status": "resolved", "authority": "managed_shot_expansion+compositor_0.0.6",
+              "track": track, "fade_contract": "audio_params" if audio else "visual_effects" if media else "component_owned",
+              "control_contract": "audio_track" if audio else "visual_media" if media else "visual_component"}
+    controls = {}
+    if audio or media:
+        # AudioTrack and VisualClip sanitize volume independently. clip.mute,
+        # occurrence gain/mute and the authored child track are not inherited
+        # by managed expansion and must not be folded into this value.
+        volume = lambda value: max(0, value) if _number(value) else 1
+        controls["base_gain"] = 0 if track.get("muted") else volume(track.get("volume")) * volume(timing.get("volume"))
+    if not audio:
+        controls["track_opacity_multiplier"] = track.get("opacity") if track.get("opacity") is not None else 1
+        if media:
+            controls["clip_opacity_multiplier"] = timing.get("opacity") if timing.get("opacity") is not None else 1
+    result["controls"] = controls
+    return result
+
+
+def _fades(clip, dispatch, start_frame, end_frame, raw_duration_frames, fps):
     raw = _raw(clip)
     params = _params(clip)
-    track = clip.get("track") if isinstance(clip.get("track"), Mapping) else {}
-    audio = track.get("kind") == "audio" or clip.get("clip_type") == "audio"
+    audio = dispatch["fade_contract"] == "audio_params"
     # Effect components bypass VisualClip.tsx/useFadeOpacity entirely.
-    visual = raw.get("clipType", clip.get("clip_type")) in {"media", "video", "image", "overlay"} and not audio
+    visual = dispatch["fade_contract"] == "visual_effects"
     presentation = clip.get("presentation_fields") if isinstance(clip.get("presentation_fields"), Mapping) else {}
     authored_effects = raw.get("effects", presentation.get("effects"))
     fades = {"fade_in": params.get("fadeIn"), "fade_out": params.get("fadeOut")} if audio else _fade_values(authored_effects) if visual else {}
@@ -223,9 +253,9 @@ def project_readable_timing(clips, context=None):
         if has_keys and not supported:
             unknowns.append(clock_reason)
         timing = clip.get("render_timing")
-        mount_track_proven = isinstance(timing, Mapping) and any(
-            row.get("id") == timing.get("track") and row.get("kind") in {"visual", "audio"}
-            for row in context.get("tracks", []) if isinstance(row, Mapping))
+        dispatch = _compositor_dispatch(clip, context)
+        clip["compositor_dispatch"] = dispatch
+        mount_track_proven = dispatch["status"] == "resolved"
         if isinstance(timing, Mapping) and scheduling is not None and not mount_track_proven:
             scheduling_error = "compositor track unresolved; mounted clock unavailable"
         if isinstance(timing, Mapping) and scheduling is not None and mount_track_proven and timing.get("id") in scheduling[1]:
@@ -237,15 +267,18 @@ def project_readable_timing(clips, context=None):
                                            "start": _wire(interval.start/fps), "end": _wire(interval.end/fps)},
                 "effective": {"start": _wire(effective[timing["id"]].start), "end": _wire(effective[timing["id"]].end)}}
             try:
-                changes.extend(_fades(clip, interval.start, interval.end, model.frames.duration_frames, fps))
+                changes.extend(_fades(clip, dispatch, interval.start, interval.end, model.frames.duration_frames, fps))
             except ValueError as exc:
                 unknowns.append(str(exc))
             if has_keys:
                 if supported:
-                    try:
-                        changes.extend(_transform_changes(_keys(params.get("keyframes")), interval.start/fps, interval.end/fps))
-                    except ValueError as exc:
-                        unknowns.append(str(exc))
+                    if dispatch["track"]["kind"] == "audio":
+                        unknowns.append("canonical transform is dispatched on an audio track; transform keyframes are not rendered")
+                    else:
+                        try:
+                            changes.extend(_transform_changes(_keys(params.get("keyframes")), interval.start/fps, interval.end/fps))
+                        except ValueError as exc:
+                            unknowns.append(str(exc))
             for declaration in declarations:
                 if declaration["from_clip_id"] != timing["id"]:
                     continue

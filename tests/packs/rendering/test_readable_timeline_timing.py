@@ -80,6 +80,70 @@ def test_visual_and_audio_fade_names_are_distinct_contracts():
         ('gain multiplier', [0, 1], [1, 2]), ('gain multiplier', [2, 1], [3, 1])]
 
 
+def test_child_audio_track_collision_uses_parent_visual_dispatch_without_gain_fade():
+    clip = _clip(kind='audio', volume=.5, opacity=.6,
+                 params={'fadeIn': 1}, effects={'fade_in': .5})
+    clip['track'] = {'id': 'shared', 'kind': 'audio', 'muted': True, 'volume': .1}
+    clip['track_ref'] = {'scope': 'internal_timeline', 'scope_id': 'child', 'track_id': 'shared'}
+    clip['render_timing']['track'] = 'shared'
+    parent = {'id': 'shared', 'kind': 'visual', 'opacity': .3, 'volume': .4, 'blendMode': 'screen'}
+    context = {'status': 'complete', 'fps': 30, 'tracks': [parent], 'clips': [clip['render_timing']]}
+    result = project_readable_timing([clip], context)[0]
+    assert result['track'] == clip['track'] and result['track_ref'] == clip['track_ref']
+    assert result['authored_fields']['params']['fadeIn'] == 1
+    dispatch = result['compositor_dispatch']
+    assert dispatch['track'] == parent and dispatch['fade_contract'] == 'visual_effects'
+    assert dispatch['controls'] == {'base_gain': .2, 'track_opacity_multiplier': .3, 'clip_opacity_multiplier': .6}
+    assert [(row['property'], row['start'], row['end']) for row in result['timed_changes']] == [
+        ('opacity multiplier', [0, 1], [1, 2])]
+    clip['authored_fields'].pop('effects')
+    # params.fadeIn remains authored, but VisualClip does not consume it.
+    assert project_readable_timing([clip], context)[0]['timed_changes'] == []
+
+
+@pytest.mark.parametrize('muted, volume, expected_gain', [(False, .4, .2), (True, .4, 0), (False, -2, 0)])
+def test_parent_audio_dispatch_overrides_child_visual_contract_and_inherits_gain(muted, volume, expected_gain):
+    clip = _clip(kind='media', volume=.5, params={'fadeIn': .5}, effects={'fade_in': 2})
+    parent = {'id': 'v', 'kind': 'audio', 'muted': muted, 'volume': volume, 'opacity': .1}
+    result = project_readable_timing([clip], {'status': 'complete', 'fps': 30, 'tracks': [parent],
+                                            'clips': [clip['render_timing']]})[0]
+    dispatch = result['compositor_dispatch']
+    assert dispatch['track'] == parent and dispatch['fade_contract'] == 'audio_params'
+    assert dispatch['controls'] == {'base_gain': expected_gain}
+    assert [(row['property'], row['start'], row['end']) for row in result['timed_changes']] == [
+        ('gain multiplier', [0, 1], [1, 2])]
+    assert result['track']['kind'] == 'visual'
+
+
+def test_effect_component_inherits_parent_opacity_but_does_not_claim_parent_audio_controls():
+    clip = _clip(volume=.5, params={'keyframes': [_key(0), _key(1, 200)]})
+    context = {'status': 'complete', 'fps': 30, 'tracks': [{'id': 'v', 'kind': 'visual', 'opacity': .3,
+                                                        'muted': True, 'volume': .1}],
+               'clips': [clip['render_timing']]}
+    result = project_readable_timing([clip], context)[0]
+    assert result['compositor_dispatch']['control_contract'] == 'visual_component'
+    assert result['compositor_dispatch']['controls'] == {'track_opacity_multiplier': .3}
+    context['tracks'][0]['kind'] = 'audio'
+    result = project_readable_timing([clip], context)[0]
+    assert result['timed_changes'] == []
+    assert result['timing_unknowns'] == ['canonical transform is dispatched on an audio track; transform keyframes are not rendered']
+
+
+@pytest.mark.parametrize('tracks', [
+    [],
+    [{'id': 'other', 'kind': 'visual'}],
+    [{'id': 'v', 'kind': 'visual'}, {'id': 'v', 'kind': 'audio'}],
+])
+def test_unproven_compositor_dispatch_retains_authored_controls_without_effective_claim(tracks):
+    clip = _clip(kind='media', volume=.5, params={'fadeIn': 1}, effects={'fade_in': 2})
+    result = project_readable_timing([clip], {'status': 'complete', 'fps': 30, 'tracks': tracks,
+                                            'clips': [clip['render_timing']]})[0]
+    assert result['timed_changes'] == [] and 'timing_projection' not in result
+    assert result['compositor_dispatch'] == {'status': 'unknown',
+        'reason': 'compositor dispatch track unresolved or ambiguous; fade/control contract unavailable'}
+    assert result['authored_fields'] == clip['authored_fields']
+
+
 def test_accepted_transition_retimes_destination_and_preserves_off_page_identity_once():
     source = _clip('source', kind='media', at=1, hold=2, transition={'id': 'cross-fade', 'durationFrames': 15})
     destination = _clip('destination', at=2.5, hold=2, params={'keyframes': [_key(0), _key(1, 200)]})
