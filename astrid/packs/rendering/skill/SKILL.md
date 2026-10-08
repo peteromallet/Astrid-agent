@@ -89,6 +89,15 @@ filmstrips are private implementation details of the same operation. Never inven
 second text-only timeline, treat a filmstrip as a new source of truth, or
 switch to a mutable child document because it is easier to read.
 
+The default composed surface keeps the rendered output and synchronized input
+lanes together, so a sampled frame can be compared with the source placement
+that produced it. Use `--hide inputs` for output-only review, or
+`--mode inputs` for a renderer-free placement view. `--every SECONDS` and
+`--every-frames N` control temporal sample spacing; `--resolution WIDTHxHEIGHT`
+controls the pixels used for each sampled output image. The returned receipt
+records the resolved components, cadence, frame step, and resolution so the
+input/output relationship is inspectable after the PNG is opened.
+
 Use this loop for every inspection or edit:
 
 1. **Resolve and pin scope.** Explicit project and timeline arguments always win.

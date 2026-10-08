@@ -69,6 +69,7 @@ def test_receipt_persists_capture_provenance_and_exact_sampling(tmp_path):
             "requested_at": 0.13, "resolved_at_frame": 3,
             "resolved_at_time": 0.125, "rounding_rule": "floor_at_authored_fps",
             "density": {"mode": "every_frames", "value": 1},
+            "step_frames_rational": [1, 1], "resolution": [320, 180],
         },
         "coverage": {},
         "frame_capture": {
@@ -82,12 +83,82 @@ def test_receipt_persists_capture_provenance_and_exact_sampling(tmp_path):
     receipt = compact_render_receipt(index, snapshot, tmp_path)
     assert receipt["sampling"]["resolved_at_frame"] == 3
     assert receipt["sampling"]["rounding_rule"] == "floor_at_authored_fps"
+    assert receipt["sampling"]["step_frames_rational"] == [1, 1]
+    assert receipt["sampling"]["resolution"] == [320, 180]
     assert receipt["provenance"]["frame_capture"]["evidence_source"] == "fresh_capture"
     assert receipt["provenance"]["frame_capture"]["requested_frame_bounds"] == [3, 3]
     environment = receipt["provenance"]["frame_capture"]["renderer_environment"]
     assert environment["digest"].startswith("sha256:")
     assert environment["sources"] == "digest"
     assert len(environment["digest"]) == 71
+
+
+def test_receipt_keeps_component_and_paired_surface_settings(tmp_path):
+    snapshot = {
+        "project_slug": "demo", "timeline_id": "main", "render_run_id": "run",
+        "video_digest": "sha256:video", "fps_rational": [30, 1], "duration_frames": 90,
+    }
+    receipt = compact_render_receipt(
+        {
+            "cards": [],
+            "components": ["output", "inputs", "text", "audio"],
+            "component_request": {
+                "show": [], "hide": [],
+                "resolved": ["output", "text", "audio", "inputs"], "default": True,
+            },
+            "sampling": {
+                "mode": "interval", "density": {"mode": "every_frames", "value": 6},
+                "step_frames_rational": [6, 1], "resolution": [640, 360],
+            },
+            "coverage": {},
+            "static_surface": {
+                "schema": "astrid.timeline-static-surface.v2", "mode": "paired_rows",
+                "components": ["output", "inputs"], "columns": 5, "page_size": 5,
+                "page_count": 1, "row_count": 1, "axis": "linear_half_open_seconds",
+                "canonical_input_tracks": ["picture", "audio"],
+                "rows": [{
+                    "index": 1, "start_seconds": 0.0, "end_seconds": 2.0,
+                    "output_card_count": 5, "card_ids": ["frame-1"],
+                    "input_tracks": ["picture"],
+                }],
+            },
+        },
+        snapshot,
+        tmp_path,
+    )
+    assert receipt["components"] == ["output", "inputs", "text", "audio"]
+    assert receipt["component_request"]["resolved"] == ["output", "text", "audio", "inputs"]
+    assert receipt["sampling"]["density"] == {"mode": "every_frames", "value": 6}
+    assert receipt["sampling"]["step_frames_rational"] == [6, 1]
+    assert receipt["sampling"]["resolution"] == [640, 360]
+    assert receipt["static_surface"]["mode"] == "paired_rows"
+    assert receipt["static_surface"]["rows"][0]["input_tracks"] == ["picture"]
+
+
+def test_summary_exposes_sampling_and_surface_contract(tmp_path):
+    manifest, _ = make_bundle(
+        tmp_path,
+        count=1,
+        extra={
+            "components": ["output", "inputs"],
+            "component_request": {"resolved": ["output", "inputs"], "default": True},
+            "sampling": {
+                "mode": "interval", "density": {"mode": "every_frames", "value": 6},
+                "step_frames_rational": [6, 1], "resolution": [640, 360],
+            },
+            "static_surface": {
+                "mode": "paired_rows", "columns": 5, "page_count": 1,
+                "canonical_input_tracks": ["picture"],
+            },
+        },
+    )
+
+    summary = inspect_filmstrip(manifest, section="summary")
+    record = summary["data"]["records"][0]
+    assert record["components"] == ["output", "inputs"]
+    assert record["sampling"]["step_frames_rational"] == [6, 1]
+    assert record["sampling"]["resolution"] == [640, 360]
+    assert record["static_surface"]["mode"] == "paired_rows"
 
 
 @pytest.mark.parametrize("legacy", [False, True])

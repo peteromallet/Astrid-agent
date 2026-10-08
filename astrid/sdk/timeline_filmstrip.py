@@ -75,9 +75,10 @@ def matching_composed_render(
         return matched_pin
 
     # A transport that only exposes the native input-view surface has no
-    # render-history reader. That is a valid input-only capability, not a
-    # composed lookup failure: ``auto`` falls back to inputs and ``composed``
-    # returns the normal render-required diagnostic.
+    # render-history reader. That is enough for the explicit input-only
+    # capability, but it cannot satisfy the default composed-output route.
+    # The caller must keep the composed request fail-closed rather than
+    # silently replacing it with declared inputs.
     list_runs = getattr(client, "list_project_runs", None)
     if not callable(list_runs):
         return None

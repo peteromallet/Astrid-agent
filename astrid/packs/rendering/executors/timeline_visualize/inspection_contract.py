@@ -936,6 +936,82 @@ def _bounded_pair(value: Any) -> list[Any] | None:
     return list(value)
 
 
+def _component_list(value: Any) -> list[str] | None:
+    """Keep the resolved component surface small and machine-readable."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or item not in COMPONENTS or item in result:
+            continue
+        result.append(item)
+    return result
+
+
+def _component_request_projection(value: Any) -> dict[str, Any] | None:
+    """Persist the user's component intent without copying arbitrary options."""
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, Any] = {}
+    for key in ("show", "hide", "resolved"):
+        values = _component_list(value.get(key))
+        if values is not None:
+            result[key] = values
+    if isinstance(value.get("default"), bool):
+        result["default"] = value["default"]
+    return result or None
+
+
+def _sampling_projection(value: Any) -> dict[str, Any]:
+    """Project the settings that explain what was sampled and at what size."""
+    if not isinstance(value, Mapping):
+        return {}
+    result = _projection(value, (
+        "mode", "overview", "explicit_interval", "include_cuts",
+        "requested_at", "requested_frame", "resolved_at_frame",
+        "resolved_at_time", "rounding_rule",
+    ))
+    for key in ("range", "effective_range", "requested_range", "step_frames_rational", "resolution"):
+        pair = _bounded_pair(value.get(key))
+        if pair is not None:
+            result[key] = pair
+    density = value.get("density")
+    if isinstance(density, Mapping):
+        result["density"] = _projection(density, ("mode", "value"))
+    return result
+
+
+def _surface_projection(value: Any, *, include_rows: bool = True) -> dict[str, Any] | None:
+    """Persist bounded paired-surface metadata for offline inspection."""
+    if not isinstance(value, Mapping):
+        return None
+    result = _projection(value, (
+        "schema", "mode", "columns", "page_size", "page_count",
+        "page_size_policy", "row_count", "axis",
+    ))
+    for key in ("components", "canonical_input_tracks", "standalone_input_pages"):
+        values = value.get(key)
+        if isinstance(values, (list, tuple)):
+            bounded = [item for item in values if isinstance(item, str) and len(item) <= 256]
+            result[key] = bounded[:128]
+    rows = value.get("rows")
+    if include_rows and isinstance(rows, list):
+        compact_rows: list[dict[str, Any]] = []
+        for row in rows[:500]:
+            if not isinstance(row, Mapping):
+                continue
+            projected = _projection(row, (
+                "index", "start_seconds", "end_seconds", "output_card_count",
+            ))
+            for key in ("card_ids", "input_tracks"):
+                values = row.get(key)
+                if isinstance(values, (list, tuple)):
+                    projected[key] = [item for item in values if isinstance(item, str) and len(item) <= 256][:64]
+            compact_rows.append(projected)
+        result["rows"] = compact_rows
+    return result or None
+
+
 def _capture_projection(value: Any) -> dict[str, Any] | None:
     """Persist bounded fresh/cache and renderer identity evidence."""
     if not isinstance(value, Mapping):
@@ -1020,23 +1096,19 @@ def compact_render_receipt(index: Mapping, snapshot: Mapping, root: Path) -> dic
         cards.append(card)
     receipt = {"schema": "astrid.filmstrip.v2", "provenance": provenance,
                "canonical_timeline": timeline, "cards": cards,
-               "sampling": _projection(index.get("sampling", {}), (
-                   "mode", "overview", "explicit_interval", "include_cuts",
-                   "requested_at", "requested_frame", "resolved_at_frame",
-                   "resolved_at_time", "rounding_rule",
-               )),
+               "sampling": _sampling_projection(index.get("sampling", {})),
                "coverage": _projection(index.get("coverage", {}), ("full_duration", "selected_frame_count", "page_count", "page_size", "all_boundaries_sampled")),
                "inspection": {"command": "python3 -m astrid timelines inspect --manifest MANIFEST --section summary",
                               "sections": list(INSPECTION_SECTIONS)}}
-    sampling = index.get("sampling")
-    if isinstance(sampling, Mapping):
-        for key in ("range", "effective_range", "requested_range"):
-            pair = _bounded_pair(sampling.get(key))
-            if pair is not None:
-                receipt["sampling"][key] = pair
-        density = sampling.get("density")
-        if isinstance(density, Mapping):
-            receipt["sampling"]["density"] = _projection(density, ("mode", "value"))
+    components = _component_list(index.get("components"))
+    if components is not None:
+        receipt["components"] = components
+    component_request = _component_request_projection(index.get("component_request"))
+    if component_request is not None:
+        receipt["component_request"] = component_request
+    surface = _surface_projection(index.get("static_surface"))
+    if surface is not None:
+        receipt["static_surface"] = surface
     capture = _capture_projection(index.get("frame_capture"))
     if capture is not None:
         receipt["provenance"]["frame_capture"] = capture
@@ -1201,9 +1273,29 @@ def inspect_filmstrip(manifest: str | Path, *, section: str = "summary", limit: 
 
         records = []
         if section == "summary":
-            records = [{**identity, "sample_count": len(cards), "sections": list(INSPECTION_SECTIONS),
-                        "canonical_timeline": _projection(index.get("canonical_timeline", {}), ("timeline_ref", "config_version", "config_hash")),
-                        "note": "Samples are rendered evidence; placements and shot scripts are declarations, not proof of pixels, speech timing or silence."}]
+            summary = {
+                **identity,
+                "sample_count": len(cards),
+                "sections": list(INSPECTION_SECTIONS),
+                "canonical_timeline": _projection(index.get("canonical_timeline", {}), ("timeline_ref", "config_version", "config_hash")),
+                "note": "Samples are rendered evidence; placements and shot scripts are declarations, not proof of pixels, speech timing or silence.",
+            }
+            components = _component_list(index.get("components"))
+            if components is not None:
+                summary["components"] = components
+            component_request = _component_request_projection(index.get("component_request"))
+            if component_request is not None:
+                summary["component_request"] = component_request
+            sampling = _sampling_projection(index.get("sampling"))
+            if sampling:
+                summary["sampling"] = sampling
+            # The bounded summary reports the surface contract, while the
+            # receipt retains row-level timing/track metadata for offline
+            # consumers that need to inspect the paired layout in detail.
+            surface = _surface_projection(index.get("static_surface"), include_rows=False)
+            if surface is not None:
+                summary["static_surface"] = surface
+            records = [summary]
         elif section == "pages":
             for name in sorted(members):
                 if PurePosixPath(name).name.startswith("filmstrip-") and name.endswith(".png"):

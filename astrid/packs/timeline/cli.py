@@ -1094,8 +1094,9 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     human_outputs: Mapping[str, Any] | None = None
 
     # Normalize repeatable and comma-separated spellings before the one
-    # canonical SDK call. Inputs remain render-free; auto resolves to one
-    # exact current composed output or falls back to declared inputs.
+    # canonical SDK call. The default auto route resolves to one exact
+    # current composed output or captures the pinned composition; declared
+    # inputs are an explicit input-only view.
     formats = [
         item.strip().lower()
         for value in (parsed.formats or ["png", "md"])
@@ -1779,7 +1780,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         "--show", action="append", default=None, metavar="COMPONENT[,COMPONENT...]",
         help=(
             "Add synchronized components: inputs, output, text, or audio "
-            "(default: output,text,audio; add inputs for the paired view)."
+            "(default composed view: output with synchronized inputs, text, and audio; "
+            "use --hide inputs for output-only)."
         ),
     )
     subparser.add_argument(

@@ -76,6 +76,7 @@ def test_visualize_defaults_to_rendered_filmstrip(parser):
     )
     assert "Rendered paired filmstrip" in help_text
     assert "default" in help_text
+    assert "synchronized inputs" in help_text
 
 
 def test_structural_view_is_not_a_public_cli_route(parser):

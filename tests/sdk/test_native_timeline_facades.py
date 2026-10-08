@@ -193,6 +193,43 @@ def test_remote_visualize_creates_runtime_owned_view_without_executor() -> None:
     assert transport.view_calls == []
 
 
+def test_remote_visualize_default_requests_composed_output_with_input_lanes() -> None:
+    transport = _SelectedNativeTransport()
+    calls = []
+
+    def invoke(capability_id, **kwargs):
+        calls.append((capability_id, kwargs))
+        return DomainResult.success({"mode": "composed_capture"})
+
+    result = RemoteTimelines(transport, invoker=invoke).visualize(
+        "project-1", "main", formats=("md", "png"), options={"every_frames": 6},
+    )
+
+    assert result.ok
+    assert calls[0][0] == "rendering.timeline_visualize"
+    inputs = calls[0][1]["inputs"]
+    assert inputs["composed_capture"] is True
+    assert inputs["show"] == ["output", "inputs", "text", "audio"]
+    assert inputs["every_frames"] == 6
+
+
+def test_remote_visualize_preserves_an_explicit_output_only_surface() -> None:
+    transport = _SelectedNativeTransport()
+    calls = []
+
+    def invoke(capability_id, **kwargs):
+        calls.append((capability_id, kwargs))
+        return DomainResult.success({"mode": "composed_capture"})
+
+    result = RemoteTimelines(transport, invoker=invoke).visualize(
+        "project-1", "main", options={"show": ["output"], "hide": ["inputs"]},
+    )
+
+    assert result.ok
+    assert calls[0][1]["inputs"]["show"] == ["output"]
+    assert calls[0][1]["inputs"]["hide"] == ["inputs"]
+
+
 def test_native_visualize_rejects_arbitrary_output_path() -> None:
     result = RemoteTimelines(_NativeTransport()).visualize("project-1", "main", out="view.md")
     assert isinstance(result, DomainResult)

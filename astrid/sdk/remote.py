@@ -723,6 +723,9 @@ class RemoteTimelines(_RemoteFamily):
         output only when the bounded Runtime lookup proves an exact match for
         the current timeline head; otherwise it captures the requested frames
         from the pinned composition. ``composed`` uses the same capture route.
+        The default composed request includes synchronized input lanes so the
+        source placements remain apparent beside the output; callers can use
+        ``show``/``hide`` to choose a narrower surface.
         An explicit run instead uses that run's immutable candidate or
         historical authority after exact-run admission verifies it.
         """
