@@ -60,9 +60,9 @@ connected runtime's project and timeline slugs: export the complete pinned
 composition, edit its JSON, validate and inspect the diff, then publish one
 revision against the original head. The example defines every variable; no
 pre-supplied `target`, `pinned_parent`, or `runtime_writer` is needed.
-Temporary local media paths in the edited document are probed during the
-read-only check. Publication imports them through the existing project catalog,
-rewrites durable IDs and selected-media mirrors, then validates and publishes.
+Temporary local media paths in the edited document are rejected by the
+read-only check. Import new media first through the public media client, then
+use its managed digest in the checkout before validating and publishing.
 Image, video, and audio imports appear in the ordinary gallery; audio keeps its
 own type and native playback controls. An unchanged checkout has an empty diff.
 
@@ -70,6 +70,11 @@ This bundle includes parent layers, shot placements, and internal clips.
 Narration is read through `timelines script`, which resolves the selected composition's pinned text bindings in occurrence order. Rendering is optional:
 a saved revision can be reviewed in Reigh. The recipe includes the authoritative
 field map, media/gallery distinction, and common recovery paths.
+
+For ordinary candidate edits, use the [timeline editing helper catalog](references/document-checkout.md#editing-helper-catalog).
+It groups media/track changes, timing and ripple operations, layout helpers,
+and occurrence moves. Helpers mutate only the detached JSON candidate; the
+same `check` → diff → `publish` boundary remains authoritative.
 
 For repeatable draft narration synchronization, use `video_editing.sync_draft_voiceover` as documented in the [video editing skill](../../video_editing/skill/SKILL.md). It reads the timeline's pinned script, synthesizes through `generation.generate_speech`, and publishes one validated revision. Empty scripts are skipped and existing final or unadopted audio stays protected. For a one-off manual import, see the [placeholder voiceover recipe](references/placeholder-voiceover.md). Neither workflow needs a video render.
 
@@ -121,12 +126,13 @@ Use this loop for every inspection or edit:
    expansion, and filters. A missing frame or source is reported explicitly;
    never substitute a nearby frame or a different occurrence.
 4. **Choose the smallest supported edit.** Use a public command for a direct,
-   exact primitive (replace media, sequence, reorder layers, quantize, ripple,
-   text binding, or render). For a repeated or data-dependent change, open the
-   same pinned authoring bundle and use ordinary Python/SDK code against its
-   objects. That code is a detached candidate, not a new format or hidden
-   command language. Do not edit Runtime files directly, call undocumented
-   endpoints, or silently rebase a stale candidate.
+   exact Runtime operation such as replacing admitted media or rendering. Use
+   the [helper catalog](references/document-checkout.md#editing-helper-catalog)
+   for sequence, reorder, quantize, ripple, layout, or repeated transforms;
+   those helpers operate on the same detached authoring bundle. That code is a
+   candidate transform, not a new format or hidden command language. Do not
+   edit Runtime files directly, call undocumented endpoints, or silently rebase
+   a stale candidate.
 5. **Validate and save.** Validate the complete candidate, inspect its diff,
    and save through the existing compare-and-swap/idempotent publication boundary.
    Preview, rendering, and focused readback are optional unless the request
@@ -546,33 +552,12 @@ Start timing normally uses `row["placement"]["start_ms"]`; an existing
 `row["at_ms"]` takes precedence, so preserve the opened convention. Duration
 uses **`row["duration_ms"]` at the row level**, not inside `placement`.
 
-The older `timelines save --config ... --registry ... --expected-version ...`
-command below is a separate legacy whole-document compare-and-swap interface.
-It requires the complete document and is not a substitute for the pinned
-parent/shot/internal bundle workflow or the targeted parent-media route.
-
-Create a named runtime timeline once; the returned document starts at
-`config_version: 1`. A save is a whole-document compare-and-swap: `config` and
-`registry` are both required, and `--expected-version` must equal the version
-observed by `show` (or create). Merge edits into the freshly shown document:
-
-```bash
-python3 -m astrid timelines create --project <project> <slug> \
-  --name "<name>" --config '<config-json>' --registry '<registry-json>' \
-  --default --json
-
-python3 -m astrid timelines save --project <project> <slug-or-id> \
-  --config '<complete-config-json>' --registry '<complete-registry-json>' \
-  --expected-version <version> --json
-```
-
-The user edit may be narrow, but the save payload must contain the complete
-current document; do not reuse a stale snapshot. On a version conflict, run
-`show`, reconcile the intended edit against the current complete document, and
-retry with its new version. Preserve managed media identity and digests in the
-registry; raw source paths, URLs, and private CAS locators do not belong in
-durable canonical state. For reusable project shots, use nested `timelines
-shots` commands.
+Do not reconstruct or save a legacy whole-document `config`/`registry` payload
+from `timelines show`. Use the detached checkout recipe above so the complete
+parent/shot/internal closure, managed media identities, validation diff, and
+compare-and-swap publication stay together. For reusable project shots, use
+the nested `timelines shots` product only where its command is explicitly
+available.
 
 To group existing timeline clips into a named shot, use the canonical grouping
 command rather than constructing shot resources and child documents by hand:

@@ -827,6 +827,8 @@ def test_timelines_visualize_help_describes_filmstrip_navigation(
     assert "structure" not in normalized
     assert "returned durable manifest_path" in normalized
     assert "--include-media" in normalized
+    assert "timeline_editing" in normalized
+    assert "checkout" in normalized
 
 
 @pytest.mark.parametrize(
@@ -1004,6 +1006,49 @@ def test_timelines_show_defaults_to_readable_authored_rows(capsys) -> None:
     assert "opacity multiplier 0% → 100% (fade in)" in output
     assert "source playback segments use a separate media clock" in output
     assert "visualize: python3 -m astrid timelines visualize" in output
+    assert "controls: python3 -m astrid timelines visualize --help" in output
+    assert "edit guide:" in output
+    assert "edit JSON: python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout" in output
+
+
+def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() -> None:
+    from astrid.packs.timeline.cli import _show_navigation_help, _visualization_navigation_help
+
+    parsed = SimpleNamespace(
+        revision_id=None,
+        occurrence=None,
+        shot=None,
+        clip=None,
+        asset=None,
+        range=None,
+        track=None,
+    )
+    outputs = {
+        "summary": {
+            "project_slug": "astrid-intro",
+            "timeline_slug": "main-final",
+            "revision_id": "rev-42",
+        }
+    }
+    shown = _show_navigation_help(project=None, ref=None, parsed=parsed, outputs=outputs)
+    assert "--project astrid-intro" in shown["commands"]["visualize"]
+    assert "--timeline-slug main-final" in shown["commands"]["visualize"]
+    assert "--revision-id rev-42" in shown["commands"]["visualize"]
+    assert shown["editing"]["workflow"] == ["checkout", "edit", "check", "publish"]
+    assert shown["editing"]["checkout_revision"].startswith("current Runtime head")
+    assert Path(shown["editing"]["guide"]).is_file()
+    assert Path(shown["editing"]["script"]).is_file()
+
+    visual = _visualization_navigation_help(
+        project=None,
+        inputs={"view": "filmstrip", "timeline_slug": None, "show": ["output"]},
+        outputs={**outputs, "static_surface": {"components": ["output"]}},
+    )
+    assert "--project astrid-intro" in visual["commands"]["show"]
+    assert "main-final" in visual["commands"]["show"]
+    assert "--revision-id rev-42" in visual["commands"]["show"]
+    assert "--frame FRAME" in visual["commands"]["exact_frame"]
+    assert visual["editing"]["commands"]["check"].endswith("--file /tmp/timeline-edit.json")
 
 
 def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, tmp_path) -> None:

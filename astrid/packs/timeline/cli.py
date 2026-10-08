@@ -32,9 +32,10 @@ mutation is a parent-composition candidate publish):
 - ``recover`` — idempotent recovery through ``client.timelines.recover``;
 - ``history`` — ordered lifecycle events (read);
 - ``diff`` — deterministic adjacent-version diffs (read).
-- ``visualize`` — the single public native timeline visualization operation
-  (declared inputs immediately, or an exactly matched composed view when one
-  already exists).
+- ``visualize`` — the single public native timeline visualization operation;
+  the default is a composed output with synchronized input lanes when the
+  canonical route can capture it, while ``--mode inputs`` is the explicit
+  render-free declared-input view.
 - ``render`` — version-pinned kernel timeline render through the explicit
   ``rendering.render`` `timeline_ref` mode.
 
@@ -663,6 +664,23 @@ def _human_motion_lines(clip: Mapping[str, Any], *, detail: bool = False) -> lis
     return lines
 
 
+def _append_navigation_footer(lines: list[str], navigation: Mapping[str, Any]) -> None:
+    """Keep sibling views, editing, and control help visible but compact."""
+    commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
+    if commands.get("visualize"):
+        lines.append(f"visualize: {commands['visualize']}")
+    if commands.get("show"):
+        lines.append(f"show: {commands['show']}")
+    if commands.get("controls"):
+        lines.append(f"controls: {commands['controls']}")
+    editing = navigation.get("editing") if isinstance(navigation.get("editing"), Mapping) else {}
+    if editing.get("guide"):
+        lines.append(f"edit guide: {editing['guide']}")
+    edit_commands = editing.get("commands") if isinstance(editing.get("commands"), Mapping) else {}
+    if edit_commands.get("checkout"):
+        lines.append(f"edit JSON: {edit_commands['checkout']}")
+
+
 def _render_timeline_human(result: object) -> str:
     """Render a compact, addressable authored timeline for human inspection."""
     envelope = envelope_dict(result)
@@ -815,9 +833,8 @@ def _render_timeline_human(result: object) -> str:
     if isinstance(omitted_count, int) and omitted_count > 0:
         lines.append(f"page: {omitted_count} bounded values omitted; full values are unavailable through a bounded retrieval route")
     navigation = data.get("navigation") if isinstance(data.get("navigation"), Mapping) else {}
-    commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
-    if commands.get("visualize"):
-        lines.append(f"visualize: {commands['visualize']}")
+    if navigation:
+        _append_navigation_footer(lines, navigation)
     return "\n".join(lines)
 
 
@@ -890,13 +907,79 @@ def _revision_from_outputs(outputs: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _navigation_scope(
+    *, project: str | None, timeline: str | None, outputs: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Resolve copyable navigation scope without guessing a new default."""
+    containers = [outputs]
+    for key in ("summary", "scope", "native_inspection", "inspection", "provenance"):
+        value = outputs.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+
+    def first(keys: tuple[str, ...], fallback: str) -> str:
+        if fallback not in (None, ""):
+            return str(fallback)
+        for container in containers:
+            for key in keys:
+                value = container.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return fallback or "<unresolved>"
+
+    return (
+        first(("project_slug", "project_id", "project"), project),
+        first(("timeline_slug", "timeline_id", "timeline", "ref"), timeline),
+    )
+
+
+def _timeline_editing_resources() -> dict[str, Any]:
+    """Locate the installed checkout recipe without depending on cwd."""
+    skill_root = Path(__file__).resolve().parents[1] / "rendering" / "skill"
+    guide = skill_root / "references" / "document-checkout.md"
+    script = skill_root / "scripts" / "timeline_document.py"
+    return {
+        "guide": str(guide),
+        "script": str(script),
+        "workflow": ["checkout", "edit", "check", "publish"],
+        "scope": "complete parent/shot/internal-timeline composition",
+        "checkout_revision": "current Runtime head at checkout; historical revisions remain read-only",
+    }
+
+
+def _editing_navigation(
+    *, project: str | None, timeline: str | None,
+) -> dict[str, Any]:
+    """Return one small, copyable entry point for detached JSON editing."""
+    resources = _timeline_editing_resources()
+    file_path = "/tmp/timeline-edit.json"
+    checkout = shlex.join([
+        "python3", "-m", "astrid.packs.rendering.skill.scripts.timeline_document",
+        "checkout", "--project", project or "<project>", "--timeline", timeline or "<timeline>",
+        "--file", file_path,
+    ])
+    check = shlex.join([
+        "python3", "-m", "astrid.packs.rendering.skill.scripts.timeline_document",
+        "check", "--file", file_path,
+    ])
+    publish = shlex.join([
+        "python3", "-m", "astrid.packs.rendering.skill.scripts.timeline_document",
+        "publish", "--file", file_path, "--idempotency-key", "<edit-key>",
+    ])
+    resources["commands"] = {"checkout": checkout, "check": check, "publish": publish}
+    return resources
+
+
 def _show_navigation_help(
     *, project: str | None, ref: str | None, parsed: argparse.Namespace, outputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Offer a revision-pinned visual continuation from structural show output."""
-    argv = ["python3", "-m", "astrid", "timelines", "visualize", "--project", str(project or "<project>")]
-    if ref not in (None, ""):
-        argv += ["--timeline-slug", str(ref)]
+    resolved_project, resolved_timeline = _navigation_scope(
+        project=project, timeline=ref, outputs=outputs,
+    )
+    argv = ["python3", "-m", "astrid", "timelines", "visualize", "--project", resolved_project]
+    if resolved_timeline not in (None, ""):
+        argv += ["--timeline-slug", resolved_timeline]
     revision = getattr(parsed, "revision_id", None) or _revision_from_outputs(outputs)
     if revision:
         argv += ["--revision-id", str(revision)]
@@ -906,10 +989,15 @@ def _show_navigation_help(
             argv += [flag, str(value)]
     for track in getattr(parsed, "track", None) or []:
         argv += ["--track", str(track)]
+    edit = _editing_navigation(project=resolved_project, timeline=resolved_timeline)
     return {
-        "commands": {"visualize": shlex.join(argv)},
+        "commands": {
+            "visualize": shlex.join(argv),
+            "controls": "python3 -m astrid timelines visualize --help",
+        },
+        "editing": edit,
         "authority": revision or "resolved by Runtime current head",
-        "note": "The visual continuation preserves the saved revision and structural filters; it does not follow a newer head implicitly.",
+        "note": "The visual continuation preserves the saved revision and structural filters; checkout starts a fresh current-head editable file.",
     }
 
 
@@ -1219,11 +1307,14 @@ def _visualization_navigation_help(
     *, project: str | None, inputs: Mapping[str, Any], outputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Expose copyable zoom/sampling/navigation guidance in CLI results."""
+    resolved_project, resolved_timeline = _navigation_scope(
+        project=project, timeline=inputs.get("timeline_slug"), outputs=outputs,
+    )
     identity = [
         "python3", "-m", "astrid", "timelines", "visualize",
-        "--project", str(project or "<project>"),
+        "--project", resolved_project,
     ]
-    timeline = inputs.get("timeline_slug")
+    timeline = resolved_timeline
     if timeline not in (None, ""):
         identity += ["--timeline-slug", str(timeline)]
     render_run = inputs.get("render_run")
@@ -1295,7 +1386,16 @@ def _visualization_navigation_help(
     primary_page = pages[0] if isinstance(pages, list) and pages else outputs.get("png")
     manifest_ref = outputs.get("manifest_path") or "MANIFEST"
     inspect_base = ["python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest_ref)]
-    paired = "output" in tokens(inputs.get("show")) and "inputs" in tokens(inputs.get("show"))
+    output_components = outputs.get("components")
+    if not isinstance(output_components, (list, tuple)):
+        surface = outputs.get("static_surface")
+        output_components = surface.get("components") if isinstance(surface, Mapping) else None
+    effective_components = tokens(output_components)
+    paired = (
+        "output" in effective_components and "inputs" in effective_components
+    ) or (
+        not inputs.get("show") and not inputs.get("hide")
+    )
     page_status = None
     if paired and isinstance(pages, list) and len(pages) > 1:
         page_status = f"Paired view generated {len(pages)} bite-sized pages; open them in numbered order."
@@ -1312,11 +1412,22 @@ def _visualization_navigation_help(
     ]
     if show_range is not None:
         show_selectors.append(["--range", show_range])
+    show_command = shlex.join(
+        [
+            "python3", "-m", "astrid", "timelines", "show",
+            "--project", resolved_project,
+            *([str(timeline)] if timeline not in (None, "") else []),
+            *(["--revision-id", str(revision_id)] if revision_id not in (None, "") else []),
+            *sum(show_selectors, []),
+            *sum((["--track", track] for track in tokens(inputs.get("track"))), []),
+        ]
+    )
     return {
         "primary_page": primary_page,
         "pages": pages,
         "markdown": outputs.get("markdown"),
         "inspection": shlex.join(inspect_base + ["--section", "summary"]),
+        "editing": _editing_navigation(project=resolved_project, timeline=timeline),
         "status": page_status,
         "keyboard": [
             "Open the primary PNG page for visual inspection; use the bounded inspect command for exact card, placement, lane, or timing lookup.",
@@ -1328,22 +1439,15 @@ def _visualization_navigation_help(
         ],
         "commands": {
             "rerun": shlex.join(base()),
+            "visualize": shlex.join(base()),
+            "show": show_command,
+            "controls": "python3 -m astrid timelines visualize --help",
             "zoom": shlex.join(clean + ["--range", "START..END", "--every", "0.25", *zoom_detail]),
             "interval_seconds": shlex.join(clean + ["--every", "1"]),
             "interval_frames": shlex.join(clean + ["--every-frames", "12"]),
             "exact_frame": shlex.join(clean + ["--frame", "FRAME"]),
             "resolution": shlex.join(base(resolution=False) + ["--resolution", "960x540"]),
             "inputs_only": shlex.join(input_only),
-            "show": shlex.join(
-                [
-                    "python3", "-m", "astrid", "timelines", "show",
-                    "--project", str(project or "<project>"),
-                    *([str(timeline)] if timeline not in (None, "") else []),
-                    *( ["--revision-id", str(revision_id)] if revision_id not in (None, "") else []),
-                    *sum(show_selectors, []),
-                    *sum((["--track", track] for track in tokens(inputs.get("track"))), []),
-                ]
-            ),
             "pages": shlex.join(clean + ["--columns", "5", "--page-size", "10"]),
             "inspect_summary": shlex.join(inspect_base + ["--section", "summary"]),
             "inspect_cards": shlex.join(inspect_base + ["--section", "cards"]),
@@ -1490,20 +1594,13 @@ def _print_visualization_navigation(outputs: Mapping[str, Any]) -> None:
     status = navigation.get("status")
     if status:
         print(f"  status: {status}")
-    commands = navigation.get("commands")
-    if not isinstance(commands, Mapping):
-        return
-    for label, key in (
-        ("zoom", "zoom"),
-        ("interval (seconds)", "interval_seconds"),
-        ("interval (frames)", "interval_frames"),
-        ("resolution", "resolution"),
-        ("inputs only", "inputs_only"),
-        ("pages", "pages"),
-    ):
-        command = commands.get(key)
-        if command:
-            print(f"  {label}: {command}")
+    footer: list[str] = []
+    _append_navigation_footer(footer, navigation)
+    commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
+    if commands.get("exact_frame"):
+        footer.append(f"exact frame: {commands['exact_frame']}")
+    for line in footer:
+        print(f"  {line}")
 
 
 def _cmd_inspect(parsed: argparse.Namespace) -> int:
@@ -1672,6 +1769,11 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
+    subparser.epilog = (
+        "Next: use `timelines visualize` for composed pixels. For edits, use the "
+        "timeline_editing document-checkout recipe (checkout → edit → check → publish). "
+        "Use `timelines visualize --help` for the visual controls."
+    )
     _add_project_arg(subparser, required=False)
     subparser.add_argument(
         "ref", nargs="?", default=None,
@@ -1752,6 +1854,11 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
+    subparser.epilog = (
+        "Next: use `timelines show` for authored rows and timing. For edits, use the "
+        "timeline_editing document-checkout recipe (checkout → edit → check → publish). "
+        "Use this help page for component, sampling, frame, and resolution controls."
+    )
     _add_project_arg(subparser, required=False)
     subparser.add_argument(
         "timeline_ref", nargs="?", default=None,

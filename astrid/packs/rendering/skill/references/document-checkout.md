@@ -42,6 +42,29 @@ Keep the `.publication.json` receipt, including `new_head` and
 `dependency_manifest`; use a new checkout for the next edit. Choose a distinct
 idempotency key for each intended publication.
 
+## The control map
+
+The normal inspection loop is deliberately short:
+
+```text
+timelines show       authored structure and timing
+        ↓
+timelines visualize  composed pixels, with synchronized input lanes
+        ↓
+checkout             detached, editable JSON at the current head
+        ↓
+check                local validation and a readable diff
+        ↓
+publish              one parent compare-and-swap publication
+```
+
+Both inspection commands print the next useful command in human output and
+return the complete set of copyable commands in `data.navigation` (or
+`outputs.navigation` for a render-backed result). The visual route retains
+`exact_frame`, sampling, range, resolution, lane, and inspection commands in
+that structured object, so a compact terminal footer does not hide detail.
+The edit guide and helper catalog below are the stable route for changes.
+
 ## Where to edit
 
 In these paths, `work` is the JSON document, `row` is one member of
@@ -122,3 +145,77 @@ later parent CAS fails. Re-check out if the parent head advanced.
 - **Unsupported edit or unavailable API:** retain the local file and report the
   actual missing capability. Do not fall back to legacy document saves or
   manufacture a target descriptor that claims an edit capability.
+
+## Editing helper catalog
+
+The public `astrid.sdk.timeline_editing` helpers operate on the detached
+candidate only. They do not publish, rewrite Runtime history, or bypass the
+checkout's provenance fields. Use them for ordinary transformations, then run
+`check` and inspect the diff before `publish`. The catalog is grouped by the
+kind of edit it expresses and mirrors the module's `__all__` export list.
+
+### Components and media
+
+- `clone_candidate(candidate)` — make a lossless editable copy of a checkout.
+- `add_track(container, ...)` — add a visual or audio track.
+- `add_shot(candidate, ...)` — add a shot with an internal timeline.
+- `place_media(container, media, track=..., start=..., end=...)` — place a
+  managed media selector on a track. Import the file first; never put a local
+  filesystem path in the checkout.
+- `replace_media(container, clip_id, media, preserve_interval=True)` — swap a
+  selected asset while retaining its timing by default.
+- `duplicate(value, ...)` and `remove(container, item_id, ...)` — copy or
+  remove a clip/row while preserving the surrounding document shape.
+
+### Timing and frame policy
+
+- `move(container, clip_id, track=..., start=..., end=...)` — move one clip.
+- `retime(clip, start=..., end=..., ripple="none")` — change one interval;
+  the default leaves later placements where they are.
+- `retime_with_ripple(...)` — opt into an explicit ripple policy when later
+  placements should move with the changed duration.
+- `sequence(clips, start=..., durations=..., gap=...)` — lay out clips in
+  order; `fit_duration(container, mode="extend")` updates the container to
+  the resulting end.
+- `frame_time(frame, fps)`, `source_to_timeline_time(...)`, and
+  `timeline_to_source_time(...)` — convert between the admitted clocks.
+- `quantize_time(seconds, fps, policy=...)` and
+  `quantize_interval(...)` — make frame rounding explicit at the boundary.
+
+For example, to move a clip and intentionally ripple everything after it:
+
+```python
+from astrid.sdk.timeline_editing import retime_with_ripple
+
+retime_with_ripple(
+    work["shots"]["shot-terminal"]["internal_timeline"],
+    "clip-terminal",
+    start=20.5,
+    end=24.0,
+    parent_duration="extend",
+)
+```
+
+State the policy in the edit note. A duration change never implicitly moves
+later placements, overlays, or audio.
+
+### Layout and layers
+
+- `align(clips, anchors, edge="start")` — align a set of clips to explicit
+  anchors.
+- `grid(rows, columns, gap=...)` — calculate repeatable positions for a
+  multi-item visual layout.
+- `reorder_layers(container, track_ids)` — change authored layer order without
+  changing clip timing.
+
+### Parent and authoring-shot structure
+
+- `add_authoring_shot(...)`, `duplicate_authoring_shot(...)`, and
+  `remove_authoring_shot(...)` — change the complete authoring-shot bundle.
+- `move_occurrence_group(...)` — move a parent occurrence together with its
+  linked internal structure.
+
+These structural helpers are useful when a visual change spans a parent shot
+and its internal timeline. They still produce one detached candidate; the
+publication boundary remains `check` → `publish`, with the Runtime head
+rechecked before the compare-and-swap.
