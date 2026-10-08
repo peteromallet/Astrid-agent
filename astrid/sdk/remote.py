@@ -943,6 +943,8 @@ class RemoteTimelines(_RemoteFamily):
                         "element_ref": item.get("element_ref"),
                         "addressable": True,
                     })
+        from astrid.packs.rendering.executors.timeline_visualize.readable_timing import project_readable_timing
+        clips = project_readable_timing(clips, data.get("render_timing_context"))
         selectors = data.get("selectors") if isinstance(data.get("selectors"), Mapping) else {}
         projection = {
             "kind": "timeline-inspection",

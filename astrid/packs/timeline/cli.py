@@ -278,7 +278,7 @@ def _human_clip_controls(clip: Mapping[str, Any]) -> list[str]:
     if clip.get("muted") is True or clip.get("mute") is True:
         controls.append("muted")
     gain = clip.get("gain", clip.get("volume"))
-    if isinstance(gain, (int, float)) and gain not in (0, 1):
+    if isinstance(gain, (int, float)) and gain != 1:
         controls.append(f"gain {gain:g}")
     if clip.get("timing_unknown") is True:
         controls.append("motion timing unknown")
@@ -296,153 +296,207 @@ def _human_track_controls(track: Mapping[str, Any]) -> list[str]:
     if track.get("muted") is True or track.get("mute") is True:
         controls.append("muted")
     volume = track.get("volume", track.get("gain"))
-    if isinstance(volume, (int, float)) and volume not in (0, 1):
+    if isinstance(volume, (int, float)) and volume != 1:
         controls.append(f"gain {volume:g}")
     return controls
 
 
-def _human_motion_lines(clip: Mapping[str, Any]) -> list[str]:
-    """Summarize only explicit, simple keyframe changes; retain unknown clocks."""
-    if clip.get("timing_unknown") is True:
-        return ["[motion timing unknown]"]
-    raw = clip.get("keyframes")
-    authored = clip.get("authored_fields") if isinstance(clip.get("authored_fields"), Mapping) else {}
-    presentation = clip.get("presentation_fields") if isinstance(clip.get("presentation_fields"), Mapping) else {}
-    if raw is None:
-        raw = presentation.get("keyframes")
-    if raw is None:
-        raw = authored.get("keyframes")
-    if raw is None and isinstance(authored.get("presentation_fields"), Mapping):
-        raw = authored["presentation_fields"].get("keyframes")
-    if raw is None:
-        for alias in ("parameters", "params", "props"):
-            nested = authored.get(alias)
-            if isinstance(nested, Mapping) and "keyframes" in nested:
-                raw = nested["keyframes"]
-                break
-    if raw is None and isinstance(clip.get("parameters"), Mapping):
-        raw = clip["parameters"].get("keyframes")
-    if not isinstance(raw, (list, tuple)):
-        return []
-    # The canonical animated-media-transform element stores one rectangle per
-    # keyframe (`at`, `x`, `y`, `width`, `height`, `opacity`) rather than one
-    # row per property. Keep that authored shape legible too; dropping it here
-    # would make the very zoom/pan clocks the command is meant to explain
-    # disappear from the default view.
-    transform_rows = [item for item in raw if isinstance(item, Mapping)]
-    if transform_rows and not any(
-        item.get("property", item.get("name", item.get("field"))) not in (None, "")
-        for item in transform_rows
-    ) and len(transform_rows) >= 2:
-        def _motion_time(item: Mapping[str, Any]) -> Any:
-            return item.get("time", item.get("at", item.get("t")))
+def _human_is_audio_clip(clip: Mapping[str, Any]) -> bool:
+    """Classify audio from any non-empty clip, media, or scoped-track kind."""
+    track = clip.get("track")
+    candidates = (
+        clip.get("kind"), clip.get("media_type"), clip.get("clip_type"),
+        track.get("kind") if isinstance(track, Mapping) else None,
+        clip.get("track_kind"),
+    )
+    for value in candidates:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        kind = value.lower()
+        if kind in {"audio", "sound", "music"} or kind.startswith("audio/"):
+            return True
+    return False
 
-        clip_start = clip.get("start")
-        try:
-            clip_start_value = (
-                Fraction(int(clip_start[0]), int(clip_start[1]))
-                if isinstance(clip_start, (list, tuple))
-                else Fraction(str(clip_start or 0))
-            )
-        except (TypeError, ValueError, ZeroDivisionError):
-            clip_start_value = Fraction(0)
-        try:
-            first_time = _motion_time(transform_rows[0])
-            last_time = _motion_time(transform_rows[-1])
-            first_time_value = clip_start_value + (
-                Fraction(int(first_time[0]), int(first_time[1]))
-                if isinstance(first_time, (list, tuple))
-                else Fraction(str(first_time))
-            )
-            last_time_value = clip_start_value + (
-                Fraction(int(last_time[0]), int(last_time[1]))
-                if isinstance(last_time, (list, tuple))
-                else Fraction(str(last_time))
-            )
-        except (TypeError, ValueError, ZeroDivisionError):
-            first_time_value = _motion_time(transform_rows[0])
-            last_time_value = _motion_time(transform_rows[-1])
-        changes: list[str] = []
-        for field in ("x", "y", "width", "height", "opacity"):
-            before = transform_rows[0].get(field)
-            after = transform_rows[-1].get(field)
-            if before is None or after is None or before == after:
-                continue
-            changes.append(f"{field} {before:g} → {after:g}" if isinstance(before, (int, float)) and isinstance(after, (int, float)) else f"{field} {before} → {after}")
-        if changes:
-            lines = [f"{_human_time(first_time_value)}–{_human_time(last_time_value)} transform " + "; ".join(changes)]
-        else:
-            lines = []
-    else:
-        lines = []
-    grouped: dict[str, list[Mapping[str, Any]]] = {}
-    for item in raw:
-        if not isinstance(item, Mapping):
+
+def _human_track_identity(clip: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Return the exact scoped track key, with a stable unassigned fallback."""
+    reference = clip.get("track_ref") if isinstance(clip.get("track_ref"), Mapping) else {}
+    track = clip.get("track")
+    track_id = reference.get("track_id") or clip.get("track_id")
+    if not track_id and isinstance(track, Mapping):
+        track_id = track.get("id")
+    if not track_id and isinstance(track, str):
+        track_id = track
+    return (
+        str(reference.get("scope") or ""),
+        str(reference.get("scope_id") or ""),
+        str(track_id or "unassigned"),
+    )
+
+
+def _human_track_heading(identity: tuple[str, str, str]) -> str:
+    scope, scope_id, track_id = identity
+    heading = f"Track {track_id}"
+    if scope or scope_id:
+        heading += f" ({scope or 'scope unknown'}/{scope_id or 'owner unknown'})"
+    return heading
+
+
+def _human_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _human_clip_detail_lines(
+    clip: Mapping[str, Any], *, summary: Mapping[str, Any], scope: Mapping[str, Any]
+) -> list[str]:
+    """Show bounded authored values plus the exact saved target in detail mode."""
+    lines: list[str] = []
+    authored = clip.get("authored_fields") if isinstance(clip.get("authored_fields"), Mapping) else {}
+    label = clip.get("label", authored.get("label"))
+    labels = clip.get("labels", authored.get("labels"))
+    if label not in (None, ""):
+        lines.append(f"       authored label: {_human_json(label)}")
+    if labels not in (None, "", [], {}):
+        lines.append(f"       authored labels: {_human_json(labels)}")
+    params = clip.get("parameters")
+    if params is None:
+        params = next((authored.get(key) for key in ("parameters", "params", "props") if key in authored), None)
+    if params not in (None, {}, []):
+        source = clip.get("parameters_source") or next((key for key in ("parameters", "params", "props") if key in authored), "parameters")
+        lines.append(f"       {source}: {_human_json(params)}")
+    details = {
+        key: value for key, value in (
+            ("element_ref", clip.get("element_ref", authored.get("element_ref", authored.get("elementRef")))),
+            ("extensions", clip.get("extensions", authored.get("extensions"))),
+            ("presentation", clip.get("presentation", authored.get("presentation"))),
+            ("presentation_fields", clip.get("presentation_fields", authored.get("presentation_fields"))),
+            ("authored_timing", clip.get("authored_timing", authored.get("authored_timing"))),
+        ) if value not in (None, {}, [])
+    }
+    if details:
+        lines.append("       authored values: " + _human_json(details))
+    # Keep future or opaque authored keys visible without repeating the fields
+    # already presented above. Runtime has already bounded this mapping.
+    if authored:
+        known = {"label", "labels", "parameters", "params", "props", "element_ref", "elementRef",
+                 "extensions", "presentation", "presentation_fields", "authored_timing",
+                 "id", "clip_id", "clipType", "clip_type", "type", "track", "at", "at_ms",
+                 "duration", "duration_ms", "hold", "from", "from_ms", "to", "to_ms",
+                 "speed", "asset", "asset_id", "assetId", "source_object_id", "media_id",
+                 "object_id", "content_sha256", "content_digest", "digest"}
+        remaining = {key: value for key, value in authored.items() if key not in known}
+        if remaining:
+            lines.append("       authored fields: " + _human_json(remaining))
+    elif any(item.get("path") == "authored_fields" for item in clip.get("omitted_fields", []) if isinstance(item, Mapping)):
+        lines.append("       authored values: omitted by Runtime's authored-field byte limit")
+
+    exact = {
+        key: clip.get(key) for key in (
+            "media_name", "asset_id", "source_object_id", "content_digest", "media_type", "element_ref"
+        ) if clip.get(key) not in (None, "")
+    }
+    exact.update({key: clip.get(key) for key in ("shot_id", "occurrence_id", "clip_id") if clip.get(key) not in (None, "")})
+    exact["timeline_id"] = scope.get("timeline") or scope.get("timeline_id")
+    exact["revision_id"] = summary.get("revision_id")
+    exact["is_current_head"] = summary.get("is_current_head")
+    exact = {key: value for key, value in exact.items() if value not in (None, "")}
+    lines.append("       identity: " + _human_json(exact))
+    return lines
+
+
+def _human_omission_lines(
+    omissions: object, *, summary: Mapping[str, Any], scope: Mapping[str, Any],
+    occurrence: Mapping[str, Any] | None = None, clip: Mapping[str, Any] | None = None,
+) -> list[str]:
+    if not isinstance(omissions, list):
+        return []
+    lines: list[str] = []
+    for omission in omissions:
+        if not isinstance(omission, Mapping):
             continue
-        prop = item.get("property", item.get("name", item.get("field")))
-        if prop in (None, ""):
+        path = omission.get("path") or "authored value"
+        reason = omission.get("reason") or "omitted"
+        size = omission.get("byte_length")
+        limit = omission.get("limit_bytes")
+        size_text = f" ({size} B; limit {limit} B)" if size is not None and limit is not None else ""
+        target = {
+            "timeline_id": scope.get("timeline") or scope.get("timeline_id"),
+            "revision_id": summary.get("revision_id"),
+        }
+        if occurrence:
+            target.update({key: occurrence.get(key) for key in ("occurrence_id", "shot_id") if occurrence.get(key) is not None})
+        if clip:
+            target.update({key: clip.get(key) for key in ("occurrence_id", "shot_id", "clip_id") if clip.get(key) is not None})
+        target = {key: value for key, value in target.items() if value not in (None, "")}
+        digest = omission.get("sha256")
+        digest_text = f"; sha256 {digest}" if digest else ""
+        lines.append(
+            f"       omitted {path}: {reason}{size_text}{digest_text}; pinned target {_human_json(target)}; "
+            "full omitted values are unavailable through a bounded retrieval route"
+        )
+    return lines
+
+
+def _human_occurrence_lookup(data: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    native = data.get("native_inspection") if isinstance(data.get("native_inspection"), Mapping) else {}
+    selected = native.get("selected") if isinstance(native.get("selected"), list) else []
+    result: dict[str, Mapping[str, Any]] = {}
+    for row in selected:
+        if not isinstance(row, Mapping):
             continue
-        grouped.setdefault(str(prop), []).append(item)
-    for prop, items in grouped.items():
-        if len(items) < 2:
+        occurrence = row.get("occurrence")
+        if isinstance(occurrence, Mapping) and occurrence.get("occurrence_id") is not None:
+            result[str(occurrence["occurrence_id"])] = occurrence
+    return result
+
+
+def _human_motion_lines(clip: Mapping[str, Any], *, detail: bool = False) -> list[str]:
+    """Present only producer-supported intervals; custom clocks stay declarations."""
+    from astrid.packs.rendering.executors.timeline_visualize.readable_timing import project_readable_timing
+    if "timed_changes" not in clip:
+        clip = project_readable_timing([clip])[0]
+    grouped = {}
+    for change in clip.get("timed_changes", []):
+        if change.get("hold") and not detail:
             continue
-        first, last = items[0], items[-1]
-        start = first.get("time", first.get("at", first.get("t")))
-        end = last.get("time", last.get("at", last.get("t")))
-        clip_start = clip.get("start")
-        try:
-            clip_start = Fraction(int(clip_start[0]), int(clip_start[1])) if isinstance(clip_start, (list, tuple)) else Fraction(str(clip_start or 0))
-            start = clip_start + (Fraction(int(start[0]), int(start[1])) if isinstance(start, (list, tuple)) else Fraction(str(start)))
-            end = clip_start + (Fraction(int(end[0]), int(end[1])) if isinstance(end, (list, tuple)) else Fraction(str(end)))
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-        before = first.get("value")
-        after = last.get("value")
-        if before == after:
-            continue
-        lines.append(f"{_human_time(start)}–{_human_time(end)} {prop} {before} → {after}")
-    authored_effects = authored.get("effects") if isinstance(authored.get("effects"), Mapping) else None
-    effects = clip.get("effects") if isinstance(clip.get("effects"), Mapping) else authored_effects
-    if effects is None:
-        for alias in ("parameters", "params", "props"):
-            nested = authored.get(alias)
-            if isinstance(nested, Mapping) and isinstance(nested.get("effects"), Mapping):
-                effects = nested["effects"]
-                break
-    clip_start, clip_end = _clip_bounds(clip)
-    if isinstance(effects, Mapping) and clip_start is not None and clip_end is not None:
-        for key, before, after, origin in (
-            ("fade_in", "0%", "100%", clip_start),
-            ("fade_out", "100%", "0%", clip_end),
-        ):
-            duration = _fractional(effects.get(key))
-            if duration is None or duration <= 0:
-                continue
-            interval_start = origin if key == "fade_in" else max(clip_start, clip_end - duration)
-            interval_end = min(clip_end, clip_start + duration) if key == "fade_in" else clip_end
-            lines.append(f"{_human_time(interval_start)}–{_human_time(interval_end)} opacity {before} → {after} ({key.replace('_', ' ')})")
-    transition = clip.get("transition")
-    if transition is None and isinstance(authored.get("transition"), Mapping):
-        transition = authored["transition"]
+        key = (tuple(change["start"]), tuple(change["end"]), change["kind"], change.get("hold", False))
+        grouped.setdefault(key, []).append(change)
+    changes = []
+    for (start, end, kind, hold), rows in grouped.items():
+        values = []
+        for row in rows:
+            before, after = row["before"], row["after"]
+            if row["property"].endswith("multiplier"):
+                before, after = f"{before*100:g}%", f"{after*100:g}%"
+            else:
+                before, after = f"{before:g}", f"{after:g}"
+            values.append(f"{row['property']} holds {before}" if hold else f"{row['property']} {before} → {after}")
+        label = "transform " if kind == "transform" else ""
+        suffix = f" ({kind.replace('_', ' ')})" if kind != "transform" else ""
+        if any(row.get("overlapping_fades") for row in rows):
+            suffix += " [fade multipliers overlap]"
+        changes.append(f"{_human_time(start)}–{_human_time(end)} {label}{'; '.join(values)}{suffix}")
+    lines = changes if detail else changes[:3]
+    if len(changes) > len(lines):
+        lines.append(f"[{len(changes)-len(lines)} more change intervals; expand with --detail]")
+    lines.extend(f"[motion timing unknown: {reason}]" for reason in clip.get("timing_unknowns", []))
+    transition = clip.get("transition_projection")
     if isinstance(transition, Mapping):
-        transition_id = transition.get("id", transition.get("type", "transition"))
-        resolved = clip.get("transition_interval")
-        if isinstance(resolved, Mapping) and resolved.get("start") is not None and resolved.get("end") is not None:
-            lines.append(f"{_human_time(resolved['start'])}–{_human_time(resolved['end'])} transition {transition_id}")
+        declaration = transition.get("transition")
+        identifier = declaration.get("id", declaration.get("type", "transition")) if isinstance(declaration, Mapping) else declaration
+        if transition.get("status") == "resolved":
+            source = transition.get("from_target", {})
+            destination = transition.get("to_target", {})
+            target = lambda value: "/".join(str(value[key]) for key in ("occurrence_id", "clip_id") if value.get(key)) or str(value.get("render_clip_id"))
+            lines.append(f"{_human_time(transition['start'])}–{_human_time(transition['end'])} transition {identifier}: {target(source)} → {target(destination)}")
         else:
-            lines.append(f"[transition {transition_id}; timing unresolved]")
-    source_segments = clip.get("sourceSegments") or clip.get("source_segments")
-    if source_segments is None:
-        source_segments = authored.get("sourceSegments") or authored.get("source_segments")
-    if source_segments is None:
-        for alias in ("parameters", "params", "props"):
-            nested = authored.get(alias)
-            if isinstance(nested, Mapping):
-                source_segments = nested.get("sourceSegments") or nested.get("source_segments")
-                if source_segments:
-                    break
-    if source_segments:
-        lines.append("[source playback segments use a separate media clock]")
+            lines.append(f"[transition {identifier}; timing unresolved: {transition.get('reason', 'placement unavailable')}]")
+    elif clip.get("transition"):
+        declaration = clip["transition"]
+        identifier = declaration.get("id", declaration.get("type", "transition")) if isinstance(declaration, Mapping) else declaration
+        lines.append(f"[transition {identifier}; timing unresolved: producer unavailable]")
+    if clip.get("source_clock"):
+        lines.append(f"[{clip['source_clock']}]")
     return lines
 
 
@@ -457,60 +511,132 @@ def _render_timeline_human(result: object) -> str:
     summary = data.get("summary") if isinstance(data.get("summary"), Mapping) else {}
     query = data.get("query") if isinstance(data.get("query"), Mapping) else {}
     scope = data.get("scope") if isinstance(data.get("scope"), Mapping) else {}
+    currentness = (
+        "current head" if summary.get("is_current_head") is True
+        else "saved revision (not current head)" if summary.get("is_current_head") is False
+        else "currentness unknown"
+    )
     lines = [
         f"Timeline {scope.get('timeline') or scope.get('timeline_id') or 'current'}",
-        f"  revision: {summary.get('revision_id') or 'unknown'} · Authored timeline",
+        f"  revision: {summary.get('revision_id') or 'unknown'} · {currentness} · Authored timeline",
     ]
     filters = [f"{key}={query[key]}" for key in ("range", "occurrence", "shot", "clip", "track", "asset") if query.get(key) not in (None, "", [])]
     if filters:
         lines.append("  scope: " + ", ".join(filters))
-    lines.append("Visual layers, top to bottom")
-    if not data.get("layer_order"):
-        lines.append("  (layer order unavailable; authored order retained)")
+    lines.append("Visual layers (order unavailable; grouped by exact scoped track)")
     clips = [item for item in data.get("clips", []) if isinstance(item, Mapping)]
-    track_rows: dict[str, Mapping[str, Any]] = {}
-    for clip in clips:
-        track = clip.get("track")
-        if isinstance(track, Mapping):
-            track_id = str(clip.get("track_id") or track.get("id") or "track")
-            track_rows.setdefault(track_id, track)
-    for track_id, track in track_rows.items():
-        controls = _human_track_controls(track)
-        if controls:
-            lines.append(f"  Track {track_id} [{', '.join(controls)}]")
-    audio = [clip for clip in clips if str(clip.get("kind", clip.get("clip_type", clip.get("track", "")))).lower() in {"audio", "sound", "music"}]
-    visual_clips = [clip for clip in clips if clip not in audio]
-    if not visual_clips:
-        lines.append("  (no clip occurrences in this page)")
-    else:
-        for index, clip in enumerate(visual_clips, 1):
-            start, end = _human_clip_interval(clip)
-            identity = "/".join(str(value) for value in (clip.get("occurrence_id"), clip.get("clip_id")) if value not in (None, ""))
-            label = f" · {identity}" if identity else ""
-            controls = _human_clip_controls(clip)
-            suffix = f"  [{', '.join(controls)}]" if controls else ""
-            lines.append(f"  {index}. {start}–{end}  {_human_clip_name(clip)}{label}{suffix}")
-            for change in _human_motion_lines(clip):
-                lines.append(f"       {change}")
-            if query.get("detail") is True:
-                authored = clip.get("authored_fields")
-                if isinstance(authored, Mapping):
-                    lines.append("       authored fields: " + ", ".join(sorted(str(key) for key in authored)))
-                exact = {key: clip.get(key) for key in ("source_object_id", "content_digest", "asset_id", "element_ref") if clip.get(key) not in (None, "")}
-                if exact:
-                    lines.append("       identity: " + json.dumps(exact, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    audio = [clip for clip in clips if _human_is_audio_clip(clip)]
+    visual_clips = [clip for clip in clips if not _human_is_audio_clip(clip)]
+    occurrence_lookup = _human_occurrence_lookup(data)
+    detail = query.get("detail") is True
+
+    def render_rows(rows: list[Mapping[str, Any]], *, section: str) -> None:
+        groups: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
+        tracks: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        for clip in rows:
+            identity = _human_track_identity(clip)
+            groups.setdefault(identity, []).append(clip)
+            track = clip.get("track")
+            if isinstance(track, Mapping):
+                tracks.setdefault(identity, track)
+        if not rows:
+            lines.append(f"  (no {section} clip occurrences in this page)")
+            return
+        display_index = 0
+        for identity, group in groups.items():
+            track = tracks.get(identity, {})
+            heading = _human_track_heading(identity)
+            track_label = track.get("label") if isinstance(track, Mapping) else None
+            if isinstance(track_label, str) and track_label.strip():
+                heading += f" · {track_label}"
+            controls = _human_track_controls(track) if isinstance(track, Mapping) else []
+            suffix = f" [{', '.join(controls)}]" if controls else ""
+            lines.append(f"  {heading}{suffix}")
+            if isinstance(track, Mapping):
+                lines.extend(_human_omission_lines(
+                    track.get("omitted_fields"), summary=summary, scope=scope,
+                ))
+            indexed = list(enumerate(group))
+            indexed.sort(key=lambda pair: (
+                _clip_bounds(pair[1])[0] is None,
+                _clip_bounds(pair[1])[0] or Fraction(0),
+                pair[0],
+            ))
+            for _source_index, clip in indexed:
+                display_index += 1
+                start, end = _human_clip_interval(clip)
+                identity_parts = [clip.get("occurrence_id"), clip.get("clip_id")]
+                row_identity = "/".join(str(value) for value in identity_parts if value not in (None, ""))
+                label = f" · {row_identity}" if row_identity else ""
+                controls = _human_clip_controls(clip)
+                suffix = f" [{', '.join(controls)}]" if controls else ""
+                lines.append(f"    {display_index}. {start}–{end}  {_human_clip_name(clip)}{label}{suffix}")
+                for change in _human_motion_lines(clip, detail=query.get("detail") is True):
+                    lines.append(f"         {change}")
+                occurrence = occurrence_lookup.get(str(clip.get("occurrence_id"))) if clip.get("occurrence_id") is not None else None
+                if detail:
+                    lines.extend(_human_clip_detail_lines(clip, summary=summary, scope=scope))
+                # Authored value omissions remain visible in compact mode too.
+                lines.extend(_human_omission_lines(
+                    clip.get("omitted_fields"), summary=summary, scope=scope,
+                    occurrence=occurrence, clip=clip,
+                ))
+
+    # Parent-level occurrence tracks place child timelines on a layer. Keep
+    # that owner separate from each child's internal track and associate it
+    # with the exact occurrence IDs that appear in the clip rows below.
+    placements: dict[tuple[str, str, str, tuple[str, ...]], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    for occurrence_id, occurrence in occurrence_lookup.items():
+        reference = occurrence.get("track_ref") if isinstance(occurrence.get("track_ref"), Mapping) else {}
+        track = occurrence.get("track") if isinstance(occurrence.get("track"), Mapping) else {}
+        track_id = reference.get("track_id") or (track.get("id") if isinstance(track, Mapping) else None) or "unassigned"
+        occurrence_controls: list[str] = _human_track_controls(track)
+        if occurrence.get("mute") is True:
+            occurrence_controls.append("muted")
+        gain = occurrence.get("gain", occurrence.get("volume"))
+        if isinstance(gain, (int, float)) and gain != 1:
+            occurrence_controls.append(f"gain {gain:g}")
+        key = (
+            str(reference.get("scope") or ""), str(reference.get("scope_id") or ""),
+            str(track_id), tuple(dict.fromkeys(occurrence_controls)),
+        )
+        placements.setdefault(key, []).append((occurrence, track))
+    if placements:
+        lines.append("  Occurrence placement tracks")
+        for identity_with_controls, rows in placements.items():
+            identity = identity_with_controls[:3]
+            controls = list(identity_with_controls[3])
+            track = rows[0][1]
+            heading = _human_track_heading(identity)
+            occurrence_ids = ", ".join(str(row[0].get("occurrence_id")) for row in rows)
+            suffix = f" [{', '.join(controls)}]" if controls else ""
+            lines.append(f"    {heading} · occurrences {occurrence_ids}{suffix}")
+            for occurrence, _track in rows:
+                lines.extend(_human_omission_lines(
+                    occurrence.get("omitted_fields"), summary=summary, scope=scope,
+                    occurrence=occurrence,
+                ))
+
+    render_rows(visual_clips, section="visual")
     if audio:
-        lines.append("Audio")
-        lines.extend(f"  {_human_clip_name(clip)} [{', '.join(_human_clip_controls(clip)) or 'authored'}]" for clip in audio)
+        lines.append("Audio (separate tracks; order unavailable unless projected)")
+        render_rows(audio, section="audio")
     native = data.get("native_inspection") if isinstance(data.get("native_inspection"), Mapping) else {}
     pagination = data.get("pagination") if isinstance(data.get("pagination"), Mapping) else {}
     if not pagination and isinstance(native.get("next_cursor"), str):
         pagination = {"next_cursor": native.get("next_cursor")}
     page = data.get("page") if isinstance(data.get("page"), Mapping) else native.get("page") if isinstance(native.get("page"), Mapping) else {}
     if page.get("returned_clips") is not None:
-        lines.append(f"page: returned {page['returned_clips']} of {page.get('total_selected_clips', page['returned_clips'])} selected clips")
+        page_line = f"page: returned {page['returned_clips']} of {page.get('total_selected_clips', page['returned_clips'])} selected clips"
+        if page.get("remaining_clips") not in (None, 0):
+            page_line += f"; {page['remaining_clips']} remain after this page"
+        lines.append(page_line)
     if pagination.get("next_cursor"):
         lines.append(f"  page: more results available (cursor {pagination['next_cursor']})")
+    omissions = data.get("omission_metadata") if isinstance(data.get("omission_metadata"), Mapping) else native.get("omission_metadata") if isinstance(native.get("omission_metadata"), Mapping) else {}
+    omitted_count = omissions.get("authored_values_omitted")
+    if isinstance(omitted_count, int) and omitted_count > 0:
+        lines.append(f"page: {omitted_count} authored values omitted; full values are unavailable through a bounded retrieval route")
     navigation = data.get("navigation") if isinstance(data.get("navigation"), Mapping) else {}
     commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
     if commands.get("visualize"):
