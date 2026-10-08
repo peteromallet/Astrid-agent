@@ -2473,6 +2473,229 @@
         },
         "opaque": []
       }
+    },
+    {
+      "name": "incoming fade entrance",
+      "context": {
+        "clip": {
+          "clipType": "media",
+          "entrance": {
+            "type": "fade",
+            "duration": 0.5
+          }
+        },
+        "fps": 30,
+        "startFrame": 30,
+        "endFrame": 60,
+        "path": [
+          "parent",
+          "t",
+          "clip",
+          "b"
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "disclosureVersion": "visual-seam/v1",
+        "effectVersion": 1,
+        "span": {
+          "startFrame": 30,
+          "endFrame": 60,
+          "path": [
+            "parent",
+            "t",
+            "clip",
+            "b"
+          ]
+        },
+        "cues": [
+          {
+            "frame": 31,
+            "kind": "motion-start",
+            "id": "entrance",
+            "path": [
+              "parent",
+              "t",
+              "clip",
+              "b"
+            ]
+          }
+        ],
+        "source": {
+          "binding": null
+        },
+        "opaque": []
+      }
+    },
+    {
+      "name": "media custom element remains opaque",
+      "context": {
+        "clip": {
+          "clipType": "media",
+          "elementRef": {
+            "id": "custom",
+            "kind": "effect",
+            "revision": "opaque-1"
+          }
+        },
+        "fps": 30,
+        "startFrame": 30,
+        "endFrame": 60,
+        "path": [
+          "parent",
+          "t",
+          "clip",
+          "b"
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "disclosureVersion": "visual-seam/v1",
+        "effectVersion": 1,
+        "span": {
+          "startFrame": 30,
+          "endFrame": 60,
+          "path": [
+            "parent",
+            "t",
+            "clip",
+            "b"
+          ]
+        },
+        "cues": [],
+        "source": {
+          "binding": null
+        },
+        "opaque": [
+          "unverified element reference timing"
+        ]
+      }
+    },
+    {
+      "name": "invalid transition stays opaque",
+      "context": {
+        "clip": {
+          "clipType": "media",
+          "transition": {
+            "type": "not-real",
+            "duration": 0.2
+          }
+        },
+        "fps": 30,
+        "startFrame": 30,
+        "endFrame": 60,
+        "path": [
+          "parent",
+          "t",
+          "clip",
+          "b"
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "disclosureVersion": "visual-seam/v1",
+        "effectVersion": 1,
+        "span": {
+          "startFrame": 30,
+          "endFrame": 60,
+          "path": [
+            "parent",
+            "t",
+            "clip",
+            "b"
+          ]
+        },
+        "cues": [],
+        "source": {
+          "binding": null
+        },
+        "opaque": [
+          "unsupported transition timing"
+        ]
+      }
+    },
+    {
+      "name": "failed playback retains known motion",
+      "context": {
+        "clip": {
+          "clipType": "animated-media-transform",
+          "hold": 1,
+          "entrance": "fade",
+          "params": {
+            "keyframes": [
+              {
+                "at": 0,
+                "x": 0,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+                "opacity": 1
+              },
+              {
+                "at": 0.5,
+                "x": 20,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+                "opacity": 1
+              }
+            ],
+            "sourceSegments": []
+          }
+        },
+        "fps": 30,
+        "startFrame": 30,
+        "endFrame": 60,
+        "path": [
+          "parent",
+          "t",
+          "clip",
+          "b"
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "disclosureVersion": "visual-seam/v1",
+        "effectVersion": 1,
+        "span": {
+          "startFrame": 30,
+          "endFrame": 60,
+          "path": [
+            "parent",
+            "t",
+            "clip",
+            "b"
+          ]
+        },
+        "cues": [
+          {
+            "frame": 31,
+            "kind": "motion-start",
+            "id": "entrance",
+            "path": [
+              "parent",
+              "t",
+              "clip",
+              "b"
+            ]
+          },
+          {
+            "frame": 31,
+            "kind": "motion-start",
+            "id": "key-0",
+            "path": [
+              "parent",
+              "t",
+              "clip",
+              "b"
+            ]
+          }
+        ],
+        "source": null,
+        "opaque": [
+          "failed disclosure: Invalid source playback timing"
+        ]
+      }
     }
   ]
 }

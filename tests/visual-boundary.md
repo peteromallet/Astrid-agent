@@ -1,5 +1,16 @@
 # Visual boundary conformance
 
+Portable intent is stored as a `canonical` record beside existing editor intent
+bytes: `{contextVersion: "visual-seam/v1", frame, kind, participants, context}`.
+`seam-intent.ts` defines the cue IDs and JSON context; Runtime's `seam_intent.py`
+mirrors it. IDs are timeline-local owner paths plus cue kind, ID and frame.
+Context includes fps, frame, owner spans, source bindings and relevant authored
+parameters; derived reports and acknowledgements are excluded. Runtime recomputes
+this context from its pinned closure. Only `synchronized` grants its named extra
+cues. Old bytes survive; malformed/stale canonical records never downgrade to a
+legacy acknowledgement. The Reigh cross-repository test executes the actual
+Reigh authoring helper and evaluates the result in Runtime.
+
 `fixtures/visual-boundary-v1.json` is the deterministic `visual-seam/v1` vector
 set shared with Runtime. It records expected disclosure values; the old-timeline
 vectors are synthetic timing evidence unless a vector explicitly carries pinned

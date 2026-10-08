@@ -18,6 +18,14 @@ export type BoundaryDisclosure = {
 };
 const finite = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 const sameRect = (a: Json, b: Json) => ['x', 'y', 'width', 'height', 'opacity'].every(k => a[k] === b[k]);
+const object = (v: unknown): Json | undefined => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Json : undefined;
+export function transitionFrames(value: unknown, fps: number): number | null {
+  const ref = object(value);
+  const id = typeof value === 'string' ? value : ref?.id ?? ref?.type;
+  if (!['cross-fade', 'crossfade', 'fade'].includes(String(id))) return null;
+  const frames = ref?.durationFrames ?? (ref?.duration === undefined ? 8 : finite(ref.duration, -1) * fps);
+  return typeof frames === 'number' && Number.isFinite(frames) && frames > 0 ? Math.round(frames) : null;
+}
 
 /** Trusted, closed dispatch. A caller cannot install or execute a disclosure callback. */
 export function boundaryReport(context: BoundaryContext): BoundaryDisclosure {
@@ -34,6 +42,25 @@ export function boundaryReport(context: BoundaryContext): BoundaryDisclosure {
   try {
     if (!Number.isFinite(fps) || fps <= 0 || !Number.isInteger(startFrame) || !Number.isInteger(endFrame) || endFrame <= startFrame) throw new Error('invalid visible span');
     if (params.disclosureVersion !== undefined && params.disclosureVersion !== DISCLOSURE_VERSION) report.opaque.push('unsupported disclosure version');
+    if (clip.elementRef !== undefined) report.opaque.push('unverified element reference timing');
+    // Animation references can be strings, lists, renderer id objects, or the
+    // editor's type/duration shape. Unknown timing stays visible as opacity.
+    for (const phase of ['entrance', 'exit'] as const) {
+      const raw = clip[phase];
+      if (raw === undefined) continue;
+      for (const entry of Array.isArray(raw) ? raw : [raw]) {
+        const ref = object(entry);
+        const id = typeof entry === 'string' ? entry : ref?.id ?? ref?.type;
+        const defaults: Record<string, number> = {fade: 12, 'fade-up': 18, 'scale-in': 18, 'slide-left': 18, 'slide-up': 12, 'type-on': 120};
+        const duration = ref?.durationFrames ?? (ref?.duration === undefined ? defaults[String(id)] : finite(ref.duration, -1) * fps);
+        if (duration === undefined || typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || !Object.prototype.hasOwnProperty.call(defaults, String(id))) {
+          report.opaque.push(`unsupported ${phase} timing`); continue;
+        }
+        if (duration > 0) cue(phase === 'entrance' ? 1 : Math.max(0, endFrame - origin - Math.round(duration) + 1), 'motion-start', phase);
+      }
+    }
+    if (clip.continuous !== undefined) report.opaque.push('unsupported continuous timing');
+    if (clip.transition !== undefined && transitionFrames(clip.transition, fps) === null) report.opaque.push('unsupported transition timing');
     if (type === 'end-spanning-layer') {
       const timing = endSpanningTiming(clip as {at: number}, params as TimingParams, fps);
       const [prep, iteration, anchors] = timing.frames as [number, number, number, number];
@@ -104,7 +131,7 @@ export function boundaryReport(context: BoundaryContext): BoundaryDisclosure {
       report.opaque.push('unknown effect timing');
     }
   } catch (error) {
-    report.cues = [];
+    // A failed source adapter must not erase already known entrance/motion.
     report.opaque.push(`failed disclosure: ${error instanceof Error ? error.message : String(error)}`);
   }
   report.cues.sort((a, b) => a.frame - b.frame || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
