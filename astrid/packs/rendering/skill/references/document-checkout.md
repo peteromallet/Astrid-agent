@@ -158,7 +158,10 @@ kind of edit it expresses and mirrors the module's `__all__` export list.
 
 - `clone_candidate(candidate)` — make a lossless editable copy of a checkout.
 - `add_track(container, ...)` — add a visual or audio track.
-- `add_shot(candidate, ...)` — add a shot with an internal timeline.
+- `add_shot(candidate, ...)` — add a shot to the separate list-shaped
+  candidate helper format (`candidate["shots"]` is a list). A checked-out
+  authoring bundle stores `shots` as a mapping; use `add_authoring_shot(...)`
+  for that shape instead.
 - `place_media(container, media, track=..., start=..., end=...)` — place a
   managed media selector on a track. Import the file first; never put a local
   filesystem path in the checkout.
@@ -172,8 +175,9 @@ kind of edit it expresses and mirrors the module's `__all__` export list.
 - `move(container, clip_id, track=..., start=..., end=...)` — move one clip.
 - `retime(clip, start=..., end=..., ripple="none")` — change one interval;
   the default leaves later placements where they are.
-- `retime_with_ripple(...)` — opt into an explicit ripple policy when later
-  placements should move with the changed duration.
+- `retime_with_ripple(...)` — opt into a narrow ripple on one visual track;
+  later clips on that same track move with the changed duration. Audio,
+  voice, music, other tracks, and parent occurrences are not moved.
 - `sequence(clips, start=..., durations=..., gap=...)` — lay out clips in
   order; `fit_duration(container, mode="extend")` updates the container to
   the resulting end.
@@ -182,7 +186,8 @@ kind of edit it expresses and mirrors the module's `__all__` export list.
 - `quantize_time(seconds, fps, policy=...)` and
   `quantize_interval(...)` — make frame rounding explicit at the boundary.
 
-For example, to move a clip and intentionally ripple everything after it:
+For example, to move a visual clip and intentionally ripple later clips on its
+same track:
 
 ```python
 from astrid.sdk.timeline_editing import retime_with_ripple

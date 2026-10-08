@@ -1008,7 +1008,7 @@ def test_timelines_show_defaults_to_readable_authored_rows(capsys) -> None:
     assert "visualize: python3 -m astrid timelines visualize" in output
     assert "controls: python3 -m astrid timelines visualize --help" in output
     assert "edit guide:" in output
-    assert "edit JSON: python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout" in output
+    assert "edit JSON (current head): python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout" in output
 
 
 def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() -> None:
@@ -1049,6 +1049,37 @@ def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() ->
     assert "--revision-id rev-42" in visual["commands"]["show"]
     assert "--frame FRAME" in visual["commands"]["exact_frame"]
     assert visual["editing"]["commands"]["check"].endswith("--file /tmp/timeline-edit.json")
+
+
+def test_visualization_human_navigation_footer_is_compact(capsys) -> None:
+    from astrid.packs.timeline.cli import _print_visualization_navigation
+
+    _print_visualization_navigation(
+        {
+            "navigation": {
+                "primary_page": "/tmp/page-001.png",
+                "inspection": "python3 -m astrid timelines inspect --manifest MANIFEST",
+                "commands": {
+                    "visualize": "python3 -m astrid timelines visualize --project demo",
+                    "show": "python3 -m astrid timelines show --project demo main",
+                    "controls": "python3 -m astrid timelines visualize --help",
+                    "exact_frame": "python3 -m astrid timelines visualize --frame FRAME",
+                },
+                "editing": {
+                    "guide": "/tmp/document-checkout.md",
+                    "commands": {
+                        "checkout": "python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout",
+                    },
+                },
+            }
+        }
+    )
+    output = capsys.readouterr().out
+    assert "show: python3 -m astrid timelines show" in output
+    assert "controls: python3 -m astrid timelines visualize --help" in output
+    assert "edit JSON (current head):" in output
+    assert "visualize: python3 -m astrid timelines visualize" not in output
+    assert "exact frame:" not in output
 
 
 def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, tmp_path) -> None:

@@ -664,10 +664,12 @@ def _human_motion_lines(clip: Mapping[str, Any], *, detail: bool = False) -> lis
     return lines
 
 
-def _append_navigation_footer(lines: list[str], navigation: Mapping[str, Any]) -> None:
+def _append_navigation_footer(
+    lines: list[str], navigation: Mapping[str, Any], *, include_visualize: bool = True,
+) -> None:
     """Keep sibling views, editing, and control help visible but compact."""
     commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
-    if commands.get("visualize"):
+    if include_visualize and commands.get("visualize"):
         lines.append(f"visualize: {commands['visualize']}")
     if commands.get("show"):
         lines.append(f"show: {commands['show']}")
@@ -678,7 +680,7 @@ def _append_navigation_footer(lines: list[str], navigation: Mapping[str, Any]) -
         lines.append(f"edit guide: {editing['guide']}")
     edit_commands = editing.get("commands") if isinstance(editing.get("commands"), Mapping) else {}
     if edit_commands.get("checkout"):
-        lines.append(f"edit JSON: {edit_commands['checkout']}")
+        lines.append(f"edit JSON (current head): {edit_commands['checkout']}")
 
 
 def _render_timeline_human(result: object) -> str:
@@ -1595,10 +1597,10 @@ def _print_visualization_navigation(outputs: Mapping[str, Any]) -> None:
     if status:
         print(f"  status: {status}")
     footer: list[str] = []
-    _append_navigation_footer(footer, navigation)
-    commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
-    if commands.get("exact_frame"):
-        footer.append(f"exact frame: {commands['exact_frame']}")
+    # The current command is already visible above. Keep the human footer to
+    # the sibling view, controls, and editing entry points; JSON retains the
+    # full rerun/exact-frame command catalog.
+    _append_navigation_footer(footer, navigation, include_visualize=False)
     for line in footer:
         print(f"  {line}")
 
