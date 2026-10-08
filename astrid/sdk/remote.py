@@ -928,10 +928,23 @@ class RemoteTimelines(_RemoteFamily):
                 clip.setdefault("track", clip.get("track_id"))
                 clips.append(clip)
                 if target:
-                    targets[-1]["kind"] = "clip"
-                    targets[-1]["clip_id"] = item.get("clip_id")
+                    # Keep the occurrence target as the stable parent address
+                    # and add one exact child target per clip. Mutating the
+                    # last target collapsed multi-child occurrences onto the
+                    # final child and made visualization navigation ambiguous.
+                    targets.append({
+                        "kind": "clip",
+                        "target_kind": "clip",
+                        "timeline_id": data.get("timeline_id"),
+                        "occurrence_id": oid,
+                        "shot_id": occurrence.get("shot_id"),
+                        "clip_id": item.get("clip_id"),
+                        "track_id": item.get("track_id"),
+                        "element_ref": item.get("element_ref"),
+                        "addressable": True,
+                    })
         selectors = data.get("selectors") if isinstance(data.get("selectors"), Mapping) else {}
-        return {
+        projection = {
             "kind": "timeline-inspection",
             "summary": {
                 "authority": "canonical_head",
@@ -953,6 +966,14 @@ class RemoteTimelines(_RemoteFamily):
             "native_inspection": dict(data),
             "scope": {"authority": "canonical_head", "project": str(project), "timeline": str(ref), "read_only": True},
         }
+        # Keep bounded paging/omission facts at the public inspection boundary
+        # as well as in the lossless native payload, so human and machine
+        # callers can state exactly what was returned without unpacking a
+        # transport-specific field.
+        for key in ("bounds", "page", "omission_metadata"):
+            if isinstance(data.get(key), Mapping):
+                projection[key] = dict(data[key])
+        return projection
     def open_composition(
         self,
         project,

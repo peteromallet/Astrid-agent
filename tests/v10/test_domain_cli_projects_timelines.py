@@ -174,11 +174,11 @@ class _RecordingTimelines:
             "query": {}, "targets": [], "clips": [],
         })
 
-    def visualize(self, project, ref, *, mode="auto", options=None, out=None):
+    def visualize(self, project, ref, *, mode="auto", options=None, revision_id=None, out=None):
         return self._owner.invoke_result(
             "rendering.timeline_visualize",
             kind="executor", project=project,
-            inputs=dict(options or {}), out=out, wait=True,
+            inputs={**dict(options or {}), **({"revision_id": revision_id} if revision_id else {})}, out=out, wait=True,
         )
 
     def save(
@@ -961,14 +961,144 @@ def test_remote_timelines_list_filters_archived_rows_and_preserves_cursor() -> N
 
 def test_timelines_show_is_one_sdk_call(capsys) -> None:
     client = _FakeClient()
-    rc = _run("timelines", ["show", "--project", "demo", "main"], client=client)
+    rc = _run("timelines", ["show", "--project", "demo", "main", "--json"], client=client)
     assert rc == 0
     assert client.calls == [("timelines.open_composition", {
         "project": "demo", "ref": "main", "limit": 50, "cursor": None,
         "clip": None, "occurrence": None, "shot": None, "track": [],
-        "asset": None, "range_value": None, "detail": False,
+        "asset": None, "range_value": None, "detail": False, "revision_id": None,
     })]
     assert json.loads(capsys.readouterr().out)["data"]["kind"] == "timeline-inspection"
+
+
+def test_timelines_show_defaults_to_readable_authored_rows(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection",
+                "summary": {"revision_id": "head-1"},
+                "scope": {"timeline": ref},
+                "query": {},
+                "clips": [{
+                    "occurrence_id": "occ-a", "clip_id": "clip-a", "track": "picture",
+                    "start": [41, 2], "duration": [16, 15], "asset": "terminal.png",
+                    "authored_fields": {"params": {"keyframes": [
+                        {"property": "zoom", "time": 0, "value": "1×"},
+                        {"property": "zoom", "time": 1.066667, "value": "2.21×"},
+                    ], "sourceSegments": [{"at": 0, "sourceStart": 0, "speed": 1}]},
+                    "effects": {"fade_in": 0.5}},
+                }],
+                "pagination": {},
+                "navigation": {"commands": {"visualize": "astrid timelines visualize --occurrence occ-a"}},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Authored timeline" in output
+    assert "20.5–21.566667" in output
+    assert "zoom 1× → 2.21×" in output
+    assert "opacity 0% → 100% (fade in)" in output
+    assert "source playback segments use a separate media clock" in output
+    assert "visualize: python3 -m astrid timelines visualize" in output
+
+
+def test_timelines_show_exposes_both_historical_zoom_intervals(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection",
+                "summary": {"revision_id": "fc2bbb4"},
+                "scope": {"timeline": ref},
+                "query": {},
+                "clips": [
+                    {"occurrence_id": "occ-terminal", "clip_id": "terminal", "asset": "terminal.png",
+                     "start": [41, 2], "duration": [16, 15],
+                     "authored_fields": {"params": {"keyframes": [
+                         {"property": "zoom", "time": 0, "value": "1×"},
+                         {"property": "zoom", "time": 1.066667, "value": "2.21×"},
+                     ]}}},
+                    {"occurrence_id": "occ-room", "clip_id": "room", "asset": "terminal-typing-canonical-mink.png",
+                     "start": [169, 5], "duration": [11, 10],
+                     "authored_fields": {"params": {"keyframes": [
+                         {"property": "zoom", "time": 0, "value": "1×"},
+                         {"property": "zoom", "time": 1.1, "value": "2.21×"},
+                     ]}}},
+                ],
+                "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "20.5–21.566667" in output
+    assert "33.8–34.9" in output
+    assert output.count("zoom 1× → 2.21×") == 2
+
+
+def test_timelines_show_human_output_reads_transform_keyframes(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "head-transform"},
+                "scope": {"timeline": ref}, "query": {},
+                "clips": [{
+                    "occurrence_id": "occ-transform", "clip_id": "transform", "start": [10, 1],
+                    "duration": [2, 1], "asset": "screen.png",
+                    "authored_fields": {"params": {"keyframes": [
+                        {"at": 0, "x": 0, "y": 0, "width": 1920, "height": 1080, "opacity": 1},
+                        {"at": 1, "x": 160, "y": 40, "width": 1280, "height": 720, "opacity": 0.8},
+                    ]}},
+                }],
+                "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "10–11 transform" in output
+    assert "x 0 → 160" in output
+    assert "opacity 1 → 0.8" in output
+
+
+def test_timelines_show_human_output_keeps_audio_detail_and_unknowns(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "head-2"},
+                "scope": {"timeline": ref}, "query": {"detail": True},
+                "clips": [
+                    {"occurrence_id": "occ-v", "clip_id": "visual", "track_id": "V1",
+                     "track": {"id": "V1", "opacity": 0.3, "blendMode": "screen"},
+                     "start": [0, 1], "duration": [2, 1], "asset": "room.png",
+                     "transition": {"id": "cross-fade"},
+                     "authored_fields": {"label": "room", "params": {"keyframes": []}},
+                     "source_object_id": "obj-1", "content_digest": "sha256:abc"},
+                    {"occurrence_id": "occ-a", "clip_id": "audio", "clip_type": "audio",
+                     "track": "A1", "start": [0, 1], "duration": [2, 1], "asset": "music.wav", "mute": True},
+                    {"occurrence_id": "occ-u", "clip_id": "opaque", "start": [2, 1], "duration": [1, 1],
+                     "asset": "opaque", "timing_unknown": True},
+                ],
+                "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Track V1 [opacity 30%, blend screen]" in output
+    assert "Audio" in output and "music.wav [muted]" in output
+    assert "[transition cross-fade; timing unresolved]" in output
+    assert "authored fields: label, params" in output
+    assert "identity:" in output and "obj-1" in output
+    assert "[motion timing unknown]" in output
 
 
 def test_timelines_show_allows_runtime_selected_scope(capsys) -> None:
@@ -994,7 +1124,7 @@ def test_timelines_show_summary_is_bounded_and_keeps_clip_timing(capsys) -> None
     class _Client:
         timelines = _Timelines()
 
-    rc = _run("timelines", ["show", "--summary", "--project", "demo", "main"], client=_Client())
+    rc = _run("timelines", ["show", "--summary", "--project", "demo", "main", "--json"], client=_Client())
     assert rc == 0
     summary = json.loads(capsys.readouterr().out)["data"]
     assert summary["kind"] == "timeline-inspection"

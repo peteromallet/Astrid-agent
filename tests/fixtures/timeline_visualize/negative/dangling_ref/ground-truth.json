@@ -44,7 +44,8 @@
       "durations": {
         "authored_visual_only_end_seconds": 0,
         "frame_quantized_visual_end": {"frames": 0, "seconds": 0},
-        "all_track_composition": {"frames": 1, "seconds": 0.041666666666666664}
+        "all_track_composition": {"frames": 1, "seconds": 0.041666666666666664},
+        "authored_all_track_composition": {"frames": 1, "seconds": 0.041666666666666664}
       },
       "tracks": [],
       "clips": [],

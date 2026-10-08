@@ -60,7 +60,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import DomainResult, print_result
+from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_human
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 
@@ -80,12 +80,16 @@ def _parse_json_object(value: str) -> dict[str, Any]:
     return parsed
 
 
-def _add_json_flag(subparser: argparse.ArgumentParser) -> None:
+def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) -> None:
     subparser.add_argument(
         "--json",
         action="store_true",
-        default=True,
-        help="Print the exact SDK envelope (ok/data/error/receipt/idempotency_key); default output.",
+        default=default,
+        help=(
+            "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key)."
+            if not default
+            else "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key); default output."
+        ),
     )
 
 
@@ -182,6 +186,338 @@ def _timeline_summary(item: Any) -> Any:
     return summary
 
 
+def _human_time(value: Any) -> str:
+    """Keep authored times readable without rounding away exact boundaries."""
+    if value is None:
+        return "?"
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            value = Fraction(int(value[0]), int(value[1]))
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    if isinstance(value, Fraction):
+        value = float(value)
+    if isinstance(value, float):
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+    text = str(value)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def _human_clip_interval(clip: Mapping[str, Any]) -> tuple[str, str]:
+    bounds = clip.get("time_bounds") if isinstance(clip.get("time_bounds"), Mapping) else {}
+    start = clip.get("at", clip.get("start", clip.get("start_time", clip.get("time", bounds.get("timeline_start")))))
+    end = clip.get("end", clip.get("end_time", bounds.get("timeline_end")))
+    if end is None:
+        duration = clip.get("duration", clip.get("hold", clip.get("duration_seconds")))
+        try:
+            if isinstance(start, (list, tuple)) and len(start) == 2:
+                start_value = Fraction(int(start[0]), int(start[1]))
+            else:
+                start_value = Fraction(str(start))
+            if isinstance(duration, (list, tuple)) and len(duration) == 2:
+                duration_value = Fraction(int(duration[0]), int(duration[1]))
+            else:
+                duration_value = Fraction(str(duration))
+            end = start_value + duration_value
+        except (TypeError, ValueError):
+            end = None
+    return _human_time(start), _human_time(end)
+
+
+def _fractional(value: Any) -> Fraction | None:
+    try:
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            return Fraction(int(value[0]), int(value[1]))
+        return Fraction(str(value))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _clip_bounds(clip: Mapping[str, Any]) -> tuple[Fraction | None, Fraction | None]:
+    bounds = clip.get("time_bounds") if isinstance(clip.get("time_bounds"), Mapping) else {}
+    start = _fractional(clip.get("start", clip.get("at", bounds.get("timeline_start"))))
+    end = _fractional(clip.get("end", bounds.get("timeline_end")))
+    if end is None and start is not None:
+        duration = _fractional(clip.get("duration", clip.get("hold")))
+        if duration is not None:
+            end = start + duration
+    return start, end
+
+
+def _human_clip_name(clip: Mapping[str, Any]) -> str:
+    source = clip.get("source")
+    candidates = [
+        clip.get("media_name"), clip.get("asset_name"), clip.get("name"),
+        clip.get("asset"), clip.get("asset_id"),
+        source.get("name") if isinstance(source, Mapping) else None,
+        source.get("key") if isinstance(source, Mapping) else source if isinstance(source, str) else None,
+    ]
+    return next((str(value) for value in candidates if value not in (None, "")), "(unnamed media)")
+
+
+def _human_clip_controls(clip: Mapping[str, Any]) -> list[str]:
+    controls: list[str] = []
+    authored = clip.get("authored_fields") if isinstance(clip.get("authored_fields"), Mapping) else {}
+    presentation = clip.get("presentation_fields") if isinstance(clip.get("presentation_fields"), Mapping) else {}
+    opacity = clip.get("opacity", presentation.get("opacity", authored.get("opacity")))
+    if isinstance(opacity, (int, float)) and opacity != 1 and opacity != 100:
+        controls.append(f"opacity {opacity * 100:g}%" if 0 <= opacity <= 1 else f"opacity {opacity:g}%")
+    speed = clip.get("speed", clip.get("playback_rate"))
+    if isinstance(speed, (list, tuple)) and len(speed) == 2:
+        try:
+            speed = float(Fraction(int(speed[0]), int(speed[1])))
+        except (TypeError, ValueError, ZeroDivisionError):
+            speed = None
+    if isinstance(speed, (int, float)) and speed != 1:
+        controls.append(f"speed {speed:g}×")
+    blend = clip.get("blend", clip.get("blend_mode"))
+    if blend not in (None, "", "normal"):
+        controls.append(f"blend {blend}")
+    if clip.get("muted") is True or clip.get("mute") is True:
+        controls.append("muted")
+    gain = clip.get("gain", clip.get("volume"))
+    if isinstance(gain, (int, float)) and gain not in (0, 1):
+        controls.append(f"gain {gain:g}")
+    if clip.get("timing_unknown") is True:
+        controls.append("motion timing unknown")
+    return controls
+
+
+def _human_track_controls(track: Mapping[str, Any]) -> list[str]:
+    controls: list[str] = []
+    opacity = track.get("opacity")
+    if isinstance(opacity, (int, float)) and opacity not in (1, 100):
+        controls.append(f"opacity {opacity * 100:g}%" if 0 <= opacity <= 1 else f"opacity {opacity:g}%")
+    blend = track.get("blend", track.get("blend_mode", track.get("blendMode")))
+    if blend not in (None, "", "normal"):
+        controls.append(f"blend {blend}")
+    if track.get("muted") is True or track.get("mute") is True:
+        controls.append("muted")
+    volume = track.get("volume", track.get("gain"))
+    if isinstance(volume, (int, float)) and volume not in (0, 1):
+        controls.append(f"gain {volume:g}")
+    return controls
+
+
+def _human_motion_lines(clip: Mapping[str, Any]) -> list[str]:
+    """Summarize only explicit, simple keyframe changes; retain unknown clocks."""
+    if clip.get("timing_unknown") is True:
+        return ["[motion timing unknown]"]
+    raw = clip.get("keyframes")
+    authored = clip.get("authored_fields") if isinstance(clip.get("authored_fields"), Mapping) else {}
+    presentation = clip.get("presentation_fields") if isinstance(clip.get("presentation_fields"), Mapping) else {}
+    if raw is None:
+        raw = presentation.get("keyframes")
+    if raw is None:
+        raw = authored.get("keyframes")
+    if raw is None and isinstance(authored.get("presentation_fields"), Mapping):
+        raw = authored["presentation_fields"].get("keyframes")
+    if raw is None:
+        for alias in ("parameters", "params", "props"):
+            nested = authored.get(alias)
+            if isinstance(nested, Mapping) and "keyframes" in nested:
+                raw = nested["keyframes"]
+                break
+    if raw is None and isinstance(clip.get("parameters"), Mapping):
+        raw = clip["parameters"].get("keyframes")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    # The canonical animated-media-transform element stores one rectangle per
+    # keyframe (`at`, `x`, `y`, `width`, `height`, `opacity`) rather than one
+    # row per property. Keep that authored shape legible too; dropping it here
+    # would make the very zoom/pan clocks the command is meant to explain
+    # disappear from the default view.
+    transform_rows = [item for item in raw if isinstance(item, Mapping)]
+    if transform_rows and not any(
+        item.get("property", item.get("name", item.get("field"))) not in (None, "")
+        for item in transform_rows
+    ) and len(transform_rows) >= 2:
+        def _motion_time(item: Mapping[str, Any]) -> Any:
+            return item.get("time", item.get("at", item.get("t")))
+
+        clip_start = clip.get("start")
+        try:
+            clip_start_value = (
+                Fraction(int(clip_start[0]), int(clip_start[1]))
+                if isinstance(clip_start, (list, tuple))
+                else Fraction(str(clip_start or 0))
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            clip_start_value = Fraction(0)
+        try:
+            first_time = _motion_time(transform_rows[0])
+            last_time = _motion_time(transform_rows[-1])
+            first_time_value = clip_start_value + (
+                Fraction(int(first_time[0]), int(first_time[1]))
+                if isinstance(first_time, (list, tuple))
+                else Fraction(str(first_time))
+            )
+            last_time_value = clip_start_value + (
+                Fraction(int(last_time[0]), int(last_time[1]))
+                if isinstance(last_time, (list, tuple))
+                else Fraction(str(last_time))
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            first_time_value = _motion_time(transform_rows[0])
+            last_time_value = _motion_time(transform_rows[-1])
+        changes: list[str] = []
+        for field in ("x", "y", "width", "height", "opacity"):
+            before = transform_rows[0].get(field)
+            after = transform_rows[-1].get(field)
+            if before is None or after is None or before == after:
+                continue
+            changes.append(f"{field} {before:g} → {after:g}" if isinstance(before, (int, float)) and isinstance(after, (int, float)) else f"{field} {before} → {after}")
+        if changes:
+            lines = [f"{_human_time(first_time_value)}–{_human_time(last_time_value)} transform " + "; ".join(changes)]
+        else:
+            lines = []
+    else:
+        lines = []
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        prop = item.get("property", item.get("name", item.get("field")))
+        if prop in (None, ""):
+            continue
+        grouped.setdefault(str(prop), []).append(item)
+    for prop, items in grouped.items():
+        if len(items) < 2:
+            continue
+        first, last = items[0], items[-1]
+        start = first.get("time", first.get("at", first.get("t")))
+        end = last.get("time", last.get("at", last.get("t")))
+        clip_start = clip.get("start")
+        try:
+            clip_start = Fraction(int(clip_start[0]), int(clip_start[1])) if isinstance(clip_start, (list, tuple)) else Fraction(str(clip_start or 0))
+            start = clip_start + (Fraction(int(start[0]), int(start[1])) if isinstance(start, (list, tuple)) else Fraction(str(start)))
+            end = clip_start + (Fraction(int(end[0]), int(end[1])) if isinstance(end, (list, tuple)) else Fraction(str(end)))
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+        before = first.get("value")
+        after = last.get("value")
+        if before == after:
+            continue
+        lines.append(f"{_human_time(start)}–{_human_time(end)} {prop} {before} → {after}")
+    authored_effects = authored.get("effects") if isinstance(authored.get("effects"), Mapping) else None
+    effects = clip.get("effects") if isinstance(clip.get("effects"), Mapping) else authored_effects
+    if effects is None:
+        for alias in ("parameters", "params", "props"):
+            nested = authored.get(alias)
+            if isinstance(nested, Mapping) and isinstance(nested.get("effects"), Mapping):
+                effects = nested["effects"]
+                break
+    clip_start, clip_end = _clip_bounds(clip)
+    if isinstance(effects, Mapping) and clip_start is not None and clip_end is not None:
+        for key, before, after, origin in (
+            ("fade_in", "0%", "100%", clip_start),
+            ("fade_out", "100%", "0%", clip_end),
+        ):
+            duration = _fractional(effects.get(key))
+            if duration is None or duration <= 0:
+                continue
+            interval_start = origin if key == "fade_in" else max(clip_start, clip_end - duration)
+            interval_end = min(clip_end, clip_start + duration) if key == "fade_in" else clip_end
+            lines.append(f"{_human_time(interval_start)}–{_human_time(interval_end)} opacity {before} → {after} ({key.replace('_', ' ')})")
+    transition = clip.get("transition")
+    if transition is None and isinstance(authored.get("transition"), Mapping):
+        transition = authored["transition"]
+    if isinstance(transition, Mapping):
+        transition_id = transition.get("id", transition.get("type", "transition"))
+        resolved = clip.get("transition_interval")
+        if isinstance(resolved, Mapping) and resolved.get("start") is not None and resolved.get("end") is not None:
+            lines.append(f"{_human_time(resolved['start'])}–{_human_time(resolved['end'])} transition {transition_id}")
+        else:
+            lines.append(f"[transition {transition_id}; timing unresolved]")
+    source_segments = clip.get("sourceSegments") or clip.get("source_segments")
+    if source_segments is None:
+        source_segments = authored.get("sourceSegments") or authored.get("source_segments")
+    if source_segments is None:
+        for alias in ("parameters", "params", "props"):
+            nested = authored.get(alias)
+            if isinstance(nested, Mapping):
+                source_segments = nested.get("sourceSegments") or nested.get("source_segments")
+                if source_segments:
+                    break
+    if source_segments:
+        lines.append("[source playback segments use a separate media clock]")
+    return lines
+
+
+def _render_timeline_human(result: object) -> str:
+    """Render a compact, addressable authored timeline for human inspection."""
+    envelope = envelope_dict(result)
+    if not envelope["ok"]:
+        return render_human(result)
+    data = envelope.get("data")
+    if not isinstance(data, Mapping):
+        return render_human(result)
+    summary = data.get("summary") if isinstance(data.get("summary"), Mapping) else {}
+    query = data.get("query") if isinstance(data.get("query"), Mapping) else {}
+    scope = data.get("scope") if isinstance(data.get("scope"), Mapping) else {}
+    lines = [
+        f"Timeline {scope.get('timeline') or scope.get('timeline_id') or 'current'}",
+        f"  revision: {summary.get('revision_id') or 'unknown'} · Authored timeline",
+    ]
+    filters = [f"{key}={query[key]}" for key in ("range", "occurrence", "shot", "clip", "track", "asset") if query.get(key) not in (None, "", [])]
+    if filters:
+        lines.append("  scope: " + ", ".join(filters))
+    lines.append("Visual layers, top to bottom")
+    if not data.get("layer_order"):
+        lines.append("  (layer order unavailable; authored order retained)")
+    clips = [item for item in data.get("clips", []) if isinstance(item, Mapping)]
+    track_rows: dict[str, Mapping[str, Any]] = {}
+    for clip in clips:
+        track = clip.get("track")
+        if isinstance(track, Mapping):
+            track_id = str(clip.get("track_id") or track.get("id") or "track")
+            track_rows.setdefault(track_id, track)
+    for track_id, track in track_rows.items():
+        controls = _human_track_controls(track)
+        if controls:
+            lines.append(f"  Track {track_id} [{', '.join(controls)}]")
+    audio = [clip for clip in clips if str(clip.get("kind", clip.get("clip_type", clip.get("track", "")))).lower() in {"audio", "sound", "music"}]
+    visual_clips = [clip for clip in clips if clip not in audio]
+    if not visual_clips:
+        lines.append("  (no clip occurrences in this page)")
+    else:
+        for index, clip in enumerate(visual_clips, 1):
+            start, end = _human_clip_interval(clip)
+            identity = "/".join(str(value) for value in (clip.get("occurrence_id"), clip.get("clip_id")) if value not in (None, ""))
+            label = f" · {identity}" if identity else ""
+            controls = _human_clip_controls(clip)
+            suffix = f"  [{', '.join(controls)}]" if controls else ""
+            lines.append(f"  {index}. {start}–{end}  {_human_clip_name(clip)}{label}{suffix}")
+            for change in _human_motion_lines(clip):
+                lines.append(f"       {change}")
+            if query.get("detail") is True:
+                authored = clip.get("authored_fields")
+                if isinstance(authored, Mapping):
+                    lines.append("       authored fields: " + ", ".join(sorted(str(key) for key in authored)))
+                exact = {key: clip.get(key) for key in ("source_object_id", "content_digest", "asset_id", "element_ref") if clip.get(key) not in (None, "")}
+                if exact:
+                    lines.append("       identity: " + json.dumps(exact, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    if audio:
+        lines.append("Audio")
+        lines.extend(f"  {_human_clip_name(clip)} [{', '.join(_human_clip_controls(clip)) or 'authored'}]" for clip in audio)
+    native = data.get("native_inspection") if isinstance(data.get("native_inspection"), Mapping) else {}
+    pagination = data.get("pagination") if isinstance(data.get("pagination"), Mapping) else {}
+    if not pagination and isinstance(native.get("next_cursor"), str):
+        pagination = {"next_cursor": native.get("next_cursor")}
+    page = data.get("page") if isinstance(data.get("page"), Mapping) else native.get("page") if isinstance(native.get("page"), Mapping) else {}
+    if page.get("returned_clips") is not None:
+        lines.append(f"page: returned {page['returned_clips']} of {page.get('total_selected_clips', page['returned_clips'])} selected clips")
+    if pagination.get("next_cursor"):
+        lines.append(f"  page: more results available (cursor {pagination['next_cursor']})")
+    navigation = data.get("navigation") if isinstance(data.get("navigation"), Mapping) else {}
+    commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
+    if commands.get("visualize"):
+        lines.append(f"visualize: {commands['visualize']}")
+    return "\n".join(lines)
+
+
 def _cmd_show(parsed: argparse.Namespace) -> int:
     """Print the Runtime-owned canonical current-head inspection.
 
@@ -237,7 +573,7 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
             receipt=result.receipt,
             idempotency_key=result.idempotency_key,
         )
-    return print_result(result, as_json=parsed.json)
+    return print_result(result, as_json=parsed.json, human_renderer=_render_timeline_human)
 
 
 def _revision_from_outputs(outputs: Mapping[str, Any]) -> str | None:
@@ -1056,7 +1392,9 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--cursor", default=None, help="Continue a bounded inspection page from its cursor.")
     subparser.add_argument("--revision-id", default=None, help="Inspect an exact immutable timeline revision.")
     subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
-    _add_json_flag(subparser)
+    # ``show`` is the human inspection route by default. Machine callers use
+    # the explicit stable envelope switch and keep the SDK shape unchanged.
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_show)
 
 
