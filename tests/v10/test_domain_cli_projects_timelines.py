@@ -1218,7 +1218,7 @@ def test_timelines_show_human_output_keeps_audio_detail_and_unknowns(capsys) -> 
 
     assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
     output = capsys.readouterr().out
-    assert "Track V1 [opacity 30%, blend screen]" in output
+    assert "Track V1 [authored track controls: opacity 30%, blend screen]" in output
     assert "Audio" in output and "0–2  music.wav · occ-a/audio [muted]" in output
     assert "[transition cross-fade; timing unresolved: producer unavailable]" in output
     assert 'authored label: "room"' in output
@@ -1284,8 +1284,8 @@ def test_timelines_show_groups_exact_scoped_tracks_and_keeps_addressable_audio(c
     assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
     output = capsys.readouterr().out
     assert "Visual layers (order unavailable; grouped by exact scoped track)" in output
-    assert "Track shared (internal_timeline/child-a) [opacity 30%, blend screen, gain 0]" in output
-    assert "Track shared (internal_timeline/child-b) [muted]" in output
+    assert "Track shared (internal_timeline/child-a) [authored track controls: opacity 30%, blend screen, gain 0]" in output
+    assert "Track shared (internal_timeline/child-b) [authored track controls: muted]" in output
     assert output.index("1. 1–2  room.png · occ-a-early/visual-early") < output.index("2. 3–4  room.png · occ-a-late/visual-late")
     assert "occurrences occ-a-late, occ-a-early [opacity 50%, muted]" in output
     assert "Audio (separate tracks; order unavailable unless projected)" in output
@@ -1296,6 +1296,103 @@ def test_timelines_show_groups_exact_scoped_tracks_and_keeps_addressable_audio(c
     assert '"asset_id":"black_frame"' in output
     assert '"source_object_id":"obj-room"' in output
     assert "saved revision (not current head)" in output
+
+
+@pytest.mark.parametrize(
+    ("clip", "expect_audio"),
+    [
+        (
+            {
+                "occurrence_id": "occ-visual-audio",
+                "clip_id": "child-visual",
+                "clip_type": "media",
+                "track_ref": {"scope": "internal_timeline", "scope_id": "child-a", "track_id": "shared"},
+                "track": {"id": "shared", "kind": "visual", "opacity": 0.5, "blendMode": "multiply"},
+                "start": [0, 1], "duration": [2, 1], "media_name": "room.png",
+                "compositor_dispatch": {
+                    "status": "resolved", "fade_contract": "audio_params", "control_contract": "audio_track",
+                    "track": {"id": "outer-audio", "kind": "audio", "muted": True, "volume": 0.4},
+                    "controls": {"base_gain": 0},
+                },
+                "timed_changes": [{"kind": "fade_in", "property": "gain multiplier", "start": [0, 1],
+                                   "end": [1, 2], "before": 0, "after": 1}],
+            },
+            True,
+        ),
+        (
+            {
+                "occurrence_id": "occ-audio-visual",
+                "clip_id": "child-audio",
+                "clip_type": "audio",
+                "track_ref": {"scope": "internal_timeline", "scope_id": "child-b", "track_id": "shared"},
+                "track": {"id": "shared", "kind": "audio", "muted": True, "volume": 0.1},
+                "volume": 0.5,
+                "start": [0, 1], "duration": [2, 1], "media_name": "room.wav",
+                "compositor_dispatch": {
+                    "status": "resolved", "fade_contract": "visual_effects", "control_contract": "visual_media",
+                    "track": {"id": "outer-visual", "kind": "visual", "opacity": 0.3, "blendMode": "screen"},
+                    "controls": {"base_gain": 0.2, "track_opacity_multiplier": 0.3,
+                                 "clip_opacity_multiplier": 0.6},
+                },
+                "timed_changes": [{"kind": "fade_in", "property": "opacity multiplier", "start": [0, 1],
+                                   "end": [1, 2], "before": 0, "after": 1}],
+            },
+            False,
+        ),
+    ],
+)
+def test_timelines_show_uses_compositor_dispatch_for_human_classification_and_controls(
+    capsys, clip, expect_audio
+) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": [clip], "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    audio_section = "Audio (separate tracks; order unavailable unless projected)"
+    assert (audio_section in output) is expect_audio
+    if clip["clip_id"] == "child-visual":
+        assert output.index(audio_section) < output.index("Track shared (internal_timeline/child-a)")
+        assert "Track shared (internal_timeline/child-a) [authored track controls: opacity 50%, blend multiply]" in output
+        assert "compositor dispatch: audio track outer-audio [muted, parent volume 0.4, effective base gain 0]" in output
+        assert "gain multiplier 0% → 100%" in output
+    else:
+        assert "Track shared (internal_timeline/child-b) [authored track controls: muted, gain 0.1]" in output
+        assert "room.wav · occ-audio-visual/child-audio [authored gain 0.5]" in output
+        assert "compositor dispatch: visual track outer-visual [effective track opacity 30%, effective clip opacity 60%, blend screen]" in output
+        assert "opacity multiplier 0% → 100%" in output
+        assert "gain multiplier" not in output
+
+
+def test_timelines_show_names_unresolved_compositor_dispatch(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-unknown"},
+                "scope": {"timeline": ref}, "query": {}, "clips": [{
+                    "occurrence_id": "occ-unknown", "clip_id": "clip-unknown", "clip_type": "audio",
+                    "track": {"id": "child-audio", "kind": "audio"},
+                    "track_ref": {"scope": "internal_timeline", "scope_id": "child", "track_id": "child-audio"},
+                    "start": [0, 1], "duration": [1, 1], "media_name": "unknown.wav",
+                    "compositor_dispatch": {"status": "unknown", "reason": "dispatch track ambiguous"},
+                    "timed_changes": [],
+                }], "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Audio (separate tracks; order unavailable unless projected)" in output
+    assert "[compositor dispatch unknown: dispatch track ambiguous]" in output
 
 
 def test_timelines_show_omission_notice_names_exact_pinned_target_and_limit(capsys) -> None:

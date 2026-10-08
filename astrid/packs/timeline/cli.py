@@ -267,11 +267,13 @@ def _human_clip_name(clip: Mapping[str, Any]) -> str:
 
 def _human_clip_controls(clip: Mapping[str, Any]) -> list[str]:
     controls: list[str] = []
+    dispatch = clip.get("compositor_dispatch")
+    authored_prefix = "authored " if isinstance(dispatch, Mapping) and dispatch.get("status") == "resolved" else ""
     authored = clip.get("authored_fields") if isinstance(clip.get("authored_fields"), Mapping) else {}
     presentation = clip.get("presentation_fields") if isinstance(clip.get("presentation_fields"), Mapping) else {}
     opacity = clip.get("opacity", presentation.get("opacity", authored.get("opacity")))
     if isinstance(opacity, (int, float)) and opacity != 1 and opacity != 100:
-        controls.append(f"opacity {opacity * 100:g}%" if 0 <= opacity <= 1 else f"opacity {opacity:g}%")
+        controls.append(authored_prefix + (f"opacity {opacity * 100:g}%" if 0 <= opacity <= 1 else f"opacity {opacity:g}%"))
     speed = clip.get("speed", clip.get("playback_rate"))
     if isinstance(speed, (list, tuple)) and len(speed) == 2:
         try:
@@ -279,15 +281,15 @@ def _human_clip_controls(clip: Mapping[str, Any]) -> list[str]:
         except (TypeError, ValueError, ZeroDivisionError):
             speed = None
     if isinstance(speed, (int, float)) and speed != 1:
-        controls.append(f"speed {speed:g}×")
+        controls.append(f"{authored_prefix}speed {speed:g}×")
     blend = clip.get("blend", clip.get("blend_mode"))
     if blend not in (None, "", "normal"):
-        controls.append(f"blend {blend}")
+        controls.append(f"{authored_prefix}blend {blend}")
     if clip.get("muted") is True or clip.get("mute") is True:
-        controls.append("muted")
+        controls.append(f"{authored_prefix}muted")
     gain = clip.get("gain", clip.get("volume"))
     if isinstance(gain, (int, float)) and gain != 1:
-        controls.append(f"gain {gain:g}")
+        controls.append(f"{authored_prefix}gain {gain:g}")
     if clip.get("timing_unknown") is True:
         controls.append("motion timing unknown")
     return controls
@@ -310,7 +312,13 @@ def _human_track_controls(track: Mapping[str, Any]) -> list[str]:
 
 
 def _human_is_audio_clip(clip: Mapping[str, Any]) -> bool:
-    """Classify audio from any non-empty clip, media, or scoped-track kind."""
+    """Prefer the resolved compositor target, falling back to authored facts."""
+    dispatch = clip.get("compositor_dispatch")
+    if isinstance(dispatch, Mapping) and dispatch.get("status") == "resolved":
+        dispatched_track = dispatch.get("track")
+        dispatched_kind = dispatched_track.get("kind") if isinstance(dispatched_track, Mapping) else None
+        if dispatched_kind in {"audio", "visual"}:
+            return dispatched_kind == "audio"
     track = clip.get("track")
     candidates = (
         clip.get("kind"), clip.get("media_type"), clip.get("clip_type"),
@@ -324,6 +332,50 @@ def _human_is_audio_clip(clip: Mapping[str, Any]) -> bool:
         if kind in {"audio", "sound", "music"} or kind.startswith("audio/"):
             return True
     return False
+
+
+def _human_dispatch_lines(clip: Mapping[str, Any]) -> list[str]:
+    """Describe effective compositor controls without replacing authored tracks."""
+    dispatch = clip.get("compositor_dispatch")
+    if not isinstance(dispatch, Mapping):
+        return []
+    if dispatch.get("status") != "resolved":
+        reason = dispatch.get("reason") or "compositor dispatch could not be resolved"
+        return [f"         [compositor dispatch unknown: {reason}]"]
+
+    track = dispatch.get("track") if isinstance(dispatch.get("track"), Mapping) else {}
+    controls = dispatch.get("controls") if isinstance(dispatch.get("controls"), Mapping) else {}
+    kind = track.get("kind")
+    track_id = track.get("id") or "unknown"
+    effective: list[str] = []
+    if kind == "audio":
+        if track.get("muted") is True or track.get("mute") is True:
+            effective.append("muted")
+        parent_volume = track.get("volume", track.get("gain"))
+        if isinstance(parent_volume, (int, float)) and parent_volume != 1:
+            effective.append(f"parent volume {parent_volume:g}")
+        base_gain = controls.get("base_gain")
+        if isinstance(base_gain, (int, float)):
+            effective.append(f"effective base gain {base_gain:g}")
+    elif kind == "visual":
+        track_opacity = controls.get("track_opacity_multiplier")
+        if isinstance(track_opacity, (int, float)) and track_opacity != 1:
+            effective.append(
+                f"effective track opacity {track_opacity * 100:g}%"
+                if 0 <= track_opacity <= 1 else f"effective track opacity {track_opacity:g}%"
+            )
+        clip_opacity = controls.get("clip_opacity_multiplier")
+        if isinstance(clip_opacity, (int, float)) and clip_opacity != 1:
+            effective.append(
+                f"effective clip opacity {clip_opacity * 100:g}%"
+                if 0 <= clip_opacity <= 1 else f"effective clip opacity {clip_opacity:g}%"
+            )
+        blend = track.get("blend", track.get("blend_mode", track.get("blendMode")))
+        if blend not in (None, "", "normal"):
+            effective.append(f"blend {blend}")
+    if effective:
+        return [f"         compositor dispatch: {kind or 'unknown'} track {track_id} [{', '.join(effective)}]"]
+    return [f"         compositor dispatch: {kind or 'unknown'} track {track_id}"]
 
 
 def _human_track_identity(clip: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -572,7 +624,7 @@ def _render_timeline_human(result: object) -> str:
             if isinstance(track_label, str) and track_label.strip():
                 heading += f" · {track_label}"
             controls = _human_track_controls(track) if isinstance(track, Mapping) else []
-            suffix = f" [{', '.join(controls)}]" if controls else ""
+            suffix = f" [authored track controls: {', '.join(controls)}]" if controls else ""
             lines.append(f"  {heading}{suffix}")
             if isinstance(track, Mapping):
                 lines.extend(_human_omission_lines(
@@ -593,6 +645,7 @@ def _render_timeline_human(result: object) -> str:
                 controls = _human_clip_controls(clip)
                 suffix = f" [{', '.join(controls)}]" if controls else ""
                 lines.append(f"    {display_index}. {start}–{end}  {_human_clip_name(clip)}{label}{suffix}")
+                lines.extend(_human_dispatch_lines(clip))
                 for change in _human_motion_lines(clip, detail=query.get("detail") is True):
                     lines.append(f"         {change}")
                 occurrence = occurrence_lookup.get(str(clip.get("occurrence_id"))) if clip.get("occurrence_id") is not None else None
