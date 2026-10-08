@@ -11,6 +11,29 @@ export type SeamIntent = {
   participants: string[]; context: Json;
 };
 
+/** A pause grants exactly one picture-lane interval, never adjacent gaps. */
+export type VisualPause = {kind: 'pause'; track: string; startFrame: number; endFrame: number};
+export function pauseCovers(gaps: unknown, track: string, startFrame: number, endFrame: number): boolean {
+  return endFrame > startFrame && Array.isArray(gaps) && gaps.some(p => p && p.kind === 'pause'
+    && p.track === track && p.startFrame === startFrame && p.endFrame === endFrame
+    && Number.isInteger(p.startFrame) && Number.isInteger(p.endFrame));
+}
+
+/** Actual boundary owners plus nearby cue contributors; spanning pictures
+ * without cues are unrelated to this acknowledgement. */
+export function relevantIntentOwners(owners: readonly IntentOwner[], boundaryOwners: readonly IntentOwner[], cues: readonly BoundaryCue[]): IntentOwner[] {
+  const paths = new Set([...boundaryOwners.map(o => JSON.stringify(o.path)), ...cues.map(c => JSON.stringify(c.path))]);
+  return owners.filter(o => paths.has(JSON.stringify(o.path)));
+}
+
+/** Auxiliary visibility starts at the owner span even when its clock is opaque.
+ * Primary picture ownership is already represented by the editorial cut. */
+export function opaqueActivationCues(owners: readonly (IntentOwner & {primary: boolean; disclosure: {opaque: readonly string[]}})[], frames: ReadonlySet<number>): BoundaryCue[] {
+  return owners.filter(o => !o.primary && o.disclosure.opaque.length > 0
+    && [-2, -1, 0, 1, 2].some(delta => frames.has(o.startFrame + delta)))
+    .map(o => ({frame: o.startFrame, kind: 'activation', id: 'owner-activation', path: o.path}));
+}
+
 /** Owner IDs are local to the admitted timeline; transport/project prefixes
  * and flattened occurrence clip IDs do not change their identity. */
 export function intentPath(path: readonly string[]): string[] {
@@ -39,7 +62,14 @@ export function intentContext(fps: number, frame: number, owners: readonly Inten
     const path = intentPath(owner.path);
     const metadata: Json = {clipType: clip.clipType ?? clip.clip_type ?? 'media', track: clip.track ?? 'video',
       from: clip.from ?? 0, speed: clip.speed ?? 1};
-    for (const key of FIELDS) if (clip[key] !== undefined) metadata[key] = clean(clip[key]);
+    for (const key of FIELDS) {
+      const value = clip[key];
+      // Projection can attach an empty local-effect container when only
+      // timeline effects were authored. It is the same optional data as absence.
+      if (value === undefined || key === 'effects' && value !== null && typeof value === 'object'
+        && Object.keys(value).length === 0) continue;
+      metadata[key] = clean(value);
+    }
     byPath.set(JSON.stringify(path), {path, span: [owner.startFrame, owner.endFrame, owner.originFrame],
       source: owner.source, clip: metadata});
   }

@@ -62,3 +62,16 @@ test('portable context binds authored timing and ignores derived reports', () =>
   assert.ok(!sameContext(context, intentContext(24, 30, [owner])));
   assert.equal(cueIdentity({path: owner.path, frame: 31, kind: 'motion-start', id: 'entrance'}), '[["clip","a"],"motion-start","entrance",31]');
 });
+
+test('optional empty effects canonicalize to absence while real effects remain bound', () => {
+  const owner = {path: ['parent', 't', 'clip', 'b'], startFrame: 30, endFrame: 60, originFrame: 30,
+    clip: {clipType: 'media', track: 'v'}, source: null};
+  const absent = intentContext(30, 30, [owner]);
+  for (const effects of [[], {}]) {
+    assert.deepEqual(intentContext(30, 30, [{...owner, clip: {...owner.clip, effects}}]), absent);
+  }
+  const effects = [{id: 'real', type: 'crop', params: {left: 4}}];
+  const real = intentContext(30, 30, [{...owner, clip: {...owner.clip, effects}}]);
+  assert.deepEqual(real.owners[0].clip.effects, effects);
+  assert.notDeepEqual(real, absent);
+});

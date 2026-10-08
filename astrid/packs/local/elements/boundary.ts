@@ -60,6 +60,7 @@ export function boundaryReport(context: BoundaryContext): BoundaryDisclosure {
       }
     }
     if (clip.continuous !== undefined) report.opaque.push('unsupported continuous timing');
+    if (clip.children !== undefined || path.includes('effect') && clip.effects !== undefined) report.opaque.push('unsupported nested effect timing');
     if (clip.transition !== undefined && transitionFrames(clip.transition, fps) === null) report.opaque.push('unsupported transition timing');
     if (type === 'end-spanning-layer') {
       const timing = endSpanningTiming(clip as {at: number}, params as TimingParams, fps);
