@@ -30,5 +30,5 @@ If the compiler is available elsewhere, set `TS_COMPILER` to its
 TypeScript compiler installed; the JSON remains independently parseable with:
 
 ```sh
-node -e 'const f=JSON.parse(require("node:fs").readFileSync("tests/fixtures/visual-boundary-v1.json","utf8")); if(f.version!==1||!f.vectors.length) process.exit(1); console.log(`${f.vectors.length} visual boundary vectors`)' 
+node -e 'const f=JSON.parse(require("node:fs").readFileSync("tests/fixtures/visual-boundary-v1.json","utf8")); if(f.version!==1||!f.vectors.length) process.exit(1); console.log(`${f.vectors.length} visual boundary vectors`)'
 ```
