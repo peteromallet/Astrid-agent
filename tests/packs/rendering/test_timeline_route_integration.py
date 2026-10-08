@@ -78,7 +78,7 @@ def test_show_and_visualize_preserve_one_normalized_occurrence_target(capsys) ->
     parser = build_parser(client)
 
     show_args = parser.parse_args(
-        ["show", "--project", "demo", "main", "--summary", "--occurrence", "occ-b"]
+        ["show", "--project", "demo", "main", "--summary", "--occurrence", "occ-b", "--json"]
     )
     assert _cmd_show(show_args) == 0
     shown = json.loads(capsys.readouterr().out)["data"]
@@ -113,7 +113,7 @@ def test_show_visualize_round_trip_keeps_saved_revision_after_newer_head(capsys)
     parser = build_parser(client)
 
     show_args = parser.parse_args(
-        ["show", "--project", "demo", "main", "--revision-id", "saved-revision", "--range", "2..4"]
+        ["show", "--project", "demo", "main", "--revision-id", "saved-revision", "--range", "2..4", "--json"]
     )
     assert _cmd_show(show_args) == 0
     shown = json.loads(capsys.readouterr().out)["data"]
@@ -162,7 +162,7 @@ def test_visualize_show_navigation_reads_fps_from_frame_index(tmp_path) -> None:
 def test_plain_show_returns_the_canonical_inspection_shape(capsys) -> None:
     client = _Client()
     parser = build_parser(client)
-    args = parser.parse_args(["show", "--project", "demo", "main"])
+    args = parser.parse_args(["show", "--project", "demo", "main", "--json"])
     assert _cmd_show(args) == 0
     shown = json.loads(capsys.readouterr().out)["data"]
     assert shown["kind"] == "timeline-inspection"
@@ -185,7 +185,7 @@ def test_show_prefers_shared_open_composition_adapter_when_available(capsys) -> 
 
     client = OpenClient()
     parser = build_parser(client)
-    args = parser.parse_args(["show", "--project", "demo", "main", "--summary", "--occurrence", "occ-b"])
+    args = parser.parse_args(["show", "--project", "demo", "main", "--summary", "--occurrence", "occ-b", "--json"])
     assert _cmd_show(args) == 0
     assert client.opened[0:2] == ("demo", "main")
     assert client.opened[2]["occurrence"] == "occ-b"
@@ -200,7 +200,7 @@ def test_show_fails_closed_without_canonical_adapter(capsys) -> None:
             )
 
     parser = build_parser(LegacyOnly())
-    args = parser.parse_args(["show", "--project", "demo", "main"])
+    args = parser.parse_args(["show", "--project", "demo", "main", "--json"])
     assert _cmd_show(args) == 1
     error = json.loads(capsys.readouterr().out)["error"]
     assert error["code"] == "unavailable"

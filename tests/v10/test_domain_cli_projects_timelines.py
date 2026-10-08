@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -174,11 +178,11 @@ class _RecordingTimelines:
             "query": {}, "targets": [], "clips": [],
         })
 
-    def visualize(self, project, ref, *, mode="auto", options=None, out=None):
+    def visualize(self, project, ref, *, mode="auto", options=None, revision_id=None, out=None):
         return self._owner.invoke_result(
             "rendering.timeline_visualize",
             kind="executor", project=project,
-            inputs=dict(options or {}), out=out, wait=True,
+            inputs={**dict(options or {}), **({"revision_id": revision_id} if revision_id else {})}, out=out, wait=True,
         )
 
     def save(
@@ -961,14 +965,551 @@ def test_remote_timelines_list_filters_archived_rows_and_preserves_cursor() -> N
 
 def test_timelines_show_is_one_sdk_call(capsys) -> None:
     client = _FakeClient()
-    rc = _run("timelines", ["show", "--project", "demo", "main"], client=client)
+    rc = _run("timelines", ["show", "--project", "demo", "main", "--json"], client=client)
     assert rc == 0
     assert client.calls == [("timelines.open_composition", {
         "project": "demo", "ref": "main", "limit": 50, "cursor": None,
         "clip": None, "occurrence": None, "shot": None, "track": [],
-        "asset": None, "range_value": None, "detail": False,
+        "asset": None, "range_value": None, "detail": False, "revision_id": None,
     })]
     assert json.loads(capsys.readouterr().out)["data"]["kind"] == "timeline-inspection"
+
+
+def test_timelines_show_defaults_to_readable_authored_rows(capsys) -> None:
+    from astrid.packs.rendering.executors.timeline_visualize.readable_timing import project_readable_timing
+    raw = {"id": "clip-a", "clipType": "media", "track": "picture", "at": 20.5,
+           "hold": 16 / 15, "effects": {"fade_in": .5},
+           "params": {"sourceSegments": [{"at": 0, "sourceStart": 0, "speed": 1}]}}
+    clip = {"occurrence_id": "occ-a", "clip_id": "clip-a", "track": "picture", "clip_type": "media",
+            "start": [41, 2], "duration": [16, 15], "asset": "terminal.png",
+            "authored_fields": raw, "render_timing": raw}
+    context = {"status": "complete", "fps": 30, "tracks": [{"id": "picture", "kind": "visual"}], "clips": [raw]}
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "head-1"},
+                "scope": {"timeline": ref}, "query": {},
+                "clips": project_readable_timing([clip], context), "pagination": {},
+                "navigation": {"commands": {"visualize": "astrid timelines visualize --occurrence occ-a"}},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Authored timeline" in output
+    assert "20.5–21.566667" in output
+    assert "opacity multiplier 0% → 100% (fade in)" in output
+    assert "source playback segments use a separate media clock" in output
+    assert "visualize: python3 -m astrid timelines visualize" in output
+
+
+def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, tmp_path) -> None:
+    """Exercise actual Runtime closure -> SDK projection -> human CLI output."""
+    runtime_root = os.environ.get("ASTRID_RUNTIME_SOURCE_ROOT")
+    if not runtime_root:
+        pytest.skip("set ASTRID_RUNTIME_SOURCE_ROOT to the paired Runtime execution worktree")
+    runtime_path = Path(runtime_root).resolve()
+    if not (runtime_path / "runtime_protocol" / "service.py").is_file():
+        pytest.fail(f"ASTRID_RUNTIME_SOURCE_ROOT has no runtime_protocol package: {runtime_path}")
+    sys.path.insert(0, str(runtime_path))
+    try:
+        from runtime_protocol.service import RuntimeService
+        from runtime_protocol.store import RealmStore
+
+        root = tmp_path / "runtime-realm"
+        RealmStore.initialize(root, display_name="Timeline inspection fixture").close()
+        service = RuntimeService(root)
+        try:
+            project = service.create_project({"slug": "inspection", "name": "Inspection"}, idempotency_key="project")
+            project_id = project["id"]
+            service.create_timeline(project_id, "main", idempotency_key="timeline")
+
+            def ingest_media(name: str, data: bytes) -> dict[str, str]:
+                row = service.ingest(
+                    project_id, data, media_type="image/png", original_name=name,
+                    idempotency_key=f"media-{name}",
+                )["data"]
+                return {"object_id": row["object_id"], "digest": row["digest"]}
+
+            room = ingest_media("shot-room-final.png", b"room-image")
+            studio = ingest_media("shot-studio-final.png", b"studio-image")
+            parent_media = ingest_media("global-banner.png", b"parent-image")
+
+            def internal_payload(revision: str, media: dict[str, str], end_width: int, *, moving: bool) -> dict[str, Any]:
+                clip = {
+                    "id": "room-clip",
+                    "clipType": "animated-media-transform",
+                    "track": "outer-picture",
+                    "at": 0,
+                    "hold": 16 / 15 if revision in {"internal-room-before", "internal-room-after"} else 1.1,
+                    "asset": "black_frame",
+                }
+                if moving:
+                    clip["params"] = {"keyframes": [
+                        {"at": 0, "x": 0, "y": 0, "width": 1920, "height": 1080, "opacity": 1},
+                        {"at": clip["hold"], "x": 0, "y": 0, "width": end_width, "height": 1080, "opacity": 1},
+                    ]}
+                return {
+                    "timeline_id": "main", "revision_id": revision,
+                    "payload": {
+                        "tracks": [{"id": "outer-picture", "kind": "visual"}],
+                        "clips": [clip], "effects": [], "audio": [], "layout": {},
+                        "registry": {"assets": {"black_frame": {
+                            "media_id": media["object_id"], "content_sha256": media["digest"],
+                            "type": "image", "file": f"assets/{'shot-room-final.png' if media is room else 'shot-studio-final.png'}",
+                        }}},
+                        "assets": [],
+                    },
+                }
+
+            def shot_revision(shot_id: str, revision: str, internal_id: str) -> dict[str, Any]:
+                return {
+                    "shot_id": shot_id, "revision_id": revision,
+                    "internal_timeline_revision_id": internal_id,
+                    "payload": {"metadata": {"title": shot_id}, "items": [], "pools": [],
+                                "selected_variants": {}, "provenance": {}, "generation_inputs": {},
+                                "audio_bindings": [], "text_bindings": []},
+                }
+
+            def occurrence(oid: str, shot_id: str, shot_rev: str, start_ms: int, duration_ms: int) -> dict[str, Any]:
+                return {
+                    "occurrence_id": oid, "shot_id": shot_id, "shot_revision_id": shot_rev,
+                    "placement": {"start_ms": start_ms}, "duration_ms": duration_ms,
+                    "source_offset": 0, "speed": 1, "track": "outer-picture",
+                    "transform": {}, "gain": 1, "mute": False, "provenance": {},
+                }
+
+            common_parent = {
+                "config": {"output": {"fps": 30}, "tracks": [{"id": "outer-picture", "kind": "visual"}]},
+                "registry": {"assets": {"black_frame": {
+                    "media_id": parent_media["object_id"], "content_sha256": parent_media["digest"],
+                    "type": "image", "file": "assets/global-banner.png",
+                }}},
+                "clips": [{"id": "parent-banner", "clipType": "media", "track": "outer-picture",
+                           "at_ms": 0, "duration_ms": 1000, "asset": "black_frame"}],
+                "occurrences": [
+                    occurrence("occ-room", "shot-room", "shot-room-r1", 20500, 16000),
+                    occurrence("occ-studio", "shot-studio", "shot-studio-r1", 33800, 1100),
+                ],
+            }
+
+            def publication(revision: str, expected_head: str | None, *, room_internal: str, room_shot: str, room_moving: bool) -> dict[str, Any]:
+                room_clip = internal_payload(room_internal, room, 4243, moving=room_moving)
+                studio_clip = internal_payload("internal-studio", studio, 3840, moving=True)
+                parent = json.loads(json.dumps(common_parent))
+                parent["occurrences"][0]["shot_revision_id"] = room_shot
+                return {
+                    "project_id": project_id, "timeline_id": "main", "expected_head": expected_head,
+                    "parent_revision_id": revision,
+                    "internal_timeline_revisions": [room_clip, studio_clip],
+                    "shot_revisions": [
+                        shot_revision("shot-room", room_shot, room_internal),
+                        shot_revision("shot-studio", "shot-studio-r1", "internal-studio"),
+                    ],
+                    "parent_composition": parent,
+                    "dependency_manifest": {"media": [
+                        {"media_id": value["digest"], "content_digest": value["digest"]}
+                        for value in (room, studio, parent_media)
+                    ]},
+                }
+
+            service.publish_parent_composition(
+                project_id, "main", publication("parent-before", None,
+                                                  room_internal="internal-room-before",
+                                                  room_shot="shot-room-r1", room_moving=True),
+                idempotency_key="publish-before",
+            )
+
+            def list_timelines(project_ref: str, *, cursor=None, limit=50):
+                page = service.list_timelines(project_ref, cursor=cursor, limit=limit)
+                return page["items"], page["next_cursor"]
+
+            transport = SimpleNamespace(
+                list_timelines=list_timelines,
+                inspect_timeline=service.inspect_timeline,
+            )
+            sdk = RemoteTimelines(transport)
+            client = SimpleNamespace(timelines=sdk)
+
+            def show(revision: str) -> str:
+                assert _run("timelines", ["show", "--project", project_id, "main",
+                                           "--revision-id", revision, "--detail"], client=client) == 0
+                return capsys.readouterr().out
+
+            before = show("parent-before")
+            assert "20.5–21.566667" in before and "33.8–34.9" in before
+            assert "shot-room-final.png" in before and "shot-studio-final.png" in before
+            assert "global-banner.png" in before
+            assert "black_frame" in before
+            assert '"source_object_id":"' + room["object_id"] + '"' in before
+            assert "width 1920 → 4243" in before and "width 1920 → 3840" in before
+
+            service.publish_parent_composition(
+                project_id, "main", publication("parent-after", "parent-before",
+                                                  room_internal="internal-room-after",
+                                                  room_shot="shot-room-r2", room_moving=False),
+                idempotency_key="publish-after",
+            )
+            after = show("parent-after")
+            assert "20.5–21.566667" in after and "33.8–34.9" in after
+            assert "shot-room-final.png" in after and "shot-studio-final.png" in after
+            assert "width 1920 → 4243" not in after
+            assert "width 1920 → 3840" in after
+            assert '"source_object_id":"' + room["object_id"] + '"' in after
+            assert "saved revision (not current head)" not in after
+        finally:
+            service.close()
+    finally:
+        sys.path.remove(str(runtime_path))
+
+
+def test_timelines_show_human_output_reads_transform_keyframes(capsys) -> None:
+    from astrid.packs.rendering.executors.timeline_visualize.readable_timing import project_readable_timing
+    raw = {"id": "transform", "clipType": "animated-media-transform", "track": "picture", "at": 10, "hold": 2,
+           "params": {"keyframes": [
+               {"at": 0, "x": 0, "y": 0, "width": 1920, "height": 1080, "opacity": 1},
+               {"at": 1, "x": 160, "y": 40, "width": 1280, "height": 720, "opacity": .8}]}}
+    clip = {"occurrence_id": "occ-transform", "clip_id": "transform", "start": [10, 1], "duration": [2, 1],
+            "clip_type": "animated-media-transform", "asset": "screen.png", "authored_fields": raw, "render_timing": raw}
+    context = {"status": "complete", "fps": 30, "tracks": [{"id": "picture", "kind": "visual"}], "clips": [raw]}
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "head-transform"},
+                "scope": {"timeline": ref}, "query": {}, "clips": project_readable_timing([clip], context), "pagination": {}})
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "10–11 transform" in output
+    assert "x 0 → 160" in output
+    assert "opacity 1 → 0.8" in output
+
+
+def test_timelines_show_human_output_keeps_audio_detail_and_unknowns(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "head-2"},
+                "scope": {"timeline": ref}, "query": {"detail": True},
+                "clips": [
+                    {"occurrence_id": "occ-v", "clip_id": "visual", "track_id": "V1",
+                     "track": {"id": "V1", "opacity": 0.3, "blendMode": "screen"},
+                     "start": [0, 1], "duration": [2, 1], "asset": "room.png",
+                     "transition": {"id": "cross-fade"},
+                     "authored_fields": {"label": "room", "params": {"keyframes": []}},
+                     "source_object_id": "obj-1", "content_digest": "sha256:abc"},
+                    {"occurrence_id": "occ-a", "clip_id": "audio", "clip_type": "audio",
+                     "track": "A1", "start": [0, 1], "duration": [2, 1], "asset": "music.wav", "mute": True},
+                    {"occurrence_id": "occ-u", "clip_id": "opaque", "start": [2, 1], "duration": [1, 1],
+                     "asset": "opaque", "timing_unknown": True},
+                ],
+                "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Track V1 [authored track controls: opacity 30%, blend screen]" in output
+    assert "Audio" in output and "0–2  music.wav · occ-a/audio [muted]" in output
+    assert "[transition cross-fade; timing unresolved: producer unavailable]" in output
+    assert 'authored label: "room"' in output
+    assert 'params: {"keyframes":[]}' in output
+    assert "identity:" in output and "obj-1" in output
+    assert "motion timing unknown: authored clock explicitly unknown" in output
+
+
+def test_timelines_show_groups_exact_scoped_tracks_and_keeps_addressable_audio(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection",
+                "summary": {"revision_id": "saved-r9", "is_current_head": False},
+                "scope": {"timeline": ref},
+                "query": {"detail": True},
+                "clips": [
+                    {
+                        "occurrence_id": "occ-a-late", "clip_id": "visual-late",
+                        "track_id": "shared", "track_ref": {"scope": "internal_timeline", "scope_id": "child-a", "track_id": "shared"},
+                        "track": {"id": "shared", "kind": "visual", "opacity": 0.3, "blendMode": "screen", "volume": 0},
+                        "start": [3, 1], "duration": [1, 1], "media_name": "room.png",
+                        "asset_id": "black_frame", "source_object_id": "obj-room", "content_digest": "sha256:room",
+                        "authored_fields": {"label": "towards monitor", "params": {"tint": "cool"}},
+                    },
+                    {
+                        "occurrence_id": "occ-a-early", "clip_id": "visual-early",
+                        "track_id": "shared", "track_ref": {"scope": "internal_timeline", "scope_id": "child-a", "track_id": "shared"},
+                        "track": {"id": "shared", "kind": "visual", "opacity": 0.3, "blendMode": "screen", "volume": 0},
+                        "start": [1, 1], "duration": [1, 1], "media_name": "room.png",
+                        "asset_id": "black_frame", "source_object_id": "obj-room", "content_digest": "sha256:room",
+                    },
+                    {
+                        "occurrence_id": "occ-b", "clip_id": "visual-b",
+                        "track_id": "shared", "track_ref": {"scope": "internal_timeline", "scope_id": "child-b", "track_id": "shared"},
+                        "track": {"id": "shared", "kind": "visual", "mute": True},
+                        "start": [2, 1], "duration": [1, 1], "media_name": "studio.png",
+                        "asset_id": "black_frame", "source_object_id": "obj-studio", "content_digest": "sha256:studio",
+                    },
+                    {
+                        "occurrence_id": "occ-audio", "clip_id": "audio-1", "kind": None,
+                        "clip_type": "audio", "track_id": "shared",
+                        "track_ref": {"scope": "internal_timeline", "scope_id": "audio-child", "track_id": "shared"},
+                        "track": {"id": "shared", "kind": "audio"},
+                        "start": [5, 1], "duration": [2, 1], "media_name": "theme.wav",
+                        "asset_id": "music_alias", "source_object_id": "obj-music", "content_digest": "sha256:music",
+                        "gain": 0, "mute": True, "parameters": {"fadeIn": 0.5}, "parameters_source": "params",
+                    },
+                ],
+                "native_inspection": {"selected": [
+                    {"occurrence": {"occurrence_id": "occ-a-late", "shot_id": "shot-a", "track_ref": {"scope": "parent_composition", "scope_id": "parent-1", "track_id": "outer"}, "track": {"id": "outer", "opacity": 0.5}, "mute": True}},
+                    {"occurrence": {"occurrence_id": "occ-a-early", "shot_id": "shot-a", "track_ref": {"scope": "parent_composition", "scope_id": "parent-1", "track_id": "outer"}, "track": {"id": "outer", "opacity": 0.5}, "mute": True}},
+                    {"occurrence": {"occurrence_id": "occ-b", "shot_id": "shot-b", "track_ref": {"scope": "parent_composition", "scope_id": "parent-2", "track_id": "outer"}, "track": {"id": "outer", "mute": True}}},
+                    {"occurrence": {"occurrence_id": "occ-audio", "shot_id": "shot-audio", "track_ref": {"scope": "parent_composition", "scope_id": "parent-3", "track_id": "outer"}, "track": {"id": "outer", "volume": 0}}},
+                ]},
+                "page": {"returned_clips": 4, "total_selected_clips": 4, "remaining_clips": 0},
+                "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Visual layers (order unavailable; grouped by exact scoped track)" in output
+    assert "Track shared (internal_timeline/child-a) [authored track controls: opacity 30%, blend screen, gain 0]" in output
+    assert "Track shared (internal_timeline/child-b) [authored track controls: muted]" in output
+    assert output.index("1. 1–2  room.png · occ-a-early/visual-early") < output.index("2. 3–4  room.png · occ-a-late/visual-late")
+    assert "occurrences occ-a-late, occ-a-early [opacity 50%, muted]" in output
+    assert "Audio (separate tracks; order unavailable unless projected)" in output
+    assert "Track shared (internal_timeline/audio-child)" in output
+    assert "5–7  theme.wav · occ-audio/audio-1 [muted, gain 0]" in output
+    assert 'authored label: "towards monitor"' in output
+    assert 'params: {"tint":"cool"}' in output
+    assert '"asset_id":"black_frame"' in output
+    assert '"source_object_id":"obj-room"' in output
+    assert "saved revision (not current head)" in output
+
+
+@pytest.mark.parametrize(
+    ("clip", "expect_audio"),
+    [
+        (
+            {
+                "occurrence_id": "occ-visual-audio",
+                "clip_id": "child-visual",
+                "clip_type": "media",
+                "track_ref": {"scope": "internal_timeline", "scope_id": "child-a", "track_id": "shared"},
+                "track": {"id": "shared", "kind": "visual", "opacity": 0.5, "blendMode": "multiply"},
+                "start": [0, 1], "duration": [2, 1], "media_name": "room.png",
+                "compositor_dispatch": {
+                    "status": "resolved", "fade_contract": "audio_params", "control_contract": "audio_track",
+                    "track": {"id": "outer-audio", "kind": "audio", "muted": True, "volume": 0.4},
+                    "controls": {"base_gain": 0},
+                },
+                "timed_changes": [{"kind": "fade_in", "property": "gain multiplier", "start": [0, 1],
+                                   "end": [1, 2], "before": 0, "after": 1}],
+            },
+            True,
+        ),
+        (
+            {
+                "occurrence_id": "occ-audio-visual",
+                "clip_id": "child-audio",
+                "clip_type": "audio",
+                "track_ref": {"scope": "internal_timeline", "scope_id": "child-b", "track_id": "shared"},
+                "track": {"id": "shared", "kind": "audio", "muted": True, "volume": 0.1},
+                "volume": 0.5,
+                "start": [0, 1], "duration": [2, 1], "media_name": "room.wav",
+                "compositor_dispatch": {
+                    "status": "resolved", "fade_contract": "visual_effects", "control_contract": "visual_media",
+                    "track": {"id": "outer-visual", "kind": "visual", "opacity": 0.3, "blendMode": "screen"},
+                    "controls": {"base_gain": 0.2, "track_opacity_multiplier": 0.3,
+                                 "clip_opacity_multiplier": 0.6},
+                },
+                "timed_changes": [{"kind": "fade_in", "property": "opacity multiplier", "start": [0, 1],
+                                   "end": [1, 2], "before": 0, "after": 1}],
+            },
+            False,
+        ),
+    ],
+)
+def test_timelines_show_uses_compositor_dispatch_for_human_classification_and_controls(
+    capsys, clip, expect_audio
+) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": [clip], "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    audio_section = "Audio (separate tracks; order unavailable unless projected)"
+    assert (audio_section in output) is expect_audio
+    if clip["clip_id"] == "child-visual":
+        assert output.index(audio_section) < output.index("Track shared (internal_timeline/child-a)")
+        assert "Track shared (internal_timeline/child-a) [authored track controls: opacity 50%, blend multiply]" in output
+        assert "compositor dispatch: audio track outer-audio [muted, parent volume 0.4, effective base gain 0]" in output
+        assert "gain multiplier 0% → 100%" in output
+    else:
+        assert "Track shared (internal_timeline/child-b) [authored track controls: muted, gain 0.1]" in output
+        assert "room.wav · occ-audio-visual/child-audio [authored gain 0.5]" in output
+        assert "compositor dispatch: visual track outer-visual [effective track opacity 30%, blend screen]" in output
+        assert "compositor dispatch clip controls: effective clip opacity 60%" in output
+        assert "opacity multiplier 0% → 100%" in output
+        assert "gain multiplier" not in output
+
+
+def test_timelines_show_places_shared_muted_dispatch_once_on_exact_track_heading(capsys) -> None:
+    clips = [
+        {
+            "occurrence_id": f"occ-{suffix}", "clip_id": f"clip-{suffix}", "clip_type": "media",
+            "track_ref": {"scope": "internal_timeline", "scope_id": "child-audio", "track_id": "shared"},
+            "track": {"id": "shared", "kind": "visual", "opacity": 0.3, "blendMode": "screen"},
+            "start": [index * 2, 1], "duration": [1, 1], "media_name": f"room-{suffix}.wav",
+            "compositor_dispatch": {
+                "status": "resolved", "control_contract": "audio_track",
+                "track": {"id": "outer-audio", "kind": "audio", "muted": True, "volume": 0.4},
+                "controls": {"base_gain": 0},
+            },
+        }
+        for index, suffix in enumerate(("a", "b"))
+    ]
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-shared-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": clips, "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    dispatch = "compositor dispatch: audio track outer-audio [muted, parent volume 0.4, effective base gain 0]"
+    heading = "Track shared (internal_timeline/child-audio) [authored track controls: opacity 30%, blend screen]"
+    assert output.count(dispatch) == 1
+    assert f"{heading} [{dispatch}]" in output
+    assert output.index(f"{heading} [{dispatch}]") < output.index("room-a.wav · occ-a/clip-a")
+    assert "room-b.wav · occ-b/clip-b" in output
+
+
+def test_timelines_show_clip_specific_effective_gain_on_each_row(capsys) -> None:
+    clips = [
+        {
+            "occurrence_id": f"occ-{suffix}", "clip_id": f"clip-{suffix}", "clip_type": "audio",
+            "track_ref": {"scope": "internal_timeline", "scope_id": "child-audio", "track_id": "shared"},
+            "track": {"id": "shared", "kind": "audio"}, "volume": volume,
+            "start": [index * 2, 1], "duration": [1, 1], "media_name": f"sound-{suffix}.wav",
+            "compositor_dispatch": {
+                "status": "resolved", "control_contract": "audio_track",
+                "track": {"id": "outer-audio", "kind": "audio", "volume": 0.4},
+                "controls": {"base_gain": base_gain},
+            },
+        }
+        for index, (suffix, volume, base_gain) in enumerate((("a", 0.5, 0.2), ("b", 0.7, 0.28)))
+    ]
+
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-clip-gains-r1"},
+                "scope": {"timeline": ref}, "query": {}, "clips": clips, "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert output.count("compositor dispatch: audio track outer-audio [parent volume 0.4]") == 1
+    assert "compositor dispatch clip controls: effective base gain 0.2" in output
+    assert "compositor dispatch clip controls: effective base gain 0.28" in output
+    assert "sound-a.wav · occ-a/clip-a [authored gain 0.5]" in output
+    assert "sound-b.wav · occ-b/clip-b [authored gain 0.7]" in output
+
+
+def test_timelines_show_names_unresolved_compositor_dispatch(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection", "summary": {"revision_id": "dispatch-unknown"},
+                "scope": {"timeline": ref}, "query": {}, "clips": [{
+                    "occurrence_id": "occ-unknown", "clip_id": "clip-unknown", "clip_type": "audio",
+                    "track": {"id": "child-audio", "kind": "audio"},
+                    "track_ref": {"scope": "internal_timeline", "scope_id": "child", "track_id": "child-audio"},
+                    "start": [0, 1], "duration": [1, 1], "media_name": "unknown.wav",
+                    "compositor_dispatch": {"status": "unknown", "reason": "dispatch track ambiguous"},
+                    "timed_changes": [],
+                }], "pagination": {},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "Audio (separate tracks; order unavailable unless projected)" in output
+    assert "[compositor dispatch unknown: dispatch track ambiguous]" in output
+
+
+def test_timelines_show_omission_notice_names_exact_pinned_target_and_limit(capsys) -> None:
+    class _Timelines:
+        def open_composition(self, project, ref, **kwargs):
+            return DomainResult.success({
+                "kind": "timeline-inspection",
+                "summary": {"revision_id": "rev-omitted", "is_current_head": True},
+                "scope": {"timeline": ref}, "query": {"detail": True},
+                "clips": [{
+                    "occurrence_id": "occ-omitted", "shot_id": "shot-omitted", "clip_id": "clip-omitted",
+                    "media_name": "room.png", "asset_id": "black_frame", "source_object_id": "obj-room",
+                    "content_digest": "sha256:room", "start": [0, 1], "duration": [1, 1],
+                    "track_ref": {"scope": "internal_timeline", "scope_id": "internal-omitted", "track_id": "picture"},
+                    "authored_fields": None,
+                    "omitted_fields": [{"path": "parameters", "reason": "byte_limit", "byte_length": 6500,
+                                        "limit_bytes": 4096, "sha256": "params-digest"}],
+                    "track_omitted_fields": [{"path": "track", "reason": "byte_limit", "byte_length": 6500,
+                                               "limit_bytes": 2048, "sha256": "track-digest"}],
+                }],
+                "omission_metadata": {"authored_values_omitted": 2},
+                "page": {"returned_clips": 1, "total_selected_clips": 3, "remaining_clips": 2},
+                "pagination": {"next_cursor": "cursor-next"},
+            })
+
+    class _Client:
+        timelines = _Timelines()
+
+    assert _run("timelines", ["show", "--project", "demo", "main"], client=_Client()) == 0
+    output = capsys.readouterr().out
+    assert "current head" in output
+    assert "returned 1 of 3 selected clips; 2 remain after this page" in output
+    assert "omitted parameters: byte_limit (6500 B; limit 4096 B); sha256 params-digest" in output
+    assert 'omitted track: byte_limit (6500 B; limit 2048 B); sha256 track-digest' in output
+    assert '"revision_id":"rev-omitted"' in output
+    assert '"occurrence_id":"occ-omitted"' in output
+    assert '"clip_id":"clip-omitted"' in output
+    assert '"track_ref":{"scope":"internal_timeline","scope_id":"internal-omitted","track_id":"picture"}' in output
+    assert "page: 2 bounded values omitted" in output
+    assert "full omitted values are unavailable through a bounded retrieval route" in output
+
+    assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
+    detail_output = capsys.readouterr().out
+    assert "omitted track: byte_limit (6500 B; limit 2048 B); sha256 track-digest" in detail_output
+    assert '"track_ref":{"scope":"internal_timeline","scope_id":"internal-omitted","track_id":"picture"}' in detail_output
 
 
 def test_timelines_show_allows_runtime_selected_scope(capsys) -> None:
@@ -994,7 +1535,7 @@ def test_timelines_show_summary_is_bounded_and_keeps_clip_timing(capsys) -> None
     class _Client:
         timelines = _Timelines()
 
-    rc = _run("timelines", ["show", "--summary", "--project", "demo", "main"], client=_Client())
+    rc = _run("timelines", ["show", "--summary", "--project", "demo", "main", "--json"], client=_Client())
     assert rc == 0
     summary = json.loads(capsys.readouterr().out)["data"]
     assert summary["kind"] == "timeline-inspection"

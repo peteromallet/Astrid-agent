@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from collections.abc import Callable
 from typing import Any, TextIO
 
 from astrid.core.receipts.canonical import canonical_json
@@ -113,7 +114,7 @@ def _identity_summary(data: object) -> str:
     return str(data)
 
 
-def render_human(result: object) -> str:
+def render_human(result: object, *, human_renderer: Callable[[object], str] | None = None) -> str:
     """Render *result* as one concise human-readable line.
 
     Success lines name the object identity (or a count for lists);
@@ -121,6 +122,8 @@ def render_human(result: object) -> str:
     <message>``. Human output never leaks receipt internals beyond the
     receipt id, and never prints raw data blobs.
     """
+    if human_renderer is not None:
+        return human_renderer(result)
     envelope = envelope_dict(result)
     if envelope["ok"]:
         line = _identity_summary(envelope["data"])
@@ -144,6 +147,7 @@ def print_result(
     *,
     as_json: bool = False,
     stream: TextIO | None = None,
+    human_renderer: Callable[[object], str] | None = None,
 ) -> int:
     """Print *result* and return its stable exit code.
 
@@ -160,7 +164,7 @@ def print_result(
         return exit_code(result)
     envelope = envelope_dict(result)
     if envelope["ok"]:
-        print(render_human(result), file=out)
+        print(render_human(result, human_renderer=human_renderer), file=out)
         return EXIT_OK
     print(render_human(result), file=err)
     return EXIT_FAILURE
