@@ -3,16 +3,8 @@ import {Easing, Img, interpolate, Sequence, staticFile, useCurrentFrame} from 'r
 import {Video} from '@remotion/media';
 import {type ElementComponentProps, narrowParams} from '../../../../rendering/elements/_shared/contracts';
 
-type TimelineSegment = {
-  id?: string;
-  start: number;
-  end: number;
-  sourceStart?: number;
-  sourceEnd?: number;
-  speed?: number;
-  label: string;
-  title: string;
-};
+import {endSpanningTiming, positive, nonnegative, validSegments, selectedSegmentIndex, type TimelineSegment} from './timing';
+
 type PhaseDurations = {prep?: number; iteration?: number; anchors?: number; workflow?: number};
 type Params = {
   __astridAssets?: Record<string, string>;
@@ -42,14 +34,6 @@ const INK = '#0b0703';
 const CARD_KEYS = ['card0', 'card1', 'card2', 'card3', 'card4', 'card5'] as const;
 // Six real sections from the final child-16 Minkhole timeline. Callers can
 // replace this with the current visualizer snapshot through params.
-const DEFAULT_SEGMENTS: TimelineSegment[] = [
-  {id: 'astrid', start: 0, end: 5, label: '00', title: 'ASTRID — through the glasses'},
-  {id: 'choice', start: 5, end: 8, sourceStart: 74.9347, sourceEnd: 76.4, speed: 0.4884, label: '01', title: 'Two options'},
-  {id: 'blue', start: 8, end: 19, sourceStart: 79.12, sourceEnd: 80.87, label: '02', title: 'Blue pill — manual tools'},
-  {id: 'red', start: 19, end: 22, label: '03', title: 'Red pill'},
-  {id: 'creature', start: 22, end: 26.9167, label: '04', title: 'Creature reveal — glasses edit'},
-  {id: 'reflection', start: 26.9167, end: 43.4927, label: '05', title: 'Into the minkhole — reflection close-up'},
-];
 const DEFAULT_HEADINGS = {
   prep: 'Original clip + rough voiceover',
   iteration: 'Words & timing',
@@ -57,7 +41,6 @@ const DEFAULT_HEADINGS = {
   workflow: 'Workflow running',
 } as const;
 const ITERATION_ORDER = [2, 0, 4, 1, 5, 3] as const;
-const DEFAULT_SELECTED_SEGMENT_INDEX = 2;
 const ITERATION_WORDS = [
   'You have two options.',
   'You take the blue pill.',
@@ -76,36 +59,6 @@ const easedPhase = (value: number, start: number, duration: number): number => i
   [0, 1],
   {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad)},
 );
-const positive = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
-const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-
-const phaseValues = (params: Params, clipSeconds: number): [number, number, number, number] => {
-  const configured = params.phaseDurations ?? {};
-  const values = [
-    positive(params.prepSeconds) ?? positive(configured.prep),
-    positive(params.iterationSeconds) ?? positive(configured.iteration),
-    positive(params.anchorsSeconds) ?? positive(configured.anchors),
-    positive(params.workflowSeconds) ?? positive(configured.workflow),
-  ];
-  if (values.every((value): value is number => value !== null)) return values as [number, number, number, number];
-  // Keep the visual sequence adaptable when narration lengths change and the
-  // timeline owner omits explicit phase metadata.
-  return [0.24, 0.22, 0.2, 0.34].map((weight) => clipSeconds * weight) as [number, number, number, number];
-};
-
-const validSegments = (value: unknown): TimelineSegment[] => {
-  if (!Array.isArray(value)) return DEFAULT_SEGMENTS;
-  const result = value.filter((segment): segment is TimelineSegment => {
-    if (!segment || typeof segment !== 'object') return false;
-    const candidate = segment as Partial<TimelineSegment>;
-    return typeof candidate.start === 'number' && Number.isFinite(candidate.start)
-      && typeof candidate.end === 'number' && Number.isFinite(candidate.end) && candidate.end > candidate.start
-      && typeof candidate.label === 'string' && candidate.label.length > 0
-      && typeof candidate.title === 'string' && candidate.title.length > 0;
-  });
-  return result.length > 0 ? result : DEFAULT_SEGMENTS;
-};
-
 const renderableFile = (file: string | undefined): string | null => {
   if (!file || !file.trim()) return null;
   const value = file.trim();
@@ -172,15 +125,9 @@ function IterationWords({progress, opacity}: {progress: number; opacity: number}
 export default function EndSpanningLayer({clip, params: rawParams, assetEntry, fps}: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const params = narrowParams<Params>(rawParams);
-  const clipSeconds = positive(clip.hold) ?? positive((clip.to ?? 0) - clip.at) ?? 30;
-  const [prepSeconds, iterationSeconds, anchorsSeconds, workflowSeconds] = phaseValues(params, clipSeconds);
-  // Quantize cumulative boundaries, rather than individual durations, so the
-  // presentation and its media sequence share one origin on the frame grid.
-  const prepEndFrame = Math.round(prepSeconds * fps);
-  const iterationEndFrame = Math.round((prepSeconds + iterationSeconds) * fps);
-  const anchorsEndFrame = Math.round((prepSeconds + iterationSeconds + anchorsSeconds) * fps);
-  const workflowEndFrame = Math.round((prepSeconds + iterationSeconds + anchorsSeconds + workflowSeconds) * fps);
-  const effectEndFrame = Math.max(workflowEndFrame, Math.round(clipSeconds * fps));
+  const {seconds, frames, effectEndFrame} = endSpanningTiming(clip, params, fps);
+  const [, iterationSeconds, anchorsSeconds, workflowSeconds] = seconds;
+  const [prepEndFrame, iterationEndFrame, anchorsEndFrame, workflowEndFrame] = frames as [number, number, number, number];
   const prepEnd = prepEndFrame / fps;
   const iterationEnd = iterationEndFrame / fps;
   const anchorsEnd = anchorsEndFrame / fps;
@@ -196,17 +143,7 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
   const cards = [...CARD_KEYS];
   const staged = params.__astridAssets ?? {};
   const url = (key: string): string => renderableFile(staged[key]) ?? staticFile(`astrid-effects/end-spanning-layer/${key}`);
-  const fallbackSelectedIndex = Math.min(segments.length - 1, DEFAULT_SELECTED_SEGMENT_INDEX);
-  const requestedIndex = typeof params.selectedSegmentIndex === 'number' && Number.isFinite(params.selectedSegmentIndex) && params.selectedSegmentIndex >= 0
-    ? params.selectedSegmentIndex
-    : null;
-  // Resolve the workflow media even during earlier phases: Sequence controls
-  // when it is prepared/visible, while the strip only highlights it on activation.
-  const workflowSelectedIndex = (
-    typeof params.selectedSegmentId === 'string'
-      ? Math.max(0, segments.findIndex((segment) => segment.id === params.selectedSegmentId))
-      : requestedIndex === null ? fallbackSelectedIndex : Math.min(segments.length - 1, Math.floor(requestedIndex))
-  );
+  const workflowSelectedIndex = selectedSegmentIndex(params, segments);
   const selectedIndex = mode === 'workflow' ? workflowSelectedIndex : null;
   const selected = segments[workflowSelectedIndex];
   const sourceStart = selected ? nonnegative(selected.sourceStart) ?? selected.start : 0;
