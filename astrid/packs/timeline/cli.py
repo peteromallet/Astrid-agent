@@ -1939,8 +1939,13 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         "--include-cuts", action="store_true", default=None,
         help="With interval sampling, also capture visual cut-neighbor frames.",
     )
-    subparser.add_argument("--render-run", default=None,
-                           help="Exact successful render run, or latest (filmstrip default).")
+    subparser.add_argument(
+        "--render-run", default=None,
+        help=(
+            "Explicit successful render run, or latest (filmstrip default). "
+            "An explicit run may be historical/candidate; auto reuse checks the current timeline head."
+        ),
+    )
     subparser.add_argument("--columns", type=int, default=None,
                            help="Filmstrip contact sheet columns (default: 5; paired pages use one row by default).")
     subparser.add_argument("--page-size", type=int, default=None,

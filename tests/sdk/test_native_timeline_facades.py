@@ -213,6 +213,29 @@ def test_remote_visualize_default_requests_composed_output_with_input_lanes() ->
     assert inputs["every_frames"] == 6
 
 
+def test_remote_visualize_marks_auto_selected_render_as_current_reuse(monkeypatch) -> None:
+    transport = _SelectedNativeTransport()
+    calls = []
+
+    monkeypatch.setattr(
+        "astrid.sdk.timeline_filmstrip.matching_composed_render",
+        lambda *args, **kwargs: "run-current",
+    )
+
+    def invoke(capability_id, **kwargs):
+        calls.append((capability_id, kwargs))
+        return DomainResult.success({"mode": "filmstrip"})
+
+    result = RemoteTimelines(transport, invoker=invoke).visualize(
+        "project-1", "main", formats=("md", "png"),
+    )
+
+    assert result.ok
+    inputs = calls[0][1]["inputs"]
+    assert inputs["render_run"] == "run-current"
+    assert inputs["auto_selected_render"] is True
+
+
 def test_remote_visualize_preserves_an_explicit_output_only_surface() -> None:
     transport = _SelectedNativeTransport()
     calls = []

@@ -845,6 +845,11 @@ class RemoteTimelines(_RemoteFamily):
             executor_inputs.update(view_options)
             executor_inputs["render_run"] = exact_render
             executor_inputs.setdefault("timeline_slug", timeline_ref)
+            if not explicit_run:
+                # The matching lookup selected this run from the current head;
+                # keep that provenance distinct from a user-pinned historical
+                # or candidate render when the executor builds its receipt.
+                executor_inputs["auto_selected_render"] = True
             executor_inputs.setdefault("show", ["output", "inputs", "text", "audio"])
             return self._invoker(
                 "rendering.timeline_visualize",

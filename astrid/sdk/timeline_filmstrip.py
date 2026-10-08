@@ -897,10 +897,10 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         ))
     run_id = _identifier(run, 'id', 'run_id')
     snapshot = build_filmstrip_snapshot(envelope, client=client, project=canonical_project, run_id=run_id, video_digest=digest)
-    snapshot['metadata']['selection'] = (
-        _explicit_render_selection(envelope, authority, timeline_row)
-        if exact else 'latest_current_render'
-    )
+    selection = 'latest_current_render'
+    if exact and not inputs.get('auto_selected_render'):
+        selection = _explicit_render_selection(envelope, authority, timeline_row)
+    snapshot['metadata']['selection'] = selection
     from .managed_transcript import transcript_input_from_snapshot
     timeline_snapshot = _timeline_snapshot(envelope)
     config = timeline_snapshot.get('config', {})
