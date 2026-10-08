@@ -198,3 +198,16 @@ def test_absent_actual_compositor_track_keeps_window_but_cannot_claim_mounted_mo
     assert result['timed_changes'] == []
     assert 'timing_projection' not in result
     assert result['timing_unknowns'] == ['compositor track unresolved; mounted clock unavailable']
+
+
+def test_human_rows_and_frame_navigation_prefer_actual_mounted_intervals():
+    from astrid.packs.timeline.cli import _human_clip_interval, _clip_bounds
+    source = _clip('source', kind='media', at=1, hold=2, transition={'id': 'fade', 'durationFrames': 15})
+    destination = _clip('destination', at=2.75, hold=2, params={'keyframes': [_key(0), _key(1, 200)]})
+    destination.update(start=[11, 4], duration=[2, 1])
+    mounted = _project([source, destination])[1]
+    assert _human_clip_interval(mounted) == ('2.5', '4.5')
+    assert _clip_bounds(mounted) == (Fraction(5, 2), Fraction(9, 2))
+    # The original saved selection and authored placement are preserved.
+    assert mounted['start'] == [11, 4]
+    assert mounted['authored_fields']['at'] == 2.75

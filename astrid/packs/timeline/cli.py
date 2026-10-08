@@ -206,6 +206,10 @@ def _human_time(value: Any) -> str:
 
 
 def _human_clip_interval(clip: Mapping[str, Any]) -> tuple[str, str]:
+    timing = clip.get("timing_projection")
+    mounted = timing.get("mounted") if isinstance(timing, Mapping) else None
+    if isinstance(mounted, Mapping) and mounted.get("start") is not None and mounted.get("end") is not None:
+        return _human_time(mounted["start"]), _human_time(mounted["end"])
     bounds = clip.get("time_bounds") if isinstance(clip.get("time_bounds"), Mapping) else {}
     start = clip.get("at", clip.get("start", clip.get("start_time", clip.get("time", bounds.get("timeline_start")))))
     end = clip.get("end", clip.get("end_time", bounds.get("timeline_end")))
@@ -236,6 +240,10 @@ def _fractional(value: Any) -> Fraction | None:
 
 
 def _clip_bounds(clip: Mapping[str, Any]) -> tuple[Fraction | None, Fraction | None]:
+    timing = clip.get("timing_projection")
+    mounted = timing.get("mounted") if isinstance(timing, Mapping) else None
+    if isinstance(mounted, Mapping) and mounted.get("start") is not None and mounted.get("end") is not None:
+        return _fractional(mounted["start"]), _fractional(mounted["end"])
     bounds = clip.get("time_bounds") if isinstance(clip.get("time_bounds"), Mapping) else {}
     start = _fractional(clip.get("start", clip.get("at", bounds.get("timeline_start"))))
     end = _fractional(clip.get("end", bounds.get("timeline_end")))
