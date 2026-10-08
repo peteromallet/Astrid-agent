@@ -415,13 +415,19 @@ def _human_clip_detail_lines(
 def _human_omission_lines(
     omissions: object, *, summary: Mapping[str, Any], scope: Mapping[str, Any],
     occurrence: Mapping[str, Any] | None = None, clip: Mapping[str, Any] | None = None,
+    track_ref: Mapping[str, Any] | None = None,
 ) -> list[str]:
     if not isinstance(omissions, list):
         return []
     lines: list[str] = []
+    seen: set[str] = set()
     for omission in omissions:
         if not isinstance(omission, Mapping):
             continue
+        identity = _human_json(dict(omission))
+        if identity in seen:
+            continue
+        seen.add(identity)
         path = omission.get("path") or "authored value"
         reason = omission.get("reason") or "omitted"
         size = omission.get("byte_length")
@@ -435,6 +441,12 @@ def _human_omission_lines(
             target.update({key: occurrence.get(key) for key in ("occurrence_id", "shot_id") if occurrence.get(key) is not None})
         if clip:
             target.update({key: clip.get(key) for key in ("occurrence_id", "shot_id", "clip_id") if clip.get(key) is not None})
+        if track_ref:
+            target["track_ref"] = dict(track_ref)
+        elif clip and isinstance(clip.get("track_ref"), Mapping):
+            target["track_ref"] = dict(clip["track_ref"])
+        elif occurrence and isinstance(occurrence.get("track_ref"), Mapping):
+            target["track_ref"] = dict(occurrence["track_ref"])
         target = {key: value for key, value in target.items() if value not in (None, "")}
         digest = omission.get("sha256")
         digest_text = f"; sha256 {digest}" if digest else ""
@@ -588,7 +600,12 @@ def _render_timeline_human(result: object) -> str:
                     lines.extend(_human_clip_detail_lines(clip, summary=summary, scope=scope))
                 # Authored value omissions remain visible in compact mode too.
                 lines.extend(_human_omission_lines(
-                    clip.get("omitted_fields"), summary=summary, scope=scope,
+                    [
+                        *(clip.get("omitted_fields", []) if isinstance(clip.get("omitted_fields"), list) else []),
+                        *(clip.get("authored_omitted_fields", []) if isinstance(clip.get("authored_omitted_fields"), list) else []),
+                        *(clip.get("asset_omitted_fields", []) if isinstance(clip.get("asset_omitted_fields"), list) else []),
+                        *(clip.get("track_omitted_fields", []) if isinstance(clip.get("track_omitted_fields"), list) else []),
+                    ], summary=summary, scope=scope,
                     occurrence=occurrence, clip=clip,
                 ))
 
@@ -623,7 +640,10 @@ def _render_timeline_human(result: object) -> str:
             lines.append(f"    {heading} · occurrences {occurrence_ids}{suffix}")
             for occurrence, _track in rows:
                 lines.extend(_human_omission_lines(
-                    occurrence.get("omitted_fields"), summary=summary, scope=scope,
+                    [
+                        *(occurrence.get("omitted_fields", []) if isinstance(occurrence.get("omitted_fields"), list) else []),
+                        *(occurrence.get("track_omitted_fields", []) if isinstance(occurrence.get("track_omitted_fields"), list) else []),
+                    ], summary=summary, scope=scope,
                     occurrence=occurrence,
                 ))
 
@@ -646,7 +666,7 @@ def _render_timeline_human(result: object) -> str:
     omissions = data.get("omission_metadata") if isinstance(data.get("omission_metadata"), Mapping) else native.get("omission_metadata") if isinstance(native.get("omission_metadata"), Mapping) else {}
     omitted_count = omissions.get("authored_values_omitted")
     if isinstance(omitted_count, int) and omitted_count > 0:
-        lines.append(f"page: {omitted_count} authored values omitted; full values are unavailable through a bounded retrieval route")
+        lines.append(f"page: {omitted_count} bounded values omitted; full values are unavailable through a bounded retrieval route")
     navigation = data.get("navigation") if isinstance(data.get("navigation"), Mapping) else {}
     commands = navigation.get("commands") if isinstance(navigation.get("commands"), Mapping) else {}
     if commands.get("visualize"):

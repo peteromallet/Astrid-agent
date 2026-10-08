@@ -1042,7 +1042,7 @@ def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, t
                 clip = {
                     "id": "room-clip",
                     "clipType": "animated-media-transform",
-                    "track": "picture",
+                    "track": "outer-picture",
                     "at": 0,
                     "hold": 16 / 15 if revision in {"internal-room-before", "internal-room-after"} else 1.1,
                     "asset": "black_frame",
@@ -1055,7 +1055,7 @@ def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, t
                 return {
                     "timeline_id": "main", "revision_id": revision,
                     "payload": {
-                        "tracks": [{"id": "picture", "kind": "visual"}],
+                        "tracks": [{"id": "outer-picture", "kind": "visual"}],
                         "clips": [clip], "effects": [], "audio": [], "layout": {},
                         "registry": {"assets": {"black_frame": {
                             "media_id": media["object_id"], "content_sha256": media["digest"],
@@ -1309,11 +1309,14 @@ def test_timelines_show_omission_notice_names_exact_pinned_target_and_limit(caps
                     "occurrence_id": "occ-omitted", "shot_id": "shot-omitted", "clip_id": "clip-omitted",
                     "media_name": "room.png", "asset_id": "black_frame", "source_object_id": "obj-room",
                     "content_digest": "sha256:room", "start": [0, 1], "duration": [1, 1],
+                    "track_ref": {"scope": "internal_timeline", "scope_id": "internal-omitted", "track_id": "picture"},
                     "authored_fields": None,
                     "omitted_fields": [{"path": "parameters", "reason": "byte_limit", "byte_length": 6500,
                                         "limit_bytes": 4096, "sha256": "params-digest"}],
+                    "track_omitted_fields": [{"path": "track", "reason": "byte_limit", "byte_length": 6500,
+                                               "limit_bytes": 2048, "sha256": "track-digest"}],
                 }],
-                "omission_metadata": {"authored_values_omitted": 1},
+                "omission_metadata": {"authored_values_omitted": 2},
                 "page": {"returned_clips": 1, "total_selected_clips": 3, "remaining_clips": 2},
                 "pagination": {"next_cursor": "cursor-next"},
             })
@@ -1326,10 +1329,18 @@ def test_timelines_show_omission_notice_names_exact_pinned_target_and_limit(caps
     assert "current head" in output
     assert "returned 1 of 3 selected clips; 2 remain after this page" in output
     assert "omitted parameters: byte_limit (6500 B; limit 4096 B); sha256 params-digest" in output
+    assert 'omitted track: byte_limit (6500 B; limit 2048 B); sha256 track-digest' in output
     assert '"revision_id":"rev-omitted"' in output
     assert '"occurrence_id":"occ-omitted"' in output
     assert '"clip_id":"clip-omitted"' in output
+    assert '"track_ref":{"scope":"internal_timeline","scope_id":"internal-omitted","track_id":"picture"}' in output
+    assert "page: 2 bounded values omitted" in output
     assert "full omitted values are unavailable through a bounded retrieval route" in output
+
+    assert _run("timelines", ["show", "--project", "demo", "main", "--detail"], client=_Client()) == 0
+    detail_output = capsys.readouterr().out
+    assert "omitted track: byte_limit (6500 B; limit 2048 B); sha256 track-digest" in detail_output
+    assert '"track_ref":{"scope":"internal_timeline","scope_id":"internal-omitted","track_id":"picture"}' in detail_output
 
 
 def test_timelines_show_allows_runtime_selected_scope(capsys) -> None:
