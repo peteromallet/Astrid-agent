@@ -126,8 +126,10 @@ async function handleRequest(request) {
 }
 
 function idleSeconds() {
-  const configured = Number(process.env.ASTRID_TIMELINE_FRAME_IDLE_SECONDS ?? 45);
-  return Number.isFinite(configured) ? Math.max(0, configured) : 45;
+  // Keep the browser warm through an agent's look-edit-look loop (minutes), not
+  // just one request: a cold start costs 30-50 s, a warm capture ~0.3 s a frame.
+  const configured = Number(process.env.ASTRID_TIMELINE_FRAME_IDLE_SECONDS ?? 300);
+  return Number.isFinite(configured) ? Math.max(0, configured) : 300;
 }
 
 async function runServer(socketPath) {

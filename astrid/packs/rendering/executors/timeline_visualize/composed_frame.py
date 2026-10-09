@@ -20,7 +20,7 @@ from threading import Timer
 from typing import Any
 
 RENDERER_IDENTITY = "astrid.remotion.frame-capture.v1|backend=1.0.0|remotion=4.0.509|fonts=local-bundle-v1"
-DEFAULT_IDLE_SECONDS = 45.0
+DEFAULT_IDLE_SECONDS = 300.0  # keep the Remotion owner warm across an agent's look-edit-look loop
 DEFAULT_MAX_ENTRIES = 256
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 _EPHEMERAL_ATTEMPT_PATH = re.compile(r"astrid-attempt-[^/]+(?=/)")
