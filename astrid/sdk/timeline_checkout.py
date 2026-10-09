@@ -521,18 +521,21 @@ class _MomentContext:
 
     def cut_start(self, cut_id: str) -> float:
         for g in self.tl._cut_groups():
-            if g["id"] == cut_id and g["picture"] is not None:
-                return g["picture"].start
+            if g["id"] == cut_id:
+                return g["start"]
         raise mo.MomentError(f"there is no cut {cut_id}")
 
     def own_cut(self):
         return self.tl._own_cut_span(self.clip) if self.clip is not None else None
 
     def line_in_point(self, line: str):
+        """Where the take begins on the timeline (its file's zero: a trimmed or tightened take starts later)."""
         try:
-            return Voice(self.tl, line).clips[0].start
+            first = Voice(self.tl, line).clips[0]
         except TimelineEditError:
             return None
+        speed = _num(first.data.get("speed"), 1.0) or 1.0
+        return first.start - _num(first.data.get("from")) / speed
 
 
 def tl_cache(tl: "Checkout") -> dict[str, Any]:
@@ -891,14 +894,28 @@ class Checkout:
                 out.append((clip, by_clip[clip.id]))
         return sorted(out, key=lambda item: item[1][0].start)
 
+    def _mark(self, prev: Clip, nxt: Clip, nwords: Sequence[Word]) -> float:
+        """Where the silence after ``prev`` ends: the next line's take begins (its in-point), or,
+        inside a tightened line, the next word group's first word."""
+        if intent.line(nxt.data) != intent.line(prev.data):
+            speed = _num(nxt.data.get("speed"), 1.0) or 1.0
+            return nxt.start - _num(nxt.data.get("from")) / speed
+        return nwords[0].start
+
     def _piece_gaps(self) -> dict[str, float]:
         pieces = self._pieces()
-        return {a.id: _r(wb[0].start - wa[-1].end) for (a, wa), (_b, wb) in zip(pieces, pieces[1:])}
+        return {a.id: _r(self._mark(a, b, wb) - wa[-1].end) for (a, wa), (b, wb) in zip(pieces, pieces[1:])}
 
     def gaps(self) -> dict[str, float]:
-        """The silence after each line as it is now (its speech end to the next line's first word)."""
+        """The silence after each line as it is now: its last word ends → the next line's take begins
+        (the ``gap_after_s`` of a VO script)."""
         lines = self.lines()
-        return {line.segment: _r(nxt.words[0].start - line.speech_end) for line, nxt in zip(lines, lines[1:]) if nxt.words}
+        out = {}
+        for line, nxt in zip(lines, lines[1:]):
+            first = nxt.clips[0]
+            speed = _num(first.data.get("speed"), 1.0) or 1.0
+            out[line.segment] = _r(first.start - _num(first.data.get("from")) / speed - line.speech_end)
+        return out
 
     def declare_gaps(self) -> int:
         """Record every piece's current silence as its declared gap (once, when a timeline is migrated)."""
@@ -935,7 +952,7 @@ class Checkout:
             gap = declared if declared is not None else gaps.get(clip.id)
             if gap is None:
                 continue
-            end, have = words[-1].end, nwords[0].start
+            end, have = words[-1].end, self._mark(clip, _nclip, nwords)
             delta = self.quantize(end + gap - have)
             if abs(delta) < 0.5 / self.fps:
                 continue
@@ -945,7 +962,7 @@ class Checkout:
             else:
                 start = max(end, min(point, _nclip.start + delta))
                 self.ripple_delete(self.quantize(start), self.quantize(start) - delta, skip=[clip.data])
-            report.append(f"{nwords[0].segment} ({nwords[0].text!r}) {have:.3f} → {have + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
+            report.append(f"{nwords[0].segment} ({nwords[0].text!r}) {nwords[0].start:.3f} → {nwords[0].start + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
         report += [f"{cid}: {a:.3f} → {b:.3f} s (anchored)" for cid, a, b in self.retime()]
         report += self.notes[notes_before:]
         del self.notes[notes_before:]
@@ -965,11 +982,11 @@ class Checkout:
         last = prev.clips[-1]
         gap_prev = prev.gap_after if prev.gap_after is not None else before.get(last.id, 0.3)
         gap_new = gap_after if gap_after is not None else gap_prev
-        first = self.quantize(prev.speech_end + gap_prev)  # the new line's first word
+        start = self.quantize(prev.speech_end + gap_prev)  # the new take begins
+        first = start + new_words[0][0]
         # open the room in the silence after the previous line: what was keyed to the next line moves with it
-        self.insert_time(prev.speech_end, new_words[-1][1] - new_words[0][0] + gap_new, skip=[c.data for c in prev.clips])
-        sid = self._shot_at(first)
-        start = first - new_words[0][0]
+        self.insert_time(prev.speech_end, new_words[-1][1] + gap_new, skip=[c.data for c in prev.clips])
+        sid = self._shot_at(start)
         new = {"id": f"vo-{segment}-0", "clipType": "media", "track": last.track,
                "at": _r(start - self._shot_start(sid)), "from": 0.0, "to": _r(new_words[-1][1] + 0.06)}
         for key in ("volume", "gain_db"):
@@ -1057,6 +1074,7 @@ class Checkout:
         ``on`` (or with its cut) and ends on its ``until``, its literal ``for``, or its cut's
         end. Clips without a cut only follow their ``on``/``until``. Moments floor to the frame."""
         moved: dict[int, tuple[str, float, float]] = {}
+        self._moved_ends: dict[str, tuple[float, float]] = {}
         self._mcache = None
         groups = self._cut_groups()
         for g in groups:  # 1. cut starts
@@ -1067,13 +1085,7 @@ class Checkout:
             t = self._resolve_note(on, pic, in_point=True)
             if t is not None and self._move_within_shot(pic, t, keep_end=True, moved=moved):
                 self._mcache = None
-        groups = self._cut_groups()
-        cut_span = {}
-        for k, g in enumerate(groups):
-            if g["picture"] is None:
-                continue
-            nxt = next((h for h in groups[k + 1:] if h["picture"] is not None), None)
-            cut_span[g["id"]] = (g["picture"].start, nxt["picture"].start if nxt else None)
+        cut_span = self._cut_spans()
         self._mcache = {"cuts": cut_span}
         for clip in self.clips():  # 2. every clip on its moments
             cut = intent.cut_of(clip.data)
@@ -1164,17 +1176,43 @@ class Checkout:
             return None
         spans = (self._mcache or {}).get("cuts")
         if spans is None:
-            groups = self._cut_groups()
-            spans = {}
-            for k, g in enumerate(groups):
-                if g["picture"] is None:
-                    continue
-                nxt = next((h for h in groups[k + 1:] if h["picture"] is not None), None)
-                spans[g["id"]] = (g["picture"].start, nxt["picture"].start if nxt else None)
+            spans = self._cut_spans()
         span = spans.get(cut)
         if span is None:
             return None
         return span[0], span[1] if span[1] is not None else self.duration
+
+    def orphans(self) -> list[str]:
+        """Moments that no longer resolve (their word was cut or rewritten), one readable line each:
+        ``c22.rocket  on "viral": "viral" is not spoken in n20b; did you mean …``."""
+        out = []
+        self._mcache = None
+        for clip in self.clips():
+            for field, text in (("on", intent.on(clip.data)), ("until", intent.until(clip.data))):
+                if not text:
+                    continue
+                try:
+                    mo.resolve(mo.parse(text), _MomentContext(self, clip))
+                except mo.MomentError as exc:
+                    out.append(f"{clip.address:<16} {field} {text}: {exc}")
+            for path, expr in intent.formulas(clip.data).items():
+                if isinstance(expr, Mapping) and expr.get("moment"):
+                    try:
+                        mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))
+                    except mo.MomentError as exc:
+                        out.append(f"{clip.address:<16} {path} = {expr['moment']}: {exc}")
+            fit = intent.sequence_fit(clip.data)
+            if fit and isinstance(fit.get("land"), str):
+                try:
+                    mo.resolve(mo.parse(fit["land"]), _MomentContext(self, clip))
+                except mo.MomentError as exc:
+                    out.append(f"{clip.address:<16} fit until {fit['land']}: {exc}")
+        return out
+
+    def _cut_spans(self) -> dict[str, tuple[float, float | None]]:
+        """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last)."""
+        groups = self._cut_groups()
+        return {g["id"]: (g["start"], groups[k + 1]["start"] if k + 1 < len(groups) else None) for k, g in enumerate(groups)}
 
     def _cut_groups(self) -> list[dict[str, Any]]:
         """Clips grouped by cut id, in time order; each group's picture is its bed clip (first step)."""
@@ -1234,6 +1272,7 @@ class Checkout:
                 changed = True
         if changed and id(clip.data) not in moved:
             moved[id(clip.data)] = (clip.address, old_start, clip.start)
+            self._moved_ends[clip.address] = (old_end, clip.end)
 
     def _fit_sequences(self) -> list[str]:
         """Re-lay every sequence that has a fit (see ``timeline_intent.sequence_fit``) so it lands on its word."""
@@ -1248,10 +1287,16 @@ class Checkout:
             fit = intent.sequence_fit(steps[0].data)
             if not fit:
                 continue
-            land = self._as_word(str((fit.get("land") or {}).get("word") or "")) or self.word(str((fit.get("land") or {}).get("text")))
+            spec = fit.get("land")
             start, end = steps[0].start, steps[-1].end
             total = int(round((end - start) * self.fps))
-            life = int(round((land.start - start) * self.fps))
+            if isinstance(spec, str):  # a moment: "lifetime"
+                land_t = mo.resolve(mo.parse(spec), _MomentContext(self, steps[0]))
+                land_name = spec
+            else:  # older form {word, text}
+                land = self._as_word(str((spec or {}).get("word") or "")) or self.word(str((spec or {}).get("text")))
+                land_t, land_name = land.start, repr(land.text)
+            life = int(round((land_t - start) * self.fps)) + int(fit.get("offset_frames") or 0)
             cycle = list(fit.get("cycle") or [steps[0].asset])
             lead = [int(n) for n in fit.get("lead") or []]
             plan = [(cycle[i % len(cycle)], n) for i, n in enumerate(lead)]
@@ -1288,7 +1333,7 @@ class Checkout:
                 intent.set_sequence(new, seq_id, i)
                 rows.append(new)
                 frame += n
-            changes.append(f"sequence {seq_id}: {len(steps)} → {len(plan)} steps, lands on {land.text!r} at frame {life}")
+            changes.append(f"sequence {seq_id}: {len(steps)} → {len(plan)} steps, lands on {land_name} at frame {life}")
         return changes
 
     def resolve(self) -> list[str]:
@@ -1977,7 +2022,11 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
                 lines.append((c.start, f"✎ {c.address:<{width}}  {c.start - frames / fps:.3f} → {c.start:.3f} s ({secs(frames / fps)})"))
         else:
             lines.append((first.start, f"  {len(clips)} clips moved {secs(frames / fps)} from {first.start - frames / fps:.3f} s on (everything after the change)"))
-    return [text for _t, text in sorted(lines, key=lambda item: item[0])]
+    ordered = [text for _t, text in sorted(lines, key=lambda item: item[0])]
+    # align the addresses to the widest one actually printed
+    cells = [re.match(r"^(\S\s|\s\s)(\S+)\s+(.*)$", t) for t in ordered]
+    pad = max([len(m.group(2)) for m in cells if m] + [0])
+    return [f"{m.group(1)}{m.group(2):<{pad}}  {m.group(3)}" if m else t for m, t in zip(cells, ordered)]
 
 
 def _post(value: float, expr: Mapping[str, Any]) -> Any:

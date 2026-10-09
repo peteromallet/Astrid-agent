@@ -1,0 +1,79 @@
+"""The cut sheet round-trips: what show prints, apply reads back; text, verb and code make the same change."""
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from astrid.sdk.timeline_checkout import Checkout
+from astrid.sdk.timeline_sheet import SheetError, apply_sheet, moment_range, parse_sheet, render_sheet
+
+from tests.sdk.test_timeline_checkout import FPS, bundle
+
+
+def named():
+    data = bundle()
+    a, b = data["shots"]["A"]["internal_timeline"]["clips"], data["shots"]["B"]["internal_timeline"]["clips"]
+    a[0]["app"] = {"cut": "c1", "layer": "plate", "why": "the opener"}
+    a[1]["app"] = {"cut": "c1", "layer": "rocket", "on": '"viral"'}
+    a[1]["at"] = 1.3
+    b[0]["app"] = {"cut": "c2", "layer": "plate", "on": '"Live"', "why": "live"}
+    b[1]["app"] = {"cut": "c2", "layer": "card", "for": 1.0}
+    b[0]["at"], b[0]["hold"] = 0.0, 4.0
+    a[2]["app"]["text"] = "It went viral."
+    b[2]["app"]["text"] = "Live now."
+    return data
+
+
+def test_the_sheet_reads_like_a_script():
+    tl = Checkout(named())
+    tl.resolve()
+    text = render_sheet(tl)
+    assert '  s1  "It went viral."' in text
+    assert "┃ c1" in text and "┃ c2    on \"Live\"" in text
+    assert 'rocket  sprite' in text and 'on "viral"' in text
+    assert "card" in text and "for 1s" in text
+    assert "why: the opener" in text
+
+
+def test_applying_the_printed_sheet_changes_nothing():
+    tl = Checkout(named())
+    tl.resolve()
+    assert apply_sheet(tl, render_sheet(tl)) == []
+
+
+def test_text_verb_and_code_make_the_same_change():
+    base = Checkout(named())
+    base.resolve()
+    by_text, by_code = Checkout(copy.deepcopy(base.bundle)), Checkout(copy.deepcopy(base.bundle))
+    sheet = render_sheet(by_text).replace("for 1s", 'until "now"')
+    lines = apply_sheet(by_text, sheet)
+    by_code.clip("c2.card").until("now")
+    assert by_text.document() == by_code.document()
+    assert any('c2.card' in line and 'now holds until "now"' in line for line in lines)
+
+
+def test_a_fragment_touches_only_its_cuts_and_a_new_line_adds_a_layer():
+    tl = Checkout(named())
+    tl.resolve()
+    fragment = "\n".join(line for line in render_sheet(tl).splitlines() if "c1" not in line and "rocket" not in line
+                         and "opener" not in line and "plate" not in line or "c2" in line)
+    fragment += '\n         type  stamp  type  "LIVE"  size=40  on "now"\n'
+    lines = apply_sheet(tl, fragment)
+    assert tl.clip("c2.stamp").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
+    assert any(line.startswith("+ c2.stamp") for line in lines)
+    assert tl.clip("c1.rocket")  # untouched: its cut was not in the fragment
+
+
+def test_errors_name_the_line():
+    tl = Checkout(named())
+    with pytest.raises(SheetError, match="line 2"):
+        apply_sheet(tl, "  0.00 ┃ c1\n  plate x snap-plate P on \"nonsense-word\"\n")
+    assert parse_sheet("lines\n  s1  \"x\"  gap 0.5\n")["lines"]["s1"]["gap"] == 0.5
+
+
+def test_ranges_take_words_times_and_cuts():
+    tl = Checkout(named())
+    tl.resolve()
+    assert moment_range(tl, '"went".."Live"') == (pytest.approx(0.9), pytest.approx(6.0))
+    assert moment_range(tl, "1..c2")[1] == pytest.approx(tl.clip("c2.plate").start)

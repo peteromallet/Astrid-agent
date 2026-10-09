@@ -240,8 +240,11 @@ def resolve(moment: Moment | str, ctx: Context, *, in_point: bool = False) -> fl
     return t + m.offset_s + m.offset_frames / ctx.fps
 
 
+FRAME_EPSILON = 0.02  # frames: times arrive through ms placements, so allow ~0.6 ms of rounding
+
+
 def floor_frame(seconds: float, fps: float) -> float:
-    return math.floor(seconds * fps + 1e-6) / fps
+    return math.floor(seconds * fps + FRAME_EPSILON) / fps
 
 
 def _missing(m: Moment, words: Sequence[Word]) -> str:

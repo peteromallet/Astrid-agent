@@ -205,10 +205,11 @@ def _with_beats(data):
 def test_a_longer_take_reflows_the_film_and_keeps_the_gap_overlays_and_music():
     tl = Checkout(_with_beats(bundle()))
     tl.clip("b-type").enter_at("now")
-    gap = tl.gaps()["s1"]  # 1.7 → 6.0
+    gap = tl.gaps()["s1"]  # "viral" ends 1.7 → the next take begins 5.9
+    assert gap == pytest.approx(4.2)
     moved = tl.voice("s1").replace("Q", words=[[0.1, 0.5, "it"], [0.6, 1.0, "went"], [1.4, 2.4, "viral"]])
     assert tl.word("viral").end == pytest.approx(2.9)
-    assert tl.word("Live").start - tl.word("viral").end == pytest.approx(gap, abs=1 / FPS)  # the silence is kept
+    assert tl.voice("s2").clips[0].start - tl.word("viral").end == pytest.approx(gap, abs=1 / FPS)  # the silence is kept
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)  # the overlay is still on its word
     assert [m[0] for m in moved] == ["b-type"]
     music = sorted((c for c in tl.clips() if c.track == "music"), key=lambda c: c.start)
@@ -219,11 +220,11 @@ def test_a_longer_take_reflows_the_film_and_keeps_the_gap_overlays_and_music():
 
 def test_a_declared_gap_is_honoured():
     tl = Checkout(bundle())
-    tl.voice("s1").set_gap_after(0.5)
-    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5, abs=1 / FPS)
+    tl.voice("s1").set_gap_after(0.5)  # the next take begins 0.5 s after "viral" ends ("Live" is 0.1 s into it)
+    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5 + 0.1, abs=1 / FPS)
     assert tl.voice("s1").gap_after == 0.5
     tl.voice("s1").replace("Q", words=[[0.1, 0.3, "it"], [0.4, 0.6, "went"], [0.8, 1.0, "viral"]])  # shorter
-    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5, abs=1 / FPS)
+    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5 + 0.1, abs=1 / FPS)
 
 
 def test_insert_and_remove_a_line():
@@ -233,12 +234,12 @@ def test_insert_and_remove_a_line():
     report = tl.insert_line("s1b", "Q", words=[[0.0, 0.4, "and"], [0.5, 1.0, "then"]], after="s1", gap_after=0.3)
     assert report[0].startswith("inserted line s1b")
     assert [v.segment for v in tl.lines()] == ["s1", "s1b", "s2"]
-    assert tl.word("and").start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
-    assert tl.word("Live").start == pytest.approx(tl.word("then").end + 0.3, abs=1 / FPS)
+    assert tl.voice("s1b").clips[0].start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
+    assert tl.voice("s2").clips[0].start == pytest.approx(tl.word("then").end + 0.3, abs=1 / FPS)
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
     tl.remove_line("s1b")
     assert [v.segment for v in tl.lines()] == ["s1", "s2"]
-    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
+    assert tl.voice("s2").clips[0].start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
 
 
@@ -380,6 +381,6 @@ def test_apply_script_swaps_changed_takes_and_adds_new_lines(tmp_path, monkeypat
     assert [v.segment for v in tl.lines()] == ["s1", "s1b", "s2"]
     assert "line s1: new take" in report and any(r.startswith("inserted line s1b") for r in report)
     assert tl.word("viral").end == pytest.approx(2.9)
-    assert tl.word("Live").start == pytest.approx(tl.word("really").end + 0.4, abs=1 / FPS)
+    assert tl.voice("s2").clips[0].start == pytest.approx(tl.word("really").end + 0.4, abs=1 / FPS)
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
     assert tl.voice("s2").text == "Live now."
