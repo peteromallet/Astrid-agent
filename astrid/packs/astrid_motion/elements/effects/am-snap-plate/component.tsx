@@ -9,21 +9,15 @@ import {
   clipFrames,
   elementSource,
   finiteNumber,
-  frameList,
   integerIn,
   narrowParams,
   oneOf,
   pixelImage,
-  spanList,
   type ElementComponentProps,
   type WipePattern,
 } from '../../_shared/am';
-import {
-  type PresenterTiming,
-  type Point,
-  type Span,
-  presenterView,
-} from '../am-presenter/presenter-core';
+import {type Point, type Span} from '../am-presenter/presenter-core';
+import {plateView} from './motion';
 import {MosaicImage, mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 
 // am-snap-plate: a pixel snapshot shown through an integer-zoom viewport.
@@ -85,31 +79,8 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
   }
 
   const fps = finiteNumber(props.fps, compositionFps);
-  const stepFrames = integerIn(params.stepFrames, 2, 3, 2);
-  const steps = Math.floor(frame / stepFrames);
-  const focusX0 = finiteNumber(params.focus?.x, LOGICAL_W / 2);
-  const focusY0 = finiteNumber(params.focus?.y, LOGICAL_H / 2);
-  const dx = finiteNumber(params.pan?.dx, 0);
-  const dy = finiteNumber(params.pan?.dy, 0);
-
-  const timing: PresenterTiming = {
-    fps,
-    words: spanList(params.words),
-    seed: Math.trunc(finiteNumber(params.seed, 7)),
-    blinkEvery: 0,
-    noBlink: [],
-    bob: integerIn(params.bob, 0, 1, 0),
-  };
-  const view = presenterView(
-    {
-      zoom: integerIn(params.zoom, 1, 3, 1),
-      focus: {x: focusX0 + dx * steps, y: focusY0 + dy * steps},
-      punchAt: frameList(params.punchAt),
-      push: params.push && typeof params.push === 'object' ? params.push : null,
-    },
-    timing,
-    frame,
-  );
+  // The view (zoom, push, punch, pan, bob) lives in ./motion so visualize charts the same maths.
+  const {timing, view} = plateView(props.params, frame, fps);
 
   const total = clipFrames(props.clip, fps);
   const enter = oneOf(params.enter, ENTER_EXIT, 'cut');

@@ -254,8 +254,28 @@ def _draw_track_lane(ctx: LayerContext, draw, track, y: float) -> None:
 
 # ---------------------------------------------------------------- curves (data)
 
+# plotted first when an element moves more than four ways
+CURVE_ORDER = ("zoom", "x", "y", "pan_x", "pan_y", "mouth", "reveal", "connector", "value", "step", "blink", "visible")
+
+
+def _zoom_finding(element, values, ctx: LayerContext) -> str | None:
+    """``zoom 1.00→1.35 push over 3.33 s from +0.00`` / ``zoom punch ×2 (+1 for 6 frames)``."""
+    changes = [t for (t, v), (_t2, v2) in zip(values, values[1:]) if abs(v2 - v) > 1e-6]
+    if not changes:
+        return None
+    first, last = values[0][1], values[-1][1]
+    source = "element maths" if element.maths is not None and element.maths.note is None else "visualize mirror"
+    if abs(last - first) < 1e-6:
+        rises = sum(1 for (_t, v), (_t2, v2) in zip(values, values[1:]) if v2 > v + 1e-6)
+        return f"CURVE  {element.label} zoom punch ×{rises} from {ctx.rel(changes[0])} ({source})"
+    span = changes[-1] - changes[0] + 1 / ctx.fps
+    kind = "push" if len(changes) > 2 else "zoom cut"
+    return (f"CURVE  {element.label} zoom {first:.2f}→{last:.2f} {kind} over {span:.2f} s from "
+            f"{ctx.rel(changes[0])} ({source})")
+
+
 def render_curves(ctx: LayerContext) -> LayerResult:
-    """Each element's animated properties per frame, from the element models (no pixels)."""
+    """Each element's animated properties per frame: the element's own motion.ts, else the visualize model."""
     elements = [e for e in ctx.elements if not e.audio and not e.sequence]
     rows = []
     start, end = ctx.window
@@ -264,6 +284,7 @@ def render_curves(ctx: LayerContext) -> LayerResult:
         samples = [(f / ctx.fps, model.props_at(element, f / ctx.fps + 1e-6, ctx.fps)) for f in frames]
         keys = sorted({k for _t, props in samples for k in props})
         moving = [k for k in keys if len({round(props.get(k, math.nan), 3) for _t, props in samples if k in props}) > 1]
+        moving.sort(key=lambda k: (CURVE_ORDER.index(k) if k in CURVE_ORDER else len(CURVE_ORDER), k))
         rows.append((element, samples, moving or (["visible"] if "visible" in keys else [])))
     # one row per sequence: which step is on screen (its steps are one picture cut)
     sequences: dict[str, list] = {}
@@ -311,7 +332,12 @@ def render_curves(ctx: LayerContext) -> LayerResult:
                     draw.line((x1, y0, x1, y1), fill=colour, width=1)
             changes = sum(1 for (_x0, y0), (_x1, y1) in zip(points, points[1:]) if abs(y1 - y0) > 0.01)
             distance = high - low
-            # the 1-logical-px landing of a stamp is not travel; report real moves only
+            if key == "zoom":
+                line = _zoom_finding(element, values, ctx)
+                findings.extend([line] if line else [])
+            # the 1-logical-px landing of a stamp is not travel; a pan that follows a zoom is the zoom
+            if key in ("pan_x", "pan_y") and "zoom" in keys:
+                continue
             if key in ("x", "y", "pan_x", "pan_y") and changes and distance > 2 * model.LOGICAL_PX:
                 moving_frames = [t for (t, v), (_t2, v2) in zip(values, values[1:]) if v2 != v]
                 span = (max(moving_frames) - min(moving_frames)) if len(moving_frames) > 1 else 0.0
@@ -331,6 +357,9 @@ def render_curves(ctx: LayerContext) -> LayerResult:
     static = [e.label for e, _s, keys in rows if keys in ([], ["visible"])]
     if static:
         findings.append(f"CURVE  static over the cut: {', '.join(static[:6])}{' …' if len(static) > 6 else ''}")
+    notes = {e.maths.note for e in elements if e.maths is not None and e.maths.note}
+    if notes:
+        findings.insert(0, f"CURVE  element maths unavailable ({sorted(notes)[0]}); these curves are the visualize mirror")
     return LayerResult(image, findings[:8], "curves")
 
 

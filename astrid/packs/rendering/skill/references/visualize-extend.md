@@ -9,6 +9,7 @@ You can add each one without touching the rendering pack.
 | check a new condition | a **check** (typed findings, optional fix) | same module → `CHECK` (or `Layer(..., checks=(...))`) | yes |
 | change thresholds/severities | a **rules file** | `astrid-lint.toml` next to your work | no |
 | attach new data to clips | a **data track** | `clip.app.data.<name>` in the timeline document | no (JSON) |
+| chart an element's motion exactly | **`motion.ts`** in the element folder → `motionAt` | `astrid/packs/<pack>/elements/<kind>/<id>/motion.ts` | no (TS) |
 
 Discovery: every `astrid/packs/*/visualize_layers/*.py` (not starting with `_`) is imported, and its
 `LAYER`/`LAYERS`/`CHECK`/`CHECKS` are registered. A module that raises is listed as broken and
@@ -178,3 +179,12 @@ from astrid.packs.rendering.executors.timeline_visualize.motion import data
 for track in data.by_name(ctx.tracks, "claw_contact"):
     for t, label in track.points: ...
 ```
+
+## 5. Element motion: `motion.ts`
+Curves, bounds, lip sync and lint read an element's motion from the element itself. Put the maths the
+component draws with in `motion.ts` beside `component.tsx`, have the component call it, and export
+`motionAt(params, clipFrame, fps) -> {zoom, pan_x, pan_y, x, y, mouth, …: number}` (pure: no React, no DOM).
+visualize evaluates it with the renderer's Node and esbuild for every frame of every such clip (~0.1 s), so
+a new param (a push, a pan) shows up with no visualize change. Examples: `am-presenter/motion.ts`,
+`am-snap-plate/motion.ts`. Without Node the curves say "element maths unavailable" and use the fallback
+model in `timeline_visualize/motion/model.py`.

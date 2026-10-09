@@ -9,7 +9,6 @@ import {
   FAMILY,
   LOGICAL_H,
   LOGICAL_W,
-  clamp,
   clipFrames,
   finiteNumber,
   integerIn,
@@ -18,14 +17,13 @@ import {mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 import {
   type Anchor,
   type MouthState,
-  type PresenterTiming,
   type PresenterView,
   type Point,
   type Span,
   blinkClosedAt,
   mouthStateAt,
-  presenterView,
 } from './presenter-core';
+import {presenterAt} from './motion';
 
 // am-presenter: the Remotion-animated stand-in for the speaker. It draws ONLY
 // the pixel overlay (mouth, eyes, blinks, bob) plus crisp UI chrome (label,
@@ -66,21 +64,14 @@ type Params = {
   mosaicOut?: MosaicRamp | null;
 };
 
+// zoom, focus, words, blinks, seed, bob, punchAt and push are read by ./motion.
 type Resolved = {
-  zoom: number;
-  focus: Point;
   mouth: Anchor;
   skin: string;
   lip: string;
   inner: string;
   edge: string;
-  words: Span[];
   eyes: Anchor[];
-  blinkEvery: number;
-  noBlink: Span[];
-  seed: number;
-  bob: number;
-  punchAt: number[];
   label: string;
   timecodeStart: string;
   chip: ChipSpec | null;
@@ -108,41 +99,16 @@ const anchorOr = (value: unknown, fallback: Anchor): Anchor => {
   };
 };
 
-const spansOf = (value: unknown): Span[] => {
-  if (!Array.isArray(value)) return [];
-  const spans: Span[] = [];
-  for (const item of value) {
-    if (!Array.isArray(item) || item.length < 2) continue;
-    const start = finiteNumber(item[0], Number.NaN);
-    const end = finiteNumber(item[1], Number.NaN);
-    if (Number.isFinite(start) && Number.isFinite(end) && end > start) spans.push([start, end]);
-  }
-  return spans.sort((a, b) => a[0] - b[0]);
-};
-
 const readParams = (raw: unknown): Resolved => {
   const p = narrowParams<Params>(raw);
   const chipRaw = p.chip && typeof p.chip === 'object' ? p.chip : null;
   return {
-    zoom: integerIn(p.zoom, 1, 3, 1),
-    focus: {
-      x: clamp(finiteNumber(p.focus?.x, 160), 0, LOGICAL_W),
-      y: clamp(finiteNumber(p.focus?.y, 90), 0, LOGICAL_H),
-    },
     mouth: anchorOr(p.mouth, DEFAULT_MOUTH),
     skin: hexOr(p.skin, '#EDB98E'),
     lip: hexOr(p.lip, '#2B1A14'),
     inner: hexOr(p.inner, '#7A3510'),
     edge: hexOr(p.edge, COLOR.ink),
-    words: spansOf(p.words),
     eyes: Array.isArray(p.eyes) ? p.eyes.map((e) => anchorOr(e, {x: 0, y: 0, w: 3})) : DEFAULT_EYES,
-    blinkEvery: finiteNumber(p.blinkEvery, 3.4),
-    noBlink: spansOf(p.noBlink),
-    seed: Math.trunc(finiteNumber(p.seed, 7)),
-    bob: integerIn(p.bob, 0, 1, 0),
-    punchAt: Array.isArray(p.punchAt)
-      ? p.punchAt.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0)
-      : [],
     label: typeof p.label === 'string' ? p.label : 'PLACEHOLDER · POM ON CAMERA · TAKE 03',
     timecodeStart: typeof p.timecodeStart === 'string' ? p.timecodeStart : '01:02:14:00',
     chrome: p.chrome === 'label' || p.chrome === 'none' ? p.chrome : 'full',
@@ -273,20 +239,8 @@ export default function AmPresenter(props: ElementComponentProps): ReactElement 
   const fps = finiteNumber(props.fps, config.fps);
   const p = readParams(props.params);
 
-  const timing: PresenterTiming = {
-    fps,
-    words: p.words,
-    seed: p.seed,
-    blinkEvery: p.blinkEvery,
-    noBlink: p.noBlink,
-    bob: p.bob,
-  };
-  const rawPush = narrowParams<Params>(props.params).push;
-  const view = presenterView(
-    {zoom: p.zoom, focus: p.focus, punchAt: p.punchAt, push: rawPush && typeof rawPush === 'object' ? rawPush : null},
-    timing,
-    frame,
-  );
+  // The view and timing live in ./motion so visualize charts the same maths.
+  const {timing, view} = presenterAt(props.params, frame, fps);
 
   // While the plate under this overlay is a mosaic, the crisp face pixels would
   // float over blocks, so they hide for those frames.

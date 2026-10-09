@@ -7,8 +7,9 @@ A small, pure model of a timeline window that the motion layers and
   its asset's pixel size (registry ``resolution``).
 - :func:`events`: entrances, exits and element keyframes in timeline seconds.
 - :func:`props_at`: an element's animated properties on one frame (x/y,
-  visibility, reveal progress, zoom, mouth state …), mirroring the
-  ``astrid_motion`` components so curves can be drawn without rendering.
+  visibility, reveal progress, zoom, mouth state …). An element that ships
+  ``motion.ts`` answers itself (``element_motion.py``: the component's own
+  maths, evaluated with Node); the tables below are the fallback mirror.
 - :func:`boxes_at`: declared on-screen bounds (screen px at the canvas size),
   including a presenter's face box derived from its eye/mouth anchors.
 - :func:`words`, :func:`beats_in`, :func:`sfx`: the audio side, in timeline seconds.
@@ -62,6 +63,12 @@ class Element:
     asset: str | None = None
     asset_size: tuple[int, int] | None = None
     occurrence_id: str = ""
+    # the element's own motion maths (element_motion.ElementMaths), shared by one run
+    maths: Any = field(default=None, repr=False, compare=False)
+
+    @property
+    def key(self) -> str:
+        return f"{self.id}@{self.start:.4f}"
 
     @property
     def sequence(self) -> str | None:
@@ -134,7 +141,26 @@ def elements_from_occurrences(occurrences: Iterable[Mapping[str, Any]], registry
                 occurrence_id=str(occurrence.get("occurrence_id") or ""),
             ))
     found.sort(key=lambda element: (element.start, element.id))
+    from .element_motion import ElementMaths
+
+    maths = ElementMaths(found)
+    for element in found:
+        if maths.wants(element):
+            element.maths = maths
     return found
+
+
+def own_motion(element: Element, clip_frame: int, fps: float | None = None) -> dict[str, float] | None:
+    """The element's own values (its ``motion.ts``) on a clip frame, or ``None``."""
+    return element.maths.at(element, clip_frame, fps) if element.maths is not None else None
+
+
+def view_of(element: Element, clip_frame: int, fps: float | None = None) -> tuple[float, float, float]:
+    """``(scale, originX, originY)``: the element's own view, else the mirrored ``presenter_view``."""
+    own = own_motion(element, clip_frame, fps)
+    if own and all(k in own for k in ("zoom", "pan_x", "pan_y")):
+        return LOGICAL_PX * own["zoom"], -own["pan_x"], -own["pan_y"]
+    return presenter_view(element.params, clip_frame)
 
 
 def in_window(elements: Iterable[Element], start: float, end: float, *, tolerance: float = 0.01) -> list[Element]:
@@ -370,7 +396,10 @@ def presenter_words(element: Element) -> list[tuple[float, float]]:
 
 
 def mouth_state(element: Element, clip_frame: int, fps: float) -> str:
-    """``mouthStateAt`` from am-presenter/presenter-core.ts."""
+    """``mouthStateAt`` from am-presenter/presenter-core.ts (the element's own value when it can answer)."""
+    own = own_motion(element, clip_frame, fps)
+    if own is not None and "mouth" in own:
+        return {0.0: "closed", 0.5: "half", 1.0: "open"}.get(own["mouth"], "closed")
     ordered = sorted(
         (round(s * fps), max(round(s * fps) + 1, round(e * fps))) for s, e in presenter_words(element)
     )
@@ -435,7 +464,7 @@ def face_box(element: Element, clip_frame: int = 0) -> tuple[float, float, float
     top = min(_num(e.get("y")) for e in eyes) - 0.8 * span
     bottom = _num(mouth.get("y")) + 0.5 * span
     left, right = left - 0.4 * span, right + 0.4 * span
-    scale, ox, oy = presenter_view(params, clip_frame)
+    scale, ox, oy = view_of(element, clip_frame)
     return (ox + left * scale, oy + top * scale, ox + right * scale, oy + bottom * scale)
 
 
@@ -460,7 +489,7 @@ def mouth_box(element: Element, clip_frame: int = 0) -> tuple[float, float, floa
     mouth = _map(element.params.get("mouth"))
     if not mouth:
         return None
-    scale, ox, oy = presenter_view(element.params, clip_frame)
+    scale, ox, oy = view_of(element, clip_frame)
     x, y, w = _num(mouth.get("x")), _num(mouth.get("y")), _num(mouth.get("w"), 16)
     return (ox + (x - 2) * scale, oy + (y - 3) * scale, ox + (x + w + 2) * scale, oy + (y + 5) * scale)
 
@@ -547,6 +576,9 @@ def props_at(element: Element, t: float, fps: float) -> dict[str, float]:
     if not element.start - 1e-6 <= t < element.end - 1e-6:
         return {}
     frame = int(math.floor((t - element.start) * fps + 1e-6))
+    own = own_motion(element, frame, fps)
+    if own is not None:
+        return own
     model = PROPS.get(element.type)
     return model(element, frame, fps) if model else {"visible": 1.0}
 

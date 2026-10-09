@@ -663,3 +663,93 @@ def test_diff_view_scope_condition():
     scope = [f for f in report["findings"] if f.code == "SCOPE"]
     assert report["changed_after"] == [2] and scope and "params.x 100→140" in scope[0].message
     assert not [f for f in compare(bundle(100), bundle(140), edited=[2])["findings"] if f.code == "SCOPE"]
+
+
+# --- element motion: the element's own maths, the model as fallback ---------------------
+from astrid.packs.rendering.executors.timeline_visualize.motion import element_motion  # noqa: E402
+
+V6_PUSHED = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "v6_pushed_clips.json").read_text())
+
+
+def _v6_elements():
+    elements = [model.Element(c["id"], c["clipType"], c["track"], c["at"], c["at"] + c["hold"], c["params"], c)
+                for c in V6_PUSHED["clips"]]
+    maths = element_motion.ElementMaths(elements)
+    for element in elements:
+        element.maths = maths
+    return {e.id: e for e in elements}, maths
+
+
+def _own_or_skip(maths, element):
+    values = maths.at(element, 0, V6_PUSHED["fps"])
+    if values is None:
+        pytest.skip(f"element maths unavailable here: {maths.note}")
+    return values
+
+
+def test_elements_ship_their_own_motion():
+    found = element_motion.modules()
+    assert {"am-presenter", "am-snap-plate"} <= set(found)
+    assert all(path.name == "motion.ts" and (path.parent / "element.yaml").is_file() for path in found.values())
+
+
+def test_a_real_v6_push_comes_from_the_element():
+    """c16 (48.53 s): plate and presenter push 1 -> 1.35 over 100 frames; c07: zoom 3 -> 1 from frame 98."""
+    by_id, maths = _v6_elements()
+    _own_or_skip(maths, by_id["c16-00-am-snap-plate"])
+    fps = V6_PUSHED["fps"]
+    for clip in ("c16-00-am-snap-plate", "c16-01-am-presenter"):
+        element = by_id[clip]
+        zooms = [model.own_motion(element, f, fps)["zoom"] for f in (0, 50, 100)]
+        assert zooms == pytest.approx([1.0, 1.175, 1.35])
+        assert model.props_at(element, element.start + 50 / fps + 1e-6, fps)["zoom"] == pytest.approx(1.175)
+    plate = by_id["c07-00-am-snap-plate"]
+    assert [model.own_motion(plate, f, fps)["zoom"] for f in (0, 98, 110, 138, 200)] == pytest.approx(
+        [3.0, 3.0, 2.4, 1.0, 1.0])
+    # plate and overlay stay registered through the push: the same view on every frame
+    for f in range(0, 101, 5):
+        a = model.own_motion(by_id["c16-00-am-snap-plate"], f, fps)
+        b = model.own_motion(by_id["c16-01-am-presenter"], f, fps)
+        assert (a["zoom"], a["pan_x"], a["pan_y"]) == (b["zoom"], b["pan_x"], b["pan_y"])
+    # the face box follows the element's view, so it grows with the push
+    early, late = model.face_box(by_id["c16-01-am-presenter"], 0), model.face_box(by_id["c16-01-am-presenter"], 100)
+    assert (late[2] - late[0]) == pytest.approx(1.35 * (early[2] - early[0]), rel=0.02)
+
+
+def test_the_curves_layer_reports_the_push_not_static(tmp_path, monkeypatch):
+    clips = [_clip(c["id"], c["track"], "visual", c["at"] - 48.533, c["hold"], "occ-v6", clipType=c["clipType"],
+                   params=c["params"]) for c in V6_PUSHED["clips"] if c["id"].startswith("c16")]
+    snapshot = layered_snapshot()
+    snapshot.update(clips=clips, duration_frames=101, registry={"assets": {}},
+                    occurrences=[{"occurrence_id": "occ-v6", "shot_id": "v6", "shot_name": "03 TWO PROBLEMS",
+                                  "start": 0.0, "end": 3.3667, "start_frame": 0, "end_frame": 101}])
+    result = _execute(tmp_path, snapshot, {"view": "motion", "cut": "1", "layers": "curves"}, monkeypatch)
+    findings = (Path(result["outputs"]["pack_root"]) / "findings.txt").read_text()
+    if "element maths unavailable" not in findings:
+        assert "am-snap-plate zoom 1.00→1.35 push over 3.33 s from +0.00s (element maths)" in findings
+    assert "zoom 1.00→1.35 push" in findings
+    assert "static over the cut: am-snap-plate" not in findings
+
+
+def test_without_node_the_mirror_answers_and_says_so(monkeypatch):
+    monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", "/nonexistent/node")
+    monkeypatch.setattr(element_motion.shutil, "which", lambda _name: None)
+    by_id, maths = _v6_elements()
+    plate = by_id["c16-00-am-snap-plate"]
+    assert maths.at(plate, 50, 30) is None and "no Node" in maths.note
+    assert model.props_at(plate, plate.start + 50 / 30 + 1e-6, 30)["zoom"] == pytest.approx(1.175)
+
+
+def test_the_fallback_mirror_still_matches_the_element_on_v6_pushes():
+    """If presenter-core.ts changes, this names the drift in motion/model.py (the fallback only)."""
+    by_id, maths = _v6_elements()
+    _own_or_skip(maths, by_id["c07-00-am-snap-plate"])
+    for element in by_id.values():
+        frames = round((element.end - element.start) * 30)
+        for f in range(frames):
+            own = model.own_motion(element, f, 30)
+            mirror = model.PROPS[element.type](model.Element(element.id, element.type, element.track, element.start,
+                                                             element.end, {**element.params, "bob": 0}, {}), f, 30)
+            assert own["zoom"] == pytest.approx(mirror["zoom"]), (element.id, f)
+            if "pan_x" in mirror:
+                assert own["pan_x"] == pytest.approx(mirror["pan_x"]), (element.id, f)
