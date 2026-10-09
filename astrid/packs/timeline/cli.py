@@ -1685,6 +1685,43 @@ def _visualization_artifact_summary(outputs: Mapping[str, Any]) -> dict[str, Any
     }
 
 
+def _visualize_working_copy(parsed: argparse.Namespace) -> dict[str, Any] | None:
+    """The working copy visualize reads (path, base, edits, changed cuts), or None when it reads the published head."""
+    from astrid.sdk.timeline_checkout import Checkout, find_draft
+
+    if getattr(parsed, "published", False) or getattr(parsed, "revision_id", None) or getattr(parsed, "from_revision", None):
+        return None
+    ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
+    try:
+        path = find_draft(parsed.project, ref)
+    except Exception as exc:  # the runtime is not reachable: say so, visualize the published head
+        print(f"working copy: not checked ({exc}); visualizing the published head", file=sys.stderr)
+        return None
+    if path is None:
+        return None
+    checkout = Checkout.load(path)
+    changes = list(checkout.edits().get("changes") or [])
+    return {
+        "draft": str(path),
+        "base_revision": checkout.base_revision,
+        "edits": len(changes),
+        "changed_cuts": [int(n) for n in checkout.check().changed_cuts],
+    }
+
+
+def _changed_cuts_line(cuts: list[int], *, limit: int = 12) -> str:
+    """One line: which cuts the default selection shows, paged explicitly (never silently truncated)."""
+    if not cuts:
+        return "the working copy changes no cut · --every-cut for all cuts"
+    if len(cuts) <= limit:
+        noun = "cut" if len(cuts) == 1 else "cuts"
+        return f"showing the {len(cuts)} {noun} you changed ({', '.join(map(str, cuts))}) · --every-cut for all cuts"
+    return (
+        f"showing 1–{limit} of {len(cuts)} cuts you changed ({', '.join(map(str, cuts[:limit]))}) · "
+        f"next: --cut {cuts[limit]} · --every-cut for all cuts"
+    )
+
+
 def _cmd_visualize(parsed: argparse.Namespace) -> int:
     """Run visualization through the public SDK and product output layer."""
     from astrid.sdk.contracts import DomainResult, ErrorObject
@@ -1779,6 +1816,45 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         mode = "inputs"
     else:
         mode = getattr(parsed, "mode", "auto")
+    working = _visualize_working_copy(parsed)
+    if working is not None:
+        # The working copy is the default subject. Its banner and the cut selection come first.
+        banner = (
+            f"WORKING COPY · {working['edits']} unpublished edits vs published {working['base_revision']} · "
+            "--published for the live version"
+        )
+        selected = any(
+            inputs.get(name) not in (None, "", [])
+            for name in ("cut", "range", "at", "frame", "clip", "asset", "occurrence", "shot")
+        )
+        cut_line = None
+        if not selected and not getattr(parsed, "all_cuts", False):
+            if working["changed_cuts"]:
+                inputs["cuts"] = ",".join(map(str, working["changed_cuts"][:12]))
+            cut_line = _changed_cuts_line(working["changed_cuts"])
+        elif getattr(parsed, "all_cuts", False):
+            cut_line = "showing every cut of the working copy"
+        if not parsed.json:
+            print(banner)
+            if cut_line:
+                print(cut_line)
+        # Composed frames are captured from the admitted published head; the executor has no
+        # candidate authority yet (timeline_filmstrip.prepare_filmstrip / invocation). Refuse
+        # rather than show published frames under a WORKING COPY banner.
+        message = (
+            "the working copy cannot be visualized yet: composed frames still come from the published head "
+            "(no authoring_preview authority in the visualize executor). "
+            "Use --published for the live version, or `timelines render --draft` for the working copy render."
+        )
+        if parsed.json:
+            return print_result(
+                DomainResult.failure(ErrorObject("unavailable", message, {"working_copy": working})),
+                as_json=True,
+            )
+        print(f"error unavailable: {message}", file=sys.stderr)
+        return 1
+    if getattr(parsed, "compare_with", None) and not parsed.json:
+        print("no working copy: nothing to compare (showing the published head)")
     if getattr(parsed, "plan", False):
         return _visualize_plan(parsed, inputs)
     requested_at = time.time()
@@ -1796,6 +1872,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         # preserving Runtime-owned artifact/inspection data verbatim.
         if result.ok:
             outputs = dict(result.data) if isinstance(result.data, Mapping) else {"data": result.data}
+            outputs["working_copy"] = None  # the published head was read (see the working-copy gate above)
             summary = _visualization_artifact_summary(outputs)
             if summary is not None:
                 outputs["artifact_summary"] = summary
@@ -1824,6 +1901,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         outputs = result.outputs
         if isinstance(outputs, Mapping):
             outputs = dict(outputs)
+            outputs.setdefault("working_copy", None)
             summary = _visualization_artifact_summary(outputs)
             if summary is not None:
                 outputs["artifact_summary"] = summary
@@ -2631,14 +2709,52 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
         # forwarding it as ``backend`` made the public option silently inert
         # because the manifest has no such input port.
         inputs["selector"] = parsed.backend
-    result = parsed.client.invoke_result(
-        "rendering.render",
-        kind="executor",
-        project=parsed.project,
-        inputs=inputs,
-        wait=parsed.wait,
-        timeout_seconds=parsed.timeout_seconds,
-    )
+    working = None
+    draft = getattr(parsed, "draft", None)
+    if draft is not None:
+        # --draft: the working copy is the candidate. Admitted through the managed renderer as an
+        # unpublished authoring preview (nothing is published, the published head is untouched).
+        from astrid.sdk.authoring_render_preview import render_authoring_candidate_preview
+        from astrid.sdk.timeline_checkout import Checkout, find_draft
+
+        if not parsed.ref:
+            return print_result(
+                DomainResult.failure(ErrorObject("validation_error", "render --draft needs the timeline ref", {})),
+                as_json=parsed.json,
+            )
+        try:
+            path = find_draft(parsed.project, parsed.ref, draft or "main", client=parsed.client)
+        except Exception as exc:  # the runtime is not reachable
+            return print_result(
+                DomainResult.failure(ErrorObject("unavailable", f"working copy not checked: {exc}", {})),
+                as_json=parsed.json,
+            )
+        if path is None:
+            return print_result(
+                DomainResult.failure(ErrorObject(
+                    "not_found", f"no working copy for {parsed.ref}: run `timelines checkout {parsed.ref}` first", {},
+                )),
+                as_json=parsed.json,
+            )
+        checkout = Checkout.load(path)
+        working = {
+            "draft": str(path),
+            "base_revision": checkout.base_revision,
+            "edits": len(list(checkout.edits().get("changes") or [])),
+        }
+        result = render_authoring_candidate_preview(
+            checkout.document(), parsed.client, project=parsed.project, timeline_ref=parsed.ref,
+            wait=parsed.wait, **{key: value for key, value in inputs.items() if key != "timeline_ref"},
+        )
+    else:
+        result = parsed.client.invoke_result(
+            "rendering.render",
+            kind="executor",
+            project=parsed.project,
+            inputs=inputs,
+            wait=parsed.wait,
+            timeout_seconds=parsed.timeout_seconds,
+        )
     if result.ok:
         run_id = result.kernel_run_id or result.run_id
         task_id = result.kernel_task_id
@@ -2657,6 +2773,7 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
                 "state": str((result.raw_result or {}).get("state") or ("completed" if parsed.wait else "admitted")),
                 "handoff": handoff,
                 "outputs": result.outputs,
+                "working_copy": working,
             }
         )
     else:
@@ -2686,6 +2803,11 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
         return print_result(envelope, as_json=parsed.json)
     data = envelope.data
     assert isinstance(data, Mapping)
+    if working is not None:
+        print(
+            f"WORKING COPY · {working['edits']} unpublished edits vs published {working['base_revision']} · "
+            "rendering the draft, not the published head"
+        )
     print(f"render {data['state']}")
     durable_run_id = data.get("kernel_run_id") or data.get("run_id")
     if durable_run_id:
@@ -2959,6 +3081,18 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
                                 "resolved to its first onset. Alone: one frame; with --preset motion: 1 s around it.")
     subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
     subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
+    subparser.add_argument(
+        "--published", action="store_true", default=False,
+        help="Visualize the published head, ignoring the unpublished working copy (when one exists).",
+    )
+    subparser.add_argument(
+        "--every-cut", dest="all_cuts", action="store_true", default=False,
+        help="With a working copy and no cut/range selection: every cut, not only the cuts you changed.",
+    )
+    subparser.add_argument(
+        "--compare", dest="compare_with", choices=("published",), default=None,
+        help="With a working copy: the published version and the working copy for the same cuts, labelled.",
+    )
     subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
     subparser.add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
     subparser.add_argument("--asset", default=None, help="Focus a canonical asset key.")
@@ -3137,6 +3271,10 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="Optional exact kernel config version; stale pins fail before admission.",
+    )
+    subparser.add_argument(
+        "--draft", nargs="?", const="main", default=None, metavar="NAME",
+        help='Render the working copy (unpublished draft) instead of the published head; NAME defaults to "main".',
     )
     subparser.add_argument(
         "--backend",
