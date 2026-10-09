@@ -705,6 +705,8 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
                         if timeline_row.get(key) is not None
                     },
                     **({'parent_revision_id': closure['parent_revision_id']} if closure else {}),
+                    **({'working_copy': deepcopy(dict(closure['working_copy']))}
+                       if isinstance(closure.get('working_copy'), Mapping) else {}),
                 },
             },
         }
@@ -781,6 +783,10 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         snapshot['metadata']['capture_authority'] = deepcopy(authority)
         snapshot['metadata']['capture_identity'] = capture_identity
         snapshot['metadata']['requested_revision_id'] = requested_revision or parent_revision
+        if isinstance(closure.get('working_copy'), Mapping):
+            # Provenance: these frames are of an unpublished working copy, built on this base.
+            snapshot['metadata']['working_copy'] = deepcopy(dict(closure['working_copy']))
+
         return {
             'mode': 'composed_capture',
             'project_id': project_id,
