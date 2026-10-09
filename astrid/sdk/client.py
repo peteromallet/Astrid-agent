@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
-from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST, SOURCE_COMMIT
 
 __all__ = ["AstridClient"]
 
@@ -49,19 +49,36 @@ _HANDSHAKE_KEYS = frozenset(
     }
 )
 _TARGETED_EXECUTION_BINDING_CAPABILITY = "execution_binding.targeted.v1"
+# A digest mismatch or contract-shape failure is fixed by pairing the checkouts,
+# not by reconnecting: `up` would reattach to the same mismatched Runtime.
+RUNTIME_PAIRING_FIX = (
+    "stop the running Runtime (`banodoco-local down --profile astrid`), check out "
+    f"banodoco-workspace-runtime commit {SOURCE_COMMIT}, then run "
+    "`banodoco-local up --profile astrid`"
+)
 
 
-def _protocol_error(field: str, message: str) -> Any:
+def _protocol_error(field: str, message: str, *, actual_digest: str | None = None) -> Any:
     from astrid.sdk.workspace_client import WorkspaceClientError
 
-    return WorkspaceClientError(
-        0,
-        "protocol_error",
-        message,
-        {
-            "field": field,
-            "next_action": "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
-        },
+    details: dict[str, Any] = {
+        "field": field,
+        "expected_schema_digest": SCHEMA_DIGEST,
+        "expected_runtime_commit": SOURCE_COMMIT,
+        "next_action": RUNTIME_PAIRING_FIX,
+    }
+    if actual_digest is not None:
+        details["actual_schema_digest"] = actual_digest
+    return WorkspaceClientError(0, "protocol_error", message, details)
+
+
+def _digest_mismatch(field: str, actual: object, expected: str) -> Any:
+    observed = actual if isinstance(actual, str) and actual else None
+    return _protocol_error(
+        f"{field}.schema_digest",
+        f"runtime {field} schema digest {observed or 'is missing'} does not match this Astrid "
+        f"client's expected {expected} (Runtime commit {SOURCE_COMMIT})",
+        actual_digest=observed,
     )
 
 
@@ -94,7 +111,7 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
     if health.get("protocol") != expected_protocol:
         raise _protocol_error("health.protocol", "runtime health protocol does not match workspace.v1")
     if health.get("schema_digest") != expected_digest:
-        raise _protocol_error("health.schema_digest", "runtime health schema digest does not match the client")
+        raise _digest_mismatch("health", health.get("schema_digest"), expected_digest)
     epoch = health.get("runtime_epoch")
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
         raise _protocol_error("health.runtime_epoch", "runtime health runtime_epoch is invalid")
@@ -118,7 +135,7 @@ def _validate_handshake(
     if handshake.get("protocol") != expected_protocol:
         raise _protocol_error("handshake.protocol", "runtime handshake protocol does not match workspace.v1")
     if handshake.get("schema_digest") != expected_digest:
-        raise _protocol_error("handshake.schema_digest", "runtime handshake schema digest does not match the client")
+        raise _digest_mismatch("handshake", handshake.get("schema_digest"), expected_digest)
     session_id = handshake.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
         raise _protocol_error("handshake.session_id", "runtime handshake session_id is missing")
@@ -191,16 +208,43 @@ class AstridClient:
             )
 
         def unavailable(exc: Exception) -> ServiceUnavailableError:
+            # Keep the original failure visible: the reason code, the exception
+            # class and its message, and any digest facts gathered on the way.
             fields = getattr(exc, "details", {})
-            reason = getattr(exc, "code", "unavailable")
-            return ServiceUnavailableError(
-                "runtime rejected the explicit client context; reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
-                details={
-                    "reason": reason,
-                    **(fields if isinstance(fields, dict) else {}),
-                    "next_action": "banodoco-local up --profile astrid",
-                },
-            )
+            fields = dict(fields) if isinstance(fields, Mapping) else {}
+            reason = str(getattr(exc, "code", "unavailable"))
+            cause = exc.__cause__ if exc.__cause__ is not None else exc
+            original = str(getattr(exc, "message", "") or exc)
+            details: dict[str, Any] = {
+                **fields,
+                "reason": reason,
+                "error_class": type(exc).__name__,
+                "cause_class": type(cause).__name__,
+                "cause_message": str(getattr(cause, "message", "") or cause),
+            }
+            if reason == "protocol_error":
+                details.setdefault("expected_schema_digest", SCHEMA_DIGEST)
+                details.setdefault("expected_runtime_commit", SOURCE_COMMIT)
+                observed = fields.get("actual_schema_digest") or "no comparable schema digest"
+                message = (
+                    f"runtime does not match this Astrid client ({original}): the client expects "
+                    f"schema digest {SCHEMA_DIGEST} from Runtime commit {SOURCE_COMMIT}, and the "
+                    f"runtime reports {observed}. Fix: {RUNTIME_PAIRING_FIX}"
+                )
+                details["next_action"] = RUNTIME_PAIRING_FIX
+            elif reason == "identity_mismatch":
+                message = (
+                    f"runtime rejected the explicit client context ({original}); reconfigure the "
+                    "Astrid runtime with `banodoco-local up --profile astrid`"
+                )
+                details["next_action"] = "banodoco-local up --profile astrid"
+            else:
+                message = (
+                    f"runtime request failed ({reason}: {original}); reconfigure the Astrid runtime "
+                    "with `banodoco-local up --profile astrid`"
+                )
+                details["next_action"] = "banodoco-local up --profile astrid"
+            return ServiceUnavailableError(message, details=details)
 
         def connect(endpoint_value: str, token: str) -> Any:
             workspace = WorkspaceClient(endpoint_value, token)

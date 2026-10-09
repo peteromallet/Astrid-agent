@@ -70,7 +70,12 @@ def test_generated_failure_keeps_request_correlation(monkeypatch):
 
     assert caught.value.code == "registration_unavailable"
     assert caught.value.request_id == "request-sdk-1"
-    assert caught.value.details == {"retryable": False}
+    # The runtime's own details survive; the original exception class and
+    # message are added so a caller can see what actually failed.
+    assert caught.value.details["retryable"] is False
+    assert caught.value.details["operation"] == "health"
+    assert caught.value.details["cause_class"] == "GeneratedFailure"
+    assert caught.value.details["cause_message"] == "registration unavailable"
 
 
 def test_timeline_creation_has_only_atomic_generated_route():

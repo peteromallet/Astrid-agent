@@ -34,6 +34,9 @@ __all__ = [
 ]
 
 RECONFIGURE_ACTION = "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`"
+# Exceptions that mean "the Runtime answered, but not with the contract shape"
+# (a missing field, a wrong type, a bad JSON body) rather than "no answer".
+_SHAPE_ERRORS = (AttributeError, IndexError, KeyError, TypeError, ValueError)
 
 
 def _reconfigure(field: str, message: str) -> "WorkspaceClientError":
@@ -220,64 +223,103 @@ class WorkspaceClient:
         self.actor_id: str | None = None
         self._last_handshake: Any | None = None
 
+    def _observed_schema_digest(self) -> str | None:
+        """Read the live Runtime schema digest for diagnostics (GET health only).
+
+        Best effort: a failure here must never replace the original error.
+        """
+        try:
+            _, _, body = self._generated._request("GET", "/v1/health")
+            value = self._generated._json(body)
+        except Exception:
+            return None
+        digest = value.get("schema_digest")
+        return digest if isinstance(digest, str) and digest else None
+
+    def _translate_failure(self, operation: str, exc: Exception) -> "WorkspaceClientError":
+        """Map one generated-client failure to Astrid's stable error type.
+
+        The original class and message are kept in ``details`` so a caller can
+        tell a refused connection from a contract mismatch from a missing field.
+        """
+        status = int(getattr(exc, "status", 0) or 0)
+        request_id = str(getattr(exc, "request_id", "") or "")
+        raw_details = getattr(exc, "details", None)
+        details: dict[str, Any] = dict(raw_details) if isinstance(raw_details, Mapping) else {}
+        code = getattr(exc, "code", None)
+        message = str(getattr(exc, "message", "") or "")
+        cause = message or f"{type(exc).__name__}: {exc}"
+        details.update(operation=operation, cause_class=type(exc).__name__, cause_message=cause)
+        if isinstance(code, str) and code and code != "invalid_response":
+            # A generated ApiError already carries the Runtime's stable code.
+            return WorkspaceClientError(status, code, message or str(exc), details, request_id=request_id)
+        if code == "invalid_response" or (not isinstance(code, str) and isinstance(exc, _SHAPE_ERRORS)):
+            if operation in {"health", "handshake"}:
+                observed = self._observed_schema_digest()
+                if observed:
+                    details["actual_schema_digest"] = observed
+            return WorkspaceClientError(
+                status,
+                "protocol_error",
+                f"runtime {operation} response does not match the workspace.v1 contract ({cause})",
+                details,
+                request_id=request_id,
+            )
+        return WorkspaceClientError(status, "transport_error", message or str(exc), details, request_id=request_id)
+
     def _call_generated(self, operation: str, *args: Any, **kwargs: Any) -> Any:
         """Invoke one generated operation and normalize its typed value."""
+        # Resolve exactly one method on demand.  The generated contract is
+        # versioned independently of Astrid: a partial client used for a
+        # narrow operation (for example ``settle_attempt``) must not fail
+        # while constructing a map that eagerly looks up unrelated newer
+        # operations such as ``health``.
+        operations = {
+            "health", "handshake", "doctor", "create_backup", "restore_backup",
+            "export_realm", "tombstone_realm", "recover_realm", "purge_realm",
+            "create_project", "get_project", "update_project", "list_projects",
+            "select_project", "current_project", "create_timeline",
+            "create_timeline_document", "update_timeline_document", "list_timelines",
+            "get_timeline", "get_project_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
+            "recover_timeline", "list_project_shots", "create_project_shot",
+            "inspect_timeline", "create_timeline_view",
+            "get_project_shot", "update_project_shot", "archive_project_shot",
+            "recover_project_shot", "add_shot_item", "remove_shot_item",
+            "get_project_shot_revision", "get_project_timeline_revision",
+            "get_project_parent_composition_revision",
+            "publish_parent_composition",
+            "replace_parent_composition_media",
+            "promote_project_shot_candidate", "reorder_shot_items",
+            "list_project_references", "create_project_reference",
+            "list_project_shot_text_bindings", "set_project_shot_text_binding",
+            "get_project_shot_text_binding", "set_project_shot_text_binding_by_id",
+            "rebind_project_shot_text_binding",
+            "get_project_reference", "update_project_reference", "archive_project_reference",
+            "recover_project_reference", "associate_reference", "set_primary_reference",
+            "link_references", "create_document", "list_documents", "get_document",
+            "update_document", "ingest_object", "ingest_project_object",
+            "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
+            "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
+            "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
+            "list_project_runs", "list_events", "list_run_events", "list_managed_outputs",
+            "get_managed_output", "list_generations",
+            "get_generation", "list_variants", "attach_variant_thumbnail",
+            "get_source_frame_thumbnail", "ensure_source_frame_thumbnail",
+            "mark_variant_viewed", "mark_generation_variants_viewed",
+            "create_generation", "create_variant",
+            "list_capabilities", "register_capability", "claim_task", "register_executor",
+            "settle_attempt", "fail_attempt", "publish_timeline_render",
+        }
+        if operation not in operations:
+            # Client-side misuse, not a Runtime answer: never classified as protocol_error.
+            raise ValueError(f"unknown generated workspace operation: {operation!r}")
         try:
-            # Resolve exactly one method on demand.  The generated contract is
-            # versioned independently of Astrid: a partial client used for a
-            # narrow operation (for example ``settle_attempt``) must not fail
-            # while constructing a map that eagerly looks up unrelated newer
-            # operations such as ``health``.
-            operations = {
-                "health", "handshake", "doctor", "create_backup", "restore_backup",
-                "export_realm", "tombstone_realm", "recover_realm", "purge_realm",
-                "create_project", "get_project", "update_project", "list_projects",
-                "select_project", "current_project", "create_timeline",
-                "create_timeline_document", "update_timeline_document", "list_timelines",
-                "get_timeline", "get_project_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
-                "recover_timeline", "list_project_shots", "create_project_shot",
-                "inspect_timeline", "create_timeline_view",
-                "get_project_shot", "update_project_shot", "archive_project_shot",
-                "recover_project_shot", "add_shot_item", "remove_shot_item",
-                "get_project_shot_revision", "get_project_timeline_revision",
-                "get_project_parent_composition_revision",
-                "publish_parent_composition",
-                "replace_parent_composition_media",
-                "promote_project_shot_candidate", "reorder_shot_items",
-                "list_project_references", "create_project_reference",
-                "list_project_shot_text_bindings", "set_project_shot_text_binding",
-                "get_project_shot_text_binding", "set_project_shot_text_binding_by_id",
-                "rebind_project_shot_text_binding",
-                "get_project_reference", "update_project_reference", "archive_project_reference",
-                "recover_project_reference", "associate_reference", "set_primary_reference",
-                "link_references", "create_document", "list_documents", "get_document",
-                "update_document", "ingest_object", "ingest_project_object",
-                "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
-                "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
-                "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
-                "list_project_runs", "list_events", "list_run_events", "list_managed_outputs",
-                "get_managed_output", "list_generations",
-                "get_generation", "list_variants", "attach_variant_thumbnail",
-                "get_source_frame_thumbnail", "ensure_source_frame_thumbnail",
-                "mark_variant_viewed", "mark_generation_variants_viewed",
-                "create_generation", "create_variant",
-                "list_capabilities", "register_capability", "claim_task", "register_executor",
-                "settle_attempt", "fail_attempt", "publish_timeline_render",
-            }
-            if operation not in operations:
-                raise ValueError(f"unknown generated workspace operation: {operation!r}")
             generated = getattr(self._generated, operation)
             if not callable(generated):
                 raise AttributeError(f"generated workspace operation is not callable: {operation!r}")
             value = generated(*args, **kwargs)
         except Exception as exc:  # generated ApiError has stable fields
-            raise WorkspaceClientError(
-                int(getattr(exc, "status", 0)),
-                str(getattr(exc, "code", "transport_error")),
-                str(getattr(exc, "message", exc)),
-                getattr(exc, "details", {}),
-                request_id=str(getattr(exc, "request_id", "")),
-            ) from exc
+            raise self._translate_failure(operation, exc) from exc
         def plain(item: Any) -> Any:
             if is_dataclass(item):
                 return {key: plain(child) for key, child in asdict(item).items()}
