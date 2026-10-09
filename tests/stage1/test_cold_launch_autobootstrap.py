@@ -150,6 +150,7 @@ def test_read_runtime_connection_skips_pack_host_setup(monkeypatch, tmp_path):
                 "worker_actor": "astrid-pack-host",
                 "worker_scopes": [
                     "handshake", "worker:register", "worker:execute",
+                    "projects:read",
                     "tasks:read", "objects:read", "objects:write",
                 ],
             }),
@@ -195,6 +196,7 @@ def test_default_runtime_connection_still_starts_pack_host(monkeypatch, tmp_path
                 "worker_actor": "astrid-pack-host",
                 "worker_scopes": [
                     "handshake", "worker:register", "worker:execute",
+                    "projects:read",
                     "tasks:read", "objects:read", "objects:write",
                 ],
             }),
@@ -247,6 +249,7 @@ def test_real_worker_source_handoff_starts_pack_host_after_lifecycle_filter(
                         "handshake",
                         "worker:register",
                         "worker:execute",
+                        "projects:read",
                         "tasks:read",
                         "objects:read",
                         "objects:write",
@@ -527,6 +530,8 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
                 "protocol": "workspace.v1",
                 "schema_digest": SCHEMA_DIGEST,
                 "runtime_epoch": 1,
+                "runtime_instance_id": "runtime-1",
+                "runtime_session_id": "session-1",
             }
 
         def handshake(self, *args):
@@ -537,6 +542,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
                 "session_id": "session",
                 "realm_id": "realm",
                 "actor_id": "actor",
+                "capabilities": ["execution_binding.targeted.v1"],
                 "scopes": [
                     "projects:read", "projects:write", "objects:read",
                     "objects:write", "tasks:read", "tasks:write",

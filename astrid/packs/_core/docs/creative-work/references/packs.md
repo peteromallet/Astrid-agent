@@ -26,7 +26,7 @@
 | typed_timeline | Map admitted typed rows into validated runtime render timelines using explicit mapping resources. | `astrid/packs/typed_timeline/skill/SKILL.md` |
 | understanding | Understanding pack: modality-specific LLM inspection executors for audio, images, video, and scene captioning.  Inclu... | `astrid/packs/understanding/skill/SKILL.md` |
 | vibecomfy | Import, inspect, edit, validate, and run ComfyUI workflows through VibeComfy's canonical Python/companion/source bund... | `astrid/packs/vibecomfy/skill/SKILL.md` |
-| video_editing | Video editing pack: orchestrators for the full hype pipeline, event talk videos, thumbnail generation, iteration vide... | `astrid/packs/video_editing/skill/SKILL.md` |
+| video_editing | Video editing pack: orchestrators for the full hype pipeline, event talk videos, thumbnail generation, iteration vide... | `astrid/packs/video_editing/docs/SKILL.md` |
 | wan2gp | Native Wan2GP pack — generate video through the GenericPackHost-owned persistent upstream Python session (shared.api.... | `astrid/packs/wan2gp/skill/SKILL.md` |
 | youtube | YouTube pack — acquire YouTube media (audio MP3 / video MP4 via yt-dlp) and publish finished videos to YouTube via Za... | `astrid/packs/youtube/skill/SKILL.md` |
 

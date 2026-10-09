@@ -953,9 +953,93 @@
    ]
   },
   {
+   "id": "video_editing.animate_image",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares the image-animation workflow, but this managed-host profile has not qualified its provider-backed image/video route; the projected action contract omits the provider credential and network policy needed to establish readiness. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "video_editing.cut",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/video editing capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.event_talks",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares the event-talk workflow, but this managed-host profile has not qualified its complete transcript, media, and rendering dependency path. CPU/offline defaults alone do not establish readiness. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.hype",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares the multi-step production pipeline, but this managed-host profile has not qualified readiness across its downstream action dependencies. CPU/offline defaults alone do not establish pipeline readiness. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.iteration_video",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares iteration-video orchestration over selected Runtime project runs and delegated rendering, but this managed-host profile has not qualified its end-to-end input, admission, and settlement contract. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.logo_ideas",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares provider-backed logo concept generation, but this managed-host profile has not qualified the projected provider credential and network contract for that route. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.thumbnail_maker",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares thumbnail generation, but this managed-host profile has not qualified the complete media-analysis, generation, and output dependency path. CPU/offline defaults alone do not establish readiness. Not ready or claimable in astrid-beta-current-mac.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "video_editing.vary_grid",
+   "disposition": "unsupported",
+   "evidence_reason": "V3 declares provider-backed grid-variation generation, but this managed-host profile has not qualified the projected provider credential and network contract for that route. Not ready or claimable in astrid-beta-current-mac.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"

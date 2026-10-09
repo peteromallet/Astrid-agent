@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
@@ -341,16 +341,23 @@ def _load_pack_elements_from_packs(
                     element_kind_registry=element_kind_registry,
                 )
                 if str(pack.schema_version) == "3":
-                    expected = next(
-                        key.split("/", 1)[1]
+                    declaration_key, declaration = next(
+                        (key, item)
                         for key, item in pack.rendering.items()
                         if item["type"] == "element" and (pack.root / item["path"]).resolve() == manifest
                     )
+                    expected = declaration_key.split("/", 1)[1]
                     if element.id != expected:
                         raise PackValidationError(
                             f"element descriptor identity {element.id!r} must match declared {expected!r}"
                         )
                     element.metadata.setdefault("pack_id", pack.id)
+                    element = replace(element, support_files=tuple(
+                        (pack.root / resource["path"]).resolve()
+                        for resource in declaration.get("resources", ())
+                        if resource["kind"] in {"support", "implementation"}
+                        and (pack.root / resource["path"]).resolve() != element.component
+                    ))
                 validate_element_pack_id(element.metadata.get("pack_id"), pack, element_root=root)
                 elements.append(element)
         except ElementValidationError as exc:

@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
+from astrid.core.pack.loader import _load_manifest_payload
 from astrid.core.execution.capability_ledger import load_capability_ledger
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_shipped_ledger_reconciles_historical_capability_sets():
@@ -32,7 +35,18 @@ def test_ledger_has_only_canonical_ids_models_backends_and_explicit_unmapped_lab
     assert sources["aliases"] == []
     assert sources["models"]
     assert {"local", "cloud"} <= set(sources["generation_backends"])
-    assert {row["id"] for row in sources["rendering_backends"]} >= {"rendering.ffmpeg", "rendering.remotion", "rendering.threejs"}
+    rendering_manifest = _load_manifest_payload(ROOT / "astrid/packs/rendering/pack.yaml")
+    renderer_declarations = {
+        f"rendering.{name}": declaration
+        for name, declaration in rendering_manifest["rendering"].items()
+        if declaration.get("type") == "renderer"
+    }
+    expected_renderers = {"rendering.ffmpeg", "rendering.remotion", "rendering.threejs"}
+    assert set(renderer_declarations) == expected_renderers
+    assert all(
+        (ROOT / "astrid/packs/rendering" / declaration["path"]).is_file()
+        for declaration in renderer_declarations.values()
+    )
     assert any(row["disposition"] == "unmapped_source_label" for row in sources["pack_labels"])
 
 
@@ -41,7 +55,7 @@ def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
 
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     assert host.ledger["sources"]["counts"]["pack_labels"] == 93
-    assert len(host.matrix) == 84
+    assert len(host.matrix) == 97
 
 
 def test_vibecomfy_readiness_reserves_gpu_for_workflow_execution():

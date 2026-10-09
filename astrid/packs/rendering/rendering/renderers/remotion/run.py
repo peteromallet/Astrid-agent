@@ -144,7 +144,7 @@ def _validate_project_dir(project_dir: Path) -> RemotionRuntimeTools:
     node_modules = project_dir / "node_modules"
     if not node_modules.exists():
         raise FileNotFoundError(
-            "Run `npm install` in tools/remotion/ first; "
+            f"Remotion dependencies missing: {node_modules}. Install the server-owned bundle first; "
             "see docs/reference/render-adapter.md for @banodoco adapter package install instructions"
         )
 
@@ -161,7 +161,7 @@ def _validate_project_dir(project_dir: Path) -> RemotionRuntimeTools:
     ]
     if missing:
         raise FileNotFoundError(
-            f"Missing @banodoco render package(s): {', '.join(missing)}. "
+            f"Missing @banodoco render package(s) under {node_modules}: {', '.join(missing)}. "
             "These packages are adapter-required and not published to a public npm registry. "
             "See docs/reference/render-adapter.md for adapter install instructions."
         )
@@ -551,6 +551,30 @@ def _inject_clip_asset_params(
     clip["params"] = next_params
 
 
+def _resolve_end_spanning_card_assets(
+    clip: Mapping[str, Any],
+    asset_registry: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """Resolve authored registry keys into materialized render URLs."""
+    params = clip.get("params")
+    overrides = params.get("cardAssets") if isinstance(params, Mapping) else None
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, Mapping):
+        raise ValueError("end-spanning-layer cardAssets must be an object")
+    assets = (asset_registry or {}).get("assets", {})
+    resolved: dict[str, str] = {}
+    for card, asset_id in overrides.items():
+        if card not in {f"card{i}" for i in range(6)} or not isinstance(asset_id, str) or not asset_id.strip():
+            raise ValueError("end-spanning-layer cardAssets requires card0–card5 registry keys")
+        entry = assets.get(asset_id) if isinstance(assets, Mapping) else None
+        file = entry.get("file") if isinstance(entry, Mapping) else None
+        if not isinstance(file, str) or not file.strip():
+            raise ValueError(f"end-spanning-layer card {card!r} references unresolved asset {asset_id!r}")
+        resolved[card] = file
+    return resolved
+
+
 def _stage_effect_assets_for_timeline(
     timeline_data: dict[str, Any],
     *,
@@ -558,6 +582,7 @@ def _stage_effect_assets_for_timeline(
     theme_path: Path | None,
     render_hash: str,
     composition_clip_types: frozenset[str] = frozenset(),
+    asset_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Resolve one immutable element registry for this render. Effects and
     # animation/transition references must agree even if the filesystem pack
@@ -636,7 +661,10 @@ def _stage_effect_assets_for_timeline(
     for index, key in clip_effects.items():
         clip = clips[index]
         if isinstance(clip, dict) and staged_by_effect[key]:
-            _inject_clip_asset_params(clip, staged_by_effect[key])
+            staged_assets = dict(staged_by_effect[key])
+            if key == ("local", "end-spanning-layer"):
+                staged_assets.update(_resolve_end_spanning_card_assets(clip, asset_registry))
+            _inject_clip_asset_params(clip, staged_assets)
     return {
         "root": str(public_root),
         "effects": [
@@ -869,6 +897,7 @@ def _execute_remotion_locked(
                 theme_path=theme_path,
                 render_hash=render_hash,
                 composition_clip_types=composition_clip_types,
+                asset_registry=resolved_registry,
             )
             staged_video.parent.mkdir(parents=True, exist_ok=True)
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")

@@ -20,6 +20,7 @@ from .harnesses.base import PlannedStep, ensure_symlink
 _ROOT_ROUTE_REWRITES = {
     "../../rendering/docs/SKILL.md": "packs/rendering/SKILL.md",
     "../../media/docs/references.md": "packs/media/references.md",
+    "../../video_editing/docs/SKILL.md": "packs/video_editing/SKILL.md",
     "../../video_editing/skill/SKILL.md": "packs/video_editing/SKILL.md",
     "../../references/skill/SKILL.md": "packs/references/SKILL.md",
     "../../hivemind/skill/SKILL.md": "packs/hivemind/SKILL.md",
@@ -31,6 +32,7 @@ _CREATIVE_ROUTE_REWRITES = {
     "../../../editorial/skill/SKILL.md": "../packs/editorial/SKILL.md",
     "../../../media/docs/SKILL.md": "../packs/media/SKILL.md",
     "../../../media/docs/references.md": "../packs/media/references.md",
+    "../../../video_editing/docs/SKILL.md": "../packs/video_editing/SKILL.md",
     "../../../video_editing/skill/SKILL.md": "../packs/video_editing/SKILL.md",
     "../../../rendering/docs/SKILL.md": "../packs/rendering/SKILL.md",
     "../../../iteration/skill/SKILL.md": "../packs/iteration/SKILL.md",

@@ -23,6 +23,7 @@ function suppliedRevision(value: unknown): string {
 type SceneRequest = { pkg?: ValidatedScenePackage; error?: string; revision: string };
 type SceneDocument = {
   request: SceneRequest;
+  generation: number;
   pkg: ValidatedScenePackage;
   instance: string;
   html: string;
@@ -75,16 +76,28 @@ function SceneInstance({ document, component, frame, visible, width, height, onS
     };
     window.addEventListener('message', receive);
     effectTrace('parent-listener-installed');
+    const retire = () => {
+      if (!active) return;
+      active = false;
+      effectTrace('parent-effect-cleanup'); instance.dispose(false);
+      window.removeEventListener('message', receive); effectTrace('parent-listener-removed');
+      window.removeEventListener('pagehide', pageTransition);
+      window.removeEventListener('pageshow', pageTransition);
+      if (host.current === instance) host.current = undefined;
+    };
+    const pageTransition = (event: PageTransitionEvent) => {
+      // BFCache preserves React effects, but the child disposes on pagehide.
+      // Retire synchronously, before suspension can leave deadlines/listeners
+      // alive, even when React cannot commit a cleanup until restoration.
+      if (event.persisted) retire();
+    };
+    window.addEventListener('pagehide', pageTransition);
+    window.addEventListener('pageshow', pageTransition);
     instance.initialize();
     if (desiredFrame.current) instance.request(desiredFrame.current);
     // StrictMode can replay effects while the document survives. Stop this
     // transport only; removal/navigation's pagehide owns scene disposal.
-    return () => {
-      active = false;
-      effectTrace('parent-effect-cleanup'); instance.dispose(false);
-      window.removeEventListener('message', receive); effectTrace('parent-listener-removed');
-      if (host.current === instance) host.current = undefined;
-    };
+    return retire;
   }, [document, component, diagnostic]);
   useLayoutEffect(() => {
     if (desiredFrame.current) host.current?.request(desiredFrame.current);
@@ -125,10 +138,39 @@ export function SceneSurface({ source, sourceTime, width, height, onStatus, show
   const [displayed, setDisplayed] = useState<SceneDocument>();
   const [candidate, setCandidate] = useState<SceneDocument>();
   const [displayedStatus, setDisplayedStatus] = useState<SceneStatus>();
+  const lifecycle = useRef({ suspended: false, generation: 0 });
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
+  useEffect(() => {
+    const hide = (event: PageTransitionEvent) => {
+      if (event.persisted) lifecycle.current.suspended = true;
+    };
+    const show = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      lifecycle.current.suspended = false;
+      const generation = ++lifecycle.current.generation;
+      // A restored iframe's bridge has already disposed. Clear last-good
+      // ownership and require a fresh document to acknowledge the latest frame.
+      setDisplayed(undefined); setDisplayedStatus(undefined); setCandidate(undefined);
+      const request = desired.current;
+      const value: SceneStatus = request.error
+        ? { phase: 'error', revision: request.revision, error: request.error }
+        : { phase: 'loading', revision: request.revision };
+      setStatus(value); callback.current?.(value);
+      setRestoreGeneration(generation);
+    };
+    window.addEventListener('pagehide', hide);
+    window.addEventListener('pageshow', show);
+    return () => {
+      window.removeEventListener('pagehide', hide);
+      window.removeEventListener('pageshow', show);
+    };
+  }, []);
   useEffect(() => {
     let active = true;
+    const current = () => active && desired.current === requested
+      && !lifecycle.current.suspended && lifecycle.current.generation === restoreGeneration;
     const report = (value: SceneStatus) => {
-      if (!active || desired.current !== requested) return;
+      if (!current()) return;
       setStatus(value); callback.current?.(value);
     };
     setCandidate(undefined);
@@ -138,15 +180,16 @@ export function SceneSurface({ source, sourceTime, width, height, onStatus, show
       const pkg = requested.pkg;
       report({ phase: 'loading', revision: requested.revision });
       verifyScenePackageIntegrity(pkg).then(() => {
-        if (!active || desired.current !== requested) return;
+        if (!current()) return;
         const instance = crypto.randomUUID();
-        setCandidate({ request: requested, pkg, instance, html: sceneDocument(pkg, instance) });
+        setCandidate({ request: requested, generation: restoreGeneration, pkg, instance, html: sceneDocument(pkg, instance) });
       }).catch(error => report({ phase: 'error', revision: requested.revision, error: messageOf(error) }));
     }
     return () => { active = false; };
-  }, [requested]);
+  }, [requested, restoreGeneration]);
   const receiveStatus = (document: SceneDocument, value: SceneStatus) => {
-    if (document.request !== desired.current) return;
+    if (document.request !== desired.current || lifecycle.current.suspended
+      || document.generation !== lifecycle.current.generation) return;
     if (value.phase === 'ready') {
       // SceneFrameHost reports the complete acknowledged frame. Recheck against
       // props as well as its request fence, since props may precede its effect.

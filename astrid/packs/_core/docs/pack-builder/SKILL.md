@@ -1,153 +1,144 @@
 ---
 name: pack-builder
-description: "Design and implement reusable Astrid packs and capabilities. Use when deciding whether a missing idea belongs in an existing executor, a new executor, an orchestrator, a visual element, or a timeline rendering extension, and when authoring the corresponding manifests and entrypoints."
+description: "Design and implement reusable Astrid packs and contributions. Use when deciding whether work belongs in an action, editor UI extension, rendering contribution, document format, or a personal pack, and when authoring its V3 manifest and entrypoints."
 metadata:
-  short-description: "Build reusable Astrid extension packs"
+  short-description: "Build reusable Astrid packs and contributions"
 ---
 
 # Pack Builder
 
-Use this skill when a maker wants to turn a repeatable capability into an
-Astrid extension. Start from the existing catalog and compose what is already
-available. One pack is the distribution and namespace unit: `pack.yaml`
-declares its public actions, UI, rendering, and resources. A pack is not a
-database schema, a second project store, or a new gateway command.
+Use this skill when a maker wants to turn repeatable work into a reusable
+Astrid pack. First inspect and compose the existing catalog. A pack is the
+distribution and ownership boundary; its V3 manifest declares the public
+contribution families. A folder is not an export, and a pack is not a second
+project store, schema registry, or gateway command.
 
-The detailed contracts are maintained in these authoritative guides:
+## Authoritative references
 
-- [When and how to create a pack](../../../../../docs/guides/create-a-pack.md) —
-  the current v3 authoring route, starter journeys, roles, documentation
-  pointer, validation, and inspect commands.
-- [Creating Astrid Packs (legacy v1 reference)](../../../../../docs/packs/creating-packs.md) —
-  retained protocol and migration material for existing packs; it is not the
-  current new-pack walkthrough.
-- [Creating Tools](../../../../../docs/guides/creating-tools.md) — the decision
-  rule for composing existing capabilities and choosing an executor,
-  orchestrator, element, library, or rendering extension.
+- [When and how to create a pack](../../../../../docs/guides/create-a-pack.md)
+  is the current V3 authoring route, contribution map, visual contracts,
+  scaffold command, and validation path.
 - [Pack Contract](../../../../../docs/packs/contract.md) and
-  [Pack Taxonomy](../../../../../docs/packs/pack-taxonomy.md) — identity,
-  ownership, enablement, maturity, and trust metadata.
-- [Discovery for Agents](../../../../../docs/guides/discovery-for-agents.md) —
-  the manifest-backed SDK discovery surface.
-- [SDK reference](../../../../../docs/reference/sdk.md) — invocation and
-  rendering APIs.
-- [Capability reference](../references/capabilities.md) — generated inventory
-  for quick orientation; when executor, orchestrator, or element manifests
-  change, regenerate it with
-  [`scripts/gen_capability_index.py`](../../../../../scripts/gen_capability_index.py).
-- [Video editing skill](../../../video_editing/skill/SKILL.md) — existing timeline
-  editing route; the [rendering skill](../../../rendering/docs/SKILL.md) is the
-  downstream render/evidence compatibility layer.
+  [Pack Taxonomy](../../../../../docs/packs/pack-taxonomy.md) distinguish
+  owner identity, contribution type, discovery metadata, and legacy output.
+- [Discovery for Agents](../../../../../docs/guides/discovery-for-agents.md)
+  and the [SDK reference](../../../../../docs/reference/sdk.md) document
+  runtime lookup and invocation.
+- [Creating Tools](../../../../../docs/guides/creating-tools.md) helps decide
+  whether to compose existing work or author one focused contribution.
+- The [rendering skill](../../../rendering/docs/SKILL.md) documents timeline
+  use and render compatibility.
+- [Live scene authoring](../../../rendering/docs/references/live-scenes-authoring.md)
+  documents self-contained Runtime scene objects.
 
-The runnable starter source is
-[`astrid/core/pack/cli_basic.py`](../../../../../astrid/core/pack/cli_basic.py);
-its focused contract tests are
-[`tests/core/pack/test_cli_scaffold_f08.py`](../../../../../tests/core/pack/test_cli_scaffold_f08.py).
-Link to those sources rather than maintaining another template or schema here.
+Read only the reference needed for the current choice. Use
+[`pack.json`](../../../../../astrid/core/pack/schemas/v3/pack.json) and the
+existing [starter source](../../../../../astrid/core/pack/cli_basic.py) instead
+of copying schemas or maintaining another template here.
 
-Read only the linked guide needed for the current choice. Do not copy its
-schemas or command catalog into this skill; those documents are the source of
-truth.
+## Choose the contribution
 
-Use the contribution roles narrowly: `action` exposes callable functions,
-`ui` binds a contribution to a receiving host, `rendering` declares renderer
-or rendering support, and `shared` holds support reused by the pack's own
-contributions. Declare the public surface in `pack.yaml`; implementation and
-private helpers belong under only the applicable role folders.
+1. **Existing work:** discover and inspect first. If existing contributions
+   compose to satisfy the request, add no new code.
+2. **Action:** put callable work in the V3 `actions` family. Declare its
+   invocation, inputs, outputs, and supporting resources. The SDK selector
+   `kind="action"` is the unified callable route; typed
+   `executor`/`orchestrator` selectors remain available for those specific
+   routes and older registrations.
+3. **UI:** use `ui` for an application-hosted contribution such as an editor
+   extension. Declare its entry and receiving target; keep host-specific code
+   at the declared path.
+4. **Rendering:** use `rendering` for renderer, planner, finalizer, or
+   reusable element entries. Visual element manifests describe effects,
+   animations, and transitions. This is not a separate top-level
+   `visual_elements` family; do not add one.
+5. **Document format:** use `documents` for a versioned document schema.
+   Declare the format version and schema; keep examples and supporting data as
+   declared resources.
+6. **Support files:** use `resources` for runtime/package files and
+   `authoring_only` for source material deliberately excluded from the
+   runtime package, with a reason. A `shared` folder is a starter layout
+   convention for private helpers, not a public contribution type.
+7. **No new pack:** keep an experiment in its run directory until the behavior
+   is useful and reusable.
 
-## Choose the contribution shape
-
-Use this decision map when an idea is underspecified:
-
-1. **Existing capability** — discover and inspect the catalog with
-   `astrid.sdk.discover()` and `astrid.sdk.get_capability(...)`. If existing
-   executors can be wired to satisfy the request, add no new implementation.
-2. **Action** — a callable public function. Keep its implementation and
-   action-specific helpers under `actions/`, and declare the public entry in
-   `pack.yaml`.
-3. **UI** — a contribution received by a host application. Keep host-specific
-   code under `ui/`, and declare the public contribution in `pack.yaml`.
-4. **Rendering** — renderer or rendering support owned by the pack. Declare it
-   under `rendering:` in `pack.yaml` and follow the current authoring steps in
-   the [pack guide](../../../../../docs/guides/create-a-pack.md); the rendering
-   skill remains the downstream compatibility layer.
-5. **Shared library** — support with no public runtime of its own. Keep it
-   under `shared/` and use it only from the pack's declared contributions.
-6. **No new pack** — keep one-off experiments in a run directory and do not
-   create a discoverable capability until the behavior is reusable.
-
-For a one-off experiment, keep scratch output under a run directory and do
-not create a discoverable capability until the behavior is reusable.
+Ownership and contribution type are independent. For the existing personal
+collection, retain pack ID `local` and its stable references while displaying
+the owner-facing name **Personal**. Do not migrate the ID just to change its
+label. See the [current local manifest](../../../local/pack.yaml).
 
 ## Build a pack
 
-For a new reusable pack, follow the supported authoring path in
-[When and how to create a pack](../../../../../docs/guides/create-a-pack.md):
+Use the current V3 starter:
 
-1. Scaffold with `python3 -m astrid.core.pack.cli new <pack_id> --starter
-   standalone|wrapper|nested`. Repeat `--role` for the applicable `action`,
-   `ui`, `rendering`, or `shared` roles; unused roles are omitted.
-2. Declare every public function or contribution in `pack.yaml`. Put its
-   implementation and private support under only the applicable role folder;
-   a path or folder is not an export by itself.
-3. Author exactly one ordinary `docs/SKILL.md` with YAML `name` and
-   `description` frontmatter and point to it from
-   `documentation: {kind: skill, path: docs/SKILL.md}`. Link adjacent guides,
-   references, templates, and assets normally; they are not extra skills.
-4. For a standalone pack, keep code and declaration in the pack. For a
-   wrapper, keep the external repository unchanged and use a thin adapter plus
-   its normal dependency/install route; do not vendor arbitrary upstream code.
-   For a nested integration, preserve the parent repository layout, place only
-   Astrid integration under the documented `integrations/<pack-id>/` subpath,
-   and record a pinned source declaration. `pack_subpath` does not install
-   dependencies.
-5. Reuse existing SDK capabilities through `astrid.sdk.invoke(...)`; do not
-   open the runtime database, create a local state authority, or invoke
-   `run.py` directly.
-6. Validate with `python3 -m astrid.core.pack.cli validate <path> --json`, then
-   use `python3 -m astrid.core.pack.cli inspect <pack_id> --pack-root <root>`
-   to read back the declared docs pointer and public role sections. Static
-   validation checks manifests, roots, docs, and entrypoints; it does not
-   execute pack code or install dependencies.
+    python3 -m astrid.core.pack.cli new <pack_id> --starter standalone
 
-Use the manifest schemas and templates linked by the pack guide instead of
-inventing fields. Declare network, files, subprocesses, environment, GPU,
-and external-service needs in the pack permissions; declare specific secret
-environment variables on the component manifest that reads them. Permission
-metadata is disclosure-only in the current contract.
+Repeat `--role` for supported starter layouts: `action`, `ui`,
+`rendering`, and `shared`. The role flags choose starter files; they do not
+add a top-level manifest field. The renderer starter is not a visual-element
+scaffold; for an element declaration, follow the V3 manifest shape in the
+[Personal pack](../../../local/pack.yaml).
+
+1. Choose standalone, wrapper, or nested ownership based on the source layout.
+   For wrappers keep upstream unchanged and declare its dependency; for nested
+   packs preserve the parent repository's install/build route.
+2. Declare each public contribution in the matching `pack.yaml` family.
+   Put implementation and private support under only the declared paths.
+3. Author one `docs/SKILL.md` with ordinary `name` and `description`
+   frontmatter; point `documentation` to that bundle. Link its references,
+   templates, and assets normally rather than creating more skill exports.
+4. Declare the pack's actual Python/npm/system dependencies, access needs in
+   `permissions`, and named secrets as required by their V3 contracts. These
+   disclosures do not by themselves enforce a sandbox or install arbitrary
+   upstream code.
+5. Validate and inspect the pack before using it:
+
+       python3 -m astrid.core.pack.cli validate <path> --json
+       python3 -m astrid.core.pack.cli inspect <pack_id> --pack-root <root>
+
+Static validation checks the manifest, declared paths, skill, and entrypoints;
+it does not execute code or prove runtime behavior. Use the current SDK/host
+route for discovery and invocation. The starter, rather than this skill, owns
+the scaffold files; focused coverage lives in
+[`test_cli_scaffold_f08.py`](../../../../../tests/core/pack/test_cli_scaffold_f08.py).
+
+## Visual source and runtime scenes
+
+A pack-owned visual element is a trusted source/build contribution. Its
+descriptor and resources are declared under `rendering` and included in the
+Astrid/Reigh build and generated catalog. The element kinds are effects,
+animations, and transitions; retain their owner identity and resource paths.
+Do not compile TSX at runtime or invent a second catalog.
+
+A user-authored live scene is a different object: self-contained HTML saved
+and loaded through the Runtime project-object route. Its current contract
+requires `assets: []`. It is not a TSX element, pack resource, or code-loading
+exception. Three.js is an existing host rendering path for admitted scenes,
+not a new V3 manifest family or editor pack loader.
 
 ## Implementation invariants
 
-- Discover capabilities through the SDK and manifests. Do not guess ids from
-  source-tree names.
-- Every invocation has an explicit capability `kind`; executor and
-  orchestrator ids are qualified by their owning pack.
-- Durable projects, media, timelines, tasks, runs, receipts, and events belong
-  to the workspace runtime. Attempt-local files are delivery artifacts, not a
-  parallel ledger.
-- Keep executor work atomic and inspectable. Workflow shape, retries,
-  conditional branches, and child calls belong in orchestrators.
-- Register aliases on the pack that owns the canonical capability. Do not
-  create shadow sources or compatibility sidecars.
-- For elements, preserve the owning pack's element kind and manifest contract;
-  an element is selected by the timeline and rendered through the normal
-  rendering path.
-- For rendering contributions, declare the public surface under `rendering:`
-  in `pack.yaml` and follow the current pack guide. Do not add a renderer
-  branch to the facade or ask callers to import a backend module.
-- Do not add a schema pack, SQL migration, local schema registry, or new
-  top-level gateway family as part of capability authoring.
-
-The `_core` gateway is the bounded exception: it remains manifestless and is
-composed by the existing skill sync. Its authored source is
-`astrid/packs/_core/docs/`, not a new runtime pack or a second skill export.
+- Discover public entries from manifests and use the SDK; do not guess an
+  export from a source-tree folder.
+- Keep the pack ID as the owner namespace and preserve stable contribution
+  references. A display label does not change identity.
+- Keep timeline, project, media, task, and scene state under the workspace
+  Runtime's authority.
+- Keep dependencies, permissions, secrets, and documentation aligned with
+  what the declared contributions actually use.
+- Keep TSX rendering elements on the checked-out build/catalog path; keep
+  self-contained HTML scenes on the Runtime object path.
+- Do not add a database schema pack, SQL migration, local state authority,
+  generic loader, runtime TSX compiler, or new top-level gateway family.
 
 ## Verify the result
 
-Before handoff, confirm that the pack's manifest and every contribution pass
-the static validator, that all declared paths stay inside the pack, and that a
-cold agent can discover and inspect the capability from the SDK. Run a smoke
-invocation only when the requested change includes runtime behavior and the
-required runtime/dependencies are available. For rendering contributions,
-use the rendering-specific validation and smoke path linked from the [current
-pack guide](../../../../../docs/guides/create-a-pack.md).
+Confirm the manifest and its declared paths pass the V3 validator, then
+inspect the discovered entries and documentation pointer. For runtime changes,
+use the supported host and only the checks needed to prove the behavior.
+Rendering work follows the rendering-specific validation and smoke path from
+the [current pack guide](../../../../../docs/guides/create-a-pack.md).
+
+The manifestless `_core` gateway remains an existing exception. Its authored
+source is `astrid/packs/_core/docs/`; it is composed by the existing skill
+sync and is not another manifest-backed pack export.

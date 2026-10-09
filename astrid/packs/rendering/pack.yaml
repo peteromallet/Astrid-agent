@@ -1147,3 +1147,5 @@ resources:
   path: editor/catalog.ts
 - kind: support
   path: elements/catalog.ts
+- kind: support
+  path: elements/_shared/readiness-image.tsx

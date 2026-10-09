@@ -75,11 +75,16 @@ class ElementDefinition:
     outputs: tuple[Output, ...] = ()
     runtime: dict[str, Any] = field(default_factory=dict)
     assets: tuple[ElementAsset, ...] = ()
+    support_files: tuple[Path, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["root"] = str(self.root)
         data["component"] = str(self.component)
+        if self.support_files:
+            data["support_files"] = [str(path) for path in self.support_files]
+        else:
+            data.pop("support_files", None)
         if self.assets:
             data["assets"] = {asset.name: asset.path.as_posix() for asset in self.assets}
         else:
@@ -289,6 +294,7 @@ def _parse_definition(raw: dict[str, Any]) -> ElementDefinition:
         outputs=tuple(raw.get("outputs", ()) or ()),
         runtime=_parse_runtime(raw.get("runtime"), path="element.runtime"),
         assets=_parse_assets(raw.get("assets"), element_root=Path(raw["root"]), path="element.assets"),
+        support_files=tuple(Path(path) for path in raw.get("support_files", ())),
     )
 
 

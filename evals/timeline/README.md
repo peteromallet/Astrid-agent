@@ -68,11 +68,11 @@ canonical Astrid intro.
 ## Discovery, execution, and safety
 
 For an existing timeline, the agent-facing golden path is owned by
-`astrid/packs/video_editing/skill/SKILL.md` (installed view:
+`astrid/packs/video_editing/docs/SKILL.md` (installed view:
 `packs/video_editing/SKILL.md`): open/pin → inspect the exact target → choose
 text, visual/input, or media evidence → edit a detached candidate → validate
 and diff → render only when pixel/playback evidence is needed → publish →
-reopen and read back. `astrid/packs/rendering/skill/SKILL.md` is the downstream
+reopen and read back. `astrid/packs/rendering/docs/SKILL.md` is the downstream
 render/playback evidence compatibility route. The coordinator attributes
 worker JSON/protocol health separately from semantic outcome, which is judged
 from independent before/after/readback and render/playback artifacts.

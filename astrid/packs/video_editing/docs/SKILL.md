@@ -24,6 +24,18 @@ together form the video creation and editing surface of Astrid.
 | Image-to-video animation | `video_editing.animate_image` | Two-stage pipeline: generate a still image via fal GPT Image 2 edit, then animate it with fal WAN 2.2 animate/move driven by a reference video. |
 | Grid-based variation editing | `video_editing.vary_grid` | Iterative grid editor: take an existing grid image, pick reference cells, generate a new grid of variations via fal GPT Image 2 edit. |
 
+## Managed-host readiness
+
+The V3 declarations for `video_editing.animate_image`, `event_talks`,
+`hype`, `iteration_video`, `logo_ideas`, `thumbnail_maker`, and `vary_grid`
+remain in this pack, but the `astrid-beta-current-mac` managed-host profile
+does not currently qualify them for execution. They are retained as
+discoverable declarations and are marked unsupported in that profile, so the
+host does not advertise them as ready or claim their tasks. This is a profile
+readiness limit, not retirement of the actions. Each route needs its complete
+managed-host readiness and dependency contract qualified before its profile
+disposition can change. `video_editing.cut` remains required in this profile.
+
 ## Executors
 
 | Executor | What it does |

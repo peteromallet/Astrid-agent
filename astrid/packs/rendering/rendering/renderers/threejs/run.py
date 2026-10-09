@@ -37,7 +37,6 @@ if __package__ in {None, ""}:
 
 from astrid.core import timeline
 from astrid.core.foundation.atomic_io import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.core.rendering.assets import AssetMaterializer
 from astrid.core.rendering.contracts import (
@@ -54,6 +53,7 @@ from astrid.core.rendering.errors import (
     raise_unsupported_error,
 )
 from astrid.core.rendering.service import RenderService
+from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
 from astrid.packs.rendering.shared.rendering_backend import (
     _alpha_output_name,
     _canonical_profile,
@@ -83,9 +83,8 @@ BACKEND_VERSION = "1.0.0"
 THREE_COMPOSITION_ID = "ThreeTimelineComposition"
 THREE_VERSION = "0.185.1"
 
-_DEFAULT_PROJECT_DIR = REPO_ROOT / "remotion"
 # Own-namespace config keys honored by support (render v1 takes no config).
-_CONFIG_KEYS = frozenset({"project_dir", "theme_path", "min_free_gb"})
+_CONFIG_KEYS = frozenset({"theme_path", "min_free_gb"})
 
 # The exact field set the ThreeTimelineComposition maps (composition contract):
 # text.content/fontSize/color/align/bold and
@@ -279,10 +278,7 @@ def _settings_from_request(request: RenderRequest, workspace: Path) -> _ThreeSet
     config = dict(request.backend_config.get(BACKEND_ID, {}))
     _reject_unknown_config(config, _CONFIG_KEYS, BACKEND_ID)
 
-    project_value = config.get("project_dir", _DEFAULT_PROJECT_DIR)
-    if not isinstance(project_value, (str, os.PathLike)):
-        raise TypeError("project_dir must be a path string")
-    project_dir = _input_path(os.fspath(project_value), workspace)
+    project_dir = resolve_remotion_project_dir()
 
     theme_value = config.get("theme_path")
     if theme_value is None:
@@ -303,7 +299,7 @@ def _settings_from_request(request: RenderRequest, workspace: Path) -> _ThreeSet
 
 def _default_settings() -> _ThreeSettings:
     return _ThreeSettings(
-        project_dir=_DEFAULT_PROJECT_DIR,
+        project_dir=resolve_remotion_project_dir(),
         theme_path=None,
         min_free_gb=None,
     )
@@ -335,8 +331,15 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
     try:
         settings = _settings_from_request(request, workspace)
     except (TypeError, ValueError) as exc:
-        settings = _default_settings()
-        reasons.append(str(exc))
+        return SupportReport(
+            schema_version=SCHEMA_VERSION,
+            supported=False,
+            reasons=[str(exc)],
+            features=features,
+            alternatives=[],
+            backend=BACKEND_ID,
+            backend_version=BACKEND_VERSION,
+        )
 
     timeline_path = _input_path(request.timeline_path, workspace)
     assets_path = (
@@ -442,7 +445,15 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
             recovery_command="remove rendering.threejs backend_config and retry",
             details={"backend_config": dict(own_config)},
         )
-    settings = _default_settings()
+    try:
+        settings = _default_settings()
+    except ValueError as exc:
+        raise_unsupported_error(
+            backend=BACKEND_ID,
+            message="Three.js render environment is not available",
+            recovery_command="configure the server-owned Remotion project and retry",
+            details={"reasons": [str(exc)]},
+        )
 
     timeline_path = _input_path(request.timeline_path, workspace)
     requested_assets_path = (

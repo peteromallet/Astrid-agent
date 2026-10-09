@@ -15,7 +15,11 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         for capability_id in host.matrix
         if capability_id.startswith("hivemind.")
     }
-    assert len(records) == 83
+    assert len(host.matrix) == 97
+    assert len(records) == 90
+    assert uninstalled_external_contracts == set(host.ledger["sources"]["hivemind"]["executor_ids"])
+    assert host.ledger["sources"]["hivemind"]["disposition"] == "optional_external"
+    assert all(host.matrix[capability_id]["disposition"] == "optional" for capability_id in uninstalled_external_contracts)
     assert {record.id for record in records} == set(host.matrix) - uninstalled_external_contracts
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
     for record in records:
@@ -25,6 +29,56 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         assert record.capability_digest and record.source_digest
         assert isinstance(record.manifest()["inputs"], list)
         assert isinstance(record.manifest()["outputs"], list)
+
+
+def test_unqualified_video_editing_routes_are_withdrawn_from_readiness_and_claims():
+    unsupported_ids = {
+        "video_editing.animate_image",
+        "video_editing.event_talks",
+        "video_editing.hype",
+        "video_editing.iteration_video",
+        "video_editing.logo_ideas",
+        "video_editing.thumbnail_maker",
+        "video_editing.vary_grid",
+    }
+
+    class ClaimCapture:
+        payload = None
+
+        def claim_next(self, **payload):
+            self.payload = payload
+            return None
+
+    runtime = ClaimCapture()
+    host = GenericPackHost(
+        pack_roots=[Path("astrid/packs")],
+        client=runtime,
+        credential_source={},
+    )
+    host.discover()
+    host.claim_once()
+
+    assert runtime.payload is not None
+    assert len(unsupported_ids) == 7
+    reasons = set()
+    for capability_id in unsupported_ids:
+        record = host.capabilities[capability_id]
+        reason = record.matrix["evidence_reason"]
+        assert record.matrix["disposition"] == "unsupported"
+        assert reason.startswith("V3 declares ")
+        assert "Not ready or claimable in astrid-beta-current-mac." in reason
+        reasons.add(reason)
+        assert record.adapter.family == "cpu"
+        assert record.resource_keys == ("cpu",)
+        assert record.definition.isolation.mode == "subprocess"
+        assert record.definition.isolation.network is False
+        assert record.matrix["required_env"] == []
+        assert record.matrix["required_binaries"] == []
+        assert record.matrix["required_packages"] == []
+        assert record.ready is False
+        assert record.preflight["disposition"] == {"ok": False, "reason": reason}
+        assert capability_id not in runtime.payload["capability_ids"]
+    assert len(reasons) == len(unsupported_ids)
 
 
 def test_beta_reference_family_preflight_is_truthful_on_this_machine():

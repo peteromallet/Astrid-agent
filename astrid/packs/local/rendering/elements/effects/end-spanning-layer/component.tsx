@@ -1,21 +1,17 @@
 import type {ReactElement} from 'react';
-import {Easing, Img, interpolate, staticFile, useCurrentFrame} from 'remotion';
+import {Easing, Img, interpolate, Sequence, staticFile, useCurrentFrame} from 'remotion';
 import {Video} from '@remotion/media';
 import {type ElementComponentProps, narrowParams} from '../../../../../rendering/shared/element_contracts';
 
-type TimelineSegment = {
-  id?: string;
-  start: number;
-  end: number;
-  sourceStart?: number;
-  sourceEnd?: number;
-  speed?: number;
-  label: string;
-  title: string;
-};
+import {endSpanningTiming, positive, nonnegative, validSegments, selectedSegmentIndex, type TimelineSegment} from './timing';
+
 type PhaseDurations = {prep?: number; iteration?: number; anchors?: number; workflow?: number};
 type Params = {
   __astridAssets?: Record<string, string>;
+  /** Clip-relative delay before the complete overlay is revealed. */
+  revealDelaySeconds?: number;
+  /** Fade duration after revealDelaySeconds; zero means an immediate reveal. */
+  revealDurationSeconds?: number;
   phaseDurations?: PhaseDurations;
   prepSeconds?: number;
   iterationSeconds?: number;
@@ -38,14 +34,6 @@ const INK = '#0b0703';
 const CARD_KEYS = ['card0', 'card1', 'card2', 'card3', 'card4', 'card5'] as const;
 // Six real sections from the final child-16 Minkhole timeline. Callers can
 // replace this with the current visualizer snapshot through params.
-const DEFAULT_SEGMENTS: TimelineSegment[] = [
-  {id: 'astrid', start: 0, end: 5, label: '00', title: 'ASTRID — through the glasses'},
-  {id: 'choice', start: 5, end: 8, sourceStart: 74.9347, sourceEnd: 76.4, speed: 0.4884, label: '01', title: 'Two options'},
-  {id: 'blue', start: 8, end: 19, sourceStart: 79.12, sourceEnd: 80.87, label: '02', title: 'Blue pill — manual tools'},
-  {id: 'red', start: 19, end: 22, label: '03', title: 'Red pill'},
-  {id: 'creature', start: 22, end: 26.9167, label: '04', title: 'Creature reveal — glasses edit'},
-  {id: 'reflection', start: 26.9167, end: 43.4927, label: '05', title: 'Into the minkhole — reflection close-up'},
-];
 const DEFAULT_HEADINGS = {
   prep: 'Original clip + rough voiceover',
   iteration: 'Words & timing',
@@ -53,7 +41,6 @@ const DEFAULT_HEADINGS = {
   workflow: 'Workflow running',
 } as const;
 const ITERATION_ORDER = [2, 0, 4, 1, 5, 3] as const;
-const DEFAULT_SELECTED_SEGMENT_INDEX = 2;
 const ITERATION_WORDS = [
   'You have two options.',
   'You take the blue pill.',
@@ -72,35 +59,6 @@ const easedPhase = (value: number, start: number, duration: number): number => i
   [0, 1],
   {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad)},
 );
-const positive = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
-
-const phaseValues = (params: Params, clipSeconds: number): [number, number, number, number] => {
-  const configured = params.phaseDurations ?? {};
-  const values = [
-    positive(params.prepSeconds) ?? positive(configured.prep),
-    positive(params.iterationSeconds) ?? positive(configured.iteration),
-    positive(params.anchorsSeconds) ?? positive(configured.anchors),
-    positive(params.workflowSeconds) ?? positive(configured.workflow),
-  ];
-  if (values.every((value): value is number => value !== null)) return values as [number, number, number, number];
-  // Keep the visual sequence adaptable when narration lengths change and the
-  // timeline owner omits explicit phase metadata.
-  return [0.24, 0.22, 0.2, 0.34].map((weight) => clipSeconds * weight) as [number, number, number, number];
-};
-
-const validSegments = (value: unknown): TimelineSegment[] => {
-  if (!Array.isArray(value)) return DEFAULT_SEGMENTS;
-  const result = value.filter((segment): segment is TimelineSegment => {
-    if (!segment || typeof segment !== 'object') return false;
-    const candidate = segment as Partial<TimelineSegment>;
-    return typeof candidate.start === 'number' && Number.isFinite(candidate.start)
-      && typeof candidate.end === 'number' && Number.isFinite(candidate.end) && candidate.end > candidate.start
-      && typeof candidate.label === 'string' && candidate.label.length > 0
-      && typeof candidate.title === 'string' && candidate.title.length > 0;
-  });
-  return result.length > 0 ? result : DEFAULT_SEGMENTS;
-};
-
 const renderableFile = (file: string | undefined): string | null => {
   if (!file || !file.trim()) return null;
   const value = file.trim();
@@ -167,34 +125,28 @@ function IterationWords({progress, opacity}: {progress: number; opacity: number}
 export default function EndSpanningLayer({clip, params: rawParams, assetEntry, fps}: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const params = narrowParams<Params>(rawParams);
-  const clipSeconds = positive(clip.hold) ?? positive((clip.to ?? 0) - clip.at) ?? 30;
-  const [prepSeconds, iterationSeconds, anchorsSeconds, workflowSeconds] = phaseValues(params, clipSeconds);
-  const prepEnd = prepSeconds;
-  const iterationEnd = prepEnd + iterationSeconds;
-  const anchorsEnd = iterationEnd + anchorsSeconds;
+  const {seconds, frames, effectEndFrame} = endSpanningTiming(clip, params, fps);
+  const [, iterationSeconds, anchorsSeconds, workflowSeconds] = seconds;
+  const [prepEndFrame, iterationEndFrame, anchorsEndFrame, workflowEndFrame] = frames as [number, number, number, number];
+  const prepEnd = prepEndFrame / fps;
+  const iterationEnd = iterationEndFrame / fps;
+  const anchorsEnd = anchorsEndFrame / fps;
   const moveUpSeconds = Math.min(0.75, iterationSeconds * 0.2);
   const moveDownSeconds = Math.min(0.75, anchorsSeconds * 0.2);
   const workflowMoveSeconds = Math.min(0.35, workflowSeconds * 0.12);
   const elapsed = frame / fps;
   const prepP = phase(elapsed, 0, prepEnd);
   const anchorsP = phase(elapsed, iterationEnd, anchorsEnd);
-  const workflowP = phase(elapsed, anchorsEnd, anchorsEnd + workflowSeconds);
-  const mode: TimelineStripProps['mode'] = elapsed < prepEnd ? 'prep' : elapsed < iterationEnd ? 'iteration' : elapsed < anchorsEnd ? 'anchors' : 'workflow';
+  const workflowP = phase(elapsed, anchorsEnd, Math.max(anchorsEndFrame + 1, workflowEndFrame) / fps);
+  const mode: TimelineStripProps['mode'] = frame < prepEndFrame ? 'prep' : frame < iterationEndFrame ? 'iteration' : frame < anchorsEndFrame ? 'anchors' : 'workflow';
   const segments = validSegments(params.timelineSegments);
   const cards = [...CARD_KEYS];
   const staged = params.__astridAssets ?? {};
   const url = (key: string): string => renderableFile(staged[key]) ?? staticFile(`astrid-effects/end-spanning-layer/${key}`);
-  const fallbackSelectedIndex = Math.min(segments.length - 1, DEFAULT_SELECTED_SEGMENT_INDEX);
-  const requestedIndex = typeof params.selectedSegmentIndex === 'number' && Number.isFinite(params.selectedSegmentIndex) && params.selectedSegmentIndex >= 0
-    ? params.selectedSegmentIndex
-    : null;
-  const selectedIndex = mode === 'workflow' ? (
-    typeof params.selectedSegmentId === 'string'
-      ? Math.max(0, segments.findIndex((segment) => segment.id === params.selectedSegmentId))
-      : requestedIndex === null ? fallbackSelectedIndex : Math.min(segments.length - 1, Math.floor(requestedIndex))
-  ) : null;
-  const selected = selectedIndex === null ? null : segments[selectedIndex];
-  const sourceStart = selected ? positive(selected.sourceStart) ?? selected.start : 0;
+  const workflowSelectedIndex = selectedSegmentIndex(params, segments);
+  const selectedIndex = mode === 'workflow' ? workflowSelectedIndex : null;
+  const selected = segments[workflowSelectedIndex];
+  const sourceStart = selected ? nonnegative(selected.sourceStart) ?? selected.start : 0;
   const sourceEnd = selected ? positive(selected.sourceEnd) ?? selected.end : 1;
   const sourceSpeed = selected ? positive(selected.speed) ?? 1 : 1;
   const prepSourceStart = positive(params.prepSourceStart) ?? 74.08;
@@ -233,6 +185,15 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
   const prepVideoVisible = Boolean(sourceUrl) && elapsed < prepEnd + moveUpSeconds;
   const anchorsPanelOpacity = easedPhase(elapsed, iterationEnd, moveDownSeconds);
   const workflowPanelOpacity = easedPhase(elapsed, anchorsEnd, workflowMoveSeconds);
+  const revealDelay = Number.isFinite(params.revealDelaySeconds)
+    ? Math.max(0, params.revealDelaySeconds as number)
+    : 0;
+  const revealDuration = Number.isFinite(params.revealDurationSeconds)
+    ? Math.max(0, params.revealDurationSeconds as number)
+    : 0;
+  const revealOpacity = revealDuration > 0
+    ? phase(elapsed, revealDelay, revealDelay + revealDuration)
+    : elapsed >= revealDelay ? 1 : 0;
   // Center the effect's own visual bounds on the authored canvas. These
   // offsets are deliberately independent of ReviewOverlay subtitles: the
   // content should occupy the frame naturally and captions may overlay it.
@@ -250,7 +211,7 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
               ? interpolate(elapsed, [anchorsEnd, anchorsEnd + workflowMoveSeconds], [100, 105], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad)})
               : 105;
 
-  return <div style={{position: 'absolute', inset: 0, overflow: 'hidden', opacity: fadeOut, backgroundColor: 'transparent'}}>
+  return <div style={{position: 'absolute', inset: 0, overflow: 'hidden', opacity: fadeOut * revealOpacity, backgroundColor: 'transparent'}}>
     <div style={{position: 'absolute', inset: 0, transform: `translateY(${contentShiftY}px)`}}>
       {prepVideoVisible && sourceUrl ? <div style={{position: 'absolute', left: 520, top: 44, width: 880, height: 430, opacity: prepVideoOpacity, border: `4px solid ${AMBER}`, boxShadow: '0 0 45px rgba(255,160,46,0.5)', overflow: 'hidden', backgroundColor: INK}}>
         <Video src={sourceUrl} trimBefore={prepSourceStart * fps} trimAfter={prepSourceEnd * fps} playbackRate={prepSourceSpeed} muted loop style={{width: '100%', height: '100%', objectFit: 'cover'}} />
@@ -262,10 +223,17 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
         <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(180deg, transparent 35%, rgba(8,5,2,0.88) 100%)'}} />
         <div style={{position: 'absolute', left: 24, bottom: 20, color: '#fff0db', fontFamily: 'monospace', fontSize: 22, letterSpacing: 4}}>KEYFRAME REFERENCE</div>
       </div> : null}
-      {mode === 'workflow' && sourceUrl && selected ? <div style={{position: 'absolute', left: 520, top: 44, width: 880, height: 430, opacity: workflowPanelOpacity, border: `4px solid ${AMBER}`, boxShadow: '0 0 45px rgba(255,160,46,0.5)', overflow: 'hidden', backgroundColor: INK}}>
-        <Video src={sourceUrl} trimBefore={sourceStart * fps} trimAfter={sourceEnd * fps} playbackRate={sourceSpeed} muted loop style={{width: '100%', height: '100%', objectFit: 'cover'}} />
-        <div style={{position: 'absolute', left: 24, top: 18, color: '#fff0db', fontFamily: 'monospace', fontSize: 22, letterSpacing: 4, textShadow: '0 2px 8px #000'}}>MINKHOLE OUTPUT · {selected.label}</div>
-      </div> : null}
+      {sourceUrl && selected && effectEndFrame > anchorsEndFrame ? <Sequence
+        from={anchorsEndFrame}
+        durationInFrames={effectEndFrame - anchorsEndFrame}
+        premountFor={Math.ceil(fps * 2)}
+        name="Workflow output"
+      >
+        <div style={{position: 'absolute', left: 520, top: 44, width: 880, height: 430, opacity: workflowPanelOpacity, border: `4px solid ${AMBER}`, boxShadow: '0 0 45px rgba(255,160,46,0.5)', overflow: 'hidden', backgroundColor: INK}}>
+          <Video src={sourceUrl} trimBefore={sourceStart * fps} trimAfter={sourceEnd * fps} playbackRate={sourceSpeed} muted loop style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+          <div style={{position: 'absolute', left: 24, top: 18, color: '#fff0db', fontFamily: 'monospace', fontSize: 22, letterSpacing: 4, textShadow: '0 2px 8px #000'}}>MINKHOLE OUTPUT · {selected.label}</div>
+        </div>
+      </Sequence> : null}
       <TimelineStrip segments={segments} cards={cards} rowY={460} progress={stripProgress} selectedIndex={selectedIndex} mode={mode} url={url} />
       {mode === 'iteration' || (mode === 'anchors' && elapsed < iterationEnd + moveDownSeconds)
         ? <IterationWords progress={iterationWordsProgress} opacity={iterationWordsOpacity} />

@@ -41,7 +41,7 @@ keeping the low-resolution badge readable.
 | Understand or describe an image, audio clip, or video | [understanding](../../../understanding/skill/SKILL.md) | `understanding.understand`, `understanding.scene_describe` |
 | Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | [editorial](../../../editorial/skill/SKILL.md) | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |
 | Trim or repair media, or search/download GIFs | [media](../../../media/docs/SKILL.md) | `media.clip_extract`, `media.speech_repair_lavasr`, `media.gif_search` |
-| Assemble a production video, talk, thumbnail, logo grid, or image animation | [video editing](../../../video_editing/skill/SKILL.md) | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
+| Assemble a production video, talk, thumbnail, logo grid, or image animation | [video editing](../../../video_editing/docs/SKILL.md) | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
 | Author, inspect, edit, preview, or render a runtime timeline | [timeline editing](../../../rendering/docs/SKILL.md) | `timelines show`/`timelines visualize` inspect the pinned composition; `rendering.render` creates Remotion or other renderer output |
 | Build an iteration video or compare experiment outputs | [iteration](../../../iteration/skill/SKILL.md) | `iteration.assemble`, `iteration.experiment_review` |
 | Add sound to one short video clip | [fal](../../../fal/skill/SKILL.md), then [timeline editing](../../../rendering/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then render as evidence |

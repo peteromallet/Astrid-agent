@@ -337,6 +337,157 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
+    "componentPath": "packs/local/rendering/elements/effects/animated-media-transform/component.tsx",
+    "defaults": {
+      "fit": "contain",
+      "keyframes": [
+        {
+          "at": 0,
+          "height": 1080,
+          "opacity": 1,
+          "width": 1920,
+          "x": 0,
+          "y": 0
+        }
+      ]
+    },
+    "description": "Clip-local transform keyframes interpolate in authored canvas pixels. Optional source playback segments independently preserve trims, speed changes and deliberate source resets inside one timeline clip. Uses the same component in live preview and Remotion rendering.",
+    "id": "animated-media-transform",
+    "keywords": [
+      "media",
+      "video",
+      "image",
+      "zoom",
+      "pan",
+      "fade",
+      "keyframes"
+    ],
+    "kind": "effect",
+    "label": "Animated Media Transform",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "contain",
+        "description": "",
+        "label": "Fit",
+        "name": "fit",
+        "options": [
+          {
+            "label": "Contain",
+            "value": "contain"
+          },
+          {
+            "label": "Cover",
+            "value": "cover"
+          },
+          {
+            "label": "Fill",
+            "value": "fill"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "supported",
+      "preview": "supported",
+      "workerExport": "supported"
+    },
+    "revision": "sha256:28e6d53abd61411385d154173825576e83e74e7ad5a64208dc007db455c2db2b",
+    "runtime": {
+      "adapter": "remotion"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "enum": [
+            "contain",
+            "cover",
+            "fill"
+          ],
+          "type": "string"
+        },
+        "keyframes": {
+          "description": "Increasing clip-local seconds with x/y/width/height in canvas pixels. Values interpolate linearly and clamp outside the range.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "height": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "opacity": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "width": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "x",
+              "y",
+              "width",
+              "height",
+              "opacity"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "sourceSegments": {
+          "description": "Video playback sections starting at clip-local seconds; first at 0. Rounded frame boundaries must be distinct.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "sourceStart": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "speed": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "sourceStart",
+              "speed"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "keyframes"
+      ],
+      "type": "object"
+    },
+    "shortDescription": "Animate one managed image or video through editable position, size and opacity keyframes.",
+    "source": "pack:local"
+  },
+  {
     "componentPath": "packs/rendering/rendering/elements/effects/audio-reactive-colour/component.tsx",
     "defaults": {
       "events": [],
@@ -578,6 +729,20 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
         "type": "number"
       },
       {
+        "description": "Clip-relative delay before the complete overlay is revealed.",
+        "label": "Reveal Delay Seconds",
+        "min": 0,
+        "name": "revealDelaySeconds",
+        "type": "number"
+      },
+      {
+        "description": "Fade duration after the reveal delay; zero reveals immediately.",
+        "label": "Reveal Duration Seconds",
+        "min": 0,
+        "name": "revealDurationSeconds",
+        "type": "number"
+      },
+      {
         "description": "",
         "label": "Selected Segment Index",
         "min": 0,
@@ -592,18 +757,51 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       }
     ],
     "renderability": {
-      "browserExport": "unknown",
-      "preview": "unknown",
-      "workerExport": "unknown"
+      "browserExport": "supported",
+      "preview": "supported",
+      "workerExport": "supported"
     },
-    "revision": "sha256:40f64817d75eb752d80e08dadd1888ea5ab5158683625c36ecaf5120850db03f",
-    "runtime": {},
+    "revision": "sha256:a91d9377ec28a090dc1555cbbf83367b1b4e3137664c11d2eb54fbc1b02aa95a",
+    "runtime": {
+      "adapter": "remotion"
+    },
     "schema": {
       "additionalProperties": true,
       "properties": {
         "anchorsSeconds": {
           "exclusiveMinimum": 0,
           "type": "number"
+        },
+        "cardAssets": {
+          "additionalProperties": false,
+          "description": "Optional card0–card5 overrides by timeline asset registry key. Hosts resolve managed media for preview and render; omitted cards retain the pack defaults.",
+          "properties": {
+            "card0": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card1": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card2": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card3": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card4": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card5": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
         },
         "headings": {
           "description": "Optional short headings for the four visual phases.",
@@ -662,6 +860,16 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
           "type": "number"
         },
         "prepSourceStart": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDelaySeconds": {
+          "description": "Clip-relative delay before the complete overlay is revealed.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDurationSeconds": {
+          "description": "Fade duration after the reveal delay; zero reveals immediately.",
           "minimum": 0,
           "type": "number"
         },
@@ -1396,7 +1604,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:ea7cf7286e0d00298d250193912ccffe82893b9abd93c1ca24024e9e881de63b",
+    "revision": "sha256:f9f9342125e12eeaa73dba74e7157564e58f7d7a937d4f3012885f72dcc1b4c6",
     "runtime": {
       "adapter": "remotion"
     },

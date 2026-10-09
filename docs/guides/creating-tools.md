@@ -163,94 +163,48 @@ brief and then delegates to the existing hype or render flow.
 
 ## Required Formats
 
-All shipped content lives under packs at `astrid/packs/<pack>/`. Executor and
-orchestrator ids must be qualified — `<pack>.<name>` — and the first segment
-must equal the owning pack's id (e.g. `video_editing.cut` lives in
-`packs/video_editing/`, `vibecomfy.run` lives in `packs/vibecomfy/`). Element
-ids stay bare and
-are scoped by `kind` (`effects`, `animations`, `transitions`).
+New packs use the V3 manifest at `astrid/packs/<pack>/pack.yaml`. Its
+`actions`, `ui`, `rendering`, `documents`, `resources`, and
+`authoring_only` fields are the public contribution/source declarations; a
+directory is not an implicit export. The V3 schema and authoring flow are in
+[When and how to create a pack](create-a-pack.md) and the
+[current contract](../packs/contract.md).
 
-Terminology note: pack placement, capability identity, aliases/deprecation,
-and adapter versus default-enabled semantics are defined in
-`docs/packs/contract.md`. Use that contract for identity
-questions; this guide only describes the current folder and authoring
-conventions.
+The contribution family, not the folder name, determines the role:
 
-The authoritative layout for every pack is its `pack.yaml` manifest. The
-`content` roots declared there — `executors`, `orchestrators`, `elements` —
-are what the runtime and validation use. New packs must declare their layout
-explicitly; do not rely on implicit folder discovery. See
-[create-a-pack.md](create-a-pack.md) for the current v3 pack authoring
-workflow. The [legacy pack protocol reference](../packs/creating-packs.md)
-retains older manifest schemas and migration details.
+- `actions` declares callable work. The SDK's unified selector is
+  `kind="action"`; `executor` and `orchestrator` remain supported typed
+  selectors for those routes and existing registrations.
+- `ui` declares a host-mounted UI contribution and its entry/target.
+- `rendering` declares renderer, planner, finalizer, or element entries.
+  Element manifests use `effect`, `animation`, or `transition` and retain
+  their owning pack identity.
+- `documents` declares versioned document formats. Use `resources` for
+  packaged support files and `authoring_only` for excluded authoring material.
 
-Executor folders use:
-
-```text
-astrid/packs/<pack>/executors/<name>/
-  executor.yaml      # id: "<pack>.<name>"
-  run.py
-  STAGE.md
-  src/               optional private helper package
-```
-
-Orchestrator folders use:
-
-```text
-astrid/packs/<pack>/orchestrators/<name>/
-  orchestrator.yaml  # id: "<pack>.<name>"
-  run.py
-  STAGE.md
-  src/               optional private helper package
-```
-
-Element folders use:
-
-```text
-astrid/packs/<pack>/elements/<kind>/<id>/
-  component.tsx
-  element.yaml       # id, kind (singular: animation|effect|transition),
-                     # pack_id, metadata, schema, defaults, dependencies
-```
-
-User-authored elements may live in a project-local source pack at
-`astrid/packs/local/elements/<kind>/<id>/`. Declare that pack in `pack.yaml`
-and edit its manifests directly; registry identities and digests come from
-canonical discovered manifests, with no fork, override, or dirty-tracking
-sidecar.
+For the existing one-user collection, keep the stable pack ID `local` and its
+references. The display name **Personal** communicates ownership; it does not
+change contribution IDs. The source is
+[astrid/packs/local/pack.yaml](../../astrid/packs/local/pack.yaml).
 
 ## Templates
 
-New packs use the v3 authoring CLI. Create a starter directly in the target
-pack root, then edit the generated manifest, role files, and `docs/SKILL.md`:
+Use the supported V3 starter and edit the generated declaration and files:
 
-```bash
-python3 -m astrid.core.pack.cli new my_pack \
-  --starter standalone \
-  --role action \
-  --destination ./my_pack
-```
+    python3 -m astrid.core.pack.cli new my_pack --starter standalone --role action
+    python3 -m astrid.core.pack.cli validate my_pack --json
+    python3 -m astrid.core.pack.cli inspect my_pack --pack-root .
 
-The executor and orchestrator folders below are retained legacy reference
-material and inputs to schema-v2 compatibility validation. They are not the
-current v3 scaffold source. The element folder remains a separate legacy
-reference until its owning authoring path is documented:
+The role options scaffold action, UI, renderer, and shared-support examples.
+They do not create manifest families, and the renderer starter does not create
+an element declaration. For an effect, animation, or transition, follow the
+current `rendering` entry shape in
+[the Personal pack](../../astrid/packs/local/pack.yaml) and its element
+manifest. There is no element role flag or separate `visual_elements` family.
 
-- `docs/templates/executor/`
-- `docs/templates/orchestrator/`
-- `docs/templates/element/`
-
-For a template executor's canonical invocation, run it through the SDK:
-
-```python
-import astrid.sdk as sdk
-result = sdk.invoke(
-    "rendering.render",
-    kind="executor",
-    inputs={"timeline": "runs/example/hype.timeline.json"},
-    project="demo",
-)
-```
+The older `docs/templates/executor/`, `docs/templates/orchestrator/`, and
+`docs/templates/element/` examples remain for legacy compatibility and
+migration. Do not copy them as the V3 starter source.
 
 Then run:
 
@@ -264,15 +218,17 @@ you created instead of guessing from ids alone.
 
 ## Review Checklist
 
-- The new capability is reachable through the SDK (`astrid.sdk.discover()` /
-  `get_capability`).
-- The folder has the required manifest, `run.py`, and `STAGE.md` or element
-  files.
-- The `STAGE.md` says when to use it and gives the canonical invocation.
-- Inputs, outputs, cache behavior, isolation, dependencies, and network use are
-  declared in metadata.
-- Runtime outputs are published through the runtime and stored in its configured data folder; alternate exports must be explicit.
-- Focused tests cover registry discovery and the behavior that can break.
+- The V3 declaration and paths pass
+  `python3 -m astrid.core.pack.cli validate <path> --json`.
+- The matching manifest section, entry paths, resources, dependencies,
+  permissions, and authored documentation describe the behavior it provides.
+- The SDK/host discovers callable work through `kind="action"`, or exposes a
+  rendering, UI, or document contribution through its declared host surface.
+  Visual elements are inspected with `get_capability(..., kind="element")`
+  and selected by timelines; they are not invoked as actions.
+- Behavior changes are checked through their supported host/runtime route.
+  Use focused tests for the identity or behavior that could break; manifest
+  validation alone is not a runtime proof.
 
 ## Related Guides
 

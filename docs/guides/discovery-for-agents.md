@@ -50,25 +50,31 @@ documentation:
 The pack authors that ordinary `docs/SKILL.md` with YAML `name` and
 `description` frontmatter. Adjacent Markdown, references, templates, and
 assets are normal relative links, not additional skills. Public actions, UI,
-and rendering contributions are declared in `pack.yaml`; `shared` is support
-for the pack's own contributions. A folder is not an export merely because it
-exists. The manifestless `_core` gateway is the exception and remains composed
-as Astrid's gateway.
+rendering entries, and document formats are declared in `pack.yaml`; `shared`
+is support for the pack's own contributions. A folder is not an export merely
+because it exists. The manifestless `_core` gateway is the exception and
+remains composed as Astrid's gateway.
 
 See the formal vocabulary in
 [docs/packs/contract.md](../packs/contract.md).
 
-For the taxonomy fields that classify packs for discovery and filtering
-(`origin`, `install_tier`, `pack_type`, `domain`, `stability`, `support`),
-see [docs/packs/pack-taxonomy.md](../packs/pack-taxonomy.md).
+For current V3 pack metadata (domain, status, visibility, stability, and
+support), see [docs/packs/pack-taxonomy.md](../packs/pack-taxonomy.md).
+Normalized inspect output may still expose legacy origin/install_tier/pack_type
+compatibility values; do not add those fields to a V3 source manifest.
 
-## Three Capability Kinds
+## V3 Contribution Families and SDK Selectors
 
-| Kind | SDK surface | Purpose | Example |
+| Manifest family | SDK/host route | Purpose | Example |
 |---|---|---|---|
-| Executor | `sdk.get_capability` / `sdk.invoke` | Single-step tool (render, transcribe, generate) | `rendering.render` |
-| Orchestrator | `sdk.get_capability` / `sdk.invoke` | Multi-step pipeline | `video_editing.hype` |
-| Element | `sdk.get_capability` / `sdk.invoke` | Reusable render building block (effect, animation) | `effects/text-card` |
+| `actions` | `sdk.invoke(..., kind="action")` | Callable V3 operations. | `rendering.assemble_timeline` |
+| `ui` | Receiving UI host | Editor or other declared UI contribution. | A pack's declared editor entry. |
+| `rendering` | Rendering host; inspect elements with `sdk.get_capability(..., kind="element")` | Renderer, planner, finalizer, or reusable visual element. | The existing text-card effect. |
+| `documents` | Document-aware host | Versioned document format and schema. | A pack-declared document format. |
+
+`resources` and `authoring_only` are supporting declarations, not public
+contribution families. The legacy/runtime capability kinds executor and
+orchestrator remain supported as typed selectors for existing callable routes.
 
 ## Step-by-Step Discovery Flow
 
@@ -112,10 +118,13 @@ result = sdk.invoke(
 ```
 
 `invoke` returns an `InvocationResult` with the produced outputs and
-provenance. `kind` is required, and every executor run belongs to exactly
-one project: pass `project=<slug>` and omit `out` — project-scoped runs
-write inside the project's own `runs/<run-id>/` tree. Input names map to
-the executor's declared inputs and flags (`--input name=value` style).
+provenance. For V3 callable contributions, `kind="action"` is the unified
+selector; `kind="executor"` and `kind="orchestrator"` remain typed
+selectors for those specific routes and existing registrations. Every
+project-scoped callable run belongs to one project: pass `project=<slug>`
+and omit `out` — project-scoped runs write inside the project's own
+`runs/<run-id>/` tree. Input names map to the declared inputs and flags
+(`--input name=value` style).
 
 ## The `_capability` Identity Block
 
@@ -123,7 +132,10 @@ Every inspect response includes a `_capability` section with:
 
 - `canonical_id` — the fully-qualified id (e.g., `"generation.generate_image"`)
 - `local_id` — the id without pack prefix (e.g., `"generate_image"`)
-- `kind` — `"executor"`, `"orchestrator"`, or the element kind
+- `kind` — the resolved callable kind (`"executor"` or
+  `"orchestrator"`) or the element kind. The selector argument also accepts
+  unified `"action"` for callable lookup; this does not change the resolved
+  identity.
 - `pack_id` — owning pack (e.g., `"generation"`)
 - `aliases` — list of public alias names
 - `deprecated` / `deprecation_message` / `deprecated_alternatives`
@@ -132,12 +144,14 @@ Every inspect response includes a `_capability` section with:
 
 ## Picking the Right Capability Kind
 
-- **Need a single, concrete operation?** Use an executor. They take inputs,
-  produce outputs, and run in one shot.
-- **Need a multi-step workflow with decisions?** Use an orchestrator. They
-  compose child executors and orchestrators.
-- **Need a render building block?** Use an element. They're reusable visual
-  components (effects, animations, transitions) assembled by render pipelines.
+- **Need callable V3 work?** Declare it in `actions` and use the unified
+  `kind="action"` SDK selector.
+- **Need a specific legacy/runtime route?** Use the typed `executor` or
+  `orchestrator` selector where that is the registered contract.
+- **Need reusable visual behavior?** Declare it under `rendering` as an
+  element kind (effect, animation, or transition), inspect its owner-scoped
+  identity, then use it through the rendering host. Elements are not invoked
+  as actions.
 
 ## Recoverable CLI Choices
 

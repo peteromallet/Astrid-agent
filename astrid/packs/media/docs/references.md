@@ -57,7 +57,7 @@ filesystem path, or local cache fallback.
 
 For generating new variants, follow the [generation skill](../../generation/skill/SKILL.md).
 For placing media in an existing video timeline, follow the [video editing
-existing-timeline route](../../video_editing/skill/SKILL.md); rendering is
+existing-timeline route](../../video_editing/docs/SKILL.md); rendering is
 downstream evidence.
 Return to [creative work](../../_core/docs/creative-work/SKILL.md) for capability selection.
 

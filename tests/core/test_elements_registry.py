@@ -75,8 +75,8 @@ class ElementRegistryTest(unittest.TestCase):
         self.assertEqual(animation_fade.kind, "animations")
         self.assertEqual(transition_fade.kind, "transitions")
         self.assertNotEqual(animation_fade.root, transition_fade.root)
-        self.assertTrue(str(animation_fade.root).endswith("astrid/packs/rendering/elements/animations/fade"))
-        self.assertTrue(str(transition_fade.root).endswith("astrid/packs/rendering/elements/transitions/fade"))
+        self.assertTrue(str(animation_fade.root).endswith("astrid/packs/rendering/rendering/elements/animations/fade"))
+        self.assertTrue(str(transition_fade.root).endswith("astrid/packs/rendering/rendering/elements/transitions/fade"))
 
     def test_rendering_pack_defaults_are_discovered_with_pack_source(self) -> None:
         from unittest import mock

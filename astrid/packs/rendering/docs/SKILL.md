@@ -10,7 +10,7 @@ description: >
 
 This is the canonical skill for runtime-owned timeline work: inspect → edit →
 validate → save, with Remotion rendering and effect/evidence workflows when
-needed. The broader [video editing skill](../../video_editing/skill/SKILL.md)
+needed. The broader [video editing skill](../../video_editing/docs/SKILL.md)
 owns production orchestrators such as hype edits, talks, thumbnails, and logo
 grids; it is not a second timeline-authoring route. In a checkout the source is
 `astrid/packs/rendering/docs/SKILL.md`; in an installed skill view it is

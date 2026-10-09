@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -29,13 +30,20 @@ def test_public_package_is_bounded_content_addressed_and_importable(tmp_path: Pa
     assert receipt.file_count == manifest["file_count"]
     assert package_root.name == manifest["tree_sha256"]
     assert Path(receipt.skill_path).is_file()
+    canonical_skill = REPO_ROOT / "astrid/packs/video_editing/docs/SKILL.md"
+    packaged_skill = Path(receipt.skill_path)
+    assert receipt.skill_path == str(package_root / "astrid/packs/video_editing/docs/SKILL.md")
+    assert packaged_skill.read_bytes() == canonical_skill.read_bytes()
+    skill_digest = hashlib.sha256(canonical_skill.read_bytes()).hexdigest()
+    skill_row = next(row for row in manifest["files"] if row["path"] == "astrid/packs/video_editing/docs/SKILL.md")
+    assert skill_row["sha256"] == skill_digest
 
     relative_paths = {row["path"] for row in manifest["files"]}
     assert "pyproject.toml" in relative_paths
     assert "astrid/__main__.py" in relative_paths
     assert "astrid/sdk/__init__.py" in relative_paths
-    assert "astrid/packs/video_editing/skill/SKILL.md" in relative_paths
-    assert "astrid/packs/rendering/skill/SKILL.md" in relative_paths
+    assert "astrid/packs/video_editing/docs/SKILL.md" in relative_paths
+    assert "astrid/packs/rendering/docs/SKILL.md" in relative_paths
     assert not any(
         forbidden in Path(path).parts
         for path in relative_paths

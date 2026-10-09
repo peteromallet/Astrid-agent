@@ -174,7 +174,11 @@ def test_declared_local_rendering_assets_are_projected_without_directory_widenin
         assert f"{directory}/*.mp4" in patterns
 
     declared = _declared_local_rendering_assets()
-    assert len(declared) == 44
+    assert len(declared) == 47
+    assert {
+        f"packs/local/rendering/elements/effects/end-spanning-layer/assets/card-{index}-canonical-mink.png"
+        for index in (0, 4, 5)
+    } <= declared
     assert all((PACKAGE_ROOT / path).is_file() for path in declared)
 
     projected = _projected_package_data(PACKAGE_ROOT)

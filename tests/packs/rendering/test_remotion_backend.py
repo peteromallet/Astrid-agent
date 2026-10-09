@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from astrid.core import timeline
+from astrid.core.element.registry import ElementRegistry
 from astrid.core.element.schema import ElementAsset, ElementDefinition
 from astrid.core.pack.discovery import discover_pack_metadata
 from astrid.core.rendering import remotion_runtime
@@ -943,6 +944,8 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             props_paths: list[Path] = []
             remotion_temp_roots: list[Path] = []
 
+            pack_order = render_remotion._active_pack_order_for_provenance()
+
             def fake_run(cmd, **kwargs):
                 command = [str(part) for part in cmd]
                 calls.append((command, kwargs))
@@ -969,6 +972,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
                     clear=True,
                 ),
                 mock.patch.object(render_remotion.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(render_remotion, "_active_pack_order_for_provenance", return_value=pack_order),
             ):
                 result, provenance = _execute_direct(
                     timeline_path,
@@ -1082,6 +1086,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
                     "_effect_registry_for_assets",
                     return_value=({"sparkle": used, "unused": unused}, {"sparkle-alias": "sparkle"}),
                 ),
+                mock.patch.object(render_remotion, "load_default_registry", return_value=ElementRegistry([used, unused])),
             ):
                 _, provenance = _execute_direct(
                     timeline_path,
@@ -1153,6 +1158,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
                     "_effect_registry_for_assets",
                     return_value=({"sparkle": used}, {}),
                 ),
+                mock.patch.object(render_remotion, "load_default_registry", return_value=ElementRegistry([used])),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Remotion render failed"):
                     _execute_direct(
@@ -1228,6 +1234,8 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             timeline_path, assets_path, out_path = self._write_empty_render_inputs(tmp)
             remotion_envs: list[dict[str, str]] = []
 
+            pack_order = render_remotion._active_pack_order_for_provenance()
+
             def fake_run(cmd, **kwargs):
                 command = [str(part) for part in cmd]
                 if _is_remotion_render_command(command):
@@ -1249,6 +1257,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             with (
                 mock.patch.dict(render_remotion.os.environ, host_env, clear=True),
                 mock.patch.object(render_remotion.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(render_remotion, "_active_pack_order_for_provenance", return_value=pack_order),
             ):
                 _execute_direct(
                     timeline_path,

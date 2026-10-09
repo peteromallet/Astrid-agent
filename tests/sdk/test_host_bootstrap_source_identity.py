@@ -59,6 +59,114 @@ def _materialize_source_closure(source: Path) -> None:
     )
 
 
+CANONICAL_PACK_HOST_SCOPES = (
+    "handshake",
+    "worker:register",
+    "worker:execute",
+    "projects:read",
+    "tasks:read",
+    "objects:read",
+    "objects:write",
+)
+
+
+def test_bootstrap_and_runtime_client_share_canonical_worker_scopes() -> None:
+    from astrid.core.execution.generic_host import RuntimeProtocolClient
+
+    assert host_bootstrap.PACK_HOST_SCOPES == CANONICAL_PACK_HOST_SCOPES
+    assert RuntimeProtocolClient.WORKER_SCOPES == CANONICAL_PACK_HOST_SCOPES
+
+
+@pytest.mark.parametrize(
+    ("case", "actor", "scopes"),
+    [
+        *[
+            pytest.param(
+                f"missing-{scope.replace(':', '-')}",
+                "astrid-pack-host",
+                tuple(candidate for candidate in CANONICAL_PACK_HOST_SCOPES if candidate != scope),
+                id=f"missing-{scope}",
+            )
+            for scope in CANONICAL_PACK_HOST_SCOPES
+        ],
+        pytest.param(
+            "arbitrary-extra",
+            "astrid-pack-host",
+            (*CANONICAL_PACK_HOST_SCOPES, "custom:scope"),
+        ),
+        pytest.param(
+            "project-write",
+            "astrid-pack-host",
+            (*CANONICAL_PACK_HOST_SCOPES[:3], "projects:write", *CANONICAL_PACK_HOST_SCOPES[3:]),
+        ),
+        pytest.param(
+            "task-write",
+            "astrid-pack-host",
+            (*CANONICAL_PACK_HOST_SCOPES[:5], "tasks:write", *CANONICAL_PACK_HOST_SCOPES[5:]),
+        ),
+        pytest.param(
+            "admin",
+            "astrid-pack-host",
+            (*CANONICAL_PACK_HOST_SCOPES, "admin"),
+        ),
+        pytest.param("wrong-actor", "owner", CANONICAL_PACK_HOST_SCOPES),
+        pytest.param(
+            "duplicate",
+            "astrid-pack-host",
+            (*CANONICAL_PACK_HOST_SCOPES, "objects:write"),
+        ),
+        pytest.param(
+            "reordered",
+            "astrid-pack-host",
+            (
+                "handshake",
+                "worker:register",
+                "worker:execute",
+                "tasks:read",
+                "projects:read",
+                "objects:read",
+                "objects:write",
+            ),
+        ),
+    ],
+)
+def test_bootstrap_rejects_worker_scope_drift_before_launch(
+    monkeypatch, tmp_path: Path, case: str, actor: str, scopes: tuple[str, ...]
+) -> None:
+    source = tmp_path / case / "source"
+    (source / "astrid" / "packs").mkdir(parents=True)
+    support = tmp_path / case / "support"
+    support.mkdir(parents=True)
+    credential = support / "worker.token"
+    credential.write_text("fixture-worker-token", encoding="utf-8")
+    os.chmod(credential, 0o600)
+    launches: list[list[str]] = []
+
+    def forbidden_launch(argv, **_kwargs):
+        launches.append(list(argv))
+        pytest.fail("scope drift must be rejected before launching a host")
+
+    monkeypatch.setattr(
+        "astrid.core.pack.source_setup.active_source_inventory",
+        lambda: SimpleNamespace(identity="", roots=(), sources=()),
+    )
+    _mock_host_launch(monkeypatch, forbidden_launch)
+    value = {
+        "worker_credential_file": str(credential),
+        "source_checkout": str(source),
+        "worker_actor": actor,
+        "worker_scopes": list(scopes),
+        "endpoint": "http://runtime.test",
+    }
+
+    with pytest.raises(
+        host_bootstrap.PackHostBootstrapError,
+        match="least-privilege pack-host contract",
+    ):
+        host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
+    assert launches == []
+
+
 def test_host_pid_alive_rejects_macos_zombie(monkeypatch) -> None:
     """A defunct host must not make its persisted marker block relaunch."""
     monkeypatch.setattr(host_bootstrap.os, "kill", lambda _pid, _signal: None)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -248,6 +249,7 @@ def _element_revision(definition: Any) -> str:
     payload.pop("root", None)
     payload.pop("component", None)
     payload.pop("assets", None)
+    payload.pop("support_files", None)
     payload["asset_paths"] = {
         asset.name: asset.path.as_posix()
         for asset in sorted(definition.assets, key=lambda item: item.name)
@@ -256,6 +258,17 @@ def _element_revision(definition: Any) -> str:
     digest.update(b"\0")
     if definition.component.is_file():
         digest.update(definition.component.read_bytes())
+    # Include helper code in public revision pins, including V3-declared
+    # support files outside the element directory. Keep path keys portable.
+    helpers = set(definition.support_files)
+    helpers.update(path.resolve() for path in definition.root.rglob("*")
+                   if path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}
+                   and path.resolve() != definition.component)
+    for path in sorted(helpers):
+        digest.update(os.path.relpath(path, definition.root).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
     for asset in sorted(definition.assets, key=lambda item: item.name):
         asset_path = (definition.root / asset.path).resolve()
         digest.update(asset.name.encode("utf-8"))

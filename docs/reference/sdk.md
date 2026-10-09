@@ -114,9 +114,12 @@ registration is explicit and runtime-owned; dynamic installed-pack discovery
 and install mutation are not product extension points. Use local pack
 directories only while authoring or testing a pack.
 
-`kind="executor"` (or `"orchestrator"` / `"element"`) filters the returned
-inventory to that capability type — `capabilities` then carries only those
-entries; an invalid kind raises `CapabilityValidationError`.
+`kind="action"` filters the returned inventory to the unified callable set
+(executors and orchestrators). `kind="executor"` and
+`kind="orchestrator"` select those typed callable entries; `kind="element"`
+selects visual elements. The returned capability's identity still reports its
+resolved callable type. An unsupported selector raises
+`CapabilityValidationError`.
 
 `discover()` loads the executor, orchestrator, and element registries in
 dependency order (executor first, then orchestrator, then elements). Element

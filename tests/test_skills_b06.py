@@ -10,6 +10,7 @@ import yaml
 
 from astrid import skills
 from astrid.skills import discovery, registry, state
+from astrid.skills import view as skill_view
 from astrid.skills.view import compose_view
 
 from tests.test_skills import _Tmp
@@ -125,6 +126,28 @@ def test_nested_undeclared_guides_do_not_become_component_skills(tmp_path: Path)
 
     assert [descriptor.pack_id for descriptor in descriptors] == ["demo"]
     assert all("widget" not in descriptor.pack_id for descriptor in descriptors)
+
+
+def test_video_editing_canonical_doc_route_survives_fresh_view_composition(tmp_path: Path) -> None:
+    packs = discovery.list_skills(discovery.PACKS_DIR)
+    core = next(item for item in packs if item.pack_id == "_core")
+    video_editing = next(item for item in packs if item.pack_id == "video_editing")
+    view_root = tmp_path / "view"
+
+    compose_view(view_root, core, [video_editing])
+
+    installed_route = (view_root / "creative-work" / "SKILL.md").read_text(encoding="utf-8")
+    assert "[video editing](../packs/video_editing/SKILL.md)" in installed_route
+    assert "../../../video_editing/docs/SKILL.md" not in installed_route
+    assert (view_root / "packs" / "video_editing" / "SKILL.md").read_bytes() == (
+        video_editing.skill_md.read_bytes()
+    )
+    assert skill_view._rewrite(
+        "../../video_editing/docs/SKILL.md", skill_view._ROOT_ROUTE_REWRITES
+    ) == "packs/video_editing/SKILL.md"
+    assert skill_view._rewrite(
+        "../../video_editing/skill/SKILL.md", skill_view._ROOT_ROUTE_REWRITES
+    ) == "packs/video_editing/SKILL.md"
 
 
 def test_sync_retires_separate_component_links_and_records_without_touching_optouts_or_foreign_files(

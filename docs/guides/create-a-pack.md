@@ -1,109 +1,144 @@
 # When and how to create a pack
 
-Turn something useful into something reusable. A pack is the unit of
-distribution and namespace: its `pack.yaml` declares the public functionality,
-while implementation and support stay inside that pack.
+A pack is the distribution and ownership boundary for reusable work. Its V3
+manifest declares the public contribution types; the implementation and
+supporting files stay inside that pack. First check whether an existing pack
+already covers the need. A one-off task belongs in a run, not in the pack
+catalog.
 
-First check whether an existing pack already does the job; a one-off task does
-not need a new pack.
+## V3 contribution and support map
+
+The V3 schema is the authority for manifest shape:
+[pack.json](../../astrid/core/pack/schemas/v3/pack.json). A folder or filename
+does not publish anything by itself.
+
+| Public contribution family | Use it for | What it declares |
+|---|---|---|
+| `actions` | Callable work an agent or host can invoke. | The public action name, invocation, inputs, outputs, and related metadata. |
+| `ui` | A contribution mounted by a receiving application, such as an editor extension. | The UI type, entry file, target host, and optional compatibility/resources. |
+| `rendering` | Rendering infrastructure and reusable visual behavior. | Renderer, planner, finalizer, or element entries. Element manifests describe effects, animations, and transitions. |
+| `documents` | A versioned document format understood by the pack. | A format version and its schema, with any supporting resources. |
+
+The current manifest has no separate `visual_elements` family. Declare a
+reusable effect, animation, or transition through `rendering` with
+`type: element`, then point to its element manifest and resources. The
+existing [Personal pack](../../astrid/packs/local/pack.yaml) is the concrete
+V3 example.
+
+Contribution type and ownership answer different questions. For the existing
+one-user collection, `id: local` remains its stable owner namespace and the
+display name is **Personal**. Keep that ID and existing references; do not
+rename the source pack to change its label. A contribution's family describes
+what it does, not who owns it.
+
+`resources` and `authoring_only` are supporting manifest sections, not public
+contribution families. Resources declare files used at runtime; authoring-only
+paths are deliberately excluded from runtime packaging and include a reason.
+
+Pack-level `dependencies`, `permissions`, `secrets`, `documentation`,
+`agent`, and discovery metadata provide installation/build inputs, trust
+disclosures, author guidance, and discovery context. Declare only needs the
+pack actually has. Permission declarations explain the access a pack needs;
+they do not, by themselves, enforce a sandbox. Do not add V1 taxonomy fields
+such as `origin`, `install_tier`, or `pack_type` to a V3 manifest. The
+[taxonomy reference](../packs/pack-taxonomy.md) explains the V3 metadata and
+legacy compatibility output.
 
 ## Give it to your agent
 
-```text
-Help me turn this idea into an Astrid pack.
-Start with Astrid’s Pack Builder skill, check what already exists,
-then build and validate the smallest useful version.
-```
+    Help me turn this idea into an Astrid pack.
+    Start with Astrid’s Pack Builder skill, check what already exists,
+    then build and validate the smallest useful version.
 
 [Open the Pack Builder skill →](../../astrid/packs/_core/docs/pack-builder/SKILL.md)
 
 ## Build it yourself
 
-Choose the contribution roles you need: `action`, `ui`, `rendering`, and
-`shared`. A pack may omit unused roles. A path or folder is not an export by
-itself: declare every public function or contribution in `pack.yaml`, then put
-its implementation and private support under the applicable role folder.
+The current starter command creates a small V3 pack with only the selected
+authoring roles:
 
-From an empty working folder, with Astrid’s environment active:
+    python3 -m astrid.core.pack.cli new my_pack --starter standalone --role action
 
-```bash
-python3 -m astrid.core.pack.cli new my_pack --starter standalone --role action
-```
+The supported starter profiles are standalone, wrapper, and nested. Repeat
+`--role` for action, ui, rendering, or shared support. These role switches
+choose starter files; they are not manifest families. The `shared` folder is
+support code, not a public contribution. The current CLI creates a renderer
+example for `--role rendering`; it does not scaffold a visual element.
 
-This is the implemented pack CLI entrypoint for the F08 `packs new` route in
-this checkout; `python3 -m astrid packs ...` is not a supported gateway command.
-
-The starter writes v3 `pack.yaml`, an authored `docs/SKILL.md`, and only the
-selected role folders. Keep the ordinary YAML `name` and `description`
+The scaffold writes V3 `pack.yaml`, one authored `docs/SKILL.md`, and the
+selected starter files. Keep ordinary YAML `name` and `description`
 frontmatter in that one skill. The manifest points to it with:
 
-```yaml
-documentation:
-  kind: skill
-  path: docs/SKILL.md
-```
+    documentation:
+      kind: skill
+      path: docs/SKILL.md
 
-Link adjacent guides, references, and templates with normal relative Markdown
-links. They are supporting documentation, not additional skills.
+Link adjacent references, templates, and assets with normal relative Markdown
+links. They are supporting files, not additional skills.
 
-### Choose a starter journey
+### Starter journeys
 
-The existing F08 starter implementation is the source of truth; do not copy a
-second template or schema into this guide. It lives in
-[`astrid/core/pack/cli_basic.py`](../../astrid/core/pack/cli_basic.py), with
-focused coverage in
-[`tests/core/pack/test_cli_scaffold_f08.py`](../../tests/core/pack/test_cli_scaffold_f08.py).
+The existing CLI implementation is the source of truth:
+[`cli_basic.py`](../../astrid/core/pack/cli_basic.py), with focused coverage
+in [`test_cli_scaffold_f08.py`](../../tests/core/pack/test_cli_scaffold_f08.py).
+Do not maintain a second scaffold or schema here.
 
-- **Standalone:** the new pack owns its declaration and implementation. Add
-  only the roles you use, for example `--role action --role shared`.
-- **Wrapper:** leave the external repository unchanged. Add a thin adapter in
-  the pack, name its normal dependency and importable public module, and use
-  that repository’s normal install/package route. This does not vendor
-  arbitrary upstream source.
-- **Nested:** keep the upstream repository layout and put only Astrid
-  integration under `integrations/<pack-id>/` (the `astrid` starter defaults to
-  `integrations/astrid/`). Keep the parent repository’s normal build/install
-  route and record a pinned source declaration with `pack_subpath`.
-  `pack_subpath` identifies the integration root; it does not install
-  dependencies.
+- **Standalone:** the pack owns its declarations and implementation.
+- **Wrapper:** keep the external repository unchanged; add a thin adapter and
+  declare its normal dependency and public module. Do not vendor upstream code.
+- **Nested:** preserve the parent repository layout and place only Astrid
+  integration under `integrations/<pack-id>/`. A pinned `pack_subpath`
+  identifies the integration root; it does not install dependencies.
 
-For example:
+Declare each public action, UI entry, rendering contribution, or document
+format in the matching `pack.yaml` family. Put its implementation and private
+support under the declared paths; folders are not exports.
 
-```bash
-python3 -m astrid.core.pack.cli new adapter_pack --starter wrapper \
-  --role action --dependency clean-client --external-module clean_client
-python3 -m astrid.core.pack.cli new astrid --starter nested \
-  --role action --role ui
-```
+## Visual contributions and live scenes
 
-In all three journeys, declare public actions/UI/rendering entries in
-`pack.yaml`; do not treat `actions/`, `ui/`, `rendering/`, or `shared/` as
-implicit exports.
+A pack-owned rendering element is a trusted build-time contribution. Its
+element manifest and any TSX component/assets are declared in the pack and
+included in the Astrid/Reigh rendering build and generated catalog. For
+example, an entry has this shape:
 
-This page and [Pack Builder](../../astrid/packs/_core/docs/pack-builder/SKILL.md)
-are the current v3 authoring route. The older
-[pack protocol/reference page](../packs/creating-packs.md) is retained for
-existing v1 packs and migration details; do not use its legacy layout as the
-starting point for a new pack.
+    rendering:
+      effects/text-card:
+        type: element
+        path: rendering/elements/effects/text-card/element.yaml
+        resources:
+          - kind: implementation
+            path: rendering/elements/effects/text-card/component.tsx
 
-Validate the pack, then inspect the discovered declaration:
+The manifest path and resources belong to the source pack; do not introduce a
+second catalog declaration or a `visual_elements` key. Three.js is an existing
+host rendering route and does not change the pack's element contract.
 
-```bash
-python3 -m astrid.core.pack.cli validate my_pack --json
-python3 -m astrid.core.pack.cli inspect my_pack --pack-root .
-```
+A user-authored live scene follows a separate Runtime project-object route.
+The scene is self-contained HTML, admitted and saved through Runtime with the
+current `assets: []` restriction; it is not a TSX component installed or
+compiled at runtime. Follow
+[Live scene authoring](../../astrid/packs/rendering/docs/references/live-scenes-authoring.md)
+for its manifest and host contract.
 
-`inspect` shows the declared documentation pointer and populated public role
-sections. Validation checks structure; it does not install dependencies or
-prove runtime behavior. Discover and invoke through the supported SDK/host.
+## Validate and inspect
 
-After source edits, use Astrid’s existing sync/check against a disposable
-harness state when needed. The composed view links the authored bundle; do not
-author files in an installed view or perform a personal/global sync as part of
-pack authoring.
+    python3 -m astrid.core.pack.cli validate my_pack --json
+    python3 -m astrid.core.pack.cli inspect my_pack --pack-root .
+
+`inspect` reads back the declared documentation pointer and public sections.
+Static validation checks structure and paths; it does not install dependencies
+or prove runtime behavior. Discover and invoke through the supported SDK/host.
+For callable V3 work, the SDK's unified selector is `kind="action"`; the
+typed `executor` and `orchestrator` selectors remain available for their
+specific routes. See the [SDK reference](../reference/sdk.md).
+
+After source edits, use Astrid's existing sync/check against a disposable
+harness state when needed. Edit the authored pack, never an installed view or
+personal/global sync target.
 
 [Choosing what to build](creating-tools.md) · [Pack contract](../packs/contract.md)
 
-Have a useful finding rather than a reusable tool? [Contribute knowledge](contributing-knowledge.md).
+Have a useful finding rather than a reusable tool?
+[Contribute knowledge](contributing-knowledge.md).
 
 [Back to Astrid](../../README.md)

@@ -25,7 +25,7 @@ from astrid.core.contracts.schema import Port, Output
 
 
 # Path to rendering pack elements
-_RENDERING_ROOT = Path(__file__).resolve().parent.parent.parent / "astrid" / "packs" / "rendering" / "elements"
+_RENDERING_ROOT = Path(__file__).resolve().parent.parent.parent / "astrid" / "packs" / "rendering" / "rendering" / "elements"
 
 
 class ElementDefinitionIOFieldsTest(unittest.TestCase):

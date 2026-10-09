@@ -1,6 +1,6 @@
 schema_version: 3
 id: local
-name: Local Elements Pack
+name: Personal
 version: 0.1.0
 status: active
 domain: media
@@ -10,7 +10,7 @@ visibility: visible
 permissions:
 - id: project_files
   reason: Provides render-time visual element definitions consumed by the rendering pack.
-description: Versioned render-time visual elements and their immutable assets for Remotion timelines.
+description: Personal reusable visual elements and their versioned assets for Remotion timelines.
 keywords:
 - element
 - effect
@@ -31,6 +31,16 @@ documentation:
   kind: skill
   path: docs/SKILL.md
 rendering:
+  effects/animated-media-transform:
+    type: element
+    path: rendering/elements/effects/animated-media-transform/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/effects/animated-media-transform/component.tsx
+    - kind: support
+      path: rendering/elements/effects/animated-media-transform/motion.ts
+    - kind: support
+      path: shared/readiness-image.tsx
   effects/end-codex-transform:
     type: element
     path: rendering/elements/effects/end-codex-transform/element.yaml
@@ -111,14 +121,22 @@ rendering:
     resources:
     - kind: implementation
       path: rendering/elements/effects/end-spanning-layer/component.tsx
+    - kind: support
+      path: rendering/elements/effects/end-spanning-layer/timing.ts
     - kind: asset
-      path: rendering/elements/effects/end-spanning-layer/assets/card-0.png
+      path: rendering/elements/effects/end-spanning-layer/assets/card-0-canonical-mink.png
+    - kind: asset
+      path: rendering/elements/effects/end-spanning-layer/assets/card-4-canonical-mink.png
+    - kind: asset
+      path: rendering/elements/effects/end-spanning-layer/assets/card-5-canonical-mink.png
     - kind: asset
       path: rendering/elements/effects/end-spanning-layer/assets/card-1.png
     - kind: asset
       path: rendering/elements/effects/end-spanning-layer/assets/card-2.png
     - kind: asset
       path: rendering/elements/effects/end-spanning-layer/assets/card-3.png
+    - kind: asset
+      path: rendering/elements/effects/end-spanning-layer/assets/card-0.png
     - kind: asset
       path: rendering/elements/effects/end-spanning-layer/assets/card-4.png
     - kind: asset

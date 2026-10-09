@@ -85,7 +85,7 @@ DEFAULT_THINKING = "high"
 ATTEMPT_KIND = "astrid.timeline-eval.case-attempt.v1"
 ATTEMPT_RESULT_KIND = "astrid.timeline-eval.native-attempt.v1"
 CASE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-SKILL_RELATIVE_PATH = "astrid/packs/video_editing/skill/SKILL.md"
+SKILL_RELATIVE_PATH = "astrid/packs/video_editing/docs/SKILL.md"
 LOCAL_RUNTIME_PROJECT_PREFIX = "local-disposable"
 
 

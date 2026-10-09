@@ -177,6 +177,8 @@ def _fingerprint_element(element: ElementDefinition) -> str:
         for support_path in root.rglob(f"*{suffix}"):
             if support_path.is_file():
                 files[_fingerprint_key("support", support_path.resolve().relative_to(root))] = support_path.resolve()
+    for support_path in element.support_files:
+        files[_fingerprint_key("support", Path(os.path.relpath(support_path, root)))] = support_path
 
     for asset in element.assets:
         asset_path = (root / asset.path).resolve()

@@ -185,6 +185,15 @@ def _configured_project_dir() -> tuple[Path | None, str | None]:
     return (REPO_ROOT / "remotion").resolve(), None
 
 
+def resolve_remotion_project_dir() -> Path:
+    """Resolve host configuration, rejecting an invalid explicit path."""
+    project_dir, reason = _configured_project_dir()
+    if reason:
+        raise ValueError(reason)
+    assert project_dir is not None
+    return project_dir
+
+
 def remotion_runtime_status(
     *, require_explicit_project: bool = False
 ) -> RemotionRuntimeStatus:
@@ -305,6 +314,7 @@ __all__ = [
     "TIMELINE_SCHEMA_PYTHONPATH_ENV",
     "RemotionRuntimeStatus",
     "resolve_remotion_runtime_tools",
+    "resolve_remotion_project_dir",
     "remotion_runtime_status",
     "timeline_requires_remotion",
 ]

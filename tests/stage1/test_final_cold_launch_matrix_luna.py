@@ -255,6 +255,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
             "handshake",
             "worker:register",
             "worker:execute",
+            "projects:read",
             "tasks:read",
             "objects:read",
             "objects:write",

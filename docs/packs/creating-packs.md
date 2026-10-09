@@ -8,19 +8,19 @@ manifests.
 > That page and the [Pack Builder skill](../../astrid/packs/_core/docs/pack-builder/SKILL.md)
 > describe the implemented v3 convention: one pack, public declarations in
 > `pack.yaml`, role folders only where needed, and one authored `docs/SKILL.md`.
-> The sections below are legacy v1 reference unless explicitly stated
-> otherwise; their `skill/` and component-root examples are not current
-> starter instructions.
+> **Legacy warning:** the commands, taxonomy fields, schemas, permission
+> examples, and `skill/`/component-root layouts below describe V1 migration
+> material. They are not instructions for creating a V3 pack. V3 uses
+> [pack.json](../../astrid/core/pack/schemas/v3/pack.json) and the guide above.
 
-Terminology note: for pack identity, capability identity, default-enabled versus
-optional placement, aliases, and in-place edits, use the
-Milestone 0 contract at `docs/packs/contract.md`. New authoring decisions
-belong in the current guide linked above.
+For current V3 pack ownership, contribution types, visual elements, and stable
+references, use the [current contract](contract.md). Keep the V1 sections here
+only when maintaining or migrating an existing V1 pack.
 
-Capability packs are not database schema packs. Do not add `schema-pack.yaml`,
-SQL migrations, or a local schema registry. Product state is written through
-the neutral workspace runtime contract; a pack may only provide executable
-capabilities and attempt-local delivery artifacts.
+V3 `documents` declarations describe versioned document formats and schemas;
+they do not create a database schema pack or a second product-state store. Do
+not add `schema-pack.yaml`, SQL migrations, or a local schema registry.
+Product state remains under the workspace Runtime contract.
 
 ## Legacy v1 quick start
 
@@ -512,14 +512,15 @@ compatibility path. The current canonical external example is the v3
 
 ## Related Guides
 
-The pack system is documented across several complementary guides. Refer to
-these for the topics they cover:
+The V3 contract and new-pack route are documented separately. Refer to these
+when working on current packs:
 
-- [pack-taxonomy.md](pack-taxonomy.md) — The six taxonomy fields (`origin`,
-  `install_tier`, `pack_type`, `domain`, `stability`, `support`), their
-  defaults, and how to filter and group by them in the CLI.
-- [contract.md](contract.md) — Formal definitions for pack identity,
-  capability identity, aliases, and the unified layout contract.
+- [create-a-pack.md](../guides/create-a-pack.md) — V3 contribution families,
+  personal ownership, visual source/runtime boundaries, and scaffold usage.
+- [pack-taxonomy.md](pack-taxonomy.md) — Current V3 pack metadata and the
+  distinction between contribution family and owner identity.
+- [contract.md](contract.md) — Current V3 identity, contribution, discovery,
+  and trust boundaries.
 - [discovery-for-agents.md](../guides/discovery-for-agents.md) — How a cold agent
   discovers capabilities (e.g., via `astrid.sdk.discover()` and
   `astrid.sdk.get_capability()`).
@@ -533,11 +534,11 @@ Several pack-system capabilities are deferred to future milestones:
 - **Dependency isolation** — Per-pack virtual environments and isolated
   dependency resolution to prevent conflicts between packs.
 
-Pack-hosted app tools and interface extensions are a separate architecture
-proposal, not a currently supported pack feature. See
+The generic app-tool proposal at
 [Pack-Hosted Tools and Interface Contributions](../architecture/pack-hosted-interfaces.md)
-for the direction, its fit with pack identity/resources, and current trust
-constraints.
+is separate from the V3 `ui` family. Use `ui` only for its declared,
+supported host contribution; the proposal does not add a general-purpose code
+loader or extend V3's manifest contract.
 
 ## Next Steps
 
