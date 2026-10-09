@@ -21,6 +21,22 @@ before renderer admission. A reusable visual element is a clip whose
 The clip-level `effects` field is for fade timing (`fade_in`/`fade_out`); do
 not use it as an unregistered effects namespace.
 
+## Available fonts
+
+Set `text.fontFamily` on a `clipType: "text"` clip (or `params.fontFamily` on a
+`text-card` element) to one of these exact family names. The Remotion renderer
+loads only these faces; any other name resolves to a system font.
+
+- `Departure Mono`: pixel monospace labels (400).
+- `Gelasio`: Georgia-metric serif for headlines (400, 700; italic faces ship too).
+- `Inter`: body text (400, 700).
+- `JetBrains Mono`: monospace text (400, 700).
+- `Sixtyfour`: pixel display heading (400).
+
+`text-card` maps `bold: true` to weight 700 but does not read `italic`, so italic
+Gelasio is not selectable through a text clip yet. The FFmpeg text backend
+ignores `fontFamily`.
+
 ## Layers and canvas
 
 Visual tracks render in reversed array order: put overlay tracks before the

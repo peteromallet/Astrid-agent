@@ -22,6 +22,11 @@ EXPECTED = {
     "Inter-Regular.woff2": (27_380, "39689184132e9fba8fb1066f429125d14445352a566f47f4edcae7c3c90e486d"),
     "JetBrainsMono-Bold.woff2": (13_352, "8df3ca627bd8e1cb0e5414f7429fe7a2cf82732b0fc43f2d05bc2c471b64fcfc"),
     "JetBrainsMono-Regular.woff2": (2_180, "1b53536573e8f2e886848fee9a53c278a8f92b02ac794a83437ad9277120df47"),
+    "DepartureMono-Regular.woff2": (22_496, "5b4fed1daa90708aa9c6ee1190abca9dc22164a1c1def0020386e46b61038cfb"),
+    "Gelasio-Regular.woff2": (20_284, "698c2aa61ec1960371b6ed32e6120f028fa614613256f4b9e3f5d10ceb013eb5"),
+    "Gelasio-Italic.woff2": (22_272, "2df3d4a4d0cefc6440710666fa425627e54cb73707224bec044bca8e65940222"),
+    "Gelasio-Bold.woff2": (20_452, "2fdaa469d51ef618d648e27819f10a1df08721ed2331614c3123850162cc147a"),
+    "Gelasio-BoldItalic.woff2": (22_476, "e5b0682ff74c6798100255daafaf5d5496c5ddec596aec663fdd0afb3470b609"),
 }
 
 
@@ -33,7 +38,7 @@ def test_shipped_font_bytes_match_reviewed_manifest() -> None:
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 
 
-def test_loader_is_local_typed_and_has_one_face_per_family_weight() -> None:
+def test_loader_is_local_typed_and_has_one_face_per_family_style_weight() -> None:
     source = (REMOTION / "src" / "fonts.ts").read_text(encoding="utf-8")
     assert "@remotion/google-fonts" not in source
     assert "window.location" not in source
@@ -48,22 +53,28 @@ def test_loader_is_local_typed_and_has_one_face_per_family_weight() -> None:
     assert "FontProvider" in (REMOTION / "src" / "Root.tsx").read_text(encoding="utf-8")
 
     pairs = re.findall(
-        r"family:\s*[\"']([^\"']+)[\"'],\s*file:\s*[\"']([^\"']+)[\"'],\s*weight:\s*(\d+)",
+        r"family:\s*[\"']([^\"']+)[\"'],\s*file:\s*[\"']([^\"']+)[\"'],\s*weight:\s*(\d+)"
+        r"(?:,\s*style:\s*[\"'](\w+)[\"'])?",
         source,
     )
-    assert len(pairs) == 5
-    assert [family for family, _, _ in pairs].count("Sixtyfour") == 1
-    assert [family for family, _, _ in pairs].count("Inter") == 2
-    assert [family for family, _, _ in pairs].count("JetBrains Mono") == 2
-    assert len({(family, weight) for family, _, weight in pairs}) == len(pairs)
-    for _, file, _ in pairs:
+    assert len(pairs) == 10
+    families = [family for family, _, _, _ in pairs]
+    assert families.count("Sixtyfour") == 1
+    assert families.count("Inter") == 2
+    assert families.count("JetBrains Mono") == 2
+    assert families.count("Departure Mono") == 1
+    assert families.count("Gelasio") == 4
+    faces = {(family, style or "normal", weight) for family, _, weight, style in pairs}
+    assert len(faces) == len(pairs)
+    assert sorted(style for *_, style in pairs if style) == ["italic", "italic"]
+    for _, file, _, _ in pairs:
         assert (REMOTION / "public" / file).is_file(), file
 
 
 def test_provenance_and_license_cover_every_theme_family() -> None:
     provenance = (FONTS / "FONT_PROVENANCE.md").read_text(encoding="utf-8")
     license_text = (FONTS / "OFL-1.1.txt").read_text(encoding="utf-8")
-    for family in ("Sixtyfour", "Inter", "JetBrains Mono"):
+    for family in ("Sixtyfour", "Inter", "JetBrains Mono", "Departure Mono", "Gelasio"):
         assert f"## {family}" in provenance
         assert "Upstream revision:" in provenance
         assert "Local SHA-256:" in provenance
@@ -72,6 +83,8 @@ def test_provenance_and_license_cover_every_theme_family() -> None:
     assert "Inter Project Authors" in license_text
     assert "JetBrains Mono Project Authors" in license_text
     assert "Sixtyfour Project Authors" in license_text
+    assert "Helena Zhang" in license_text
+    assert "Gelasio Project Authors" in license_text
 
 
 def test_committed_receipt_records_real_network_denial() -> None:
