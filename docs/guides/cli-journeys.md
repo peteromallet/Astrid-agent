@@ -37,7 +37,7 @@ python3 -m astrid doctor --json
 
 # 3. Inspect a concrete family and verb without side effects.
 python3 -m astrid projects --help
-python3 -m astrid timelines save --help
+python3 -m astrid timelines create --help
 ```
 
 Notes:
@@ -482,7 +482,7 @@ There is no `--run` flag on `tasks retry`; the batch retry surface is
 
 ---
 
-## 6. `timelines` — create / list / show / save / archive / recover / history / diff / visualize / render
+## 6. `timelines` — create / list / show / archive / recover / history / diff / visualize / render
 
 ```bash
 # create — one client.timelines.create call (slug immutable)
@@ -495,11 +495,8 @@ python3 -m astrid timelines list --project demo --json
 # show — full timeline config and asset registry, by UUID, ULID, or slug
 python3 -m astrid timelines show --project demo primary --json
 
-# save — whole-document compare-and-swap (config and registry both required);
-# create sets config_version 1, so a fresh timeline saves with --expected-version 1
-python3 -m astrid timelines save --project demo primary \
-  --config '{"tracks":[{"id":"main","kind":"visual","label":"Main"}],"clips":[],"output":{"resolution":"320x180","fps":30,"file":"primary.mp4"}}' \
-  --registry '{"assets": {}}' --expected-version 1 --json
+# there is no whole-document save verb: edit content through the shots family
+# (add / remove / reorder below) and shot text bindings (`timelines shots text set`)
 
 # archive — event-backed terminal mutation
 python3 -m astrid timelines archive --project demo primary --json
@@ -594,16 +591,15 @@ tail local event files, or edit runtime state by hand. An unexpected command
 failure is returned as a typed error; preserve the idempotency key and retry
 only when the error's recovery guidance permits it.
 
-Timeline saves are compare-and-swap operations. A stale expected version is
-an HTTP `409 timeline_version_conflict` (or SDK `stale_version`) and changes
-nothing. Load the current timeline, merge the local draft, and save again with
-the returned version:
+Timeline writes are compare-and-swap operations: pass the version or head you
+read (`--expected-version` for render pinning, `--expected-head` for shot text).
+A stale value is rejected and changes nothing. Re-read, merge the local draft,
+and retry with the current value:
 
 ```bash
 python3 -m astrid timelines show --project demo primary --json
-python3 -m astrid timelines save --project demo primary \
-  --config '{"width":1920,"height":1080}' \
-  --registry '{"assets":{}}' --expected-version 1 --json
+python3 -m astrid timelines shots text set --project demo S_01ABC --kind voiceover_script \
+  --text "Narration for the opening shot." --expected-head <head-from-fresh-read> --json
 ```
 
 For missing or byte-mutated media, run runtime verification again. The service

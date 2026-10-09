@@ -2,6 +2,7 @@
 
 Reads the selected runtime project's runs through the generated client, then
 chains `iteration.assemble` and `rendering.render` to create an iteration recap.
+<!-- doc-ref: historical -->
 The retired `iteration.prepare` executor and thread/variant sidecars are not
 declared, invoked, or consulted.
 

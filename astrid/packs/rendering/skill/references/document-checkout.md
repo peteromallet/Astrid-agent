@@ -84,8 +84,9 @@ In these paths, `work` is the JSON document, `row` is one member of
 
 Script text and playable voiceover audio are separate: changing the binding does
 not synthesize speech, and changing an audio clip does not update the text.
-Read `timelines script` to inspect the selected composition's pinned narration;
-project text lists include reusable unplaced shots and are not timeline script reads.
+The old timelines script verb is gone. Read a shot's narration binding with
+`python3 -m astrid timelines shots text show <binding>` and filter bindings per shot with
+`timelines shots text list --shot <shot>`. Project text lists include reusable unplaced shots.
 Associate bindings with the
 registered shot, not a temporary authoring ID. See the skill's narration commands.
 

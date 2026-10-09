@@ -292,6 +292,7 @@ if ! $JSON_MODE; then
   "$PYTHON_BIN" scripts/reshape/compare_mypy_baseline.py
   "$PYTHON_BIN" scripts/reshape/check_repo_hygiene.py
   PYTHON_BIN="$PYTHON_BIN" bash tests/verify_docs_commands.sh
+  "$PYTHON_BIN" scripts/reshape/check_doc_references.py
 
   "$PYTHON_BIN" -m pytest tests/reshape -q
   "$PYTHON_BIN" -m pytest tests/reshape/test_hype_regression_fixture.py -q
@@ -414,6 +415,7 @@ _run_plain baselines "$PYTHON_BIN" scripts/reshape/check_repo_hygiene.py
 
 echo "--- docs ---" >&2
 _run_plain docs env "PYTHON_BIN=$PYTHON_BIN" bash tests/verify_docs_commands.sh
+_run_plain docs "$PYTHON_BIN" scripts/reshape/check_doc_references.py
 
 echo "--- reshape ---" >&2
 _run_pytest reshape tests/reshape -q

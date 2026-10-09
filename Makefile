@@ -8,10 +8,10 @@
 
 PY ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-.PHONY: help check ci preflight structure doctor ruff mypy cycles remotion-install remotion-typecheck renderer-parity wheel ci-mirror editable lock-build lock-runtime lock-proof lock-validate toolchain-record s1-gate m4-baseline m4-gate m7-gate m8-gate
+.PHONY: help check ci preflight structure doc-refs doctor ruff mypy cycles remotion-install remotion-typecheck renderer-parity wheel ci-mirror editable lock-build lock-runtime lock-proof lock-validate toolchain-record s1-gate m4-baseline m4-gate m7-gate m8-gate
 
 help:
-	@echo "make check   - blocking gates: structure, doctor, ruff, mypy, cycles, Remotion, renderer parity"
+	@echo "make check   - blocking gates: structure, doc-refs, doctor, ruff, mypy, cycles, Remotion, renderer parity"
 	@echo "make ci      - full CI deploy mirror: check + editable + wheel-install + pytest/coverage (minutes)"
 	@echo "make s1-gate - m1 S1 gate: 12 focused lanes + durable summary/logs in out/s1-gate/latest"
 	@echo "make m4-baseline - m4 Step 1: run pre-change selectors and retain artifacts/m4/baseline.json (fails closed)"
@@ -24,7 +24,7 @@ help:
 	@echo "make preflight - verify Python, Node, ffmpeg, and locked Remotion prerequisites"
 
 # --- Fast gates: catch the common deploy blockers in seconds. Run before every push. ---
-check: preflight structure doctor ruff mypy cycles remotion-typecheck renderer-parity
+check: preflight structure doc-refs doctor ruff mypy cycles remotion-typecheck renderer-parity
 	@echo "✅ make check: blocking pre-deploy gates passed"
 
 preflight:
@@ -44,6 +44,10 @@ preflight:
 structure:
 	@$(PY) -c "import sys; from astrid.core.structure import validate_repo_structure as v; r=v(); [print('STRUCTURE ERROR:', e) for e in r.errors]; sys.exit(1 if r.errors else 0)"
 	@echo "✓ repo structure (canonical top-level dirs)"
+
+doc-refs:
+	@$(PY) scripts/reshape/check_doc_references.py
+	@echo "✓ doc-refs (agent docs match the registry, gateway parser, and generated catalog)"
 
 doctor:
 	@$(PY) scripts/reshape/ci_doctor.py

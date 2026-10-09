@@ -145,7 +145,7 @@ The shared facade accepts `variant_of={"generation_id": "...",
 `primary="preserve"` is the default; `primary="promote"` atomically selects
 the new variant under Runtime generation-version CAS. The source variant must
 belong to the project and have a managed object. These are publication fields,
-not executor inputs, and an ordinary image request still uses
-`generation.publish_v1`. The generation pack skill documents the same controls
+not executor inputs. An ordinary image request still publishes through the
+generation publish effect (`publish_v1`, a receipt effect type, not a capability). The generation pack skill documents the same controls
 for video and audio and the boundary with media relations, references, and
 timeline replacement.

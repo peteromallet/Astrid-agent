@@ -47,13 +47,23 @@ inputs must also be supplied through the chosen generation capability.
 
 The current public media surface has no user-facing export or download route:
 `media show` returns metadata, while runtime byte materialization is an
-attempt-host concern. `generation.generate_image` therefore requires
-`image_ref` to be an existing absolute or invocation-relative image path for
-`i2i`/`edit`; do not pass a reference id or media object id as that value. If
-the original local file is still available, pass that path to generation and
-keep the runtime reference association for lineage. If only the managed media
-id remains, report the typed limitation instead of inventing a download,
-filesystem path, or local cache fallback.
+attempt-host concern. The two image routes take different inputs:
+
+- `generation.generate_image` (local and cloud `i2i`/`edit`) takes `image_ref` as
+  an existing absolute or invocation-relative image path. Do not pass a
+  reference id or media id as that value.
+- `generation.generate_image_codex` takes `image_ref`, `style_ref`, and
+  `brand_ref` as managed image descriptors. Each carries a SHA-256 `digest`
+  (`sha256:` plus 64 hex characters) with its filename, media type, and size. A
+  local path is rejected, and so is a reference id or media id, which is not a
+  digest. To get a descriptor, import the file into the project first with
+  `python3 -m astrid media import <path> --project <slug> --json` (SDK:
+  `client.media.import_file`), then pass the imported object's digest.
+
+If the original local file is still available, pass that path to
+`generate_image` and keep the runtime reference association for lineage. If
+only a managed media id remains, report the typed limitation instead of
+inventing a download, filesystem path, or local cache fallback.
 
 For generating new variants, follow the [generation skill](../../generation/skill/SKILL.md).
 For placing media in an existing video timeline, follow the [video editing
@@ -65,4 +75,4 @@ Return to [creative work](../../_core/skill/creative-work/SKILL.md) for capabili
 this reusable reference. It does not promote a generation variant and does not
 change a timeline. Generation promotion uses the generation facade's explicit
 `variant_of` and `primary="promote"` publication controls; object provenance
-uses `media.relate(kind="variant_of")` and remains independent.
+uses `python3 -m astrid media relate --kind variant_of` and remains independent.

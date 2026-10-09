@@ -7,8 +7,9 @@
 Transcribes source audio into a structured `transcript.json` file using
 OpenAI's Whisper model. The executor handles audio extraction from video
 sources, silence-aware chunking, and optional speaker diarization via
-pyannote.audio. Output includes word-level timestamps and segment
-metadata consumed by every downstream editorial step.
+pyannote.audio. Output includes segment-level timestamps (Whisper is requested
+with `timestamp_granularities=["segment"]`; there are no word-level timestamps)
+and segment metadata consumed by every downstream editorial step.
 
 Requires an OpenAI API key (resolved via the candidate-env-file walk in
 `astrid/core/util/secrets.py`). Whisper is called through the OpenAI API;

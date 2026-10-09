@@ -20,12 +20,10 @@ python examples/agentic_ux/agentic_ux.py \
 ## Briefs
 
 `examples/briefs/` contains human-readable pure-generative briefs that are safe
-to commit and useful for manual smoke runs:
-
-```bash
-python3 -m astrid --brief examples/briefs/cinematic.txt --out runs/cinematic --render --target-duration 15
-python3 -m astrid --brief examples/briefs/surreal.txt --out runs/surreal --render --target-duration 15
-```
+to commit and useful for manual smoke runs. The old `--brief` gateway flag is
+retired, so there is no single brief command. Read a brief and route it through
+the creative-work skill (`astrid/packs/_core/skill/creative-work/SKILL.md`),
+which selects the capability chain for the request.
 
 ## Media Fixtures
 

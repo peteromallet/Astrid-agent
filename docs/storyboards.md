@@ -7,8 +7,9 @@ per-section nav state, image variants (asset/gen), VO text + audio asset, proven
     ASTRID_PROJECTS_ROOT=<root> python3 scripts/build_storyboard.py validate --story <file>
     ASTRID_PROJECTS_ROOT=<root> python3 scripts/build_storyboard.py compile --story <file> \
         --vo-align <plan.json> --out <dir>
-    # then: astrid timelines create <slug> --config <compiled timeline.json> --registry <assets.json>
-    #       astrid timelines render <slug>
+    # then: python3 -m astrid timelines create --project <project> <slug>   (empty head; add shots with
+    #       `timelines shots` and `timelines shots text set`; the compiled JSON is not loaded whole)
+    #       python3 -m astrid timelines render --project <project> <slug>
 
 Rules: the storyboard file is an authored INPUT spec (content + provenance); compiled
 resolution fields and all durable execution facts live in the kernel timeline (ONE store).
