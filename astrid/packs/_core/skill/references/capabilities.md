@@ -135,5 +135,5 @@ The managed Hivemind pack is admitted only after its v2 manifest and immutable
 source pin validate. Its public reads remain anonymous; contributor operations,
 the three ingestion writers, and `submit-vibecomfy-rating` use Hivemind's
 contributor-authenticated backend. See
-[`docs/reference/hivemind-pack-contract.md`](../../../../docs/reference/hivemind-pack-contract.md)
-and [`config/hivemind-pack-contract.json`](../../../../config/hivemind-pack-contract.json).
+[`docs/reference/hivemind-pack-contract.md`](../../../../../docs/reference/hivemind-pack-contract.md)
+and [`config/hivemind-pack-contract.json`](../../../../../config/hivemind-pack-contract.json).

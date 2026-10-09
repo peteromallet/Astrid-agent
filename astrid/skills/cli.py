@@ -165,7 +165,36 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         deep=args.deep,
         dry_run=args.dry_run,
     )
-    return _emit_report(report, args)
+    rc = _emit_report(report, args)
+    broken = report.get("broken_links", [])
+    if not args.json:
+        _print_link_summary(report.get("links", {}))
+        _print_warnings(report.get("warnings", []))
+        for entry in broken:
+            _print_broken_link(entry)
+    # A sync that leaves a broken route in a view is not a success.
+    return 1 if broken else rc
+
+
+def _print_link_summary(links: dict) -> None:
+    for harness, summary in links.items():
+        print(
+            f"[links] {harness}: {summary['checked']} links in {summary['files']} files, "
+            f"{summary['broken']} broken"
+        )
+
+
+def _print_broken_link(entry: dict) -> None:
+    print(
+        f"  [broken link] {entry['harness']:<7} {entry['file']}:{entry['line']} "
+        f"({entry['target']}) -> missing {entry['missing']}"
+    )
+
+
+def _print_warnings(warnings: list) -> None:
+    for warning in warnings:
+        where = " ".join(part for part in (warning.get("harness"), warning.get("pack")) if part)
+        print(f"  [warn] {where + ': ' if where else ''}{warning['message']}")
 
 
 def _emit_check_report(report: dict[str, Any], args: argparse.Namespace) -> int:
@@ -180,6 +209,9 @@ def _emit_check_report(report: dict[str, Any], args: argparse.Namespace) -> int:
             print(f"  [drift] {entry['harness']:<7} {entry['pack']:<14} not linked")
         for entry in report["stale_links"]:
             print(f"  [drift] {entry['harness']:<7} {entry['link']:<14} stale link (pack gone)")
+        _print_link_summary(report.get("links", {}))
+        for entry in report.get("broken_links", []):
+            _print_broken_link(entry)
         if not report["has_drift"]:
             print("clean: registry current and all links present")
     return 1 if report["has_drift"] else 0
@@ -201,10 +233,16 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         for entry in report["results"]:
             mark = "ok" if entry["ok"] else "FAIL"
             print(f"  [{mark}] {entry['harness']:<7} {entry['pack']:<12} {entry['message']}")
+        _print_link_summary(report.get("links", {}))
+        for entry in report.get("broken_links", []):
+            _print_broken_link(entry)
+        _print_warnings(report.get("warnings", []))
     failures = sum(1 for r in report["results"] if not r["ok"]) + len(report["lint"])
+    failures += len(report.get("broken_links", []))
     # Drift not yet healed counts as a soft failure; healed drift does not.
     if not getattr(args, "heal", False):
         failures += len(report.get("drift", []))
+    # Warnings (optional packs not linked, skipped external discovery) never fail.
     return 0 if failures == 0 else 1
 
 
@@ -228,3 +266,8 @@ def _emit_report(report: dict[str, Any], args: argparse.Namespace) -> int:
 
 
 __all__ = ["build_parser", "main"]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by the subprocess test
+    raise SystemExit(main())
+

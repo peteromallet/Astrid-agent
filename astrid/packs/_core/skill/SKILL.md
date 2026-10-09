@@ -150,7 +150,7 @@ precedents, read the [Hivemind pack skill](packs/hivemind/SKILL.md) when the
 managed external pack is installed. Use its search capability, then retrieve
 the full source behind useful hits before presenting community advice. The
 Astrid-side v2 compatibility and contributor-write contract is documented in
-[`docs/reference/hivemind-pack-contract.md`](../../docs/reference/hivemind-pack-contract.md).
+[`docs/reference/hivemind-pack-contract.md`](../../../../docs/reference/hivemind-pack-contract.md).
 
 The skill and executors belong to that pack. If the default pack or its skill is
 missing, follow the pack's documented installation recovery; do not redirect to

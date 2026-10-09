@@ -14,6 +14,7 @@ from typing import Iterable
 from . import discovery, registry, state
 from .discovery import SkillDescriptor, list_skills
 from .harnesses import ADAPTERS, HarnessAdapter, adapter_for, all_adapters
+from .links import LinkScan, scan_links
 
 # Frozen setup composition selected from existing first-party declarations.
 # Broader shipped-pack availability remains unchanged; these are only the
@@ -212,6 +213,7 @@ def sync(
             harness_name,
             deep=deep,
             selected_pack_ids=selected_pack_ids,
+            view_routes=skill_md_path is None,
         )
         view_steps: list = []
         if skill_md_path is None:
@@ -296,6 +298,14 @@ def sync(
         "changed": explicit_registry_changed or any(registry_changes.values()),
         "by_harness": registry_changes,
     }
+    report["warnings"] = [
+        {"harness": None, "pack": None, "message": message}
+        for message in discovery.discovery_problems()
+    ]
+    if skill_md_path is None and not dry_run:
+        scans = _link_scans(targets, state_path)
+        report["links"] = _link_summary(scans)
+        report["broken_links"] = _broken_link_rows(scans)
     return report
 
 
@@ -345,7 +355,11 @@ def check(
 
     for harness_name, adapter in detected.items():
         expected = _sync_descriptors_for_harness(
-            all_descriptors, current_state, harness_name, deep=deep
+            all_descriptors,
+            current_state,
+            harness_name,
+            deep=deep,
+            view_routes=skill_md_path is None,
         )
         registry_descriptors = expected
         registry_target = skill_md_path
@@ -392,8 +406,15 @@ def check(
                     {"harness": harness_name, "link": name, "path": str(entry)}
                 )
 
+    scans = _link_scans(detected, state_path) if skill_md_path is None else {}
+    report["links"] = _link_summary(scans)
+    report["broken_links"] = _broken_link_rows(scans)
+
     report["has_drift"] = bool(
-        report["registry_stale"] or report["missing"] or report["stale_links"]
+        report["registry_stale"]
+        or report["missing"]
+        or report["stale_links"]
+        or report["broken_links"]
     )
     return report
 
@@ -408,7 +429,10 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
         "lint": [],
         "drift": [],
         "healed": [],
+        "warnings": [],
     }
+    for problem in discovery.discovery_problems():
+        report["warnings"].append({"harness": None, "pack": None, "message": problem})
     for descriptor in descriptors:
         text = descriptor.skill_md.read_text(encoding="utf-8")
         for finding in discovery.lint_shared_skill_md(text):
@@ -416,6 +440,7 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
 
     current_state = state.load(state_path)
     state_changed = False
+    unlinked_optional: dict[str, list[str]] = {}
     for harness_name, adapter in detected.items():
         installed_ids = set(current_state["installs"].get(harness_name, {}).keys())
         descriptors_for_harness = descriptors
@@ -429,8 +454,12 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
             except OSError:
                 points_to_view = False
             if points_to_view:
+                # Compose exactly the set sync would, so doctor judges the same view.
                 core = next(d for d in descriptors if d.pack_id == "_core")
-                pack_descriptors = [d for d in descriptors if d.pack_id != "_core"]
+                expected = _sync_descriptors_for_harness(
+                    descriptors, current_state, harness_name, deep=False
+                )
+                pack_descriptors = [d for d in expected if d.pack_id != "_core"]
                 gateway, _steps, view_packs = compose_view(
                     view_root, core, pack_descriptors, dry_run=True
                 )
@@ -442,14 +471,19 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
             in_fs = fs_record is not None
 
             if not in_state and not in_fs:
-                report["results"].append(
-                    {
-                        "harness": harness_name,
-                        "pack": descriptor.pack_id,
-                        "ok": False,
-                        "message": "not installed",
-                    }
-                )
+                if descriptor.pack_id == "_core":
+                    report["results"].append(
+                        {
+                            "harness": harness_name,
+                            "pack": descriptor.pack_id,
+                            "ok": False,
+                            "message": "not installed",
+                        }
+                    )
+                else:
+                    # Optional packs are composed into the view but are not
+                    # required to be linked into the harness; absence is a note.
+                    unlinked_optional.setdefault(harness_name, []).append(descriptor.pack_id)
                 continue
 
             if in_fs and not in_state:
@@ -502,8 +536,22 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
                 {"harness": harness_name, "pack": descriptor.pack_id, "ok": ok, "message": msg}
             )
 
+    for harness_name, pack_ids in unlinked_optional.items():
+        report["warnings"].append(
+            {
+                "harness": harness_name,
+                "pack": None,
+                "message": (
+                    f"{len(pack_ids)} optional packs not linked into this harness "
+                    f"(`sync --deep` links them): {', '.join(sorted(pack_ids))}"
+                ),
+            }
+        )
     if heal and state_changed:
         state.save(current_state, state_path)
+    scans = _link_scans(detected, state_path)
+    report["links"] = _link_summary(scans)
+    report["broken_links"] = _broken_link_rows(scans)
     return report
 
 
@@ -679,6 +727,48 @@ def _codex_after_set(
     return [available[pid] for pid in sorted(result_ids) if pid in available]
 
 
+def _route_pack_ids(all_descriptors: list[SkillDescriptor]) -> set[str]:
+    """Packs the gateway and creative-work router link to (composed by default)."""
+    core = next((d for d in all_descriptors if d.pack_id == "_core"), None)
+    if core is None:
+        return set()
+    from .view import route_pack_ids
+
+    return route_pack_ids(core, all_descriptors)
+
+
+def _link_scans(harness_names: Iterable[str], state_path: Path | None) -> dict[str, LinkScan]:
+    """Scan every composed view that exists on disk for broken markdown links."""
+    base = (state_path or state.state_path()).parent / "skills"
+    scans: dict[str, LinkScan] = {}
+    for harness_name in harness_names:
+        view_root = base / harness_name
+        if view_root.is_dir():
+            scans[harness_name] = scan_links(view_root)
+    return scans
+
+
+def _broken_link_rows(scans: dict[str, LinkScan]) -> list[dict]:
+    return [
+        {
+            "harness": harness_name,
+            "file": broken.file,
+            "line": broken.line,
+            "target": broken.target,
+            "missing": broken.missing,
+        }
+        for harness_name, scan in scans.items()
+        for broken in scan.broken
+    ]
+
+
+def _link_summary(scans: dict[str, LinkScan]) -> dict[str, dict]:
+    return {
+        harness_name: {"files": scan.files, "checked": scan.checked, "broken": len(scan.broken)}
+        for harness_name, scan in scans.items()
+    }
+
+
 def _sync_descriptors_for_harness(
     all_descriptors: list[SkillDescriptor],
     current_state: dict,
@@ -686,6 +776,7 @@ def _sync_descriptors_for_harness(
     *,
     deep: bool,
     selected_pack_ids: Iterable[str] = (),
+    view_routes: bool = True,
 ) -> list[SkillDescriptor]:
     disabled = set(current_state.get("disabled_defaults", {}).get(harness_name, []))
     if deep:
@@ -702,6 +793,7 @@ def _sync_descriptors_for_harness(
         | set(default_pack_ids(all_descriptors))
         | {str(value) for value in retained_integrations}
         | {str(value) for value in selected_pack_ids}
+        | (_route_pack_ids(all_descriptors) if view_routes else set())
     )
     expected_ids.difference_update(disabled)
     expected_ids.add("_core")

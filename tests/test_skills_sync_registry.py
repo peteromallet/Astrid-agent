@@ -11,6 +11,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,14 +21,17 @@ from types import SimpleNamespace
 from unittest import mock
 
 from astrid import skills
+from astrid.core.foundation.paths import REPO_ROOT
 from astrid.skills import cli as skills_cli
-from astrid.skills import discovery, registry
+from astrid.skills import discovery, registry, state
 from astrid.skills.harnesses import ClaudeAdapter, CodexAdapter
 from astrid.skills.harnesses.base import (
     is_ours,
     ours_link_to_pack_id,
     prune_orphan_skill_links,
 )
+from astrid.skills.links import DROP, iter_link_targets, rewrite_links, scan_links, split_target
+from astrid.skills.view import route_pack_ids
 
 # Reuse the shared HOME-pinning fixture from the main skills test module.
 from tests.test_skills import _Tmp
@@ -387,6 +393,264 @@ class CheckTest(unittest.TestCase):
                 self.assertEqual(_run(["--check"]), 0)
         finally:
             fx.close()
+
+
+class LinkTextTest(unittest.TestCase):
+    def test_split_target_separates_local_paths_from_external_and_anchors(self) -> None:
+        self.assertEqual(split_target("docs/a.md#sec"), ("docs/a.md", "#sec"))
+        self.assertEqual(split_target("<packs/with space.md>"), ("packs/with space.md", ""))
+        self.assertEqual(split_target("https://example.com/x"), (None, ""))
+        self.assertEqual(split_target("mailto:a@b.c"), (None, ""))
+        self.assertEqual(split_target("#top"), (None, ""))
+        self.assertEqual(split_target(""), (None, ""))
+
+    def test_iter_link_targets_skips_fences_and_inline_code(self) -> None:
+        text = (
+            "[one](a.md) and `[code](nope.md)`\n"
+            "```\n[fenced](nope.md)\n```\n"
+            "[ref]: b.md\n"
+        )
+        self.assertEqual(
+            [raw for _line, raw in iter_link_targets(text)],
+            ["a.md", "b.md"],
+        )
+
+    def test_rewrite_links_keeps_anchor_drops_markup_and_leaves_code(self) -> None:
+        text = "see [doc](old.md#sec) and [gone](missing.md)\n`[x](y.md)`\n"
+
+        def rewrite(raw: str):
+            if raw == "missing.md":
+                return DROP
+            return "/abs/" + raw
+
+        result = rewrite_links(text, rewrite)
+        self.assertEqual(result, "see [doc](/abs/old.md#sec) and gone\n`[x](y.md)`\n")
+
+
+class ScanLinksTest(unittest.TestCase):
+    def test_scan_reports_broken_targets_and_follows_directory_symlinks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            source = base / "checkout" / "pack"
+            source.mkdir(parents=True)
+            (source / "sibling.md").write_text("ok\n", encoding="utf-8")
+            (source / "doc.md").write_text(
+                "[ok](sibling.md) [bad](../../nope.md) [web](https://example.com)\n",
+                encoding="utf-8",
+            )
+            view = base / "view"
+            view.mkdir()
+            (view / "linked").symlink_to(source)
+
+            scan = scan_links(view)
+
+            self.assertEqual(scan.files, 2)
+            # The external https link is not a local target and is not counted.
+            self.assertEqual(scan.checked, 2)
+            self.assertEqual([b.target for b in scan.broken], ["../../nope.md"])
+            self.assertEqual(scan.broken[0].line, 1)
+            self.assertTrue(scan.broken[0].file.endswith(os.path.join("linked", "doc.md")))
+
+    def test_file_symlink_links_resolve_from_the_link_directory(self) -> None:
+        # The OS resolves ``..`` from the directory holding the link, so a
+        # relative link inside a symlinked *file* does not follow the symlink.
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            source = base / "checkout"
+            source.mkdir()
+            (source / "sibling.md").write_text("ok\n", encoding="utf-8")
+            (source / "doc.md").write_text("[s](sibling.md)\n", encoding="utf-8")
+            view = base / "view"
+            view.mkdir()
+            (view / "doc.md").symlink_to(source / "doc.md")
+
+            scan = scan_links(view)
+
+            self.assertEqual([b.target for b in scan.broken], ["sibling.md"])
+
+
+def _view_root(harness: str) -> Path:
+    """The composed view for *harness* under the (already pinned) state home."""
+    return state.state_path().parent / "skills" / harness
+
+
+class LinkIntegrityTest(unittest.TestCase):
+    """Default sync composes views whose every relative link resolves.
+
+    These tests use the default state path (pinned by ``_Tmp`` to a temp dir)
+    so the CLI and the library read the same composed views.
+    """
+
+    def test_default_sync_views_have_no_broken_links_without_deep(self) -> None:
+        fx = _Tmp()
+        try:
+            report = skills.sync()
+            self.assertEqual(report["broken_links"], [])
+            for harness in ("claude", "codex"):
+                view = _view_root(harness)
+                scan = scan_links(view)
+                self.assertGreater(scan.checked, 0)
+                self.assertEqual(scan.broken, (), msg=f"{harness}: {scan.broken}")
+                # Gateway only: no per-pack harness links without --deep.
+                entries = sorted(p.name for p in (fx.home / f".{harness}" / "skills").iterdir())
+                self.assertEqual(
+                    [name for name in entries if name.startswith("astrid-")], [],
+                    msg=f"{harness} linked pack skills without --deep",
+                )
+        finally:
+            fx.close()
+
+    def test_router_packs_are_composed_by_default_including_references(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.sync()
+            view = _view_root("claude")
+            core = next(d for d in _descriptors() if d.pack_id == "_core")
+            routed = route_pack_ids(core, _descriptors())
+            self.assertIn("references", routed)
+            self.assertIn("generation", routed)
+            for pack_id in routed:
+                self.assertTrue(
+                    (view / "packs" / pack_id / "SKILL.md").is_file()
+                    or (view / "packs" / pack_id).is_symlink(),
+                    msg=f"router pack not composed: {pack_id}",
+                )
+            self.assertTrue((view / "packs" / "references" / "SKILL.md").resolve().is_file())
+        finally:
+            fx.close()
+
+    def test_rewritten_checkout_links_point_at_real_files(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.sync()
+            view = _view_root("claude")
+            text = (view / "SKILL.md").read_text(encoding="utf-8")
+            setup_doc = (REPO_ROOT / "docs" / "setup" / "SKILL.md").resolve()
+            self.assertTrue(setup_doc.is_file())
+            self.assertIn(str(setup_doc), text)
+            # The capability reference is a rewritten copy, never a symlink into
+            # the checkout (a symlinked file would resolve its links from the view).
+            capabilities_link = view / "references" / "capabilities.md"
+            self.assertFalse(capabilities_link.is_symlink())
+            hivemind_doc = (REPO_ROOT / "docs" / "reference" / "hivemind-pack-contract.md").resolve()
+            self.assertIn(str(hivemind_doc), capabilities_link.read_text(encoding="utf-8"))
+        finally:
+            fx.close()
+
+    def test_check_fails_with_message_for_broken_link_in_view(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.sync()
+            gateway_md = _view_root("claude") / "SKILL.md"
+            gateway_md.write_text(
+                gateway_md.read_text(encoding="utf-8") + "\n[dead](packs/nope/SKILL.md)\n",
+                encoding="utf-8",
+            )
+
+            report = skills.check()
+            self.assertTrue(report["has_drift"])
+            broken = [b for b in report["broken_links"] if b["target"] == "packs/nope/SKILL.md"]
+            self.assertEqual(len(broken), 1)
+            self.assertEqual(broken[0]["harness"], "claude")
+            self.assertTrue(broken[0]["file"].endswith("SKILL.md"))
+            self.assertIn("nope", broken[0]["missing"])
+
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                rc = skills_cli.main(["sync", "--check"])
+            self.assertEqual(rc, 1)
+            self.assertIn("[broken link] claude", out.getvalue())
+            self.assertIn("packs/nope/SKILL.md", out.getvalue())
+        finally:
+            fx.close()
+
+    def test_sync_exits_nonzero_when_it_leaves_a_broken_link(self) -> None:
+        fx = _Tmp()
+        try:
+            broken = {
+                "harness": "claude",
+                "file": "/view/SKILL.md",
+                "line": 7,
+                "target": "packs/gone/SKILL.md",
+                "missing": "/view/packs/gone/SKILL.md",
+            }
+            fake_report = {
+                "actions": [],
+                "registry": {"changed": False, "by_harness": {}},
+                "links": {"claude": {"files": 1, "checked": 1, "broken": 1}},
+                "broken_links": [broken],
+                "warnings": [],
+            }
+            with mock.patch("astrid.skills.cli.sync_fn", return_value=fake_report), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                rc = skills_cli.main(["sync"])
+            self.assertEqual(rc, 1)
+            self.assertIn("[broken link] claude", out.getvalue())
+            self.assertIn("packs/gone/SKILL.md", out.getvalue())
+        finally:
+            fx.close()
+
+    def test_doctor_warns_for_absent_optional_packs_and_exits_zero(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.sync()
+            report = skills.doctor()
+            self.assertEqual([r for r in report["results"] if not r["ok"]], [])
+            self.assertEqual(report["broken_links"], [])
+            # One aggregated note per detected harness, never one per pack.
+            optional_notes = [w["message"] for w in report["warnings"] if "optional packs not linked" in w["message"]]
+            self.assertEqual(len(optional_notes), len(report["detected"]), msg=str(report["warnings"]))
+            self.assertTrue(all("references" in note for note in optional_notes))
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                rc = skills_cli.main(["doctor"])
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            self.assertIn("[warn]", out.getvalue())
+        finally:
+            fx.close()
+
+    def test_doctor_still_fails_when_gateway_is_missing(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.sync()
+            (fx.home / ".claude" / "skills" / "astrid").unlink()
+            with mock.patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(skills_cli.main(["doctor"]), 1)
+        finally:
+            fx.close()
+
+    def test_discovery_survives_a_malformed_external_pack(self) -> None:
+        with mock.patch(
+            "astrid.core.pack.discovery.discover_pack_metadata",
+            side_effect=RuntimeError("pixel/pack.yaml: keywords.1 invalid"),
+        ):
+            descriptors = discovery.list_skills()
+        self.assertIn("_core", {d.pack_id for d in descriptors})
+        problems = discovery.discovery_problems()
+        self.assertTrue(any("keywords.1 invalid" in p for p in problems), msg=problems)
+
+
+class CliEntryPointTest(unittest.TestCase):
+    def test_documented_module_command_runs_the_cli(self) -> None:
+        # ``python -m astrid.skills.cli`` used to exit 0 without doing anything
+        # because the module had no __main__ guard.  A drift check on an empty
+        # home must now run and report drift with exit 1.
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            (home / ".claude").mkdir(parents=True)
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "ASTRID_STATE_HOME": str(Path(tmp) / "state"),
+            }
+            proc = subprocess.run(
+                [sys.executable, "-m", "astrid.skills.cli", "sync", "--check"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=110,
+            )
+        self.assertEqual(proc.returncode, 1, msg=proc.stderr)
+        self.assertIn("[drift]", proc.stdout)
 
 
 def _dispatch(args: argparse.Namespace, md: Path, state_path: Path) -> int:

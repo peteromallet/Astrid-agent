@@ -139,8 +139,14 @@ def _scan_discovered_packs(descriptors: list[SkillDescriptor]) -> None:
     """
     from astrid.core.pack.discovery import discover_pack_metadata
 
+    try:
+        discovered_packs = list(discover_pack_metadata())
+    except Exception as exc:  # noqa: BLE001 - one malformed optional manifest must not hide every skill
+        _DISCOVERY_PROBLEMS.append(f"external and managed pack discovery skipped: {exc}")
+        return
+
     seen_ids = {descriptor.pack_id for descriptor in descriptors}
-    for discovered in discover_pack_metadata():
+    for discovered in discovered_packs:
         # The shared inventory calls environment/extra roots ``env``. Keep
         # ``installed`` as a compatibility spelling for older inventory
         # records, but never invent a second source scan here.
@@ -161,8 +167,19 @@ def _scan_discovered_packs(descriptors: list[SkillDescriptor]) -> None:
                 seen_ids.add(qualified_id)
 
 
+# Problems hit by the most recent ``list_skills()`` scan.  Discovery degrades
+# rather than failing, so callers surface these as warnings.
+_DISCOVERY_PROBLEMS: list[str] = []
+
+
+def discovery_problems() -> list[str]:
+    """Return problems recorded by the most recent :func:`list_skills` call."""
+    return list(_DISCOVERY_PROBLEMS)
+
+
 def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
     base = packs_dir or PACKS_DIR
+    _DISCOVERY_PROBLEMS.clear()
     descriptors: list[SkillDescriptor] = []
     if not base.exists():
         return descriptors
@@ -234,6 +251,7 @@ __all__ = [
     "FORBIDDEN_TOKEN_PATTERNS",
     "PACKS_DIR",
     "SkillDescriptor",
+    "discovery_problems",
     "get",
     "lint_shared_skill_md",
     "list_skills",
