@@ -45,9 +45,12 @@ type Run = {text: string; italic: boolean; underline: boolean; space: boolean};
 
 // Split into word and whitespace runs. The first word matching italicWord
 // (and the first matching underlineWord) is styled. Punctuation is ignored
-// when matching, so "tomorrow." matches "tomorrow".
-const buildRuns = (text: string, italicWord: string, underlineWord: string): Run[] => {
+// on BOTH sides when matching, so "tomorrow." matches "tomorrow" and an
+// italicWord of "year." still matches "year".
+const buildRuns = (text: string, italicWordRaw: string, underlineWordRaw: string): Run[] => {
   const cleaned = (token: string): string => token.replace(/[^\p{L}\p{N}']/gu, '').toLowerCase();
+  const italicWord = cleaned(italicWordRaw);
+  const underlineWord = cleaned(underlineWordRaw);
   let italicUsed = false;
   let underlineUsed = false;
   return text.split(/(\s+)/).filter((part) => part.length > 0).map((part) => {
@@ -55,9 +58,9 @@ const buildRuns = (text: string, italicWord: string, underlineWord: string): Run
       return {text: part, italic: false, underline: false, space: true};
     }
     const key = cleaned(part);
-    const italic = !italicUsed && italicWord !== '' && key === italicWord.toLowerCase();
+    const italic = !italicUsed && italicWord !== '' && key === italicWord;
     if (italic) italicUsed = true;
-    const underline = !underlineUsed && underlineWord !== '' && key === underlineWord.toLowerCase();
+    const underline = !underlineUsed && underlineWord !== '' && key === underlineWord;
     if (underline) underlineUsed = true;
     return {text: part, italic, underline, space: false};
   });
