@@ -61,6 +61,8 @@ zoom of 1 to 4.
 {"id":"plate-01","at":0,"track":"base","clipType":"am-snap-plate","asset":"plate-p01","hold":4,"params":{"zoom":3,"focus":{"x":120,"y":60},"pan":{"dx":2,"dy":0},"stepFrames":2,"enter":"blockWipe","enterFrames":6,"exit":"cut"}}
 ```
 
+For a flat coloured background with no image, `am-snap-plate` needs no asset: set `params.fill` to a brand token (`paper`, `charcoal`, `rust`, ...) or a CSS colour such as `#F4D2B2`. Do not generate a placeholder PNG for it.
+
 ## am-sprite: transparent pixel cutout with stepped motion
 
 A transparent cutout (managed PNG on `clip.asset`) placed on the logical grid.

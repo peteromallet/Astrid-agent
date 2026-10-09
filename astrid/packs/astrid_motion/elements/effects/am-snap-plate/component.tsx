@@ -60,6 +60,12 @@ type Params = {
   pattern?: WipePattern;
   wipeColor?: string;
   background?: string;
+  /**
+   * Background-only plate: no asset needed. A brand token (paper, panel, ink, muted,
+   * rust, orange, rule, charcoal) or any CSS colour. With no src and no clip.asset,
+   * the plate is this flat field (plus tint and wipes).
+   */
+  fill?: string;
   /** Pixelate transition in: starts as coarse blocks and resolves (see _shared/mosaic). */
   mosaicIn?: MosaicRamp | null;
   /** Pixelate transition out: coarsens into blocks over the clip's last frames. */
@@ -69,12 +75,27 @@ type Params = {
 const ENTER_EXIT = ['cut', 'blockWipe'] as const;
 const PATTERNS: readonly WipePattern[] = ['diagonal', 'random', 'scan'];
 
+// Brand tokens accepted by params.fill; anything else is used as a CSS colour.
+const FILL_TOKENS: Record<string, string> = {
+  paper: COLOR.paper,
+  panel: COLOR.panel,
+  ink: COLOR.ink,
+  muted: COLOR.muted,
+  rust: COLOR.rust,
+  orange: COLOR.orange,
+  rule: COLOR.rule,
+  charcoal: COLOR.charcoal,
+};
+
 export default function AmSnapPlate(props: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const {width, height, fps: compositionFps} = useVideoConfig();
   const params = narrowParams<Params>(props.params);
   const url = elementSource(props.assetEntry, params.src);
-  if (!url) {
+  const fill = typeof params.fill === 'string' && params.fill.trim() !== ''
+    ? (FILL_TOKENS[params.fill.trim()] ?? params.fill.trim())
+    : null;
+  if (!url && !fill) {
     return null;
   }
 
@@ -90,7 +111,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
   const pattern = oneOf<WipePattern>(params.pattern, PATTERNS, 'diagonal');
   const seed = timing.seed;
   const wipeColor = params.wipeColor ?? COLOR.charcoal;
-  const background = params.background ?? COLOR.paper;
+  const background = params.background ?? fill ?? COLOR.paper;
 
   let wipe: ReactElement | null = null;
   const exitStart = total - exitFrames;
@@ -120,7 +141,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
 
   return (
     <AbsoluteFill style={{overflow: 'hidden', backgroundColor: background}}>
-      {block > 0 ? (
+      {!url ? null : block > 0 ? (
         <MosaicImage url={url} rect={rect} block={block} width={width} height={height} background={background} />
       ) : (
       <Img
