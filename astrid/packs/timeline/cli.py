@@ -1220,6 +1220,12 @@ def _working_copy_view(parsed: argparse.Namespace) -> dict[str, Any] | None:
     }
 
 
+def _working_banner(working: Mapping[str, Any]) -> str:
+    """The one-line banner show, lint and diff print when they read the working copy."""
+    return (f"WORKING COPY · {len(working['changes'])} unpublished edits vs published {working['base_revision']} · "
+            "--published for the live version")
+
+
 def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     """Print the cut table for ``timelines show`` (human default, or the complete --json)."""
     from astrid.sdk.timeline_cuts import (
@@ -1390,6 +1396,11 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     if not opened.ok or not isinstance(opened.data, Mapping):
         return print_result(opened, as_json=parsed.json)
     bundle = opened.data["bundle"]
+    working = None
+    if parsed.ref and not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+        working = _working_copy_view(parsed)
+    if working is not None:
+        bundle = working["bundle"]
     fps = bundle_fps(bundle)
     occurrences = occurrences_from_bundle(bundle)
     all_cuts = picture_cuts(occurrences, fps=fps)
@@ -1421,6 +1432,7 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         rows += [f.as_dict() for f in timeline_findings]
         print(json.dumps({"ok": True, "data": {"timeline_id": opened.data.get("timeline_id"),
                                                 "revision_id": opened.data.get("revision_id"),
+                                                "working_copy": working is not None,
                                                 "rules": (rules or {}).get("path"), "findings": rows},
                           "error": None}, indent=2))
         return 0
@@ -1438,6 +1450,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         f"Timeline {opened.data.get('timeline_id')} · {len(results)} cut(s) · revision {opened.data.get('revision_id')}",
         rules_line,
     ]
+    if working is not None:
+        lines.insert(0, _working_banner(working))
     rank = {"error": 0, "warn": 1, "info": 2}
 
     def emit(finding, start=None) -> None:
@@ -1477,6 +1491,12 @@ def _cmd_history(parsed: argparse.Namespace) -> int:
 
 def _cmd_diff(parsed: argparse.Namespace) -> int:
     from_revision = getattr(parsed, "from_revision", None)
+    plain = from_revision is None and getattr(parsed, "to_revision", None) is None
+    plain = plain and getattr(parsed, "from_version", None) is None and getattr(parsed, "to_version", None) is None
+    if plain and parsed.ref and not getattr(parsed, "published", False):
+        working = _working_copy_view(parsed)
+        if working is not None:
+            return _diff_working_copy(parsed, working)
     if from_revision is None:
         from_version = getattr(parsed, "from_version", None)
         to_version = getattr(parsed, "to_version", None)
@@ -1536,6 +1556,29 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
         lines.append("see it: frames of only the changed moments, before and after (no full render):")
         lines.extend(f"  {label}: {command}" for label, command in commands.items())
     print("\n".join(lines))
+    return 0
+
+
+def _diff_working_copy(parsed: argparse.Namespace, working: Mapping[str, Any]) -> int:
+    """The published head against the working copy, with the banner."""
+    from astrid.sdk.timeline_cuts import diff_bundles, render_diff
+
+    opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not callable(opener):
+        print("error unavailable: this client cannot open timeline revisions")
+        return 2
+    head = opener(parsed.project, parsed.ref, revision_id=None)
+    if not head.ok or not isinstance(head.data, Mapping):
+        return print_result(head, as_json=parsed.json)
+    old = str(head.data["revision_id"])
+    diff = diff_bundles(head.data["bundle"], working["bundle"])
+    diff.update({"from_revision": old, "to_revision": "working copy", "timeline_id": head.data.get("timeline_id")})
+    if parsed.json:
+        print(json.dumps({"ok": True, "data": {**diff, "working_copy": {"base_revision": working["base_revision"],
+                          "edits": len(working["changes"])}}, "error": None}, indent=2, sort_keys=True))
+        return 0
+    print(_working_banner(working))
+    print(render_diff(diff, title=f"Timeline {head.data.get('timeline_id')}: {old} → working copy"))
     return 0
 
 
@@ -2805,6 +2848,8 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--from-version", type=int, default=None, help=argparse.SUPPRESS)
     subparser.add_argument("--to-version", type=int, default=None, help=argparse.SUPPRESS)
     _add_json_flag(subparser, default=False)
+    subparser.add_argument("--published", action="store_true",
+                           help="Diff saved revisions only, ignoring the working copy (no --from/--to: the head vs the working copy).")
     subparser.set_defaults(handler=_cmd_diff)
 
 
@@ -2836,6 +2881,8 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--strict", action="store_true", help="Exit 1 when any finding has severity error.")
     subparser.add_argument("--all", action="store_true", help="Also print info lines (EDGE crops, BEAT near-misses).")
     _add_json_flag(subparser, default=False)
+    subparser.add_argument("--published", action="store_true",
+                           help="Lint the published head, not the working copy (when one exists).")
     subparser.set_defaults(handler=_cmd_lint)
 
 
@@ -3194,6 +3241,13 @@ def _describe_edit(before: Mapping[str, Any], after: Mapping[str, Any], tl: Any)
     return lines
 
 
+def _cap(lines: list[str], limit: int = 30) -> list[str]:
+    """A long re-flow prints its first lines and a count; the rest is one `timelines diff` away."""
+    if len(lines) <= limit:
+        return lines
+    return lines[:limit] + [f"… and {len(lines) - limit} more (timelines diff shows them all)"]
+
+
 def _check_lines(report: Any) -> list[str]:
     """The first line of the report, then the problems and lint lines (the full report is `check`)."""
     lines = str(report).splitlines()
@@ -3230,14 +3284,16 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
 def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
 
-    timeline_level = parsed.retime or parsed.close_gap_before or parsed.insert
+    voice_ops = any((parsed.line, parsed.insert_line, parsed.remove_line, parsed.gap_after, parsed.from_script))
+    timeline_level = parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops
     selector = parsed.clip is not None or parsed.cut is not None
     if selector and timeline_level:
-        raise _VerbError("a clip edit and a timeline-level edit (--retime, --close-gap-before, --insert) "
-                         "are separate: run one per command", 2)
+        raise _VerbError("a clip edit and a timeline-level edit (--retime, --close-gap-before, --insert, or a voice "
+                         "op) are separate: run one per command", 2)
     if not selector and not timeline_level:
-        raise _VerbError("name a clip (--clip QUERY or --cut N) or a timeline-level edit "
-                         "(--retime, --close-gap-before WORD, --insert TIME:SECONDS)", 2)
+        raise _VerbError("name a clip (--clip QUERY or --cut N) or a timeline-level edit (--retime, "
+                         "--close-gap-before WORD, --insert TIME:SECONDS, --line/--insert-line/--remove-line, "
+                         "--gap-after SEG=S, --from-script VO.json)", 2)
     if selector and not any(v is not None for v in (parsed.at_word, parsed.at, parsed.nudge, parsed.nudge_frames,
                                                     parsed.extend, parsed.duration, parsed.swap_asset)) and not parsed.set:
         raise _VerbError("say what to do to the clip: --at-word, --at, --nudge, --nudge-frames, --extend, "
@@ -3263,11 +3319,14 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     _apply_edit(tl, parsed)
     report = tl.check()
     changes = _describe_edit(before, tl.document(), tl)
-    for line in changes:
+    if voice_ops:
+        for line in _cap(tl.report):
+            print(line)
+    for line in _cap(changes):
         print(line)
     if not changes:
         print("no change")
-    for line in _check_lines(report):
+    for line in _cap(_check_lines(report)):
         print(line)
     tl.save(target)
     if target is not None:
@@ -3290,6 +3349,26 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.insert:
         at, seconds = parsed.insert
         tl.insert_time(at, seconds)
+    if parsed.line:
+        if not (parsed.take and parsed.words):
+            raise _VerbError("--line needs --take (WAV or registry key) and --words (words.json)", 2)
+        tl.voice(parsed.line).replace(parsed.take, words=parsed.words, text=parsed.text)
+    if parsed.insert_line:
+        if not (parsed.after and parsed.take and parsed.words):
+            raise _VerbError("--insert-line needs --after SEG, --take and --words", 2)
+        tl.insert_line(parsed.insert_line, parsed.take, words=parsed.words, after=parsed.after,
+                       gap_after=parsed.gap, text=parsed.text)
+    if parsed.remove_line:
+        tl.remove_line(parsed.remove_line)
+    if parsed.gap_after:
+        for item in parsed.gap_after:
+            seg, sep, seconds = item.partition("=")
+            if not sep or not seg:
+                raise _VerbError(f"--gap-after takes SEG=SECONDS, got {item!r}", 2)
+            tl.voice(seg).set_gap_after(float(seconds), reflow=False)
+        tl.reflow()  # one re-flow for all of them
+    if parsed.from_script:
+        tl.apply_script(parsed.from_script, takes=parsed.takes, gaps=parsed.script_gaps)
     if parsed.clip is None and parsed.cut is None:
         return
     if parsed.clip is not None:
@@ -3542,6 +3621,22 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                               help="Close the silence before this word and ripple.")
     timeline_ops.add_argument("--insert", type=_parse_insert, default=None, metavar="TIME:SECONDS",
                               help="Open SECONDS of time at TIME and ripple.")
+    voice = subparser.add_argument_group("voice lines (timeline-level; the film re-flows and says what moved)")
+    voice.add_argument("--line", metavar="SEG", default=None, help="Swap line SEG's take (with --take and --words).")
+    voice.add_argument("--take", default=None, help="A WAV path or a registry key (for --line and --insert-line).")
+    voice.add_argument("--words", default=None, metavar="WORDS.json", help="The take's words: [[start, end, text], ...].")
+    voice.add_argument("--text", default=None, help="The line's script text (narration).")
+    voice.add_argument("--insert-line", dest="insert_line", default=None, metavar="SEG", help="Insert a new line SEG.")
+    voice.add_argument("--after", default=None, metavar="SEG", help="With --insert-line: the line before it.")
+    voice.add_argument("--gap", type=float, default=None, help="With --insert-line: silence after the new line (s).")
+    voice.add_argument("--remove-line", dest="remove_line", default=None, metavar="SEG", help="Remove line SEG.")
+    voice.add_argument("--gap-after", dest="gap_after", action="append", default=None, metavar="SEG=SECONDS",
+                       help="Silence after line SEG (repeatable; one re-flow at the end).")
+    voice.add_argument("--from-script", dest="from_script", default=None, metavar="VO.json",
+                       help="Bring the voice track in line with a VO script ({segments: [{id, text, gap_after_s}]}).")
+    voice.add_argument("--takes", default=None, metavar="DIR", help="With --from-script: where <id>.wav and <id>.words.json are.")
+    voice.add_argument("--script-gaps", dest="script_gaps", action="store_true",
+                       help="With --from-script: the script's gap_after_s wins over the declared gaps.")
     subparser.set_defaults(handler=_cmd_edit)
 
 

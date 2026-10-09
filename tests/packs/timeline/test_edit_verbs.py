@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 
 import pytest
@@ -242,3 +243,119 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     assert "1 unpublished edit(s) dropped" in capsys.readouterr().out
     assert _run("status", "t", "--project", "P") == 0
     assert "no working copy" in capsys.readouterr().out
+
+
+# ---- voice lines (timeline-level; the film re-flows) -----------------------------------
+
+def _words_file(tmp_path, name, rows):
+    path = tmp_path / name
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    return str(path)
+
+
+def test_voice_line_swap_reflows_and_reports(local, tmp_path, capsys):
+    words = _words_file(tmp_path, "s1.json", [[0.0, 0.5, "it"], [0.6, 1.1, "went"], [1.2, 2.0, "viral"]])
+    assert _run("edit", "--file", str(local), "--line", "s1", "--take", "P", "--words", words) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1].startswith("next: timelines check")
+    line = Checkout.load(local).voice("s1")
+    assert [w.text for w in line.words] == ["it", "went", "viral"]
+
+
+def test_voice_line_swap_needs_take_and_words(local, capsys):
+    assert _run("edit", "--file", str(local), "--line", "s1") == 2
+    assert "--take" in capsys.readouterr().err
+
+
+def test_insert_line_after_another(local, tmp_path, capsys):
+    words = _words_file(tmp_path, "s3.json", [[0.0, 0.4, "new"], [0.5, 0.9, "line"]])
+    assert _run("edit", "--file", str(local), "--insert-line", "s3", "--after", "s1", "--take", "Q",
+                "--words", words, "--text", "new line") == 0
+    segments = [v.segment for v in Checkout.load(local).lines()]
+    assert segments == ["s1", "s3", "s2"]
+
+
+def test_remove_line(local, capsys):
+    assert _run("edit", "--file", str(local), "--remove-line", "s2") == 0
+    assert [v.segment for v in Checkout.load(local).lines()] == ["s1"]
+
+
+def test_gap_after_is_set_and_reflowed_once(local, capsys):
+    assert _run("edit", "--file", str(local), "--gap-after", "s1=0.5") == 0
+    assert Checkout.load(local).voice("s1").gap_after == pytest.approx(0.5)
+
+
+def test_gap_after_rejects_a_bad_value(local, capsys):
+    assert _run("edit", "--file", str(local), "--gap-after", "s1") == 2
+    assert "SEG=SECONDS" in capsys.readouterr().err
+
+
+def test_from_script_with_unchanged_words_is_quiet(local, tmp_path, capsys):
+    takes = tmp_path / "vo"
+    takes.mkdir()
+    (takes / "s1.words.json").write_text(json.dumps([[0.1, 0.3, "it"], [0.4, 0.6, "went"], [0.8, 1.2, "viral"]]))
+    (takes / "s2.words.json").write_text(json.dumps([[0.1, 0.4, "Live"], [0.5, 0.8, "now"]]))
+    script = tmp_path / "vo.json"
+    script.write_text(json.dumps({"segments": [{"id": "s1", "text": "it went viral"},
+                                               {"id": "s2", "text": "Live now"}]}))
+    assert _run("edit", "--file", str(local), "--from-script", str(script), "--takes", str(takes)) == 0
+    assert [v.segment for v in Checkout.load(local).lines()] == ["s1", "s2"]
+
+
+def test_timeline_level_voice_ops_exclude_a_clip_selector(local, tmp_path, capsys):
+    assert _run("edit", "--file", str(local), "--clip", "R", "--remove-line", "s2") == 2
+    assert "separate" in capsys.readouterr().err
+
+
+# ---- lint and diff read the working copy (stub client: the published head is the synthetic bundle)
+
+class _Opened:
+    def __init__(self, data):
+        self.ok, self.data, self.error, self.receipt, self.idempotency_key = True, data, None, None, None
+
+
+class _Timelines:
+    def open_bundle(self, project, ref, revision_id=None):
+        return _Opened({"bundle": copy.deepcopy(bundle()), "timeline_id": "t", "revision_id": "rev-0",
+                        "project_id": "p", "is_current_head": True, "head_revision_id": "rev-0"})
+
+
+class _Client:
+    timelines = _Timelines()
+
+
+def _run_with_client(*argv):
+    parsed = _parse(*argv)
+    parsed.client = _Client()
+    return parsed.handler(parsed)
+
+
+@pytest.fixture
+def draft_with_edit(tmp_path, monkeypatch):
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
+    assert _run("checkout", "t", "--project", "P") == 0
+    assert _run("edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "3") == 0
+
+
+def test_lint_reads_the_working_copy_by_default(draft_with_edit, capsys):
+    capsys.readouterr()
+    _run_with_client("lint", "t", "--project", "P")
+    first = capsys.readouterr().out.splitlines()[0]
+    assert first.startswith('WORKING COPY · 1 unpublished edits vs published rev-0')
+
+
+def test_lint_published_has_no_banner(draft_with_edit, capsys):
+    capsys.readouterr()
+    _run_with_client("lint", "t", "--project", "P", "--published")
+    assert not capsys.readouterr().out.startswith("WORKING COPY")
+
+
+def test_diff_without_from_compares_head_with_working_copy(draft_with_edit, capsys):
+    capsys.readouterr()
+    assert _run_with_client("diff", "t", "--project", "P") == 0
+    out = capsys.readouterr().out
+    assert out.startswith('WORKING COPY · 1 unpublished edits vs published rev-0')
+    assert "a-rocket" in out
+    assert "working copy" in out
