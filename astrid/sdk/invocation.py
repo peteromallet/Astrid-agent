@@ -672,9 +672,9 @@ def _validate_timeline_visualize_inputs(
     # route were removed; all review navigation is render-scoped (range,
     # timestamp, shot, clip, asset, track, and density).
     view = values.get("view", "filmstrip")
-    if view not in {"filmstrip", "contact"}:
+    if view != "filmstrip":
         raise CapabilityValidationError(
-            "only view=filmstrip or view=contact is supported; the structural timeline view was removed"
+            "only view=filmstrip is supported; the structural timeline view was removed"
         )
     removed = [
         name for name in ("all", "from_view", "focus", "refresh_root", "layout", "filmstrip", "scope")
@@ -2791,6 +2791,7 @@ def invoke(
                     object_sizes=exact_object_sizes,
                     effect_asset_sizes=effect_sizes,
                     requested_profile=(inputs or {}).get("profile"),
+                    review=(inputs or {}).get("review") is True,
                 )
             except StorageEstimateError as exc:
                 raise CapabilityValidationError(str(exc)) from exc

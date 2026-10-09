@@ -10,6 +10,7 @@ from astrid.core.rendering.storage import (
     StorageEstimateError,
     estimate_managed_render_storage,
     managed_object_sizes,
+    remotion_frame_sequence_bytes,
     used_effect_asset_sizes,
 )
 
@@ -96,6 +97,7 @@ def test_h264_estimate_exposes_every_peak_storage_component() -> None:
         2000
         + 2000
         + estimate["audio_pcm_working_bytes"]
+        + estimate["frame_sequence_bytes"]
         + expected_output
         + estimate["encoded_working_copy_bytes"]
     )
@@ -176,6 +178,7 @@ def test_h264_estimate_charges_simultaneous_audio_and_output_work_for_rich_topol
         estimate["managed_entry_bytes"]
         + estimate["audio_pcm_working_bytes"]
         + estimate["inline_audio_mix_working_bytes"]
+        + estimate["frame_sequence_bytes"]
         + estimate["estimated_output_bytes"]
         + estimate["encoded_working_copy_bytes"]
     )
@@ -284,3 +287,60 @@ def test_used_effect_asset_sizes_are_exact_and_deduplicated(tmp_path: Path) -> N
         element_registry=registry,
     )
     assert sizes == {str(asset_path.resolve()): 5}
+
+
+def test_opaque_frame_sequence_is_charged_with_the_guard() -> None:
+    estimate = estimate_managed_render_storage(
+        timeline=_timeline(),
+        registry={"assets": {}},
+        object_sizes={},
+    )
+    # 300 frames at 1920x1080, PNG 0.6 bytes per pixel, 20% guard.
+    assert estimate["frame_image_format"] == "png"
+    assert estimate["frame_sequence_bytes"] == 447_897_600
+    assert estimate["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
+        frames=300, width=1920, height=1080, image_format="png"
+    )
+
+
+def test_review_estimate_uses_the_review_output_size_for_frames() -> None:
+    export = estimate_managed_render_storage(
+        timeline=_timeline(), registry={"assets": {}}, object_sizes={}
+    )
+    review = estimate_managed_render_storage(
+        timeline=_timeline(), registry={"assets": {}}, object_sizes={}, review=True
+    )
+    assert (review["width"], review["height"]) == (640, 360)
+    assert review["review_render"] is True
+    assert review["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
+        frames=300, width=640, height=360, image_format="png"
+    )
+    assert review["frame_sequence_bytes"] < export["frame_sequence_bytes"]
+    assert review["estimated_scratch_bytes"] < export["estimated_scratch_bytes"]
+
+
+def test_explicit_profile_disables_the_review_scale() -> None:
+    from dataclasses import replace
+
+    from astrid.core.rendering.profile import resolve_render_profile
+
+    profile = replace(
+        resolve_render_profile(_timeline(), {"assets": {}}), width=1280, height=720
+    )
+    estimate = estimate_managed_render_storage(
+        timeline=_timeline(),
+        registry={"assets": {}},
+        object_sizes={},
+        requested_profile=profile,
+        review=True,
+    )
+    assert estimate["review_render"] is False
+    assert (estimate["width"], estimate["height"]) == (1280, 720)
+
+
+def test_alpha_frame_workspace_is_not_charged_twice() -> None:
+    timeline = _timeline(alpha=True)
+    estimate = estimate_managed_render_storage(
+        timeline=timeline, registry={"assets": {}}, object_sizes={}
+    )
+    assert estimate["frame_sequence_bytes"] == 0

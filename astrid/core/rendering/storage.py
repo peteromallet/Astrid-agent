@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any
 
@@ -52,8 +53,52 @@ _PARALLEL_ENCODE_WORKING_COPIES = 1
 _MANAGED_RENDERER_COPY_PASSES = 2
 
 
+# Remotion writes one image per frame into its temporary directory unless it
+# streams frames straight into ffmpeg. Streaming is gated on free RAM, so a
+# memory-tight host takes the file path and every frame is scratch until the
+# stitch finishes. The per-pixel rates are deliberately conservative (PNG 0.6
+# and JPEG 0.15 bytes per pixel) and the frame term carries a 20% guard.
+_FRAME_BYTES_PER_PIXEL = {"png": Fraction(3, 5), "jpeg": Fraction(3, 20)}
+_FRAME_GUARD_PERCENT = 120
+REVIEW_MAX_WIDTH = 640
+REVIEW_MAX_HEIGHT = 360
+
+
 class StorageEstimateError(ValueError):
     """Raised when an exact estimate input is absent or malformed."""
+
+
+def remotion_frame_sequence_bytes(
+    *,
+    frames: int,
+    width: int,
+    height: int,
+    image_format: str,
+) -> int:
+    """Scratch bytes for one Remotion frame-image sequence, with the guard."""
+
+    if image_format not in _FRAME_BYTES_PER_PIXEL:
+        raise StorageEstimateError(f"unknown Remotion frame format: {image_format!r}")
+    per_frame = Fraction(int(width) * int(height), 1) * _FRAME_BYTES_PER_PIXEL[image_format]
+    return math.ceil(per_frame * int(frames) * Fraction(_FRAME_GUARD_PERCENT, 100))
+
+
+def review_render_profile(profile: RenderProfile) -> RenderProfile:
+    """Return the size Remotion emits for a review render (``--scale``).
+
+    Mirrors the render backend: the canvas is scaled to fit inside 640x360 and
+    H.264 dimensions are rounded down to even values.
+    """
+
+    scale = min(1.0, REVIEW_MAX_WIDTH / profile.width, REVIEW_MAX_HEIGHT / profile.height)
+
+    def scaled(source: int) -> int:
+        candidate = source
+        while candidate > 1 and int(candidate * scale + 0.5) % 2:
+            candidate -= 1
+        return max(1, int(candidate * scale + 0.5))
+
+    return replace(profile, width=scaled(profile.width), height=scaled(profile.height))
 
 
 def _canonical_json_size(value: Any) -> int:
@@ -241,6 +286,7 @@ def estimate_managed_render_storage(
     object_sizes: Mapping[str, int],
     effect_asset_sizes: Mapping[str, int] | None = None,
     requested_profile: Mapping[str, Any] | RenderProfile | None = None,
+    review: bool = False,
 ) -> dict[str, Any]:
     """Estimate peak task storage from one expanded canonical snapshot.
 
@@ -293,12 +339,25 @@ def estimate_managed_render_storage(
         effect_asset_bytes += size
 
     profile = _render_profile(timeline, registry, requested_profile)
+    # A review render without an explicit profile is emitted at review scale.
+    review_frames = bool(review) and requested_profile is None
+    if review_frames:
+        profile = review_render_profile(profile)
     fps = Fraction(*profile.fps_rational)
     authored_frames = timeline_duration_frames(timeline, float(fps))
     frames = timeline_render_duration_frames(timeline, float(fps))
     duration = Fraction(frames, 1) / fps
     pixel_rate = Fraction(profile.width * profile.height, 1) * fps
     alpha = _is_alpha_timeline(timeline)
+    # The render backend emits PNG frames for every render at this commit.
+    frame_image_format = "png"
+    # Alpha renders already charge their raw frame workspace above.
+    frame_sequence_bytes = 0 if alpha else remotion_frame_sequence_bytes(
+        frames=frames,
+        width=profile.width,
+        height=profile.height,
+        image_format=frame_image_format,
+    )
 
     encoder_buffer_bps = 0
     if alpha:
@@ -452,6 +511,7 @@ def estimate_managed_render_storage(
             + effect_asset_bytes
             + audio_pcm_working_bytes
             + inline_audio_mix_working_bytes
+            + frame_sequence_bytes
             + estimated_output_bytes
             + encoded_working_copy_bytes
         )
@@ -500,6 +560,9 @@ def estimate_managed_render_storage(
         "inline_audio_mix_working_bytes": inline_audio_mix_working_bytes,
         "alpha_frame_bytes_per_frame": alpha_frame_bytes_per_frame,
         "alpha_frame_working_bytes": alpha_frame_working_bytes,
+        "review_render": review_frames,
+        "frame_image_format": frame_image_format,
+        "frame_sequence_bytes": frame_sequence_bytes,
         "parallel_encode_working_copies": _PARALLEL_ENCODE_WORKING_COPIES,
         "encoded_working_copy_bytes": encoded_working_copy_bytes,
         "staged_output_bytes": estimated_output_bytes,
