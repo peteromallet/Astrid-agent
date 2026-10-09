@@ -2494,6 +2494,50 @@ def _inside_quarantined(path: Path, quarantined_dirs: tuple[Path, ...]) -> bool:
     return any(resolved == directory or directory in resolved.parents for directory in quarantined_dirs)
 
 
+def component_load_failures(pack_roots: Any = None) -> list[dict[str, Any]]:
+    """Return executor and orchestrator manifests that discovery skips, with the loader's error.
+
+    Uses the same folder loaders and quarantine scope as ``GenericPackHost``
+    discovery, so the doctor section and the pack validator cannot disagree with
+    what discovery drops. Read-only and never raises for one bad manifest.
+    """
+    from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
+    from astrid.core.execution.orchestrator.folder import discover_folder_orchestrator_roots, load_folder_orchestrator
+    from astrid.core.pack.loader import _default_pack_roots
+
+    roots = tuple(pack_roots) if pack_roots is not None else _default_pack_roots()
+    quarantined_dirs, _ids = _quarantine_scope(roots)
+    failures: list[dict[str, Any]] = []
+    loaders = (
+        ("executor", discover_folder_executor_roots, load_folder_executor),
+        ("orchestrator", discover_folder_orchestrator_roots, load_folder_orchestrator),
+    )
+    for kind, discover_roots, load_one in loaders:
+        for root in roots:
+            for folder in discover_roots(root):
+                if _inside_quarantined(folder, quarantined_dirs):
+                    continue
+                try:
+                    load_one(folder)
+                except (OSError, ValueError) as exc:
+                    failures.append({
+                        "kind": kind,
+                        "folder": str(folder),
+                        "error": str(exc),
+                        "fix": f"fix the {kind} manifest, then run: python3 -m astrid.core.pack.cli validate {folder.parents[1]}",
+                    })
+    return failures
+
+
+def executor_skip_section(pack_roots: Any = None) -> dict[str, Any]:
+    """Doctor section: executors and orchestrators skipped at discovery, with the reason. Never raises."""
+    try:
+        records = component_load_failures(pack_roots)
+    except Exception as exc:  # noqa: BLE001 - doctor reports the failure instead of crashing
+        return {"count": 0, "skipped": [], "error": str(exc)}
+    return {"count": len(records), "skipped": records, "error": None}
+
+
 def _configured_claim_target(raw_value: str | None = None) -> dict[str, Any] | None:
     """Return an explicit target for queue claims when one is configured.
 
@@ -2877,9 +2921,10 @@ class GenericPackHost:
                     continue
                 try:
                     definition = load_folder_executor(executor_root)
-                except (ExecutorValidationError, OSError, ValueError):
+                except (ExecutorValidationError, OSError, ValueError) as exc:
                     # A broken optional manifest is unavailable, but does not hide
-                    # neighboring packs.  The manifest report records the reason.
+                    # neighboring packs. Doctor (executor_skip_section) names the reason.
+                    _LOGGER.warning("skipped executor at %s: %s", executor_root, exc)
                     continue
                 definition = _attach_pack_metadata(definition, executor_root)
                 manifest = next((executor_root / name for name in ("executor.yaml", "executor.yml", "executor.json") if (executor_root / name).is_file()), None)
@@ -2970,7 +3015,8 @@ class GenericPackHost:
                         continue
                     try:
                         definition = load_folder_orchestrator(orchestrator_root)
-                    except (OSError, ValueError):
+                    except (OSError, ValueError) as exc:
+                        _LOGGER.warning("skipped orchestrator at %s: %s", orchestrator_root, exc)
                         continue
                     if definition.id != capability_id:
                         continue

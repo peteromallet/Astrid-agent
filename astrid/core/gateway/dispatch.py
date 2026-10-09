@@ -267,6 +267,9 @@ def _dispatch_doctor(args: list[str]) -> int:
     from astrid.core.element.registry import element_skip_section
 
     report["element_skips"] = element_skip_section()
+    from astrid.core.execution.generic_host import executor_skip_section
+
+    report["executor_skips"] = executor_skip_section()
     from astrid.core.execution.guards import EVIDENCE_STATUS_NAME, read_evidence_status
 
     report["evidence_budget"] = read_evidence_status(Path(support_root) / EVIDENCE_STATUS_NAME)

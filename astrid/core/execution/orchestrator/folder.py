@@ -64,7 +64,8 @@ def _load_folder_orchestrator_definitions(orchestrator_root: str | Path) -> tupl
         try:
             definition = load_orchestrator_manifest(manifest_path)
         except OrchestratorValidationError as exc:
-            raise FolderOrchestratorError(f"{manifest_path}: {exc}") from exc
+            # load_orchestrator_manifest already names the manifest path.
+            raise FolderOrchestratorError(str(exc)) from exc
         return (_attach_folder_metadata(definition, root, manifest_path),)
 
     orchestrator_path = root / "orchestrator.py"
