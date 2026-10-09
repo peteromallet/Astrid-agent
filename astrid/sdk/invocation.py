@@ -11,6 +11,8 @@ import math
 import os
 import platform
 import re
+import shutil
+import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -672,9 +674,9 @@ def _validate_timeline_visualize_inputs(
     # route were removed; all review navigation is render-scoped (range,
     # timestamp, shot, clip, asset, track, and density).
     view = values.get("view", "filmstrip")
-    if view != "filmstrip":
+    if view not in {"filmstrip", "contact"}:
         raise CapabilityValidationError(
-            "only view=filmstrip is supported; the structural timeline view was removed"
+            "only view=filmstrip or view=contact is supported; the structural timeline view was removed"
         )
     removed = [
         name for name in ("all", "from_view", "focus", "refresh_root", "layout", "filmstrip", "scope")
@@ -888,6 +890,56 @@ def _validate_managed_speech_inputs(values: Mapping[str, Any]) -> None:
         )
     except SpeechProjectionError as exc:
         raise CapabilityValidationError(f"invalid frozen speech metadata: {exc}") from exc
+
+
+_GIB = 1024**3
+
+
+def _assert_render_disk_preflight(
+    storage_estimate: Mapping[str, Any],
+    *,
+    volume: str | None = None,
+) -> None:
+    """Fail fast when the scratch volume cannot hold the render's frames and output.
+
+    The frame sequence is the only term that grows with duration, and Remotion
+    writes it to the temporary directory before stitching. Checking it at
+    admission turns a mid-render ENOSPC into an immediate, actionable error.
+    """
+
+    if "frame_sequence_bytes" not in storage_estimate:
+        # Only the managed render estimate carries a frame model to check.
+        return
+    target = volume or tempfile.gettempdir()
+    # Alpha renders charge their raw frame workspace instead of a frame sequence.
+    frame_bytes = int(storage_estimate["frame_sequence_bytes"]) or int(
+        storage_estimate.get("alpha_frame_working_bytes", 0)
+    )
+    output_bytes = int(storage_estimate["estimated_output_bytes"])
+    required = frame_bytes + output_bytes
+    free = int(shutil.disk_usage(target).free)
+    if required <= free:
+        return
+    fmt = str(storage_estimate["frame_image_format"])
+    width = int(storage_estimate["frame_capture_width"])
+    height = int(storage_estimate["frame_capture_height"])
+    frames = int(storage_estimate["duration_frames"])
+    if storage_estimate.get("review_render"):
+        options = (
+            "this is already a review render (JPEG frames); render a shorter timeline "
+            "or free disk space"
+        )
+    else:
+        options = (
+            "for a preview, render a review (640x360 JPEG frames); for a JPEG export set "
+            "ASTRID_RENDER_EXPORT_FRAME_FORMAT=jpeg; or render a shorter timeline"
+        )
+    raise CapabilityPreconditionError(
+        f"rendering.render needs about {required / _GIB:.2f} GiB of scratch for {frames} "
+        f"{fmt} frames at {width}x{height} plus output, but only {free / _GIB:.2f} GiB is free "
+        f"on {target}. Options: {options}; or free disk space, or point TMPDIR at a larger "
+        "volume before the pack host starts."
+    )
 
 
 def _prepare_managed_render_inputs(
@@ -2785,16 +2837,18 @@ def invoke(
             try:
                 exact_object_sizes = managed_object_sizes(snapshot_registry, media_rows)
                 effect_sizes = used_effect_asset_sizes(snapshot_config)
+                review_flag = (inputs or {}).get("review")
                 storage_estimate = estimate_managed_render_storage(
                     timeline=snapshot_config,
                     registry=snapshot_registry,
                     object_sizes=exact_object_sizes,
                     effect_asset_sizes=effect_sizes,
                     requested_profile=(inputs or {}).get("profile"),
-                    review=(inputs or {}).get("review") is True,
+                    review=review_flag is True or str(review_flag).lower() in {"true", "1", "yes"},
                 )
             except StorageEstimateError as exc:
                 raise CapabilityValidationError(str(exc)) from exc
+            _assert_render_disk_preflight(storage_estimate)
             invocation_admission_metadata = {
                 "storage_estimate": storage_estimate,
                 "runtime_enforced": True,

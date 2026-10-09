@@ -61,7 +61,7 @@ from astrid.core.rendering.remotion_runtime import (
     RemotionRuntimeTools,
     resolve_remotion_runtime_tools,
 )
-from astrid.core.rendering.storage import h264_encoder_bitrates
+from astrid.core.rendering.storage import h264_encoder_bitrates, remotion_frame_format
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.backends import _shared as _shared
 from astrid.packs.rendering.backends._shared import (
@@ -956,6 +956,23 @@ def _stderr_tail(stderr: str) -> str:
     return "\n".join(tail).strip()
 
 
+def _assert_outside_public(path: Path, project_dir: Path) -> None:
+    """Refuse Remotion scratch inside the project's public directory.
+
+    Remotion copies ``public/`` into every bundle it writes. A scratch or
+    bundle directory under ``public/`` therefore makes each bundle copy the
+    previous one, which grows without bound and fills the disk.
+    """
+
+    public = (Path(project_dir) / "public").resolve(strict=False)
+    if Path(path).resolve(strict=False).is_relative_to(public):
+        raise RuntimeError(
+            f"Remotion scratch {path} is inside the public directory {public}; "
+            "Remotion would copy it into every bundle. Stage the render under the "
+            "attempt root instead."
+        )
+
+
 def _require_free_space(path: Path, min_free_gb: float | None) -> None:
     if min_free_gb is None or min_free_gb <= 0:
         return
@@ -1127,6 +1144,7 @@ def _execute_remotion_locked(
                     TemporaryDirectory(prefix=".remotion-runtime-", dir=str(temp_parent))
                 )
             )
+            _assert_outside_public(remotion_temp_root, project_dir)
             materializer = asset_lifecycle.enter_context(
                 AssetMaterializer(
                     assets_path,
@@ -1281,6 +1299,13 @@ def _execute_remotion_locked(
                     "--prores-profile=4444",
                 ]
             else:
+                # Review renders use JPEG frames (a fraction of the PNG bytes
+                # written to scratch); exports keep PNG unless overridden. The
+                # PCM/AAC override validates mjpeg input, so it stays JPEG.
+                frame_image_format = "jpeg" if pcm_aac_mp4 else remotion_frame_format(
+                    review=render_scale is not None,
+                )
+                remotion_args.append(f"--image-format={frame_image_format}")
                 remotion_args.append("--enforce-audio-track")
                 profile = _canonical_profile(
                     timeline_path,

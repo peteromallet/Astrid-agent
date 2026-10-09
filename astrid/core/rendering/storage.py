@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from fractions import Fraction
@@ -58,14 +59,44 @@ _MANAGED_RENDERER_COPY_PASSES = 2
 # memory-tight host takes the file path and every frame is scratch until the
 # stitch finishes. The per-pixel rates are deliberately conservative (PNG 0.6
 # and JPEG 0.15 bytes per pixel) and the frame term carries a 20% guard.
+REMOTION_FRAME_FORMATS = ("png", "jpeg")
 _FRAME_BYTES_PER_PIXEL = {"png": Fraction(3, 5), "jpeg": Fraction(3, 20)}
 _FRAME_GUARD_PERCENT = 120
 REVIEW_MAX_WIDTH = 640
 REVIEW_MAX_HEIGHT = 360
+REVIEW_FRAME_FORMAT_ENV = "ASTRID_RENDER_REVIEW_FRAME_FORMAT"
+EXPORT_FRAME_FORMAT_ENV = "ASTRID_RENDER_EXPORT_FRAME_FORMAT"
 
 
 class StorageEstimateError(ValueError):
     """Raised when an exact estimate input is absent or malformed."""
+
+
+def remotion_frame_format(
+    *,
+    review: bool,
+    alpha: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Return the Remotion frame image format for one render.
+
+    Review renders default to JPEG (preview quality, about a fifth of the PNG
+    bytes); clean exports default to PNG so pixel art stays exact. Alpha
+    renders always need PNG. Override with ``ASTRID_RENDER_REVIEW_FRAME_FORMAT``
+    or ``ASTRID_RENDER_EXPORT_FRAME_FORMAT`` set to ``png`` or ``jpeg``.
+    """
+
+    if alpha:
+        return "png"
+    env = os.environ if environ is None else environ
+    name = REVIEW_FRAME_FORMAT_ENV if review else EXPORT_FRAME_FORMAT_ENV
+    default = "jpeg" if review else "png"
+    value = str(env.get(name) or default).strip().lower()
+    if value not in REMOTION_FRAME_FORMATS:
+        raise StorageEstimateError(
+            f"{name} must be one of {', '.join(REMOTION_FRAME_FORMATS)} (got {value!r})"
+        )
+    return value
 
 
 def remotion_frame_sequence_bytes(
@@ -352,8 +383,7 @@ def estimate_managed_render_storage(
     duration = Fraction(frames, 1) / fps
     pixel_rate = Fraction(profile.width * profile.height, 1) * fps
     alpha = _is_alpha_timeline(timeline)
-    # The render backend emits PNG frames for every render at this commit.
-    frame_image_format = "png"
+    frame_image_format = remotion_frame_format(review=review_frames, alpha=alpha)
     # Alpha renders already charge their raw frame workspace above.
     frame_sequence_bytes = 0 if alpha else remotion_frame_sequence_bytes(
         frames=frames,
@@ -587,5 +617,8 @@ __all__ = [
     "estimate_managed_render_storage",
     "h264_encoder_bitrates",
     "managed_object_sizes",
+    "remotion_frame_format",
+    "remotion_frame_sequence_bytes",
+    "review_render_profile",
     "used_effect_asset_sizes",
 ]

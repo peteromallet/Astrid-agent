@@ -10,6 +10,7 @@ from astrid.core.rendering.storage import (
     StorageEstimateError,
     estimate_managed_render_storage,
     managed_object_sizes,
+    remotion_frame_format,
     remotion_frame_sequence_bytes,
     used_effect_asset_sizes,
 )
@@ -313,10 +314,12 @@ def test_review_output_is_review_scale_but_frames_are_captured_at_full_canvas() 
     assert (review["width"], review["height"]) == (640, 360)
     assert review["review_render"] is True
     assert (review["frame_capture_width"], review["frame_capture_height"]) == (1920, 1080)
+    # Review frames default to JPEG; the capture canvas is still 1920x1080.
+    assert review["frame_image_format"] == "jpeg"
     assert review["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
-        frames=300, width=1920, height=1080, image_format="png"
+        frames=300, width=1920, height=1080, image_format="jpeg"
     )
-    assert review["frame_sequence_bytes"] == export["frame_sequence_bytes"]
+    assert review["frame_sequence_bytes"] < export["frame_sequence_bytes"]
     assert review["estimated_output_bytes"] < export["estimated_output_bytes"]
 
 
@@ -345,3 +348,17 @@ def test_alpha_frame_workspace_is_not_charged_twice() -> None:
         timeline=timeline, registry={"assets": {}}, object_sizes={}
     )
     assert estimate["frame_sequence_bytes"] == 0
+
+
+def test_remotion_frame_format_defaults_by_render_kind() -> None:
+    assert remotion_frame_format(review=True, environ={}) == "jpeg"
+    assert remotion_frame_format(review=False, environ={}) == "png"
+    assert remotion_frame_format(review=False, alpha=True, environ={}) == "png"
+    assert remotion_frame_format(
+        review=True, environ={"ASTRID_RENDER_REVIEW_FRAME_FORMAT": "png"}
+    ) == "png"
+    assert remotion_frame_format(
+        review=False, environ={"ASTRID_RENDER_EXPORT_FRAME_FORMAT": "jpeg"}
+    ) == "jpeg"
+    with pytest.raises(StorageEstimateError, match="ASTRID_RENDER_REVIEW_FRAME_FORMAT"):
+        remotion_frame_format(review=True, environ={"ASTRID_RENDER_REVIEW_FRAME_FORMAT": "gif"})
