@@ -60,8 +60,11 @@ def contact_reasons(reasons: Mapping[int, set], *, mode: str, limit: int = CONTA
 
 
 def _tile_words(card: Mapping[str, Any]) -> str:
-    """First words of the VO under this tile, from the best timing available."""
-    if card.get('captions'):
+    """First words of the VO under this tile's cut (or at its frame), from the best timing available."""
+    cut = card.get('cut') if isinstance(card.get('cut'), Mapping) else None
+    if cut and cut.get('say'):
+        text = str(cut['say'])
+    elif card.get('captions'):
         text = ' '.join(str(item.get('canonical_text') or item.get('text') or '') for item in card['captions'])
     elif card.get('timed_words'):
         text = _word_caption_text(card)
@@ -94,7 +97,7 @@ def _card_chapter(card: Mapping[str, Any], index_by_occurrence: Mapping[str, int
 
 def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: str, render_run_id: str,
                        render_selection: str, occurrences=(), duration_seconds: float | None = None,
-                       show_output: bool = True, thinned_from: int | None = None) -> list[str]:
+                       show_output: bool = True, thinned_from: int | None = None, overlay=None) -> list[str]:
     """Write one bounded contact sheet (``contact-sheet.png``) and return its path."""
     from PIL import Image, ImageDraw
 
@@ -114,7 +117,11 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
     ]
     tile_layouts = []
     for card, image_h in zip(cards, image_heights):
-        time_text = f"{card.get('time_label', '')} · f{card.get('frame', '')}"
+        cut = card.get('cut') if isinstance(card.get('cut'), Mapping) else None
+        if cut:
+            time_text = f"#{cut['index']}  {float(cut['start']):.2f}–{float(cut['end']):.2f}s"
+        else:
+            time_text = f"{card.get('time_label', '')} · f{card.get('frame', '')}"
         label = _png_shot_label(card)
         name_text = label if _png_text_width(measure, label, name_font) <= tile_w - 8 else _png_ellipsis(measure, label, name_font, tile_w - 8)
         words = _tile_words(card) or '—'
@@ -128,12 +135,17 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
     rows = [tile_layouts[start:start + columns] for start in range(0, len(tile_layouts), columns)]
     row_heights = [max((tile['height'] for tile in row), default=0) for row in rows]
 
-    title = f'{timeline_name} · contact sheet · {len(cards)} tiles'
+    cut_numbers = {card['cut']['index'] for card in cards if isinstance(card.get('cut'), Mapping)}
+    if cut_numbers and len(cut_numbers) == len(cards):
+        title = f'{timeline_name} · contact sheet · {len(cards)} cuts, one tile each'
+    else:
+        title = f'{timeline_name} · contact sheet · {len(cards)} tiles'
     if thinned_from:
         title += f' · {thinned_from} cuts, thinned to fit'
     title_lines = _png_chrome_lines(measure, title, title_font, width - 2 * CONTACT_MARGIN, 2)
     provenance = (f'Render {render_run_id} · selection: {render_selection} · '
-                  'one tile per cut; words are word-aligned only when VO app.words exist, else the shot script.')
+                  '#N = cut number (timelines show); each tile is the cut once its layers have entered; '
+                  'words are word-aligned only when VO app.words exist, else the shot script.')
     provenance_lines = _png_chrome_lines(measure, provenance, chrome_font, width - 2 * CONTACT_MARGIN, 2)
     header_bottom = 10 + 22 * len(title_lines) + 4 + 16 * len(provenance_lines)
     band_y = header_bottom + 10
@@ -200,6 +212,8 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
             if show_output:
                 with Image.open(Path(out_root) / card['image']) as source:
                     frame = source.convert('RGB').resize((tile_w, tile['image_h']), Image.LANCZOS)
+                if overlay is not None:
+                    frame = overlay(frame, float(card.get('time_seconds') or 0.0))
                 sheet.paste(frame, (x, image_y))
             else:
                 draw.rectangle((x, image_y, x + tile_w, image_y + tile['image_h']), fill='#162630', outline='#405769')

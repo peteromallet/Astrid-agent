@@ -619,6 +619,12 @@ def _filmstrip_managed_coverage(frame_index: Mapping[str, object]) -> dict[str, 
         mode = "interval"
     if mode == "exact_frame":
         mode = "interval"
+    if mode == "motion":
+        # --view motion samples one picture cut; the Runtime's stable
+        # vocabulary calls that cut sampling.  Its frame reasons ("motion",
+        # "cut_tile") are not in that vocabulary, so cards stay in the frame
+        # index only (see _MANAGED_COVERAGE_REASONS).
+        mode = "cuts"
     if mode not in {"interval", "clips", "cuts", "shots"}:
         raise ValueError("filmstrip sampling mode is not managed-output compatible")
     managed_sampling: dict[str, object] = {
@@ -1797,6 +1803,27 @@ def execute_filmstrip(args, *, authority=None):
         )
     (pack_root / 'render-snapshot.json').write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False), encoding='utf-8')
+    # Timing is measured here, inside the executor, and travels inside the
+    # bundle (timing.json) because the host settles only the bundle; the
+    # client adds queued_s = started_at - its own request time.
+    composed_at = time.time()
+    capture_started_at, capture_ended_at = result.get('capture_window', (composed_at, composed_at))
+    timing = {
+        'started_at': round(started_at, 3),
+        'capture_started_at': round(capture_started_at, 3),
+        'capture_ended_at': round(capture_ended_at, 3),
+        'capture_s': round(capture_ended_at - capture_started_at, 3),
+        'compose_s': round(composed_at - capture_ended_at, 3),
+        'total_s': round(composed_at - started_at, 3),
+        'frames': len(result.get('cards') or []),
+        'view': options.get('view') or 'filmstrip',
+        'resolution': options.get('resolution'),
+        'evidence_source': 'composed_capture' if capture_mode else 'render_extract',
+    }
+    (pack_root / 'timing.json').write_text(json.dumps(timing, sort_keys=True), encoding='utf-8')
+    findings = result.get('findings') or []
+    if findings:
+        (pack_root / 'findings.txt').write_text('\n'.join(findings) + '\n', encoding='utf-8')
     files = sorted(p for p in pack_root.rglob('*') if p.is_file())
     png_paths = [Path(path) for path in result['paths'].get('png') or []]
     primary_png = png_paths[0].relative_to(pack_root).as_posix() if png_paths else None
@@ -1914,21 +1941,9 @@ def execute_filmstrip(args, *, authority=None):
     if primary_png:
         entrypoints["png"] = f"filmstrip-view/{primary_png}"
     entrypoints["markdown"] = "filmstrip-view/filmstrip.md"
-    # Timing is measured here, inside the executor.  Queue time is not knowable
-    # from inside the attempt; the client computes queued = started_at - its own
-    # request time.  See ``timing`` in the CLI output.
     finished_at = time.time()
-    capture_started_at, capture_ended_at = result.get('capture_window', (finished_at, finished_at))
-    timing = {
-        'started_at': round(started_at, 3),
-        'capture_started_at': round(capture_started_at, 3),
-        'capture_ended_at': round(capture_ended_at, 3),
-        'capture_s': round(capture_ended_at - capture_started_at, 3),
-        'compose_s': round(finished_at - capture_ended_at, 3),
-        'total_s': round(finished_at - started_at, 3),
-        'frames': len(result.get('cards') or []),
-        'evidence_source': 'composed_capture' if capture_mode else 'render_extract',
-    }
+    timing['compose_s'] = round(finished_at - capture_ended_at, 3)
+    timing['total_s'] = round(finished_at - started_at, 3)
     return {'returncode': 0, 'run_root': str(out_root),
             'manifest_path': str(manifest_path), 'timeline_ids': [snapshot['timeline_id']],
             'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
@@ -1937,4 +1952,6 @@ def execute_filmstrip(args, *, authority=None):
                         'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
                         'request': options.get('request'), 'timing': timing,
                         **result['paths'], 'pages': result['paths']['png'],
+                        'primary_page': (result['paths']['png'] or [None])[0],
+                        'findings': findings,
                         'filmstrip_bundle': str(bundle)}}

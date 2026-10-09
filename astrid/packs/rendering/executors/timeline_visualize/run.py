@@ -242,10 +242,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--view",
-        choices=StaticChoices(("filmstrip", "contact")),
+        choices=StaticChoices(("filmstrip", "contact", "motion")),
         default="filmstrip",
-        help="filmstrip: paired drill-down pages (default); contact: one overview page of the whole video.",
+        help=(
+            "filmstrip: paired drill-down pages (default); contact: one overview page of the whole video; "
+            "motion: one cut's motion sheet (--cut N)."
+        ),
     )
+    parser.add_argument("--cut", help="motion view: cut number (timelines show), picture clip id, or @SECONDS")
+    parser.add_argument("--layer", dest="layers", action="append", default=None,
+                        help="visualize layers (repeatable/comma-separated); see timelines visualize --list-layers")
+    parser.add_argument("--beats", help="music beats JSON (beats, downbeats, hits in cue seconds)")
+    parser.add_argument("--frame-budget", dest="frame_budget", type=int,
+                        help="motion view: maximum captured frames (default 60)")
     parser.add_argument(
         "--sample", choices=StaticChoices(("interval", "clips", "shots", "cuts"))
     )

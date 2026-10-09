@@ -14,9 +14,11 @@ Definitions (shared by ``timelines show`` and ``timelines diff``):
   Timecode is ``HH:MM:SS:FF`` at the canvas fps. Placements store
   milliseconds and clips store shot-relative seconds; both are converted here.
 - **A cut** is one clip on a shot's picture-bed track: ``plate`` when the
-  shot has one (as ``editorial.pacing`` counts cuts), otherwise the visual
-  track whose clips cover most of the shot. A shot with no picture clip is
-  one cut. Other visual clips are *layers* over the cut.
+  shot has one, otherwise the visual track whose clips cover most of the
+  shot. A shot with no picture clip is one cut. Other visual clips are
+  *layers* over the cut. The definition lives in
+  ``astrid.core.timeline.cuts.picture_cuts`` and is shared with
+  ``timelines visualize``, ``timelines lint`` and ``editorial.pacing``.
 - **Words** come from VO clip ``app.words`` entries ``[start, end, text]``.
   Timing-only entries ``[start, end]`` are matched to the shot's narration
   text binding when the word counts agree exactly; otherwise rows show the
@@ -69,16 +71,7 @@ def _num(value: Any, default: float = 0.0) -> float:
     return default
 
 
-def clip_duration(clip: Mapping[str, Any]) -> float:
-    """Timeline seconds a clip occupies (``hold``, else ``to - from``, over speed)."""
-    speed = _num(clip.get("speed"), 1.0) or 1.0
-    if clip.get("hold") is not None:
-        length = _num(clip.get("hold"))
-    elif clip.get("to") is not None:
-        length = _num(clip.get("to")) - _num(clip.get("from"))
-    else:
-        length = _num(clip.get("duration"))
-    return max(0.0, length / speed)
+from astrid.core.timeline.cuts import clip_duration  # noqa: E402  (one definition, re-exported)
 
 
 def timecode(seconds: float, fps: float) -> str:
@@ -170,16 +163,10 @@ def _narration_tokens(shot: Mapping[str, Any]) -> list[str]:
 # ------------------------------------------------------------------- model
 
 def _picture_bed(clips: Sequence[Mapping[str, Any]], kinds: Mapping[str, str], track_order: Sequence[str]) -> str | None:
-    visual = [clip for clip in clips if not _is_audio(clip, kinds) and clip_duration(clip) > 0]
-    tracks = {str(clip.get("track") or "") for clip in visual}
-    for preferred in PICTURE_BED_TRACKS:
-        if preferred in tracks:
-            return preferred
-    if not tracks:
-        return None
-    coverage = {track: sum(clip_duration(c) for c in visual if str(c.get("track") or "") == track) for track in tracks}
-    order = {track: index for index, track in enumerate(track_order)}
-    return max(sorted(tracks), key=lambda track: (coverage[track], -order.get(track, len(order))))
+    """Compatibility wrapper: the picture bed of shot-relative clips (see ``astrid.core.timeline.cuts``)."""
+    from astrid.core.timeline.cuts import _span, picture_bed
+
+    return picture_bed([_span(clip, _num(clip.get("at")), kinds) for clip in clips], track_order)
 
 
 def _words_for_occurrence(
@@ -213,102 +200,79 @@ def _words_for_occurrence(
 
 
 def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
-    """Return ``{fps, duration, shots, rows, word_sources}`` for one bundle."""
+    """Return ``{fps, duration, shots, rows, word_sources}`` for one bundle.
+
+    Rows are :func:`astrid.core.timeline.cuts.picture_cuts`, the one cut
+    definition ``visualize``, ``lint`` and ``editorial.pacing`` also use.
+    """
+    from astrid.core.timeline.cuts import occurrences_from_bundle, picture_cuts
+
     fps = _fps(bundle)
-    shots = _map(bundle.get("shots"))
-    placements = [_map(item) for item in _list(bundle.get("placements")) if isinstance(item, Mapping)]
-    placements.sort(key=lambda row: _num(row.get("at_ms", _map(row.get("placement")).get("start_ms"))))
-    rows: list[dict[str, Any]] = []
+    occurrences = occurrences_from_bundle(bundle)
     chapters: list[dict[str, Any]] = []
     word_sources: dict[str, str] = {}
+    words_by_occurrence: dict[str, list[tuple[float, float, str | None]]] = {}
+    voice_by_occurrence: dict[str, list[dict[str, Any]]] = {}
     end_of_timeline = 0.0
-    for placement in placements:
-        shot_id = str(placement.get("shot_id") or "")
-        occurrence_id = str(placement.get("occurrence_id") or shot_id)
-        at_ms = placement.get("at_ms", _map(placement.get("placement")).get("start_ms"))
-        start = _num(at_ms) / 1000.0
-        length = _num(placement.get("duration_ms")) / 1000.0
-        shot = _map(shots.get(shot_id))
+    for occurrence in occurrences:
+        occurrence_id = occurrence["occurrence_id"]
+        start, end = occurrence["start"], occurrence["end"]
+        end_of_timeline = max(end_of_timeline, end)
+        chapters.append({
+            "shot_id": occurrence["shot_id"], "occurrence_id": occurrence_id,
+            "name": occurrence["name"], "start": start, "end": end,
+        })
+        shot = occurrence["shot"]
         internal = _internal(shot)
         kinds = _track_kinds(internal)
-        order = [str(_map(track).get("id")) for track in _list(internal.get("tracks"))]
         clips = [_map(clip) for clip in _list(internal.get("clips")) if isinstance(clip, Mapping)]
-        name = _shot_name(shot, shot_id)
-        end = start + length if length > 0 else start + max(
-            [_num(c.get("at")) + clip_duration(c) for c in clips] or [0.0]
-        )
-        end_of_timeline = max(end_of_timeline, end)
-        chapters.append({"shot_id": shot_id, "occurrence_id": occurrence_id, "name": name, "start": start, "end": end})
         words, source = _words_for_occurrence(shot, start, clips, kinds)
         word_sources[occurrence_id] = source
-        bed = _picture_bed(clips, kinds, order)
-        visual = [c for c in clips if not _is_audio(c, kinds) and clip_duration(c) > 0]
-        voice = [c for c in clips if _is_audio(c, kinds) and clip_duration(c) > 0]
-        bed_clips = sorted(
-            (c for c in visual if str(c.get("track") or "") == bed),
-            key=lambda c: (_num(c.get("at")), str(c.get("id"))),
-        )
-        windows: list[tuple[float, float, Mapping[str, Any] | None]] = []
-        cursor = start
-        for clip in bed_clips:
-            clip_start = start + _num(clip.get("at"))
-            clip_end = clip_start + clip_duration(clip)
-            if clip_start > cursor + 0.5 / fps:
-                windows.append((cursor, clip_start, None))
-            windows.append((clip_start, clip_end, clip))
-            cursor = max(cursor, clip_end)
-        if not bed_clips or cursor < end - 0.5 / fps:
-            windows.append((cursor, end, None))
-        for win_start, win_end, base in windows:
-            if win_end - win_start <= _EPS:
-                continue
-            layers = []
-            for clip in visual:
-                if clip is base:
-                    continue
-                c_start = start + _num(clip.get("at"))
-                c_end = c_start + clip_duration(clip)
-                if c_end <= win_start + 0.5 / fps or c_start >= win_end - 0.5 / fps:
-                    continue
-                layers.append({
-                    "clip_id": str(clip.get("id") or ""),
-                    "track": str(clip.get("track") or ""),
-                    "type": str(clip.get("clipType") or "media"),
-                    "asset": clip.get("asset") if isinstance(clip.get("asset"), str) else None,
-                    "text": _clip_text(clip),
-                    "enters": round(c_start - win_start, 3) if c_start > win_start + 1.0 / fps else None,
-                })
-            said = [
-                (s, e, text) for s, e, text in words if win_start - _EPS <= (s + e) / 2 < win_end - _EPS
-            ]
-            vo_ids = [
-                str(c.get("id") or "")
-                for c in voice
-                if start + _num(c.get("at")) < win_end and start + _num(c.get("at")) + clip_duration(c) > win_start
-            ]
-            text = " ".join(t for _s, _e, t in said if t) if said and all(t for _s, _e, t in said) else None
-            rows.append({
-                "start": round(win_start, 6),
-                "end": round(win_end, 6),
-                "duration": round(win_end - win_start, 6),
-                "tc_in": timecode(win_start, fps),
-                "tc_out": timecode(win_end, fps),
-                "shot": name,
-                "shot_id": shot_id,
-                "occurrence_id": occurrence_id,
-                "clip_id": str(base.get("id") or "") if base else None,
-                "track": bed,
-                "type": str(base.get("clipType") or "media") if base else None,
-                "asset": base.get("asset") if base and isinstance(base.get("asset"), str) else None,
-                "text": _clip_text(base) if base else None,
-                "layers": layers,
-                "words": len(said),
-                "say": text,
-                "vo": vo_ids,
-            })
-    rows.sort(key=lambda row: (row["start"], row["end"]))
-    for index, row in enumerate(rows, start=1):
-        row["index"] = index
+        words_by_occurrence[occurrence_id] = words
+        voice_by_occurrence[occurrence_id] = [s for s in occurrence["spans"] if s["audio"] and s["end"] > s["start"]]
+    rows: list[dict[str, Any]] = []
+    for cut in picture_cuts(occurrences, fps=fps):
+        win_start, win_end = cut["start"], cut["end"]
+        base = cut["clip"]
+        layers = [
+            {
+                "clip_id": span["id"],
+                "track": span["track"],
+                "type": span["type"],
+                "asset": span["clip"].get("asset") if isinstance(span["clip"].get("asset"), str) else None,
+                "text": _clip_text(span["clip"]),
+                "enters": round(span["start"] - win_start, 3) if span["start"] > win_start + 1.0 / fps else None,
+            }
+            for span in cut["layers"]
+        ]
+        words = words_by_occurrence.get(cut["occurrence_id"], [])
+        said = [(s, e, text) for s, e, text in words if win_start - _EPS <= (s + e) / 2 < win_end - _EPS]
+        vo_ids = [
+            span["id"] for span in voice_by_occurrence.get(cut["occurrence_id"], [])
+            if span["start"] < win_end and span["end"] > win_start
+        ]
+        text = " ".join(t for _s, _e, t in said if t) if said and all(t for _s, _e, t in said) else None
+        rows.append({
+            "index": cut["index"],
+            "start": cut["start"],
+            "end": cut["end"],
+            "duration": cut["duration"],
+            "tc_in": timecode(win_start, fps),
+            "tc_out": timecode(win_end, fps),
+            "shot": cut["shot"],
+            "shot_id": cut["shot_id"],
+            "occurrence_id": cut["occurrence_id"],
+            "clip_id": cut["clip_id"],
+            "track": cut["track"],
+            "type": cut["type"],
+            "asset": base.get("asset") if base and isinstance(base.get("asset"), str) else None,
+            "text": _clip_text(base) if base else None,
+            "layers": layers,
+            "words": len(said),
+            "say": text,
+            "vo": vo_ids,
+            "deliberate_hold": cut["deliberate_hold"],
+        })
     return {
         "fps": fps,
         "duration": round(end_of_timeline, 6),

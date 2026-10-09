@@ -304,6 +304,9 @@ def command_requires_pack_host(family: str, args: Sequence[str]) -> bool:
     module = importlib.import_module(module_name)
     commands = getattr(module, "COMMANDS", ())
     command = str(args[0])
+    if "--list-layers" in args[1:] or "--help" in args[1:] or "-h" in args[1:]:
+        # Listing layers or reading help never runs a pack task.
+        return False
     spec = next((item for item in commands if isinstance(item, CommandSpec) and item.name == command), None)
     if spec is None:
         # Nested mounts (shots/references) are workspace CRUD families and do

@@ -732,6 +732,26 @@ def _full_overview(snapshot, clips, spans, total, fps, limit):
                      'rendered_frame_count': total, 'entries': entries}, coverage
 
 
+def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dict]:
+    """The shared picture cuts (``astrid.core.timeline.cuts``) on this render's frame clock."""
+    from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot, picture_cuts
+
+    from .motion.model import elements_from_occurrences, words
+
+    occurrences = occurrences_from_snapshot(snapshot)
+    cuts = picture_cuts(occurrences, fps=float(fps))
+    spoken = words(elements_from_occurrences(occurrences))
+    rows = []
+    for cut in cuts:
+        said = [w.text for w in spoken if cut['start'] <= (w.start + w.end) / 2 < cut['end'] and w.text != '·']
+        cut = {**cut, 'say': ' '.join(said)}
+        start = max(0, min(total, round(Fraction(cut['start']).limit_denominator(1_000_000) * fps)))
+        end = max(start + 1, min(total, round(Fraction(cut['end']).limit_denominator(1_000_000) * fps)))
+        tile = math.floor(Fraction(cut_sample_time(cut, float(fps))).limit_denominator(1_000_000) * fps + Fraction(1, 1000))
+        rows.append({**cut, 'start_frame': start, 'end_frame': end, 'tile_frame': max(start, min(end - 1, tile))})
+    return rows
+
+
 def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     """Plan integer presentation frames; all time windows are half-open."""
     # Resolve friendly shot aliases once against the frozen snapshot.  Exact
@@ -749,8 +769,12 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         raise ValueError('Filmstrip requires a positive frame rate and duration.')
     duration = Fraction(total, 1) / fps
     mode = options.get('sample') or 'interval'
-    if mode not in ('interval', 'clips', 'cuts', 'shots'):
+    if mode not in ('interval', 'clips', 'cuts', 'shots', 'motion'):
         raise ValueError(f'Unknown sampling mode: {mode}')
+    motion_cut = None
+    if options.get('view') == 'motion' or mode == 'motion':
+        from .motion.sheet import select_cut
+        motion_cut = select_cut(snapshot, options.get('cut'), float(fps))
     lo, hi = Fraction(0), duration
     requested_frame = options.get('frame')
     if requested_frame is not None:
@@ -761,6 +785,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
+    if motion_cut is not None:
+        from .motion.sheet import PAD_SECONDS
+        lo = max(Fraction(0), _q(motion_cut['start']) - _q(PAD_SECONDS))
+        hi = _q(motion_cut['end']) + _q(PAD_SECONDS)
     resolved_at_frame = None
     if options.get('at') is not None:
         if options.get('range') is not None or requested_frame is not None:
@@ -839,7 +867,14 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     include_cuts = bool(options.get('include_cuts'))
     is_full_overview = (mode == 'interval' and not filtered and options.get('range') is None
                         and options.get('at') is None and not explicit_interval)
-    if requested_frame is not None:
+    if motion_cut is not None:
+        from .motion.sheet import plan_motion_frames, snapshot_elements
+        _occurrences, motion_elements = snapshot_elements(snapshot)
+        for frame, why in plan_motion_frames(motion_cut, motion_elements, fps, total,
+                                             budget=int(options.get('frame_budget') or 60)).items():
+            for reason in why:
+                add(frame, reason)
+    elif requested_frame is not None:
         add(requested_frame, 'exact_frame')
     elif resolved_at_frame is not None:
         add(resolved_at_frame, 'exact_time')
@@ -867,19 +902,27 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                     raise ValueError(f'Filmstrip exceeds {limit} sample candidates; use a coarser --every or a narrower --range.')
                 add(frame, 'interval')
                 k += 1
-    if requested_frame is None and resolved_at_frame is None and not is_full_overview:
+    picture = picture_cut_frames(snapshot, fps, total)
+    if requested_frame is None and resolved_at_frame is None and not is_full_overview and motion_cut is None:
+        # Interval sampling is a strict periodic grid.  Boundary neighbors are
+        # a separate, explicit policy so ``--every 5`` cannot silently turn
+        # into 5s + 7.03s + 7.06s + shot beats.  A cut is a picture cut
+        # (astrid.core.timeline.cuts), never a layer edge: the contact view
+        # takes one settled still per cut, cut sampling the frames either side.
+        if mode == 'cuts' and options.get('view') == 'contact':
+            for cut in picture:
+                add(cut['tile_frame'], 'cut_tile')
+        elif mode == 'cuts' or (mode == 'interval' and include_cuts):
+            for cut in picture:
+                start, end = cut['start_frame'], cut['end_frame']
+                for frame, reason in ((start - 1, 'before_cut'), (start, 'after_cut'), (end - 1, 'before_cut'), (end, 'after_cut')):
+                    add(frame, reason)
         seen_shots = set()
         for clip in selected:
             start, end = spans[id(clip)]
             if end <= first or start >= stop:
                 continue
             visual = clip.get('kind') not in ('audio', 'voiceover', 'music', 'sound')
-            # Interval sampling is a strict periodic grid.  Boundary
-            # neighbors are a separate, explicit policy so ``--every 5``
-            # cannot silently turn into 5s + 7.03s + 7.06s + shot beats.
-            if visual and (mode == 'cuts' or (mode == 'interval' and include_cuts)):
-                for frame, reason in ((start - 1, 'before_cut'), (start, 'after_cut'), (end - 1, 'before_cut'), (end, 'after_cut')):
-                    add(frame, reason)
             if visual and mode == 'clips':
                 add(max(first, start), 'clip_first')
             if mode == 'shots':
@@ -921,6 +964,11 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
             'not_promised': ['every fast-cut boundary is sampled'] if not all(entry['selected'] for entry in boundary_index) else [],
         }
     cards = []
+    def cut_of(frame):
+        for cut in picture:
+            if cut['start_frame'] <= frame < cut['end_frame']:
+                return {key: cut[key] for key in ('index', 'start', 'end', 'clip_id', 'shot', 'say')}
+        return None
     for frame, why in sorted(reasons.items()):
         time = Fraction(frame, 1) / fps
         active = [c for c in clips if spans[id(c)][0] <= frame < spans[id(c)][1]]
@@ -934,7 +982,7 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                           else 'no timed text available')
         target = f"frame-{frame:09d}"
         extension = str(options.get('frame_extension') or 'jpg').lstrip('.')
-        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'timed_words': timed_words, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.{extension}', 'actions': {'target': '#' + target}})
+        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'timed_words': timed_words, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.{extension}', 'actions': {'target': '#' + target}, 'cut': cut_of(frame)})
     _project_display_scripts(cards)
     navigation = build_inspector_navigation(snapshot, cards)
     for card, target in zip(cards, navigation['frames']):
@@ -945,7 +993,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     coverage['page_count'] = page_count
     coverage['page_size'] = page_size
     coverage['selected_frame_ids'] = [card['id'] for card in cards]
-    return {'navigation': navigation, 'schema': 'astrid.filmstrip.v1', 'view': options.get('view') or 'filmstrip', 'contact': contact_info,
+    motion_info = None
+    if motion_cut is not None:
+        motion_info = {key: motion_cut[key] for key in ('index', 'start', 'end', 'duration', 'clip_id', 'shot', 'occurrence_id', 'deliberate_hold')}
+    return {'navigation': navigation, 'schema': 'astrid.filmstrip.v1', 'view': options.get('view') or 'filmstrip', 'contact': contact_info, 'motion': motion_info,
             'provenance': {k: snapshot.get(k) for k in ('project_slug', 'timeline_id', 'timeline_name', 'render_run_id', 'video_digest', 'fps_rational', 'duration_frames', 'metadata')},
             'audio': snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else navigation['audio'],
             'boundary_index': boundary_index,
@@ -1656,16 +1707,42 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
     display_audio = index.get('audio') if 'audio' in (options.get('components') or ('output', 'text', 'audio')) else None
     render_selection = (snapshot.get('metadata') or {}).get('selection') or options.get('render_run') or 'latest'
     timeline_label = snapshot.get('timeline_name') or snapshot['timeline_id']
-    if options.get('view') == 'contact':
+    if options.get('view') == 'motion':
+        from .motion.sheet import build_context, compose_motion_sheet
+        fps_value = float(Fraction(*snapshot['fps_rational']))
+        frames = {int(card['frame']): out_root / card['image'] for card in cards if (out_root / card['image']).is_file()}
+        size = (640, 360)
+        if frames:
+            from PIL import Image
+            with Image.open(next(iter(frames.values()))) as first_frame:
+                size = first_frame.size
+        from .motion.sheet import select_cut
+        cut = select_cut(snapshot, options.get('cut'), fps_value)
+        context = build_context(snapshot, cut, frames, fps=fps_value, frame_size=size,
+                                beats=options.get('beats'), layer_names=options.get('layers') or ())
+        sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
+        paths = {'png': sheet['png']}
+        index['motion_findings'] = sheet['findings']
+        index['motion_layers'] = sheet['layers']
+    elif options.get('view') == 'contact':
         from .contact_sheet import static_contact_png
         duration = float(Fraction(int(snapshot['duration_frames']), 1) / Fraction(*snapshot['fps_rational']))
         components = set(options.get('components') or ('output', 'text', 'audio'))
+        overlay = None
+        if 'bounds' in (options.get('layers') or ()):
+            from .layers.builtin import overlay_bounds
+            from .motion.sheet import snapshot_elements
+            _occurrences, contact_elements = snapshot_elements(snapshot)
+            contact_fps = float(Fraction(*snapshot['fps_rational']))
+
+            def overlay(image, seconds):
+                return overlay_bounds(image, contact_elements, seconds, contact_fps, labels=False)
         paths = {'png': static_contact_png(
             display_cards, out_root, columns=columns, timeline_name=timeline_label,
             render_run_id=snapshot['render_run_id'], render_selection=render_selection,
             occurrences=[o for o in snapshot.get('occurrences') or [] if isinstance(o, Mapping)],
             duration_seconds=duration, show_output='output' in components,
-            thinned_from=(index.get('contact') or {}).get('thinned_from'),
+            thinned_from=(index.get('contact') or {}).get('thinned_from'), overlay=overlay,
         )}
     else:
         paths = _static(display_cards, out_root, columns, page_size, timeline_label, snapshot['render_run_id'], render_selection, display_audio, components=options.get('components'), detail=bool(options.get('detail')))
@@ -1730,4 +1807,5 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         md += [f"## {card['id']}", '', f"![{card['time_label']}]({card['image']})", ''] + [html.escape(line) + '  ' for line in _lines(card)] + ['', '```sh', card['actions']['focus_command'], '```', '']
     Path(paths['markdown']).write_text('\n'.join(md), encoding='utf-8')
     return {'frame_index': index, 'cards': cards, 'paths': paths,
+            'findings': index.get('motion_findings') or [],
             'capture_window': (capture_started_at, capture_ended_at)}

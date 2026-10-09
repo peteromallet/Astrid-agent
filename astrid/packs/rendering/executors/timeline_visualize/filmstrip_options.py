@@ -50,6 +50,49 @@ def resolution(value: Any) -> list[int] | None:
     return [width, height]
 
 
+REVIEW_RESOLUTION = (480, 270)
+MOTION_FRAME_BUDGET = 60
+MOTION_FRAME_BUDGET_MAX = 120
+
+
+def layer_names(value: Any) -> list[str]:
+    """``--layer a,b`` (repeatable) as a list of names; validated against the registry by the executor."""
+    if value in (None, '', []):
+        return []
+    items = value if isinstance(value, (list, tuple)) else [value]
+    names = [part.strip().lower() for item in items for part in str(item).split(',') if part.strip()]
+    for name in names:
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', name):
+            raise ValueError(f'layer name {name!r} is not a short word')
+    return names
+
+
+def beats_value(value: Any) -> dict[str, Any] | None:
+    """Music beats as ``{beats, downbeats, hits}`` in cue seconds (a beats.json, already read by the client)."""
+    if value in (None, ''):
+        return None
+    if isinstance(value, str):
+        import json
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            raise ValueError('beats must be the JSON of a beats.json (beats, downbeats, hits)') from None
+    if not isinstance(value, Mapping):
+        raise ValueError('beats must be an object with beats/downbeats/hits')
+    out: dict[str, Any] = {}
+    for key in ('beats', 'downbeats'):
+        items = value.get(key) or []
+        if not isinstance(items, list) or len(items) > 5000:
+            raise ValueError(f'beats.{key} must be a list of seconds')
+        out[key] = [float(item) for item in items if isinstance(item, (int, float)) and not isinstance(item, bool)]
+    hits = value.get('hits') or []
+    if not isinstance(hits, list) or len(hits) > 2000:
+        raise ValueError('beats.hits must be a list')
+    out['hits'] = [{'t': float(hit['t']), 'kind': str(hit.get('kind') or 'hit')[:16]}
+                   for hit in hits if isinstance(hit, Mapping) and isinstance(hit.get('t'), (int, float))]
+    return out
+
+
 def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize only public controls; never accept an unbounded sampling job."""
     # Component/target grammar is shared with SDK admission. Keep the
@@ -57,14 +100,22 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     # the public CLI describe the same filmstrip request.
     shared = inspection_options(values)
     view = values.get('view') or 'filmstrip'
-    if view not in {'filmstrip', 'contact'}:
-        raise ValueError('view must be filmstrip (paired drill-down) or contact (one overview page)')
+    if view not in {'filmstrip', 'contact', 'motion'}:
+        raise ValueError('view must be filmstrip (paired drill-down), contact (one overview page) '
+                         'or motion (one cut: frames, onion skins, curves, sync)')
     contact = view == 'contact'
+    motion = view == 'motion'
     every, frames = values.get('every'), values.get('every_frames')
+    if motion:
+        if values.get('cut') in (None, ''):
+            raise ValueError('--view motion needs --cut N (a cut number from timelines show, a picture clip id, or @SECONDS)')
+        for name in ('range', 'at', 'frame', 'every', 'every_frames', 'sample'):
+            if values.get(name) not in (None, '', 'motion'):
+                raise ValueError(f'--view motion plans its own frames for one cut; drop --{name.replace("_", "-")}')
     # An overview samples one frame per cut unless a density was asked for.
     default_sample = 'interval' if (every is not None or frames is not None) else ('cuts' if contact else 'interval')
-    sample = values.get('sample') or default_sample
-    if sample not in {'interval', 'clips', 'shots', 'cuts'}:
+    sample = 'motion' if motion else (values.get('sample') or default_sample)
+    if sample not in {'interval', 'clips', 'shots', 'cuts', 'motion'}:
         raise ValueError('sample must be interval, clips, shots, or cuts')
     if every is not None and frames is not None:
         raise ValueError('choose every seconds or every_frames, not both')
@@ -97,8 +148,9 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
                               'max_frames': 2000,
                               'include_media': bool(values.get('include_media', False))}
     components = list(shared['components']['resolved'])
-    if contact:
-        # The overview is output plus text; input lanes belong to the paired view.
+    if contact or motion:
+        # The overview and the motion sheet are output plus text; input lanes
+        # belong to the paired view.
         components = [name for name in components if name != 'inputs']
     result.update({
         'components': components,
@@ -144,7 +196,20 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     result['frame'] = frame
     result.setdefault('range', None)
     result.setdefault('at', None)
-    result['resolution'] = resolution(values.get('resolution'))
+    # Review scale by default for the views that capture many frames: a
+    # full-canvas contact sheet or motion sheet costs disk and capture time
+    # and can exceed the settlement size limit, and 480x270 is what the page shows.
+    result['resolution'] = resolution(values.get('resolution')) or (list(REVIEW_RESOLUTION) if contact or motion else None)
+    if motion:
+        result['cut'] = str(values.get('cut')).strip()
+        budget = values.get('frame_budget', None)
+        if budget in (None, ''):
+            budget = MOTION_FRAME_BUDGET
+        if type(budget) is not int or not 8 <= budget <= MOTION_FRAME_BUDGET_MAX:
+            raise ValueError(f'frame_budget must be an integer between 8 and {MOTION_FRAME_BUDGET_MAX}')
+        result['frame_budget'] = budget
+    result['layers'] = layer_names(values.get('layers'))
+    result['beats'] = beats_value(values.get('beats'))
     result['request'] = {
         'range': result['range'],
         'at': result['at'],

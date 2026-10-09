@@ -54,12 +54,26 @@ range, and active input tracks. This is the default combined layout, while outpu
 views retain their existing layouts.
 
 `view=contact` produces ONE overview page (`contact-sheet.png`) instead of the
-paired pages: one tile per cut (`sample` defaults to `cuts`; explicit
-`every`/`every_frames` keeps a strict grid), capped at 120 tiles and thinned
-evenly above the cap (`index.contact.thinned_from`). Each tile carries its
-timecode, shot name and the first VO words (word-aligned from `app.words` when
-present, else the shot script once per shot). Input lanes are not drawn in
+paired pages: one tile per picture cut (`astrid.core.timeline.cuts.picture_cuts`,
+the definition `timelines show` and `editorial.pacing` use; a layer edge is
+never a cut), taken once the cut's layers have entered and settled
+(`cut_sample_time`). Explicit `every`/`every_frames` keeps a strict grid. Tiles
+are capped at 120 (thinned evenly, `index.contact.thinned_from`) and labelled
+`#N start–end`, shot name and the words spoken across the cut. Frames default
+to 480x270. `--layer bounds` draws declared element bounds, the presenter face
+box and title/action-safe margins on each tile. Input lanes are not drawn in
 this view, and `columns` defaults to 10 (max 12).
+
+`view=motion` with `cut=N` studies one cut as stills: at most `frame_budget`
+(default 60) frames at 480x270, dense for half a second after the cut-in and
+each entrance/keyframe, then an even fill. The registered layers
+(`layers/`, plus any `astrid/packs/*/visualize_layers/*.py`) write
+`motion-cut-NN.png` (sync, curves, stillness, pixel change, lip-sync on one
+time axis), `motion-cut-NN-frames.png` (strip with collapsed HOLD tiles, onion
+skins) and `findings.txt`. The client passes a cue's beats with `beats`.
+Every view writes `timing.json` (started/capture/compose seconds, frames,
+resolution) into the bundle, so the CLI can report wall = queue + capture +
+compose after the host settles only the bundle.
 
 Combined results may produce several numbered pages intentionally; by default
 each paired page is one row of cards. Pass `--columns 6` for six across, or

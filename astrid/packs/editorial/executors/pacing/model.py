@@ -8,8 +8,10 @@ function that may read a file.
 
 Conventions (seconds on the timeline; intervals are closed-open):
 
-- A visual cut is one clip on a shot's ``plate`` track. A shot with no plate
-  clip counts as one cut spanning its occurrence.
+- A visual cut is ``astrid.core.timeline.cuts.picture_cuts``: one clip on a
+  shot's picture-bed track (``plate``, else the widest visual track), the one
+  definition ``timelines show`` and ``timelines visualize`` also use. A shot
+  with no picture clip counts as one cut spanning its occurrence.
 - Cut kind: ``app.kind`` when set; else ``presenter`` when an ``am-presenter``
   clip overlaps the cut; else ``silent`` when no speech overlaps it; else
   ``illustrative``.
@@ -315,6 +317,11 @@ def build_rhythm(
     notes: list[str] = []
     records: list[dict[str, Any]] = []
     chapters: list[dict[str, Any]] = []
+    from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle, picture_cuts
+
+    shared_cuts: dict[str, list[dict[str, Any]]] = {}
+    for cut in picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)):
+        shared_cuts.setdefault(cut["occurrence_id"], []).append(cut)
 
     for occurrence in (_map(item) for item in _list(bundle.get("placements")) if isinstance(item, Mapping)):
         shot_id = str(occurrence.get("shot_id") or "")
@@ -345,20 +352,17 @@ def build_rhythm(
             for clip in clips
             if clip.get("clipType") == PRESENTER_CLIP and clip_duration(clip) > 0
         ]
-        plates = [clip for clip in clips if clip.get("track") == CUT_TRACK and clip_duration(clip) > 0]
-        if plates:
-            stubs = [
-                {
-                    "start": start + _num(clip.get("at")),
-                    "end": start + _num(clip.get("at")) + clip_duration(clip),
-                    "clip_id": str(clip.get("id") or occurrence_id),
-                    "app": _app(clip),
-                    "deliberate": _is_deliberate(clip),
-                }
-                for clip in plates
-            ]
-        else:
-            stubs = [{"start": start, "end": start + length, "clip_id": occurrence_id, "app": {}, "deliberate": False}]
+        # One cut definition for show, visualize and pacing (astrid.core.timeline.cuts).
+        stubs = [
+            {
+                "start": cut["start"],
+                "end": cut["end"],
+                "clip_id": str(cut["clip_id"] or occurrence_id),
+                "app": _app(cut["clip"]) if cut["clip"] else {},
+                "deliberate": bool(cut["deliberate_hold"]),
+            }
+            for cut in shared_cuts.get(occurrence_id, [])
+        ] or [{"start": start, "end": start + length, "clip_id": occurrence_id, "app": {}, "deliberate": False}]
 
         words, sources, shot_notes = _speech(shot_id, start, clips, audio_tracks, _text_word_count(shot))
         notes.extend(shot_notes)

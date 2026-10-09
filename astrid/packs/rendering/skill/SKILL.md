@@ -25,17 +25,44 @@ to find its generation capability, then return here to assemble the result.
 
 ## See the whole video before rendering
 
-Start with the overview. It captures one tile per cut (at most 120) and never renders the whole video.
+One tile per picture cut (`#N` = the cut number in `timelines show`), 480x270, about a minute, no render:
 
 ```bash
-python3 -m astrid timelines visualize <timeline> --project <project> --view contact --sample cuts
+python3 -m astrid timelines show <timeline> --project <project>                  # cut table: numbers, layers, words
+python3 -m astrid timelines visualize <timeline> --project <project> --view contact   # --layer bounds: boxes
+python3 -m astrid timelines lint <timeline> --project <project> --beats CUE.beats.json  # ~1 s, no capture
 python3 -m astrid timelines visualize <timeline> --project <project> --range 10..20 --every-frames 10
-python3 -m astrid timelines visualize <timeline> --project <project> --at 12 --context 2
-python3 -m astrid timelines visualize <timeline> --project <project> --every 1
 ```
 
-Open the contact sheet first, then drill into a window, a moment, or a dense
-interval. Each run prints `captured N frames in T s (queued Q s)`.
+Each run prints the page path, tile/frame count, `wall = queued + capture + compose`
+and the next three commands; `--json` gives the SDK envelope. Read the contact sheet
+first, fix what `lint` names (each line ends with the fix), then drill in.
+
+## How an agent edits motion (you cannot watch video; read these instead)
+
+```bash
+python3 -m astrid timelines visualize <timeline> --project <project> --view motion --cut 17 --beats CUE.beats.json
+```
+
+1. Read `findings` (also `findings.txt` next to the page): FACE/FRAME/SAFE/SMALL/SYNC lines name
+   the clip and the change (`set params.x ≤ 1104`, `move +0.12 s`); STILL/STRIP give holds;
+   TIME gives each entrance's distance to its word, music hit and sfx; CURVE says stepped vs eased.
+2. Open `motion-cut-17.png` (sync lanes, curves, stillness, pixel change, lip-sync on one time
+   axis) and `motion-cut-17-frames.png` (strip with HOLD tiles; onion skins t-2…t+6 per entrance).
+3. Edit (checkout → edit → check → publish), re-run the same command (cached frames: seconds),
+   then `timelines diff --from <old head>`. Mark intended freezes `app.deliberate_hold: true`.
+4. Render only when the sheets read right. `--layer a,b` picks layers; `--list-layers` lists them.
+
+## Add a visualize layer
+
+A layer is one PNG panel plus terse findings for one cut. To add one, create
+`astrid/packs/<pack>/visualize_layers/<name>.py` defining
+`LAYER = Layer("<name>", "<help line>", render, needs=("doc",))` with
+`render(ctx) -> LayerResult(image, ["CODE  one-line finding"])`
+(import both from `astrid.packs.rendering.executors.timeline_visualize.layers`).
+`ctx` has the cut, all cuts, elements, words, beats, sfx, events and any captured
+frames; `ctx.panel(h)` draws on the shared time axis. Commit with the pack and
+promote; `timelines visualize --list-layers` shows it (example: `editorial/visualize_layers/rhythm.py`).
 
 ## Start a new timeline
 

@@ -59,6 +59,7 @@ import argparse
 import json
 import re
 import shlex
+import sys
 import time
 from collections.abc import Mapping
 from fractions import Fraction
@@ -1191,6 +1192,8 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     else:
         lines.append("see the whole video: " + shlex.join(visual + ["--view", "contact"]))
     lines.append("one moment: " + shlex.join(visual) + " --at SECONDS   ·   every N frames: --range A..B --every-frames N")
+    lines.append("how one cut moves: " + shlex.join(visual + ["--view", "motion", "--cut", "N"])
+                 + "   ·   lint: " + shlex.join(["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]))
     edit = _editing_navigation(project=project, timeline=timeline)
     lines.append(f"edit: {edit['commands']['checkout']}   (guide: {edit['guide']})")
     lines.append("per-track layer rows: --layers · SDK envelope: --json")
@@ -1208,6 +1211,81 @@ def _render_view(view: str, bundle: Mapping[str, Any], parsed: argparse.Namespac
     if view == "script":
         return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids)
     return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "))
+
+
+def _cmd_lint(parsed: argparse.Namespace) -> int:
+    """Composition and timing findings for every picture cut, from timeline data (no capture)."""
+    from astrid.core.timeline.cuts import (
+        bundle_fps,
+        find_cut,
+        occurrences_from_bundle,
+        picture_cuts,
+    )
+    from astrid.packs.rendering.executors.timeline_visualize.motion import lint as lint_rules
+    from astrid.packs.rendering.executors.timeline_visualize.motion import model
+
+    opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not callable(opener):
+        print("error unavailable: this client cannot open a timeline bundle", file=sys.stderr)
+        return 1
+    opened = opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
+    if not opened.ok or not isinstance(opened.data, Mapping):
+        return print_result(opened, as_json=parsed.json)
+    bundle = opened.data["bundle"]
+    fps = bundle_fps(bundle)
+    occurrences = occurrences_from_bundle(bundle)
+    cuts = picture_cuts(occurrences, fps=fps)
+    try:
+        if getattr(parsed, "cut", None):
+            cuts = [find_cut(cuts, parsed.cut)]
+        elif getattr(parsed, "range", None):
+            from astrid.sdk.timeline_cuts import _parse_range
+
+            low, high = _parse_range(parsed.range)
+            cuts = [cut for cut in cuts if cut["end"] > low and cut["start"] < high]
+        beats = json.loads(_read_beats(parsed.beats)) if getattr(parsed, "beats", None) else None
+    except (OSError, ValueError) as exc:
+        print(f"error validation_error: {exc}", file=sys.stderr)
+        return 2
+    elements = model.elements_from_occurrences(occurrences)
+    track_order = next((o.get("track_order") for o in occurrences if o.get("track_order")), [])
+    results = lint_rules.lint_cuts(cuts, elements, fps, track_order=track_order, beats=beats,
+                                   min_text_px=float(parsed.min_text_px))
+    if parsed.json:
+        rows = [
+            {"cut": cut["index"], "start": cut["start"], "end": cut["end"], "code": f.code, "severity": f.severity,
+             "t": round(f.t, 3), "message": f.message}
+            for cut, findings in results for f in findings
+        ]
+        print(json.dumps({"ok": True, "data": {"timeline_id": opened.data.get("timeline_id"),
+                                                "revision_id": opened.data.get("revision_id"), "findings": rows},
+                          "error": None}, indent=2))
+        return 0
+    counts: dict[str, int] = {}
+    info: dict[str, int] = {}
+    lines = [
+        f"Timeline {opened.data.get('timeline_id')} · {len(results)} cut(s) · revision {opened.data.get('revision_id')}",
+        "Checks from timeline data: FACE (layer over a presenter face), FRAME/SAFE (outside the frame / title-safe), "
+        f"SMALL (text < {parsed.min_text_px:g} px at 1080p), COVER, SYNC (accent 0.10–0.35 s off a word onset), SFX, "
+        "SHORT (< 0.5 s), HOLD (no event for 2.5 s). Pixel stillness: --view motion.",
+    ]
+    for cut, findings in results:
+        for finding in findings:
+            if finding.severity == "warn":
+                counts[finding.code] = counts.get(finding.code, 0) + 1
+            else:
+                info[finding.code] = info.get(finding.code, 0) + 1
+            if finding.severity == "warn" or parsed.all:
+                lines.append(finding.line(cut["start"]))
+    summary = ", ".join(f"{code} {n}" for code, n in sorted(counts.items(), key=lambda item: -item[1])) or "none"
+    lines.append(f"warnings: {summary}" + (
+        f"; info hidden ({', '.join(f'{c} {n}' for c, n in sorted(info.items()))}; --all shows them)" if info and not parsed.all else ""))
+    project = str(parsed.project or "<project>")
+    lines.append("see one: " + shlex.join(["python3", "-m", "astrid", "timelines", "visualize", "--project", project,
+                                           "--timeline-slug", str(parsed.ref), "--view", "motion", "--cut", "N"])
+                 + "   ·   boxes on tiles: --view contact --layer bounds")
+    print("\n".join(lines))
+    return 0
 
 
 def _cmd_history(parsed: argparse.Namespace) -> int:
@@ -1343,6 +1421,11 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     """Run visualization through the public SDK and product output layer."""
     from astrid.sdk.contracts import DomainResult, ErrorObject
     from astrid.packs.rendering.executors.timeline_visualize.inspection_contract import inspection_options
+    if getattr(parsed, "list_layers", False):
+        from astrid.packs.rendering.executors.timeline_visualize.layers import layer_help
+
+        print(layer_help())
+        return 0
     human_outputs: Mapping[str, Any] | None = None
 
     # Normalize repeatable and comma-separated spellings before the one
@@ -1368,6 +1451,26 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
             inputs[name] = value
     if timeline_slug not in (None, ""):
         inputs["timeline_slug"] = timeline_slug
+    if inputs.get("view") in ("contact", "motion") and not inputs.get("resolution"):
+        # Review scale for the many-frame views (the executor defaults the same;
+        # sending it keeps an older host from capturing at full canvas).
+        inputs["resolution"] = "480x270"
+    layers = [
+        part.strip() for value in (getattr(parsed, "layers", None) or []) + (getattr(parsed, "overlay", None) or [])
+        for part in str(value).split(",") if part.strip()
+    ]
+    if layers:
+        inputs["layers"] = ",".join(dict.fromkeys(layers))
+    if getattr(parsed, "cut", None) not in (None, ""):
+        inputs["cut"] = str(parsed.cut)
+    if getattr(parsed, "frame_budget", None) is not None:
+        inputs["frame_budget"] = parsed.frame_budget
+    if getattr(parsed, "beats", None):
+        try:
+            inputs["beats"] = _read_beats(parsed.beats)
+        except (OSError, ValueError) as exc:
+            print(f"error validation_error: --beats {parsed.beats}: {exc}", file=sys.stderr)
+            return 2
     # The public text and visual routes use the same bounded selector
     # normalizer. Preserve all existing input spellings, but canonicalize the
     # occurrence identity before crossing the SDK boundary.
@@ -1465,12 +1568,94 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         timing = _visualization_timing(human_outputs, requested_at)
         if timing is not None:
             human_outputs["timing"] = timing
-    exit_status = print_result(envelope, as_json=parsed.json)
-    if result.ok and not parsed.json:
-        if human_outputs is not None:
-            _print_visualization_timing(human_outputs.get("timing"), requested_at)
-            _print_visualization_navigation(human_outputs)
-    return exit_status
+    if parsed.json or human_outputs is None or not result.ok:
+        return print_result(envelope, as_json=parsed.json)
+    print(_visualization_summary(human_outputs, parsed=parsed, inputs=inputs))
+    return 0
+
+
+def _read_beats(path: str) -> str:
+    """A cue's beats.json reduced to what the sync layer and lint read (cue seconds)."""
+    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        data = {"beats": data}
+    if not isinstance(data, Mapping):
+        raise ValueError("expected a beats.json object with beats/downbeats/hits")
+    compact = {
+        "beats": [round(float(t), 4) for t in data.get("beats") or [] if isinstance(t, (int, float))],
+        "downbeats": [round(float(t), 4) for t in data.get("downbeats") or [] if isinstance(t, (int, float))],
+        "hits": [
+            {"t": round(float(hit["t"]), 4), "kind": str(hit.get("kind") or "hit")}
+            for hit in data.get("hits") or [] if isinstance(hit, Mapping) and isinstance(hit.get("t"), (int, float))
+        ],
+    }
+    return json.dumps(compact, separators=(",", ":"))
+
+
+def _seconds(value: Any) -> str:
+    return f"{float(value):.0f} s" if isinstance(value, (int, float)) and not isinstance(value, bool) else "?"
+
+
+def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> str:
+    """The human result: where the picture is, what it holds, how long it took, what to run next."""
+    view = str(inputs.get("view") or "filmstrip")
+    pages = [str(page) for page in outputs.get("pages") or [] if page]
+    primary = outputs.get("primary_page") or (pages[0] if pages else None) or outputs.get("png")
+    timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
+    label = {"contact": "contact sheet", "motion": "motion sheet", "filmstrip": "filmstrip"}.get(view, view)
+    lines = [f"{label}: {primary or '(no page produced; see --json)'}"]
+    for page in pages:
+        if page != primary:
+            lines.append(f"  also: {page}")
+    frames = timing.get("frames")
+    resolution = timing.get("resolution") or inputs.get("resolution")
+    if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+        resolution = f"{resolution[0]}x{resolution[1]}"
+    what = {
+        "contact": f"{frames} tiles, one per picture cut (#N = cut number in timelines show)",
+        "motion": f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance",
+    }.get(view, f"{frames} frames")
+    lines.append(f"  {what}" + (f" · frames {resolution}" if resolution else ""))
+    if timing.get("capture_s") is not None:
+        lines.append(
+            f"  wall {_seconds(timing.get('wall_s'))} = queued {_seconds(timing.get('queued_s'))}"
+            f" + capture {_seconds(timing.get('capture_s'))} + compose {_seconds(timing.get('compose_s'))}"
+        )
+    else:
+        lines.append(f"  wall {_seconds(timing.get('wall_s'))} (executor timing unavailable: the host predates timing.json)")
+    findings = [str(line) for line in outputs.get("findings") or []]
+    if findings:
+        lines.append("findings:")
+        lines.extend(f"  {line}" for line in findings[:14])
+        if len(findings) > 14:
+            lines.append(f"  … {len(findings) - 14} more in findings.txt next to the page")
+    project = str(parsed.project or "<project>")
+    timeline = str(inputs.get("timeline_slug") or "<timeline>")
+    base = ["python3", "-m", "astrid", "timelines", "visualize", "--project", project, "--timeline-slug", timeline]
+    if inputs.get("revision_id"):
+        base += ["--revision-id", str(inputs["revision_id"])]
+    lint = ["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]
+    show = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
+    beats = ["--beats", str(parsed.beats)] if getattr(parsed, "beats", None) else []
+    if view == "motion":
+        cut = str(inputs.get("cut") or "N")
+        following = str(int(cut) + 1) if cut.isdigit() else "N"
+        nexts = [
+            ("next cut", base + ["--view", "motion", "--cut", following] + beats),
+            ("lint the whole edit", lint + beats),
+            ("whole film again", base + ["--view", "contact"]),
+        ]
+    else:
+        nexts = [
+            ("motion of one cut", base + ["--view", "motion", "--cut", "N"] + beats),
+            ("lint composition + timing", lint + beats),
+            ("cut table (numbers, words)", show),
+        ]
+    lines.append("next:")
+    width = max(len(name) for name, _argv in nexts)
+    lines.extend(f"  {name:<{width}}  {shlex.join(argv)}" for name, argv in nexts)
+    lines.append("(--json prints the full SDK envelope; --list-layers lists the views you can add with --layer)")
+    return "\n".join(lines)
 
 
 def _visualization_timing(outputs: Mapping[str, Any], requested_at: float) -> dict[str, Any] | None:
@@ -2112,6 +2297,27 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_diff)
 
 
+def _configure_lint(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Composition and timing checks for every picture cut, from timeline data alone (about a second, no "
+        "capture): a layer over a presenter's face, text outside the frame or title-safe, text smaller than "
+        "--min-text-px at 1080p, layers covering each other, accents 0.10–0.35 s off a word onset, sfx off "
+        "their visual, cuts under 0.5 s and stretches with no event. Each line names the fix."
+    )
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("ref", nargs="?", default=None, help="Timeline UUID, ULID, or slug (default: the project's).")
+    subparser.add_argument("--cut", default=None, help="Only this cut (number in timelines show, clip id, or @SECONDS).")
+    subparser.add_argument("--range", dest="range", default=None, help="Only cuts overlapping START..END seconds.")
+    subparser.add_argument("--revision-id", default=None, help="Lint a saved revision instead of the head.")
+    subparser.add_argument("--beats", default=None, metavar="BEATS_JSON",
+                           help="A music cue's beats.json: also report accents 0.10–0.20 s off a music hit or downbeat.")
+    subparser.add_argument("--min-text-px", dest="min_text_px", type=float, default=32.0,
+                           help="Smallest acceptable text size in px at 1080p (default 32).")
+    subparser.add_argument("--all", action="store_true", help="Also print info lines (EDGE crops, BEAT near-misses).")
+    _add_json_flag(subparser, default=False)
+    subparser.set_defaults(handler=_cmd_lint)
+
+
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     subparser.epilog = (
         "Next: use `timelines show` for authored rows and timing. For edits, use the "
@@ -2181,12 +2387,39 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--view",
-        choices=("filmstrip", "contact"),
+        choices=("filmstrip", "contact", "motion"),
         default="filmstrip",
         help=(
             "Rendered paired filmstrip (default; the only view for drill-down pages). "
-            "contact: ONE overview page of the whole video (one tile per cut, capped at 120)."
+            "contact: ONE overview page of the whole video, one tile per picture cut (capped at 120), 480x270. "
+            "motion: one cut (--cut N) as a motion sheet you can judge as stills: frame strip, onion skins, "
+            "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270)."
         ),
+    )
+    subparser.add_argument(
+        "--cut", default=None,
+        help="motion view: the cut, as its number in `timelines show`, a picture clip id, or @SECONDS.",
+    )
+    subparser.add_argument(
+        "--layer", dest="layers", action="append", default=None, metavar="LAYER[,LAYER...]",
+        help="Visualize layers to add (repeatable). Default: every default layer of the view. "
+             "See --list-layers (e.g. --layer bounds on contact tiles).",
+    )
+    subparser.add_argument(
+        "--overlay", action="append", default=None, metavar="LAYER",
+        help="Alias of --layer for frame overlays (bounds: element bounds, face box, safe areas).",
+    )
+    subparser.add_argument(
+        "--beats", default=None, metavar="BEATS_JSON",
+        help="A music cue's beats.json (beats/downbeats/hits in cue seconds) for the sync layer and lint.",
+    )
+    subparser.add_argument(
+        "--frame-budget", dest="frame_budget", type=int, default=None,
+        help="motion view: maximum captured frames (default 60, at most 120).",
+    )
+    subparser.add_argument(
+        "--list-layers", dest="list_layers", action="store_true",
+        help="List the registered visualize layers (built-in and pack-contributed) and exit.",
     )
     subparser.add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
                            help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")
@@ -2211,7 +2444,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--page-size", type=int, default=None,
                            help="Filmstrip cards per static page (default: 50 standalone; paired pages use one row, or explicitly opt into up to two rows / 10 cards).")
     subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
-                           help="Filmstrip frame resolution, e.g. 960x540; recorded and applied exactly by the executor.")
+                           help="Frame resolution, e.g. 960x540 (default: 480x270 for contact and motion, "
+                                "the canvas for filmstrip); applied exactly by the executor.")
     subparser.add_argument(
         "--include-media", action="store_true", default=None,
         help="Include a relative, digest-verified rendered video for offline filmstrip playback.",
@@ -2223,7 +2457,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "Omit it and use the returned durable manifest_path."
         ),
     )
-    _add_json_flag(subparser)
+    # Human summary by default (page path, counts, timing, next commands),
+    # like show/diff; --json opts into the SDK envelope.
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_visualize)
 
 
@@ -2352,6 +2588,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         requires_pack_host=True,
     ),
     CommandSpec(
+        "lint",
+        help="Composition and timing checks per picture cut, from timeline data (no capture).",
+        configure=_configure_lint,
+    ),
+    CommandSpec(
         "inspect",
         help="Read bounded named sections of a verified filmstrip bundle offline.",
         configure=_configure_inspect,
@@ -2383,7 +2624,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines",
         description=(
-            "Timeline create/list/show/replace-parent-media/archive/recover/history/diff/visualize/render "
+            "Timeline create/list/show/replace-parent-media/archive/recover/history/diff/lint/visualize/render "
             "(product family); nested shots beneath 'timelines shots'."
         ),
     )

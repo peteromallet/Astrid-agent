@@ -99,7 +99,7 @@ def test_show_and_visualize_preserve_one_normalized_occurrence_target(capsys) ->
     assert "--occurrence occ-b" in show_to_visualize
 
     visualize_args = parser.parse_args(
-        ["visualize", "main", "--project", "demo", "--occurrence", "occ-b"]
+        ["visualize", "main", "--project", "demo", "--occurrence", "occ-b", "--json"]
     )
     assert _cmd_visualize(visualize_args) == 0
     visualized = json.loads(capsys.readouterr().out)["data"]["outputs"]
@@ -121,7 +121,7 @@ def test_show_visualize_round_trip_keeps_saved_revision_after_newer_head(capsys)
     assert "--range 2..4" in shown["navigation"]["commands"]["visualize"]
 
     visualize_args = parser.parse_args(
-        ["visualize", "main", "--project", "demo", "--revision-id", "saved-revision", "--range", "2..4"]
+        ["visualize", "main", "--project", "demo", "--revision-id", "saved-revision", "--range", "2..4", "--json"]
     )
     assert _cmd_visualize(visualize_args) == 0
     visualized = json.loads(capsys.readouterr().out)["data"]["outputs"]
@@ -134,14 +134,14 @@ def test_visualize_show_navigation_projects_frame_and_timestamp_to_ranges(capsys
     parser = build_parser(client)
 
     frame_args = parser.parse_args(
-        ["visualize", "main", "--project", "demo", "--frame", "1"]
+        ["visualize", "main", "--project", "demo", "--frame", "1", "--json"]
     )
     assert _cmd_visualize(frame_args) == 0
     frame_outputs = json.loads(capsys.readouterr().out)["data"]["outputs"]
     assert "--range 1/30..1/15" in frame_outputs["navigation"]["commands"]["show"]
 
     at_args = parser.parse_args(
-        ["visualize", "main", "--project", "demo", "--at", "4", "--context", "1"]
+        ["visualize", "main", "--project", "demo", "--at", "4", "--context", "1", "--json"]
     )
     assert _cmd_visualize(at_args) == 0
     at_outputs = json.loads(capsys.readouterr().out)["data"]["outputs"]

@@ -635,6 +635,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "history",
         "diff",
         "visualize",
+        "lint",
         "inspect",
         "render",
     )
@@ -651,6 +652,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "history",
         "diff",
         "visualize",
+        "lint",
         "inspect",
         "render",
         "shots",
@@ -826,6 +828,7 @@ def test_timelines_visualize_help_describes_filmstrip_navigation(
     normalized = " ".join(capsys.readouterr().out.split())
     assert "Timeline slug, UUID, or ULID" in normalized
     assert "Rendered paired filmstrip" in normalized
+    assert "motion: one cut" in normalized
     assert "structure" not in normalized
     assert "returned durable manifest_path" in normalized
     assert "--include-media" in normalized

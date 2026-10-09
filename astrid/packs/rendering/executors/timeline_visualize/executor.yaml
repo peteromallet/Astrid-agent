@@ -153,8 +153,32 @@
       "name": "view",
       "type": "string",
       "required": false,
-      "description": "Presentation: filmstrip (paired drill-down pages, default) or contact (one overview page of the whole video) as static PNG/Markdown/JSON evidence.",
+      "description": "Presentation: filmstrip (paired drill-down pages, default), contact (one overview page of the whole video, one tile per picture cut) or motion (one cut's motion sheet: frames, onion skins, curves, sync, stillness, lip-sync) as static PNG/Markdown/JSON evidence.",
       "default": "filmstrip"
+    },
+    {
+      "name": "cut",
+      "type": "string",
+      "required": false,
+      "description": "Motion view: the cut to study, as a cut number from timelines show, a picture clip id, or @SECONDS."
+    },
+    {
+      "name": "layers",
+      "type": "string",
+      "required": false,
+      "description": "Comma-separated visualize layers (timelines visualize --list-layers); default: every non-experimental layer of the view."
+    },
+    {
+      "name": "beats",
+      "type": "string",
+      "required": false,
+      "description": "Music beats JSON read by the client from a cue's beats.json (beats, downbeats, hits in cue seconds)."
+    },
+    {
+      "name": "frame_budget",
+      "type": "integer",
+      "required": false,
+      "description": "Motion view: maximum captured frames (default 60, at most 120)."
     },
     {
       "name": "sample",
@@ -379,6 +403,26 @@
       {
         "input": "view",
         "flag": "--view",
+        "optional": true
+      },
+      {
+        "input": "cut",
+        "flag": "--cut",
+        "optional": true
+      },
+      {
+        "input": "layers",
+        "flag": "--layer",
+        "optional": true
+      },
+      {
+        "input": "beats",
+        "flag": "--beats",
+        "optional": true
+      },
+      {
+        "input": "frame_budget",
+        "flag": "--frame-budget",
         "optional": true
       },
       {

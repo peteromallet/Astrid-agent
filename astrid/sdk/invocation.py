@@ -674,9 +674,9 @@ def _validate_timeline_visualize_inputs(
     # route were removed; all review navigation is render-scoped (range,
     # timestamp, shot, clip, asset, track, and density).
     view = values.get("view", "filmstrip")
-    if view not in {"filmstrip", "contact"}:
+    if view not in {"filmstrip", "contact", "motion"}:
         raise CapabilityValidationError(
-            "only view=filmstrip or view=contact is supported; the structural timeline view was removed"
+            "view must be filmstrip, contact or motion; the structural timeline view was removed"
         )
     removed = [
         name for name in ("all", "from_view", "focus", "refresh_root", "layout", "filmstrip", "scope")
@@ -1281,6 +1281,56 @@ def _runtime_data_root() -> Path | None:
         return None
 
 
+# Page files a visualize bundle may carry at its root, in reading order after
+# the manifest's primary page: the one-page overview, motion sheets, then the
+# numbered filmstrip pages.  Frames and input bands are evidence, not pages.
+_FILMSTRIP_PAGE_PREFIXES = ("contact-sheet", "motion-", "filmstrip-")
+
+
+def _filmstrip_pages(root: Path, document: Mapping[str, Any] | None) -> list[str]:
+    """Readable pages of a verified filmstrip bundle, primary first."""
+    entrypoints = document.get("entrypoints") if isinstance(document, Mapping) else None
+    primary = entrypoints.get("png") if isinstance(entrypoints, Mapping) else None
+    names = sorted(
+        (path.name for path in root.glob("*.png") if path.name.startswith(_FILMSTRIP_PAGE_PREFIXES)),
+        key=lambda name: (next(i for i, prefix in enumerate(_FILMSTRIP_PAGE_PREFIXES) if name.startswith(prefix)), name),
+    )
+    ordered: list[str] = []
+    if isinstance(primary, str) and "/" not in primary and (root / primary).is_file():
+        ordered.append(primary)
+    ordered.extend(name for name in names if name not in ordered)
+    return [str(root / name) for name in ordered]
+
+
+def _filmstrip_sidecars(root: Path) -> dict[str, Any]:
+    """Executor timing and text findings carried inside the bundle (small JSON/text files)."""
+    found: dict[str, Any] = {}
+    timing = root / "timing.json"
+    if timing.is_file() and timing.stat().st_size < 65536:
+        try:
+            value = json.loads(timing.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            value = None
+        if isinstance(value, Mapping):
+            found["timing"] = dict(value)
+    else:
+        # Bundles from hosts that predate timing.json still say how many frames they hold.
+        index = root / "frame-index.json"
+        try:
+            cards = json.loads(index.read_text(encoding="utf-8")).get("cards") if index.is_file() else None
+        except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+            cards = None
+        if isinstance(cards, list):
+            found["timing"] = {"frames": len(cards)}
+    findings = root / "findings.txt"
+    if findings.is_file() and findings.stat().st_size < 262144:
+        try:
+            found["findings"] = [line for line in findings.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, UnicodeError):
+            pass
+    return found
+
+
 def _materialize_filmstrip_outputs(
     raw_result: dict[str, Any],
     client: Any,
@@ -1390,15 +1440,18 @@ def _materialize_filmstrip_outputs(
         os.replace(staging, root)
         staging = root
         manifest = root / "manifest.json"
+        pages = _filmstrip_pages(root, document)
         static_outputs = {
             "pack_root": str(root),
             "manifest_path": str(manifest),
-            "pages": [str(p) for p in sorted(root.glob("filmstrip-*.png"))],
+            "pages": pages,
+            "primary_page": pages[0] if pages else None,
             "frame_index": str(root / "frame-index.json"),
         }
         markdown = root / "filmstrip.md"
         if markdown.is_file():
             static_outputs["markdown"] = str(markdown)
+        static_outputs.update(_filmstrip_sidecars(root))
         raw_result["outputs"].update(static_outputs)
         if media_relative is not None:
             raw_result["outputs"]["media"] = str(root / media_relative)
@@ -1461,13 +1514,19 @@ def _invocation_outputs(
                 outputs["inspection"] = action_argv(
                     "python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest), "--section", "summary"
                 )
-            page_pattern = "filmstrip-*.png" if isinstance(document, dict) and document.get("kind") == "timeline_filmstrip" else "PG*.png"
-            outputs["pages"] = [
-                str(path)
-                for path in sorted(pack_root.rglob(page_pattern))
-                if "filmstrip" not in path.relative_to(pack_root).parts
-            ]
-            if page_pattern == "filmstrip-*.png":
+            is_filmstrip = isinstance(document, dict) and document.get("kind") == "timeline_filmstrip"
+            if is_filmstrip:
+                outputs["pages"] = _filmstrip_pages(pack_root, document)
+                outputs["primary_page"] = outputs["pages"][0] if outputs["pages"] else None
+                for key, value in _filmstrip_sidecars(pack_root).items():
+                    outputs.setdefault(key, value)
+            else:
+                outputs["pages"] = [
+                    str(path)
+                    for path in sorted(pack_root.rglob("PG*.png"))
+                    if "filmstrip" not in path.relative_to(pack_root).parts
+                ]
+            if is_filmstrip:
                 markdown = pack_root / "filmstrip.md"
                 if markdown.is_file():
                     outputs["markdown"] = str(markdown)
