@@ -48,3 +48,9 @@ schema:
       type: string
     bare:
       type: boolean
+    look:
+      type: string
+      enum:
+      - brand
+      - real
+      description: "brand (default): the ruled pixel-modernist window. real: a realistic macOS-style dark terminal (traffic lights, JetBrains Mono, soft shadow), for real screens that must read as real."

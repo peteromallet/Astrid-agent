@@ -439,6 +439,7 @@ builder's `@words` helper), then `strikeAt` strikes through it word by word and
 
 **am-terminal.** Commands type in after an orange prompt (`kind: cmd`), output
 lands whole (`out`, `dim`, `ok`), a `progress` line counts `{n}` and `{eta}`.
+`look: "real"` draws a realistic dark terminal (macOS traffic lights, JetBrains Mono, soft shadow, no ink borders) for films where real screens must read as real; the default `brand` look is the ruled pixel-modernist window.
 `badges` stamp in under the window. Real commands and real output only.
 
 **am-droste.** The plate recurses inside its own `screen` rect (logical px; P-02's
