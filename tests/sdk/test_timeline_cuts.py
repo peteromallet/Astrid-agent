@@ -183,7 +183,7 @@ def test_show_prints_the_cut_table_by_default(capsys):
     out = capsys.readouterr().out
     assert "Timeline T1 · project demo · current head" in out
     assert "showing 1" in out and 'VO "I invited"' in out
-    assert "see these cuts: python3 -m astrid timelines visualize --project demo --timeline-slug T1 --view contact --range 2.00..3.50" in out
+    assert "see these cuts: python3 -m astrid timelines visualize T1 --project demo --view contact --range 2.00..3.50" in out
     assert "per-track layer rows: --layers" in out
     assert client.timelines.calls == [("demo", "T1", None)]
 

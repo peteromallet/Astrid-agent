@@ -89,3 +89,14 @@ def test_the_tiny_fixture_prints_its_golden_sheet_and_round_trips():
     sheet = render_sheet(tl, film="tiny")
     assert sheet == (root / "tiny.sheet").read_text(encoding="utf-8")
     assert apply_sheet(tl, sheet) == []
+
+
+def test_an_error_echoes_the_line_and_says_what_to_write():
+    tl = Checkout(named())
+    tl.resolve()
+    sheet = render_sheet(tl).replace('on "viral"', 'on "virl"')
+    with pytest.raises(SheetError) as err:
+        apply_sheet(tl, sheet)
+    text = str(err.value)
+    assert "«" in text and 'on "virl"' in text  # the offending line itself
+    assert "did you mean viral" in text

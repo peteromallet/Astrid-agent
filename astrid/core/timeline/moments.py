@@ -253,7 +253,7 @@ def _missing(m: Moment, words: Sequence[Word]) -> str:
     scope = [w for w in words if m.line is None or w.segment == m.line]
     close = difflib.get_close_matches(_norm(m.text), sorted({_norm(w.text) for w in scope}), n=4)
     where = f" in line {m.line}" if m.line else ""
-    return f'"{m.text}" is not spoken{where}' + (f"; did you mean {', '.join(close)}?" if close else "") + " (an orphan: its word changed)"
+    return f'"{m.text}" is not spoken{where}' + (f"; did you mean {', '.join(close)}?" if close else "")
 
 
 def word_moment(word: Word, words: Sequence[Word], *, edge: str = "start") -> Moment:

@@ -1212,7 +1212,7 @@ class Checkout:
                 try:
                     mo.resolve(mo.parse(text), _MomentContext(self, clip))
                 except mo.MomentError as exc:
-                    out.append(f"{clip.address:<16} {field} {text}: {exc}")
+                    out.append(f"{clip.address:<16} {field} {text}: {exc} (its word is gone: re-home it or remove the clip)")
             for path, expr in intent.formulas(clip.data).items():
                 if isinstance(expr, Mapping) and expr.get("moment"):
                     try:

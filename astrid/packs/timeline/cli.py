@@ -1259,8 +1259,9 @@ def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
             return 2
     print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project)), end="")
     where = f"{parsed.ref} --project {parsed.project}"
-    # the hint goes to stderr, so `> FILE` is a clean sheet to edit and apply
-    print(f"next: edit the sheet (> FILE), then  timelines apply {where} FILE", file=sys.stderr)
+    # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
+    if sys.stdout.isatty():
+        print(f"next: save it (> FILE), change a line, then  timelines apply {where} FILE", file=sys.stderr)
     return 0
 
 
@@ -1377,7 +1378,7 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     lines = banner + [render_cut_table(table, shown, title=title, changed=changed), ""]
     if info is not None:
         lines.insert(len(lines) - 1, paging_hint(table, rows, shown, info))
-    visual = ["python3", "-m", "astrid", "timelines", "visualize", "--project", project, "--timeline-slug", timeline]
+    visual = ["python3", "-m", "astrid", "timelines", "visualize", timeline, "--project", project]
     if not data.get("is_current_head"):
         visual += ["--revision-id", revision]
     if shown and (getattr(parsed, "range", None) or getattr(parsed, "shot", None) or info is not None):
@@ -1519,8 +1520,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     lines.append(f"findings: {summary}" + (
         f"; info hidden ({', '.join(f'{c} {n}' for c, n in sorted(info.items()))}; --all shows them)" if info and not parsed.all else ""))
     project = str(parsed.project or "<project>")
-    lines.append("see one: " + shlex.join(["python3", "-m", "astrid", "timelines", "visualize", "--project", project,
-                                           "--timeline-slug", str(parsed.ref), "--view", "motion", "--cut", "N"])
+    lines.append("see one: " + shlex.join(["python3", "-m", "astrid", "timelines", "visualize", str(parsed.ref), "--project", project,
+                                           "--view", "motion", "--cut", "N"])
                  + "   ·   machine-applicable fixes: --json")
     print("\n".join(lines))
     errors = sum(1 for _cut, fs in results for f in fs if f.severity == "error") + sum(
@@ -1587,8 +1588,8 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
     for low, high in diff.get("windows") or []:
         for label, revision in (("before", old), ("after", new)):
             commands[f"{label} {low:g}..{high:g}"] = shlex.join([
-                "python3", "-m", "astrid", "timelines", "visualize", "--project", str(parsed.project),
-                "--timeline-slug", str(parsed.ref), "--revision-id", revision,
+                "python3", "-m", "astrid", "timelines", "visualize", str(parsed.ref), "--project", str(parsed.project),
+                "--revision-id", revision,
                 "--range", f"{low:g}..{high:g}", "--every-frames", "5",
             ])
     diff["commands"] = commands
@@ -2233,7 +2234,7 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
             lines.append(f"  … {len(findings) - 14} more in findings.txt next to the page")
     project = str(parsed.project or "<project>")
     timeline = str(inputs.get("timeline_slug") or "<timeline>")
-    base = ["python3", "-m", "astrid", "timelines", "visualize", "--project", project, "--timeline-slug", timeline]
+    base = ["python3", "-m", "astrid", "timelines", "visualize", timeline, "--project", project]
     if inputs.get("revision_id"):
         base += ["--revision-id", str(inputs["revision_id"])]
     lint = ["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]
@@ -3085,7 +3086,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument(
         "timeline_ref", nargs="?", default=None,
-        help="Optional positional timeline slug, UUID, or ULID (prefer --timeline-slug).",
+        help="The timeline (slug, UUID or ULID), as for the other timelines verbs; --timeline-slug also works.",
     )
     subparser.add_argument(
         "--timeline-slug",

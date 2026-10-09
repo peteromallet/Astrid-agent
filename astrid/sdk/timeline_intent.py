@@ -297,3 +297,19 @@ def set_sequence_fit(clip: dict[str, Any], spec: Mapping[str, Any] | None) -> No
     else:
         _app_w(clip).pop("sequence_fit", None)
         _tidy(clip)
+
+
+# ---- chapters: labels over runs of cuts (not containers) -----------------------------
+def chapters(bundle: Mapping[str, Any]) -> list[dict[str, str]]:
+    """``[{"name": "06 ASTRID", "from": "c30"}, …]``: each chapter starts at a cut."""
+    config = (bundle.get("parent") or {}).get("config") or {}
+    value = config.get("chapters")
+    return [dict(row) for row in value if isinstance(row, Mapping)] if isinstance(value, list) else []
+
+
+def set_chapters(bundle: dict[str, Any], table: list[Mapping[str, Any]]) -> None:
+    config = bundle.setdefault("parent", {}).setdefault("config", {})
+    if table:
+        config["chapters"] = [dict(row) for row in table]
+    else:
+        config.pop("chapters", None)

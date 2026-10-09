@@ -73,12 +73,19 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         out += ["", "orphans" + " " * 42 + "# moments whose words are gone: re-home or remove"]
         out += [f"  {o}" for o in orphans]
     chapter = None
+    labels = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
+    order = [g["id"] for g in groups]
+    carried = _carried(tl, groups, spans)
     for g in picked:
         lo, hi = spans[g["id"]]
         hi = hi if hi is not None else tl.duration
         first = g["picture"] or min(g["clips"], key=lambda c: c.start)
-        name = _chapter(tl, first.shot_id)
-        if name != chapter:
+        if labels:
+            # the chapter a cut is in: the last label at or before it
+            name = next((labels[cid] for cid in reversed(order[:order.index(g["id"]) + 1]) if cid in labels), chapter)
+        else:
+            name = _chapter(tl, first.shot_id)
+        if name and name != chapter:
             out += ["", f"# {name}"]
             chapter = name
         pic = g["picture"]
@@ -91,10 +98,28 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         layers = _ordered(g["clips"])
         rows = [_layer_row(tl, c, lo, hi, is_picture=(pic is not None and c.data is pic.data)) for c in layers]
         out += _align(rows)
+        for clip in carried.get(g["id"], []):
+            out.append(f"         ↳ {clip.address} carries on over this cut (until {clip.end:.2f} s)")
         why = next((intent.why(c.data) for c in ([pic] if pic else []) + layers if intent.why(c.data)), None)
         if why:
             out.append(f"         why: {why}")
     return "\n".join(out) + "\n"
+
+
+def _carried(tl: Any, groups: list[dict[str, Any]], spans: dict[str, Any]) -> dict[str, list[Any]]:
+    """Layers that started in an earlier cut and are still on screen when a cut opens."""
+    out: dict[str, list[Any]] = {}
+    for g in groups:
+        lo = g["start"]
+        for other in groups:
+            if other["start"] >= lo - 1e-6:
+                continue
+            for clip in other["clips"]:
+                if not clip.is_audio and clip.start < lo - 1e-6 and clip.end > lo + 0.5 / tl.fps \
+                        and not (intent.sequence(clip.data) or ("", 0))[1] and other["picture"] is not None \
+                        and clip.data is not other["picture"].data:
+                    out.setdefault(g["id"], []).append(clip)
+    return out
 
 
 def _canvas(tl: Any) -> str:
@@ -199,18 +224,24 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if not line.strip():
             continue
         body = line.strip()
-        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:")) or body.startswith(">") or raw.startswith("# "):
+        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:")) or body.startswith((">", "↳")) or raw.startswith("# "):
             continue
         if body in ("lines", "orphans"):
             section, cut = body, None
             continue
         if "┃" in line:
             section = "cuts"
-            cut = _parse_header(line, number)
+            try:
+                cut = _parse_header(line, number)
+            except SheetError as exc:
+                raise SheetError(_with_text(str(exc), number, body)) from None
             sheet["cuts"].append(cut)
             continue
         if section == "lines" and cut is None:
-            entry = _parse_line_entry(body, number)
+            try:
+                entry = _parse_line_entry(body, number)
+            except SheetError as exc:
+                raise SheetError(_with_text(str(exc), number, body)) from None
             sheet["lines"][entry["id"]] = entry
             continue
         if section == "orphans":
@@ -220,8 +251,20 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if body.startswith("why:"):
             cut["why"] = body[4:].strip()
             continue
-        cut["layers"].append(_parse_layer(body, number))
+        try:
+            cut["layers"].append(_parse_layer(body, number))
+        except SheetError as exc:
+            raise SheetError(_with_text(str(exc), number, body)) from None
+        cut["layers"][-1]["text_line"] = body
     return sheet
+
+
+def _with_text(message: str, number: int, body: str) -> str:
+    """``line 13: …`` → ``line 13  «sprite cover … until "Astird"»: …`` (the offending line, shortened)."""
+    shown = body if len(body) <= 90 else body[:87] + "…"
+    prefix = f"line {number}: "
+    rest = message[len(prefix):] if message.startswith(prefix) else message
+    return f"line {number}  «{shown}»\n  {rest}"
 
 
 def _strip_comment(raw: str) -> str:
@@ -400,7 +443,9 @@ def apply_sheet(tl: Any, text: str) -> list[str]:
                 else:
                     _update_layer(tl, clip, layer, is_picture=pic is not None and clip.data is pic.data)
             except (TimelineEditError, mo.MomentError) as exc:
-                raise SheetError(f"line {layer['line']} ({cut['id']}.{name}): {exc}") from None
+                said = str(exc)
+                said = said if said.startswith(f"{cut['id']}.{name}") else f"{cut['id']}.{name}: {said}"
+                raise SheetError(_with_text(f"line {layer['line']}: {said}", layer["line"], layer.get("text_line", ""))) from None
         for name, clip in existing.items():
             if name not in seen:
                 clip.remove()
