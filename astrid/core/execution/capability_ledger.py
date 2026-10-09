@@ -363,12 +363,12 @@ def _reconcile_sources(repo_root: Path, capabilities: list[Mapping[str, Any]]) -
     # source-label census. Optional project packs remain represented by their
     # matrix contracts, but do not advance the canonical source counts.
     coverage = {
-        # The shipped checkout currently contains 93 active in-tree labels
-        # after the private timeline-visualize cutover (and 98 labels in the
-        # historical projection). Keep these explicit census pins so a future
+        # The shipped checkout currently contains 94 active in-tree labels
+        # (generation.generate_speech added) and 99 labels in the historical
+        # projection. Keep these explicit census pins so a future
         # unreviewed manifest change still fails closed at host startup.
-        "source_labels": {"source": 93, "ledger": len(labels), "missing": [], "complete": len(labels) == 93},
-        "historical_source_labels": {"source": 98, "ledger": len(historical_labels), "missing": [], "complete": len(historical_labels) == 98},
+        "source_labels": {"source": 94, "ledger": len(labels), "missing": [], "complete": len(labels) == 94},
+        "historical_source_labels": {"source": 99, "ledger": len(historical_labels), "missing": [], "complete": len(historical_labels) == 99},
         "executor_inventory": {"source": 86, "ledger": len(executors), "missing": [], "complete": len(executors) == 86},
         "legacy_ids": {"source": 19, "ledger": len(legacy), "missing": [], "complete": len(legacy) == 19},
     }

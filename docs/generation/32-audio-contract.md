@@ -1,7 +1,7 @@
 # Audio Modality Contract (schema_version: 2)
 
-**Status**: `music` mode implemented (cloud-first).  
-**Executor**: `generation.generate_audio`  
+**Status**: `music` mode implemented (cloud-first); `tts` routed to `generation.generate_speech`.  
+**Executor**: `generation.generate_audio` (music); `generation.generate_speech` (tts)  
 **Escape hatch**: `vibecomfy.run` (custom audio pipelines, spectrogram conditioning)
 
 ## Canonical audio modes
@@ -11,14 +11,31 @@ The audio modality has three canonical modes:
 | Mode | Status | Description |
 |------|--------|-------------|
 | `music` | ✅ Wired | Music generation (prompt → audio; supports lyrics/instrumental controls). |
-| `tts` | Reserved | Text-to-speech (prompt → audio). |
+| `tts` | ✅ Routed | Exact-text speech (`text`, optional `voice`, `rate`, `volume`, `pitch`, `provider`). The SDK redirects `generation.generate_audio` with `mode="tts"` to `generation.generate_speech` before admission; see [tts routing](#tts-routing). |
 | `sfx` | Reserved | Sound effects generation (prompt → audio; short duration, specific sound). |
+
+### tts routing
+
+`generation.generate_audio` with `mode="tts"` is not a music request. `invoke()`
+rewrites it to `generation.generate_speech` and maps the inputs:
+
+| `generate_audio` input | `generate_speech` input |
+|------------------------|-------------------------|
+| `text` (preferred) or `prompt` | `text` (exact spoken words; required, non-blank) |
+| `voice`, `rate`, `volume`, `pitch`, `provider` | same names, passed through |
+| `mode`, `model`, `execution` | consumed by routing; `model`/`execution` are ignored for speech |
+
+Any other input (for example `count`, `seed`, `duration`) is rejected with a
+validation error rather than dropped. The speech executor returns WAV `speech`,
+`speech_manifest` (provenance) and `speech_words` (word timing) artifacts; see
+its `STAGE.md`. Calling the `generate_audio` executor directly with `mode=tts`
+exits with a message naming `generation.generate_speech`.
 
 ## Inputs
 
 | Port | Type | Required | Description |
 |------|------|----------|-------------|
-| `--mode` | `string` | **yes** | Generation mode: `music`. `tts`/`sfx` are not wired yet. REQUIRED (SD-005). |
+| `--mode` | `string` | **yes** | Generation mode: `music` (`tts` is routed to `generation.generate_speech` by the SDK; `sfx` is not wired yet). REQUIRED (SD-005). |
 | `--model` | `string` | **yes** | Model ID from the registry. |
 | `--execution` | `string` | **yes** | `"local"` or `"cloud"`. Cloud is wired; local is a follow-up. |
 | `--prompt` | `string` | no* | Text prompt for audio generation. |

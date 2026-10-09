@@ -286,12 +286,13 @@ verbs.
 
 ## Executors (direct access)
 
-The pack's three executors remain available for direct use through the SDK
+The pack's executors remain available for direct use through the SDK
 (`astrid.sdk.invoke(...)`) and for subprocess/cron automation.
 
 | Executor | What it does |
 |---|---|
-| `generation.generate_audio` | Generate audio from text prompts via local or cloud backends; the current mode is `music`. |
+| `generation.generate_audio` | Generate audio from text prompts via local or cloud backends; mode `music`. Mode `tts` is redirected by the SDK to `generation.generate_speech`. |
+| `generation.generate_speech` | Exact-text speech (voiceover) with Edge TTS: WAV `speech`, provenance `speech_manifest`, and word-level timing `speech_words` (`{words: [{word, start_s, end_s}], duration_seconds}`) for word-accurate cuts. Inputs: `text` (required), `voice`, `rate`, `volume`, `pitch`, `provider`. Needs `pip install 'astrid[speech]'` and ffmpeg. |
 | `generation.generate_image` | Generate images from text prompts via local (vibecomfy), cloud (fal), or Codex backends. v2: model→mode→backend taxonomy with a required `mode` input. Supports t2i, i2i, and edit modes. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v, i2v, and flf (first-last-frame) modes. |
 | `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. Requires `OPENAI_API_KEY`. |

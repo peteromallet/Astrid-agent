@@ -9,8 +9,10 @@ or cloud (fal) backends.  A single executor dispatches through `BackendAdapter`
 (SD-004) — callers pick a model, a mode, and a backend; the executor does the
 rest.  **`--mode` is required** (SD-005).
 
-The executor is multi-mode: `music` is wired this sprint; `tts` and `sfx` are
-reserved for future sprints.
+The executor is multi-mode: `music` is wired here. `tts` is not run by this
+executor: the SDK routes `mode="tts"` to `generation.generate_speech` (exact-text
+Edge TTS voiceover with word timing; see `../generate_speech/STAGE.md`). `sfx` is
+reserved for a future sprint.
 
 ## Starting models (cloud)
 
@@ -135,7 +137,9 @@ rejected at argparse.
 ## Validation rules
 
 1. **Missing `--mode`** → rejected at argparse (required argument, SD-005).
-2. **Mode `tts` / `sfx`** → rejected with "not wired this sprint".
+2. **Mode `tts`** → routed by the SDK to `generation.generate_speech`; a direct
+   executor call with `tts` exits naming that executor. **Mode `sfx`** → rejected
+   with "not wired this sprint".
 3. **Missing `requires`** (only `prompt` for the music models above) → hard-fail
    BEFORE any HTTP call.
 4. **`--execution` must name a registered backend** such as `local` or `cloud`.

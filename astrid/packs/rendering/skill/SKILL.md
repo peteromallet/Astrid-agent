@@ -104,7 +104,7 @@ Image, video, and audio imports appear in the ordinary gallery; audio keeps its
 own type and native playback controls. An unchanged checkout has an empty diff.
 
 This bundle includes parent layers, shot placements, and internal clips.
-Narration is read through `timelines script`, which resolves the selected composition's pinned text bindings in occurrence order. Rendering is optional:
+Narration is registered per shot as the `voiceover_script` text binding (`timelines shots text set` / `list`). The per-occurrence pinned-narration reader that this skill once called `timelines script` is not on this checkout (no CLI verb, no SDK method), so verify placed narration through the binding list and the checkout's `payload.text_bindings`. Rendering is optional:
 a saved revision can be reviewed in Reigh. The recipe includes the authoritative
 field map, media/gallery distinction, and common recovery paths.
 
@@ -113,7 +113,7 @@ It groups media/track changes, timing and ripple operations, layout helpers,
 and occurrence moves. Helpers mutate only the detached JSON candidate; the
 same `check` → diff → `publish` boundary remains authoritative.
 
-For repeatable draft narration synchronization, use `video_editing.sync_draft_voiceover` as documented in the [video editing skill](../../video_editing/skill/SKILL.md). It reads the timeline's pinned script, synthesizes through `generation.generate_speech`, and publishes one validated revision. Empty scripts are skipped and existing final or unadopted audio stays protected. For a one-off manual import, see the [placeholder voiceover recipe](references/placeholder-voiceover.md). Neither workflow needs a video render.
+Draft narration is a manual route on this checkout. `video_editing.sync_draft_voiceover` is not shipped: it depends on a `timelines script` reader that does not exist. The working route is: `generation.generate_speech` (exact text in, WAV plus `speech_words` word timing out), then `client.media` / checkout placement of that WAV on an audio track, then `bind-script` for the shot's `voiceover_script`. The [placeholder voiceover recipe](references/placeholder-voiceover.md) gives the steps. No video render is needed.
 
 ## Agent operating contract
 
@@ -627,24 +627,12 @@ python3 -m astrid timelines shots text list --project <project> \
   --kind voiceover_script
 ```
 
-For timeline-wide draft VO updates, the owner is
-`video_editing.sync_draft_voiceover`; this timeline skill defines the structure
-and timing rules it preserves. The workflow reads script text pinned to the
-selected composition revision. Missing or invalid script bindings are reported,
-and an intentionally empty script is skipped. It only replaces VO that it owns
-as draft; existing final, recorded, or locked audio is protected. Adopting a
-legacy clip requires its exact clip ID in `adopt_clip_ids`.
-
-The sync can keep every shot window with `timing_policy="preserve"`; narration
-that exceeds a window then fails before publication. With
-`timing_policy="ripple"`, duration changes move later shots and parent visual
-layers. Ripple rejects overlapping shot placements, source offsets or non-unit
-speed, parent or internal audio that would need stretching, and parameterized
-layers without an explicit `app.draft_voiceover_timing="stretch"` declaration.
-Inspect its detached plan and diff before deciding whether to apply it. It does
-not render a preview or change the live timeline while preparing speech; a
-successful apply validates the candidate and saves one revision through the
-authoring bundle's head check.
+Timeline-wide draft VO regeneration is not automated on this checkout:
+`video_editing.sync_draft_voiceover` is not shipped. A manual edit that changes
+narration length must keep the shot window in mind. Narration longer than its
+shot window needs either a longer `duration_ms` (ripple later shots by hand, with
+the detached diff as evidence) or a shorter line. Do not stretch another audio
+clip or a parameterized layer to fit.
 
 Publication accepts registered text descriptors in `shot["payload"]["text_bindings"]`.
 The descriptor's `binding_id`, `head`, `media_id`, `content_hash`, and byte size pin
@@ -665,19 +653,14 @@ python3 scripts/timeline_document.py bind-script --file /tmp/edit.json --shot <r
   --text-file <script.txt> --expected-head 0 --idempotency-key narration-01
 python3 scripts/timeline_document.py check --file /tmp/edit.json
 python3 scripts/timeline_document.py publish --file /tmp/edit.json --idempotency-key pin-narration-01
-python3 -m astrid timelines script <timeline> --project <project> --json
-# Historical read: use the publication receipt's exact parent revision.
-python3 -m astrid timelines script <timeline> --project <project> --revision <parent-revision> --json
+python3 -m astrid timelines shots text list --project <project> --kind voiceover_script
 ```
 
-`client.timelines.script(project, timeline, revision_id=None, occurrence=None)`
-is the same public reader. It returns names, occurrence identities, declared
-track/timing, verified text and binding provenance, excludes unplaced shots,
-and marks missing narration separately from deliberately empty text. It never
-silently reads the latest binding for a pinned composition. Single-click and
-open in the timeline editor address the placed occurrence, including a shot
-whose internal timeline has no clips. Temporal overlap does not establish child
-ownership; occurrence placement controls the shot's lane and window.
+Reading back a placed occurrence's pinned narration (`timelines script` and
+`client.timelines.script`) is not implemented on this checkout. Verify with the
+binding list above, then re-check the published revision in Reigh. Placed
+occurrence identity and timing still come from `timelines show` and the
+checkout's `placements`.
 
 `list` and `show <binding-id>` include the verified text. Use head `0` to create
 a binding; read its current head before updating it. The binding belongs to

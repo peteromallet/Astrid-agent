@@ -5,8 +5,9 @@ v2: model → mode → backend taxonomy.  ``--mode`` is required.
 Backend dispatch goes through ``BackendAdapter`` (SD-004).
 Features are validated per-mode (SD-003).
 
-The executor is multi-mode: ``music`` is wired this sprint; ``tts`` and ``sfx``
-are reserved for future sprints.
+The executor is multi-mode: ``music`` is wired here. ``tts`` is served by
+``generation.generate_speech`` (the SDK redirects it before admission); ``sfx``
+is reserved for a future sprint.
 """
 
 from __future__ import annotations
@@ -112,13 +113,22 @@ def _parse_bool_str(value: Any) -> bool | None:
 
 
 _VALID_MODES = {"music"}
-_UNWIRED_MODES = {"tts", "sfx"}
+# tts is served by generation.generate_speech: the SDK routes mode=tts there
+# before this executor is admitted, so reaching it with tts means a direct call.
+_SPEECH_REDIRECT_MODES = {"tts"}
+_UNWIRED_MODES = {"sfx"}
 
 
 def _validate_mode(mode: str) -> str:
     """Validate --mode: accept music, reject tts/sfx with clear message."""
     if mode in _VALID_MODES:
         return mode
+    if mode in _SPEECH_REDIRECT_MODES:
+        raise SystemExit(
+            "Mode 'tts' is served by generation.generate_speech. "
+            "Invoke generation.generate_audio with mode='tts' through the SDK, "
+            "or call generation.generate_speech directly."
+        )
     if mode in _UNWIRED_MODES:
         raise SystemExit(
             f"Mode {mode!r} is not wired this sprint. "

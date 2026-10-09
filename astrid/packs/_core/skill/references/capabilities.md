@@ -31,6 +31,7 @@
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends. v2: model→mode→backend with music mode. |
 | `generation.generate_image` | Generate images from text prompts via local, cloud, or Codex backends. v2: model→mode→backend. |
 | `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. |
+| `generation.generate_speech` | Generate exact-text speech as a WAV artifact with Edge TTS, with provenance and word-level timing (`speech_words`) for word-accurate cuts. `generation.generate_audio` with `mode="tts"` routes here. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v/i2v/flf/v2v modes. |
 | `hivemind.contribute` | Submit and review immutable Hivemind resource revisions and evidence. |
 | `hivemind.get_item` | Fetch a single full row from the Hivemind corpus by kind and id. |

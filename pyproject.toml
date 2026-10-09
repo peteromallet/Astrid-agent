@@ -73,6 +73,9 @@ dev = [
 runpod = [
     "runpod-lifecycle>=0.3.1.dev0,<0.4",
 ]
+# Edge TTS for generation.generate_speech. Optional, not a core dependency:
+# requirements/runtime.lock must cover every direct core dependency.
+speech = ["edge-tts>=7.2,<8"]
 
 [tool.setuptools]
 # Only the package-data patterns below are release inputs.  In particular,

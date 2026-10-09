@@ -266,6 +266,23 @@
    "required_packages": []
   },
   {
+   "id": "generation.generate_speech",
+   "disposition": "optional",
+   "evidence_reason": "Edge TTS voiceover route: online Microsoft speech service, no API key. Ready when the edge_tts package and ffmpeg/ffprobe are installed and the host broker admits speech.platform.bing.com:443.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": [
+    "edge_tts"
+   ]
+  },
+  {
    "id": "generation.generate_audio",
    "disposition": "required",
    "evidence_reason": "Required generation facade; provider readiness is credential-gated.",

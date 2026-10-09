@@ -32,7 +32,7 @@
       "kind": "requires_input"
     }
   ],
-  "description": "Generate audio from text prompts using local (vibecomfy) or cloud (fal) backends. v2: model\u2192mode\u2192backend taxonomy with required --mode. Modes: music (tts/sfx reserved for future sprints).",
+  "description": "Generate audio from text prompts using local (vibecomfy) or cloud (fal) backends. v2: model\u2192mode\u2192backend taxonomy with required --mode. Modes: music; mode tts is routed by the SDK to generation.generate_speech (exact-text Edge TTS voiceover with word timing); sfx reserved for a future sprint.",
   "graph": {
     "consumes": [
       "prompt_or_prompts_file"

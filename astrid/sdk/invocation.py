@@ -2513,6 +2513,38 @@ def _wait_for_kernel_task(
         time.sleep(min(float(poll_seconds), remaining))
 
 
+_AUDIO_TTS_PASSTHROUGH_INPUTS = frozenset({"voice", "rate", "volume", "pitch", "provider"})
+_AUDIO_TTS_IGNORED_INPUTS = frozenset({"mode", "model", "execution"})
+
+
+def _speech_inputs_from_audio_request(inputs: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Map generation.generate_audio mode=tts onto generation.generate_speech.
+
+    ``text`` is the exact spoken words; ``prompt`` is accepted as an alias
+    because audio callers use it for the main text input.  ``model`` and
+    ``execution`` select a music backend and are ignored for speech.
+    """
+    request = dict(inputs or {})
+    unsupported = sorted(set(request) - _AUDIO_TTS_PASSTHROUGH_INPUTS - _AUDIO_TTS_IGNORED_INPUTS - {"text", "prompt"})
+    if unsupported:
+        raise CapabilityValidationError(
+            "generation.generate_audio mode=tts accepts text, voice, rate, volume, pitch and provider; "
+            f"unsupported input(s): {', '.join(unsupported)}"
+        )
+    text = request.get("text")
+    prompt = request.get("prompt")
+    if text is not None and prompt is not None and text != prompt:
+        raise CapabilityValidationError("mode=tts received conflicting text and prompt; pass only text")
+    spoken = text if text is not None else prompt
+    if not isinstance(spoken, str) or not spoken.strip():
+        raise CapabilityValidationError("mode=tts requires non-empty text (the exact words to speak)")
+    speech: dict[str, Any] = {"text": spoken}
+    for key in _AUDIO_TTS_PASSTHROUGH_INPUTS:
+        if key in request:
+            speech[key] = request[key]
+    return speech
+
+
 def invoke(
     capability_id: str,
     *,
@@ -2564,6 +2596,11 @@ def invoke(
     # bounded runtime profile for Codex (the cloud profile remains closed).
     if capability_id == "generation.generate_image" and (inputs or {}).get("execution") == "codex":
         capability_id = "generation.generate_image_codex"
+    # generation.generate_audio mode=tts is the speech route: it is served by
+    # the exact-text Edge TTS executor, not by the music backend.
+    if capability_id == "generation.generate_audio" and (inputs or {}).get("mode") == "tts":
+        capability_id = "generation.generate_speech"
+        inputs = _speech_inputs_from_audio_request(inputs)
     capability = sdk_module.get_capability(
         capability_id,
         kind=kind,
