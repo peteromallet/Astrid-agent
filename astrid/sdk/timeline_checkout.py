@@ -29,6 +29,7 @@ import copy
 import difflib
 import json
 import math
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ from astrid.core.timeline.cuts import (
 
 __all__ = [
     "Checkout", "Clip", "Cut", "Word", "Voice", "TimelineEditError", "EDITABLE_NOTE",
+    "draft_path", "drafts_root", "find_draft", "resolve_ids",
 ]
 
 # Fields of a checkout that are provenance, not content. They are written compactly
@@ -418,6 +420,42 @@ class Checkout:
         target.write_text(_serialize(self._annotated()), encoding="utf-8")
         self.path = target
         return target
+
+    # ---- working copy (draft) --------------------------------------------------
+    @classmethod
+    def draft(cls, project: str, timeline: str, name: str = "main", *, client: Any = None, fresh: bool = False) -> "Checkout":
+        """The timeline's working copy: the existing draft, or a new one checked out from the head.
+
+        Drafts live in Astrid's data root (never a file you name). ``show``, ``lint``, ``diff``,
+        ``visualize`` and ``render --draft`` read the same working copy; ``save()`` writes it back.
+        """
+        project_id, timeline_id, _head = resolve_ids(project, timeline, client=client)
+        path = draft_path(project_id, timeline_id, name)
+        if path.is_file() and not fresh:
+            tl = cls.load(path)
+        else:
+            tl = cls(fetch_bundle(project, timeline, client=client))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tl.save(path)
+        tl.draft_name = name
+        return tl
+
+    def discard(self) -> None:
+        """Delete this working copy (nothing published is touched)."""
+        if self.path and Path(self.path).is_file():
+            Path(self.path).unlink()
+
+    @property
+    def base_revision(self) -> str:
+        """The published revision this working copy started from."""
+        return str((self.bundle.get("base_parent") or {}).get("revision_id") or "")
+
+    def edits(self) -> Mapping[str, Any]:
+        """What this working copy changes against its base (``diff_bundles`` shape, timeline seconds)."""
+        from astrid.sdk.timeline_cuts import base_bundle, diff_bundles
+
+        document = self.document()
+        return diff_bundles(base_bundle(document), document)
 
     # ---- clocks -----------------------------------------------------------
     def quantize(self, seconds: float) -> float:
@@ -1322,6 +1360,45 @@ def _serialize(doc: Mapping[str, Any]) -> str:
         return json.dumps(value, ensure_ascii=False)
 
     return emit(dict(doc), 0) + "\n"
+
+
+# ------------------------------------------------------------------ working copies (drafts)
+
+def drafts_root() -> Path:
+    """Where working copies live: Astrid's data root (``BANODOCO_LOCAL_DATA_ROOT``) / drafts."""
+    base = os.environ.get("BANODOCO_LOCAL_DATA_ROOT")
+    return (Path(base) if base else Path.home() / ".astrid") / "drafts"
+
+
+def draft_path(project_id: str, timeline_id: str, name: str = "main") -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", name) or "main"
+    return drafts_root() / str(project_id) / str(timeline_id) / f"{safe}.json"
+
+
+def resolve_ids(project: str, timeline: str, *, client: Any = None) -> tuple[str, str, str]:
+    """(project_id, timeline_id, head) for a project slug/id and a timeline slug/id."""
+    from astrid.sdk import AstridClient
+
+    def read(c: Any) -> tuple[str, str, str]:
+        shown = c.timelines.open_composition(project, timeline)
+        if not shown.ok or not isinstance(shown.data, Mapping):
+            raise TimelineEditError(f"could not open timeline {timeline!r} in project {project!r}: {shown.error}")
+        native = shown.data.get("native_inspection") or {}
+        return str(native.get("project_id")), str(native.get("timeline_id")), str(shown.data["summary"]["head_revision_id"])
+
+    if client is not None:
+        return read(client)
+    with AstridClient.open_from_launcher(start_pack_host=False) as c:
+        return read(c)
+
+
+def find_draft(project: str, timeline: str, name: str = "main", *, client: Any = None) -> Path | None:
+    """The working copy for this timeline, if one exists."""
+    project_id, timeline_id, _head = resolve_ids(project, timeline, client=client)
+    path = draft_path(project_id, timeline_id, name)
+    return path if path.is_file() else None
+
+
 
 
 # ------------------------------------------------------------------ runtime I/O
