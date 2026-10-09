@@ -303,7 +303,7 @@ def test_opaque_frame_sequence_is_charged_with_the_guard() -> None:
     )
 
 
-def test_review_estimate_uses_the_review_output_size_for_frames() -> None:
+def test_review_output_is_review_scale_but_frames_are_captured_at_full_canvas() -> None:
     export = estimate_managed_render_storage(
         timeline=_timeline(), registry={"assets": {}}, object_sizes={}
     )
@@ -312,11 +312,12 @@ def test_review_estimate_uses_the_review_output_size_for_frames() -> None:
     )
     assert (review["width"], review["height"]) == (640, 360)
     assert review["review_render"] is True
+    assert (review["frame_capture_width"], review["frame_capture_height"]) == (1920, 1080)
     assert review["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
-        frames=300, width=640, height=360, image_format="png"
+        frames=300, width=1920, height=1080, image_format="png"
     )
-    assert review["frame_sequence_bytes"] < export["frame_sequence_bytes"]
-    assert review["estimated_scratch_bytes"] < export["estimated_scratch_bytes"]
+    assert review["frame_sequence_bytes"] == export["frame_sequence_bytes"]
+    assert review["estimated_output_bytes"] < export["estimated_output_bytes"]
 
 
 def test_explicit_profile_disables_the_review_scale() -> None:

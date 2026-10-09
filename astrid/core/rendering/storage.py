@@ -339,6 +339,9 @@ def estimate_managed_render_storage(
         effect_asset_bytes += size
 
     profile = _render_profile(timeline, registry, requested_profile)
+    # Remotion captures every frame at the full canvas and applies --scale only
+    # when encoding, so frame scratch is sized from the capture canvas.
+    capture_width, capture_height = profile.width, profile.height
     # A review render without an explicit profile is emitted at review scale.
     review_frames = bool(review) and requested_profile is None
     if review_frames:
@@ -354,8 +357,8 @@ def estimate_managed_render_storage(
     # Alpha renders already charge their raw frame workspace above.
     frame_sequence_bytes = 0 if alpha else remotion_frame_sequence_bytes(
         frames=frames,
-        width=profile.width,
-        height=profile.height,
+        width=capture_width,
+        height=capture_height,
         image_format=frame_image_format,
     )
 
@@ -561,6 +564,8 @@ def estimate_managed_render_storage(
         "alpha_frame_bytes_per_frame": alpha_frame_bytes_per_frame,
         "alpha_frame_working_bytes": alpha_frame_working_bytes,
         "review_render": review_frames,
+        "frame_capture_width": capture_width,
+        "frame_capture_height": capture_height,
         "frame_image_format": frame_image_format,
         "frame_sequence_bytes": frame_sequence_bytes,
         "parallel_encode_working_copies": _PARALLEL_ENCODE_WORKING_COPIES,
