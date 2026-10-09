@@ -43,6 +43,40 @@ def test_default_does_not_create_blank_realm_over_existing_external_catalog(
     old_catalog.parent.mkdir(parents=True)
     old_catalog.write_text('{"selected_realm_id":"existing"}', encoding="utf-8")
 
+    target = tmp_path / "Astrid" / ".astrid-data"
     with pytest.raises(ValueError, match="existing neutral runtime") as caught:
+        ensure_no_unmigrated_runtime(target)
+    message = str(caught.value)
+    assert "astrid-upgrade" in message
+    assert "MOVES the existing realm" in message
+    assert str(old_catalog.parent) in message
+    assert str(target) in message
+    assert "BANODOCO_LOCAL_DATA_ROOT" in message
+    assert "separate workspace" in message or "its own empty workspace" in message
+    assert "is not touched" in message
+
+
+def test_migration_hint_offers_the_non_destructive_path_in_order(monkeypatch, tmp_path):
+    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    old_catalog = tmp_path / "Library" / "Application Support" / "Banodoco" / "runtime" / "catalog.json"
+    old_catalog.parent.mkdir(parents=True)
+    old_catalog.write_text('{"selected_realm_id":"realm-abc"}', encoding="utf-8")
+
+    with pytest.raises(ValueError) as caught:
         ensure_no_unmigrated_runtime(tmp_path / "Astrid" / ".astrid-data")
-    assert "astrid-upgrade" in str(caught.value)
+    message = str(caught.value)
+    assert "realm-abc" in message
+    move = message.index("astrid-upgrade")
+    keep = message.index("BANODOCO_LOCAL_DATA_ROOT")
+    assert move < keep
+
+
+def test_explicit_data_root_env_bypasses_the_migration_hint(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "separate"))
+    old_catalog = tmp_path / "Library" / "Application Support" / "Banodoco" / "runtime" / "catalog.json"
+    old_catalog.parent.mkdir(parents=True)
+    old_catalog.write_text('{"selected_realm_id":"existing"}', encoding="utf-8")
+
+    ensure_no_unmigrated_runtime(tmp_path / "separate")

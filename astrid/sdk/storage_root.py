@@ -83,9 +83,16 @@ def ensure_no_unmigrated_runtime(data_root: Path) -> None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return
     if isinstance(value, Mapping) and value.get("selected_realm_id"):
+        realm = value["selected_realm_id"]
         raise ValueError(
-            "an existing neutral runtime realm is configured at "
-            f"{legacy.parent}; {UPGRADE_ACTION} to move it into {data_root}"
+            f"an existing neutral runtime realm ({realm}) is configured at {legacy.parent}, "
+            f"and this checkout's support root {data_root} has no workspace yet. Choose one: "
+            f"(1) move it: run `astrid-upgrade`. That MOVES the existing realm from {legacy.parent} "
+            f"into {data_root}, so the old location stops being used. "
+            "(2) keep it where it is and start a separate workspace: set BANODOCO_LOCAL_DATA_ROOT "
+            "to a new absolute folder (for example `export BANODOCO_LOCAL_DATA_ROOT=<new folder>`) "
+            f"before running Astrid. That folder gets its own empty workspace and {legacy.parent} "
+            "is not touched."
         )
 
 
