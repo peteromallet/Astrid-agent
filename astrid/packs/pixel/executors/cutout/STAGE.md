@@ -9,7 +9,7 @@ interior, and the dark 1 px outline are kept.
 
 ## Inputs
 
-- `image` (file, required): managed image.
+- `image` (file, required): a media handle (output row, `"run:<run_id>/<port>#n"` or `"sha256:<digest>"`).
 - `crop` (json, optional): `{x, y, width, height}` in source pixels. Applied first.
 - `mode` (default `chroma`):
   - `chroma`: remove pixels within `tolerance` of `key`.
@@ -38,7 +38,7 @@ result = sdk.invoke(
     kind="executor",
     project="almost-ready",
     inputs={
-        "image": {"digest": "sha256:<digest>", "filename": "<file.png>", "media_type": "image/png", "size_bytes": 199012},
+        "image": "run:<run_id>/generated_images#0",  # any media handle: output row, run:, sha256:
         "mode": "flat",
         "grid": "auto",
         "trim": True,

@@ -38,7 +38,7 @@ result = sdk.invoke(
     kind="executor",
     project="almost-ready",
     inputs={
-        "image": {"digest": "sha256:<digest>", "filename": "<file.png>", "media_type": "image/png", "size_bytes": 199012},
+        "image": "run:<run_id>/generated_images#0",  # any media handle: output row, run:, sha256:
         "crop": {"x": 60, "y": 190, "width": 460, "height": 210},
         "grid_width": 48,
         "grid_height": 48,
