@@ -94,6 +94,9 @@ _ASTRID_PROPAGATED_ENV = frozenset(
         # boundary; unlike a private key value, the path itself is not secret.
         "RUNPOD_SSH_IDENTITY_PATH",
         "RUNPOD_SSH_IDENTITY_PUBLIC_PATH",
+        # The host's per-attempt progress file. A renderer backend runs one
+        # process below the executor and reports frame progress through it.
+        "ASTRID_PROGRESS_PATH",
     }
 )
 

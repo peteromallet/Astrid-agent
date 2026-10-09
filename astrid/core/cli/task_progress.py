@@ -104,7 +104,10 @@ def _progress_view(task: Mapping[str, Any], state: str) -> dict[str, Any]:
     queue_reason = None if queue_position is not None else "runtime did not report queue position"
 
     completed = _number(
-        progress.get("completed_units", progress.get("completed", progress.get("done")))
+        progress.get(
+            "completed_units",
+            progress.get("completed", progress.get("done", progress.get("current"))),
+        )
     )
     total = _number(progress.get("total_units", progress.get("total")))
     explicit_percent = _number(progress.get("percent", progress.get("percentage")))
@@ -305,10 +308,29 @@ def render_observation(observation: Mapping[str, Any]) -> str:
     return line + (f"\n  unavailable: {'; '.join(unavailable)}" if unavailable else "")
 
 
+def _runtime_progress(client: Any, task_id: str) -> Mapping[str, Any] | None:
+    """Read the task's latest reported progress from the Runtime resource.
+
+    The Runtime task resource carries ``progress`` (the newest heartbeat
+    payload, e.g. ``rendered 2175/4977 frames · ETA 6m 3s``), but the frozen
+    generated ``Task`` model behind ``tasks.show`` drops it.
+    """
+    transport = getattr(getattr(client, "tasks", None), "_client", None)
+    reader = getattr(transport, "task_progress", None)
+    if not callable(reader):
+        return None
+    try:
+        progress = reader(task_id)
+    except Exception:
+        return None
+    return progress if isinstance(progress, Mapping) else None
+
+
 def _change_signature(task: Mapping[str, Any]) -> tuple[Any, ...]:
     """Fields whose durable changes deserve a progress line."""
     return (
         task.get("state") or task.get("status"),
+        repr(task.get("progress")),
         task.get("version"),
         task.get("attempt_id"),
         task.get("waiting_reason") or task.get("blocked_reason"),
@@ -369,6 +391,10 @@ def follow_task(
             )
 
         task = dict(result.data)
+        if not isinstance(task.get("progress"), Mapping):
+            reported = _runtime_progress(client, task_id)
+            if reported is not None:
+                task["progress"] = dict(reported)
         current = monotonic()
         signature = _change_signature(task)
         changed = signature != last_signature

@@ -16,7 +16,7 @@ import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
 from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
@@ -893,6 +893,23 @@ class WorkspaceClient:
 
     def get_task(self, task_id: str) -> Any:
         return self._call_generated("get_task", task_id)
+
+    def task_progress(self, task_id: str) -> Mapping[str, Any] | None:
+        """Read the Runtime's latest reported progress for one task (best effort).
+
+        The Runtime task resource carries ``progress`` (the newest
+        ``task.progress`` heartbeat payload), but the frozen generated
+        ``Task`` model drops it. Returns None when absent or unreadable.
+        """
+        try:
+            _, _, body = self._generated._request(
+                "GET", f"/v1/tasks/{quote(str(task_id), safe='')}"
+            )
+            value = self._generated._json(body)
+        except Exception:
+            return None
+        progress = value.get("progress") if isinstance(value, Mapping) else None
+        return dict(progress) if isinstance(progress, Mapping) else None
 
     def list_project_tasks(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_project_tasks", project_id, cursor=cursor, limit=limit)

@@ -82,6 +82,7 @@ from astrid.packs.rendering.backends._shared import (
     _timeline_alpha,
 )
 from astrid.packs.rendering.backends.remotion import lock as remotion_lock
+from astrid.packs.rendering.backends.remotion.progress import RemotionProgressRelay
 
 # Release wheels intentionally exclude authoring scripts.  A provisioned
 # server-owned Remotion bundle carries its generated registry outputs.
@@ -94,6 +95,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by wheel installs
 
 
 _RangeHTTPRequestHandler = _rendering_assets.RangeHTTPRequestHandler
+
+# Read by remotion/remotion.config.ts (see remotion/stream-frames.ts).
+REMOTION_STREAM_FRAMES_ENV = "ASTRID_REMOTION_STREAM_FRAMES"
 
 
 # Keep these helpers bound on this module because direct backend tests and
@@ -1244,6 +1248,11 @@ def _execute_remotion_locked(
             }
             if pcm_aac_mp4:
                 remotion_env_additions["ASTRID_REMOTION_PCM_AAC_OUTPUT"] = str(cli_video)
+            elif not frame_mode and not alpha:
+                # Pipe each frame into the encoder instead of keeping one image
+                # per frame in scratch until the final stitch, so scratch no
+                # longer grows with duration (remotion/stream-frames.ts).
+                remotion_env_additions[REMOTION_STREAM_FRAMES_ENV] = "1"
             schema_pythonpath = os.environ.get(TIMELINE_SCHEMA_PYTHONPATH_ENV)
             if schema_pythonpath:
                 # The renderer receives only the validated server-owned schema
@@ -1334,7 +1343,10 @@ def _execute_remotion_locked(
                         "--sample-rate=48000",
                     ]
             if render_scale is not None and render_scale != 1:
-                remotion_args.append(f"--scale={render_scale:.15g}")
+                # Shortest round-trip repr: 15 digits turns 1/3 into a scale whose
+                # 1080 x scale is 359.9999999999996, which the streaming
+                # pre-encoder rejects as a non-integer frame height.
+                remotion_args.append(f"--scale={float(render_scale)!r}")
             diagnostic_acceptance = any(clip.get('app', {}).get('liveScene', {}).get('__l1bTrace') is True for clip in merged_props['timeline'].get('clips', []))
             diagnostic_trace = diagnostic_acceptance or any('<!-- astrid-l1b-diagnostic -->' in str(clip.get('app', {}).get('liveScene', {}).get('html', '')) for clip in merged_props['timeline'].get('clips', []))
             diagnostic_root = project_dir.parent / '.otto' / 'l1b-fixtures'
@@ -1358,16 +1370,26 @@ def _execute_remotion_locked(
                 )
                 frame_session.retain_staged_public_root(staged_public_root)
             else:
-                completed = subprocess.run(
-                    remotion_args,
-                    cwd=str(project_dir),
-                    env=build_child_subprocess_env(explicit_env=remotion_env_additions),
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                )
+                # Remotion prints one progress line per update to a non-TTY
+                # stdout; relay frames done/total to the task while it runs.
+                stdout_log = remotion_temp_root / "remotion-stdout.log"
+                with (
+                    stdout_log.open("w", encoding="utf-8") as stdout_sink,
+                    RemotionProgressRelay(stdout_log),
+                ):
+                    completed = subprocess.run(
+                        remotion_args,
+                        cwd=str(project_dir),
+                        env=build_child_subprocess_env(explicit_env=remotion_env_additions),
+                        stdout=stdout_sink,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                        text=True,
+                    )
                 if diagnostic_trace:
-                    (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(completed.stdout)
+                    (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(
+                        stdout_log.read_text(encoding="utf-8", errors="replace")
+                    )
                     (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
                 if completed.returncode != 0:
                     stderr_tail = _stderr_tail(completed.stderr)

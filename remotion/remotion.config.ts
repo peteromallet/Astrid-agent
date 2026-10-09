@@ -1,5 +1,6 @@
 import {Config} from '@remotion/cli/config';
 import {pcmAacMp4Stitch} from './pcm-aac-stitch';
+import {installFrameStreaming, STREAM_FRAMES_ENV} from './stream-frames';
 // Pack element aliases (every in-tree pack with an elements root, plus
 // ASTRID_PACKS_PATH roots) and the @theme/@workspace aliases are defined once
 // in webpack-alias.mjs, next to the smoke bundle that uses the same aliases.
@@ -19,3 +20,8 @@ if (pcmAacOutput) {
   Config.overrideFfmpegCommand(pcmAacMp4Stitch(pcmAacOutput));
 }
 Config.overrideWebpackConfig(applyRemotionPrimitiveAliases);
+// Set by Astrid's opaque H.264 renders: pipe frames into the encoder instead of
+// keeping one image per frame in $TMPDIR until the end (see stream-frames.ts).
+if (process.env[STREAM_FRAMES_ENV] === '1') {
+  installFrameStreaming({rendererEntry: require.resolve('@remotion/renderer')});
+}

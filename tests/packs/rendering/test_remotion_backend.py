@@ -363,7 +363,7 @@ def test_remotion_review_uses_native_scale_flag(tmp_path: Path) -> None:
         )
 
     assert len(commands) == 1
-    assert "--scale=0.333333333333333" in commands[0]
+    assert "--scale=0.3333333333333333" in commands[0]
 
 
 def test_support_treats_timeline_output_hint_as_informational_without_profile(

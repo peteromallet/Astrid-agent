@@ -154,7 +154,8 @@ test('Astrid config registers the hook only for an explicitly scoped capture out
       else delete process.env.ASTRID_REMOTION_PCM_AAC_OUTPUT;
       const hooks = [];
       const Config = new Proxy({}, {get: (_, name) => (...args) => {if (name === 'overrideFfmpegCommand') hooks.push(args[0]);}});
-      loadTs(path.join(project, 'remotion.config.ts'), {'@remotion/cli/config': {Config}, './pcm-aac-stitch': {pcmAacMp4Stitch}});
+      const streamFrames = {STREAM_FRAMES_ENV: 'ASTRID_REMOTION_STREAM_FRAMES', installFrameStreaming: () => {}};
+      loadTs(path.join(project, 'remotion.config.ts'), {'@remotion/cli/config': {Config}, './pcm-aac-stitch': {pcmAacMp4Stitch}, './stream-frames': streamFrames});
       assert.equal(hooks.length, selected ? 1 : 0);
     }
   } finally {
