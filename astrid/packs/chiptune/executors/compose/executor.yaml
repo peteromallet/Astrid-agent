@@ -33,11 +33,11 @@ inputs:
   - name: sections
     type: json
     required: true
-    description: 'JSON array of {start_s, end_s, energy 0..1, mood: bright|tense|wistful|triumphant|silent}. Pass a JSON string.'
+    description: 'JSON array of {start_s, end_s, energy 0..1, mood: bright|tense|wistful|triumphant|silent, cadence_bars 0..8}. Edges are exact; each section starts its own bar grid. Pass a JSON string.'
   - name: hits
     type: json
     required: false
-    description: JSON array of accent times in seconds (stabs on the chord sounding at that moment).
+    description: JSON array of accent times in seconds (stabs on the chord sounding at that moment), or {t, kind} objects where kind is stab or thud.
   - name: duck
     type: json
     required: false
@@ -45,11 +45,11 @@ inputs:
   - name: vo_mask
     type: json
     required: false
-    description: JSON array of [start_s, end_s] speech spans. Music dips by duck_db across each span.
+    description: JSON array of [start_s, end_s] speech spans. The bed dips by duck_db (120 ms in, 300 ms out); a gap of 0.6 s or more brings it back to full.
   - name: duck_db
     type: number
     required: false
-    default: -9
+    default: -10
     description: Gain in dB applied under vo_mask spans and as the default for duck items.
   - name: master_db
     type: number

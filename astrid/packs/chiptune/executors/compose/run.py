@@ -29,10 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--key", default="A minor", help="Tonic and mode, e.g. 'A minor' or 'F# major'.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--sections", required=True, help="JSON array of {start_s, end_s, energy, mood}.")
-    parser.add_argument("--hits", default=None, help="Optional JSON array of accent times in seconds.")
+    parser.add_argument("--hits", default=None, help="Optional JSON array of accent times or {t, kind} objects (kind: stab or thud).")
     parser.add_argument("--duck", default=None, help="Optional JSON array of {start_s, end_s, gain_db}.")
     parser.add_argument("--vo-mask", default=None, help="Optional JSON array of [start_s, end_s] speech spans.")
-    parser.add_argument("--duck-db", type=float, default=-9.0)
+    parser.add_argument("--duck-db", type=float, default=-10.0)
     parser.add_argument("--master-db", type=float, default=-16.0)
     parser.add_argument("--style", default="nes")
     parser.add_argument("--out", type=Path, required=True, help="Output directory.")
@@ -76,7 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         duration_s = float(args.duration_s)
         sections = syn.parse_structured(args.sections, "sections")
-        hits = syn.parse_number_list(args.hits, "hits")
+        hits = syn.parse_hits(args.hits)
+        hit_events = syn.normalize_hits(hits, duration_s)
         buf, meta = syn.compose_music(
             duration_s=duration_s,
             bpm=float(args.bpm),
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             "downbeats": meta["downbeats"],
             "bars": meta["bars"],
             "sections": sections_out,
-            "hits": [round(float(h), 6) for h in hits],
+            "hits": [{"t": round(t, 6), "kind": kind} for t, kind in hit_events],
         }
         write_json_atomic(beats_path, beats_doc)
 

@@ -170,20 +170,71 @@ def test_compose_no_clipping_rms_target_and_no_dc(tmp_path: Path) -> None:
     assert {item["name"] for item in manifest["outputs"]} == {"music", "beats"}
 
 
-def test_compose_beat_grid_and_bar_snapping(tmp_path: Path) -> None:
+def test_compose_beat_grid_and_exact_section_edges(tmp_path: Path) -> None:
     out = _compose(tmp_path, "f")
     beats = json.loads((out / "beats.json").read_text())
     bar_s = 4 * 60 / 132
     assert beats["bpm"] == 132
-    assert len(beats["beats"]) == 44  # beats strictly before 20 s at 132 BPM
-    assert all(abs(d / bar_s - round(d / bar_s)) < 1e-4 for d in beats["downbeats"])
+    assert len(beats["beats"]) == 44  # two sections of 10 s, each with its own beat grid
+    # Each section starts its own bar grid: downbeats sit on the section start plus whole bars.
+    for origin in (0.0, 10.0):
+        local = [d - origin for d in beats["downbeats"] if origin <= d < origin + 10.0 - 1e-9]
+        assert all(abs(d / bar_s - round(d / bar_s)) < 1e-4 for d in local)
     sections = beats["sections"]
     assert sections[0]["start_s"] == 0.0 and sections[-1]["end_s"] == pytest.approx(20.0)
-    assert sections[0]["end_s"] == pytest.approx(sections[1]["start_s"])
-    assert sections[0]["requested_end_s"] == 10.0
+    assert sections[0]["end_s"] == sections[1]["start_s"] == 10.0
     for sec in sections:
         assert sec["peak_dbfs"] < -1.0
         assert sec["rms_dbfs"] > -60.0
+
+
+def test_compose_edges_are_exact_and_rest_is_one_bar(tmp_path: Path) -> None:
+    """A one-bar rest before a chapter edge, cut exactly at the requested time."""
+    bar_s = 4 * 60 / 132
+    rest_end = 12.0
+    rest_start = rest_end - bar_s
+    sections = [{"start_s": 0, "end_s": rest_start, "energy": 0.8, "mood": "tense"},
+                {"start_s": rest_start, "end_s": rest_end, "energy": 0.0, "mood": "silent"},
+                {"start_s": rest_end, "end_s": 20, "energy": 0.8, "mood": "triumphant"}]
+    out = _compose(tmp_path, "rest", duration_s=20.0, sections=sections)
+    data, _, _ = _read_wav(out / "music.wav")
+    gap = data[:, int((rest_start + 0.02) * SR): int((rest_end - 0.02) * SR)]
+    assert syn.measure_db(gap)[0] < -100.0
+    # The tense section stops at its edge: nothing rings across the cut.
+    tail = data[:, int((rest_start - 0.2) * SR): int(rest_start * SR) + 1]
+    assert _edge_jump(tail[0]) < 0.1
+    assert syn.measure_db(data[:, int((rest_end + 0.3) * SR): int((rest_end + 1.0) * SR)])[1] > -40.0
+    beats = json.loads((out / "beats.json").read_text())
+    assert [s["start_s"] for s in beats["sections"]] == pytest.approx([0.0, rest_start, rest_end], abs=1e-6)
+
+
+def test_compose_cadence_resolves_to_tonic(tmp_path: Path) -> None:
+    sections = [{"start_s": 0, "end_s": 12, "energy": 0.45, "mood": "wistful", "cadence_bars": 3}]
+    out = _compose(tmp_path, "cad", duration_s=12.0, sections=sections)
+    chords = json.loads((out / "beats.json").read_text())["sections"][0]["chords"]
+    assert chords[-3:] == ["E", "Am", "Am"]
+
+
+def test_compose_typed_hits_and_bed_return_on_long_gap(tmp_path: Path) -> None:
+    hits = json.dumps([4.0, {"t": 8.0, "kind": "thud"}])
+    out = _compose(tmp_path, "hits", duration_s=12.0, hits=hits,
+                   vo_mask=[[1.0, 3.0], [3.5, 5.0]])  # gap 0.5 s
+    beats = json.loads((out / "beats.json").read_text())
+    assert beats["hits"] == [{"t": 4.0, "kind": "stab"}, {"t": 8.0, "kind": "thud"}]
+    with pytest.raises(AstridError):
+        syn.normalize_hits([{"t": 4.0, "kind": "gong"}], 12.0)
+    with pytest.raises(AstridError):
+        syn.normalize_hits([13.0], 12.0)
+
+
+def test_duck_returns_to_full_in_gaps_of_point_six_seconds() -> None:
+    gain = syn._duck_gain(int(20 * SR), [(2.0, 4.0, -10.0), (4.6, 6.0, -10.0), (9.0, 10.0, -10.0)])
+    assert gain is not None
+    ducked = 10 ** (-10 / 20)
+    assert gain[int(3.0 * SR)] == pytest.approx(ducked, rel=1e-3)
+    # 0.6 s gap: the release (0.30 s) and the next attack (0.12 s) fit, so the bed reaches full between.
+    assert gain[int(4.3 * SR)] == pytest.approx(1.0, rel=1e-3)
+    assert gain[int(15.0 * SR)] == pytest.approx(1.0)
 
 
 def test_compose_tempo_matches_bpm(tmp_path: Path) -> None:

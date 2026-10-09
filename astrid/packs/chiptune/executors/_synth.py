@@ -338,30 +338,6 @@ def _degree_midi(degree: int, root_pc: int, scale: Sequence[int], low: int) -> i
     return _reg(pc, low) + 12 * (degree // 7)
 
 
-def _snap_sections(
-    sections: list[dict[str, Any]], bar_s: float, duration_s: float
-) -> list[dict[str, Any]]:
-    """Snap section edges to bar lines so every cut lands on a downbeat."""
-    total_bars = int(math.ceil(duration_s / bar_s - 1e-9))
-    out: list[dict[str, Any]] = []
-    for index, sec in enumerate(sections):
-        start_bar = int(round(sec["start_s"] / bar_s))
-        end_bar = int(round(sec["end_s"] / bar_s))
-        if sec["end_s"] >= duration_s - 1e-6:
-            end_bar = total_bars
-        start_bar = max(0, min(start_bar, total_bars))
-        end_bar = max(start_bar, min(end_bar, total_bars))
-        out.append({
-            **sec,
-            "index": index,
-            "start_bar": start_bar,
-            "end_bar": end_bar,
-            "snapped_start_s": round(start_bar * bar_s, 6),
-            "snapped_end_s": round(min(end_bar * bar_s, duration_s), 6),
-        })
-    return [sec for sec in out if sec["end_bar"] > sec["start_bar"]]
-
-
 def validate_sections(raw: Any, duration_s: float) -> list[dict[str, Any]]:
     if not isinstance(raw, list) or not raw:
         raise AstridError(
@@ -387,7 +363,11 @@ def validate_sections(raw: Any, duration_s: float) -> list[dict[str, Any]]:
             raise AstridError(f"sections[{index}] needs 0 <= start_s < end_s")
         if start_s >= duration_s:
             raise AstridError(f"sections[{index}] starts after duration_s={duration_s}")
-        cleaned.append({"start_s": start_s, "end_s": min(end_s, duration_s), "energy": energy, "mood": mood})
+        cadence_bars = int(item.get("cadence_bars", 0) or 0)
+        if not 0 <= cadence_bars <= 8:
+            raise AstridError(f"sections[{index}].cadence_bars must be between 0 and 8")
+        cleaned.append({"start_s": start_s, "end_s": min(end_s, duration_s), "energy": energy, "mood": mood,
+                        "cadence_bars": cadence_bars})
     cleaned.sort(key=lambda sec: sec["start_s"])
     for before, after in zip(cleaned, cleaned[1:]):
         if after["start_s"] < before["end_s"] - 1e-9:
@@ -396,10 +376,13 @@ def validate_sections(raw: Any, duration_s: float) -> list[dict[str, Any]]:
 
 
 def _duck_gain(n: int, items: list[tuple[float, float, float]]) -> np.ndarray | None:
-    """Linear per-sample gain for (start_s, end_s, gain_db) ducks, 60 ms in, 300 ms out."""
+    """Linear per-sample gain for (start_s, end_s, gain_db) ducks: 120 ms in, 300 ms out.
+
+    A gap of 0.6 s or more brings the bed back to full level (0.12 + 0.30 < 0.6).
+    """
     if not items:
         return None
-    attack_s, release_s = 0.06, 0.30
+    attack_s, release_s = 0.12, 0.30
     db = np.zeros(n)
     for start_s, end_s, gain_db in items:
         lo = max(0, int((start_s - attack_s) * SAMPLE_RATE))
@@ -422,6 +405,20 @@ def _remove_dc(channel: np.ndarray, window: int) -> np.ndarray:
     hi = np.clip(idx + half + 1, 0, n)
     mean = (csum[hi] - csum[lo]) / (hi - lo)
     return channel - mean
+
+
+def _remove_dc_active(channel: np.ndarray, active: np.ndarray, window: int) -> np.ndarray:
+    """Centred running-mean removal over active samples only, so an exact rest stays exactly silent."""
+    n = channel.shape[0]
+    csum = np.concatenate([[0.0], np.cumsum(channel * active)])
+    count_csum = np.concatenate([[0.0], np.cumsum(active)])
+    idx = np.arange(n)
+    half = window // 2
+    lo = np.clip(idx - half, 0, n)
+    hi = np.clip(idx + half + 1, 0, n)
+    count = count_csum[hi] - count_csum[lo]
+    mean = np.where(count > 0.0, (csum[hi] - csum[lo]) / np.maximum(count, 1.0), 0.0)
+    return channel - mean * active
 
 
 def _sliding_min(x: np.ndarray, width: int) -> np.ndarray:
@@ -459,6 +456,90 @@ def _limit(buf: np.ndarray, ceiling: float, half_s: float = 0.010) -> np.ndarray
     return buf * gain.astype(np.float32)[None, :]
 
 
+def _plan_sections(sections: list[dict[str, Any]], bar_s: float, duration_s: float) -> list[dict[str, Any]]:
+    """Keep each section's exact edges. Every section gets its own bar grid from its start,
+    so a chapter opens on a downbeat and a rest can be exactly one bar long."""
+    out: list[dict[str, Any]] = []
+    for index, sec in enumerate(sections):
+        start = float(sec["start_s"])
+        end = min(float(sec["end_s"]), duration_s)
+        span = end - start
+        out.append({
+            **sec,
+            "index": index,
+            "start_s": start,
+            "end_s": end,
+            "n_bars": int(math.ceil(span / bar_s - 1e-9)),
+            "n_full_bars": int(math.floor(span / bar_s + 1e-9)),
+        })
+    return out
+
+
+def _cadence_chords(mode: str, count: int) -> list[tuple[int, str]]:
+    """The last `count` bars resolve to the tonic: dominant, then tonic."""
+    if count <= 0:
+        return []
+    seq = [(5, "m"), (7, "M"), (0, "m"), (0, "m")] if mode == "minor" else [(2, "m"), (7, "M"), (0, "M"), (0, "M")]
+    return seq[-count:]
+
+
+def _section_chords(mode: str, mood: str, n_bars: int, cadence_bars: int) -> list[tuple[int, str]]:
+    prog = PROGRESSIONS[(mode, mood)]
+    cadence = _cadence_chords(mode, min(cadence_bars, n_bars))
+    chords: list[tuple[int, str]] = []
+    for i in range(n_bars):
+        cad_index = i - (n_bars - len(cadence))
+        chords.append(cadence[cad_index] if cadence and cad_index >= 0 else prog[i % 4])
+    return chords
+
+
+def _emit(buf: np.ndarray, sig: np.ndarray, t_s: float, end_s: float, gain: float = 1.0, pan: float = 0.0) -> None:
+    """Place a voice inside its section. Anything past the section edge is cut with a 10 ms release."""
+    if t_s >= end_s:
+        return
+    avail = int(round((end_s - t_s) * SAMPLE_RATE))
+    if avail < sig.shape[0]:
+        sig = sig[: max(avail, 0)].copy()
+        if sig.shape[0]:
+            ramp = min(sig.shape[0], int(round(EDGE_S * SAMPLE_RATE)))
+            sig[-ramp:] *= np.linspace(1.0, 0.0, ramp)
+    _place(buf, sig, t_s, gain, pan)
+
+
+HIT_KINDS = ("stab", "thud")
+
+
+def parse_hits(value: Any) -> list[Any]:
+    """Hits as JSON or literal text: numbers (stabs) or {"t": seconds, "kind": "stab"|"thud"}."""
+    parsed = parse_structured(value, "hits")
+    if parsed is None:
+        return []
+    if isinstance(parsed, (int, float, dict)):
+        parsed = [parsed]
+    if isinstance(parsed, tuple):
+        parsed = list(parsed)
+    if not isinstance(parsed, list):
+        raise AstridError("hits must be a list of times or {t, kind} objects", recovery_command='pass hits as [4.5, {"t": 7.4, "kind": "thud"}]')
+    return parsed
+
+
+def normalize_hits(raw: Sequence[Any], duration_s: float) -> list[tuple[float, str]]:
+    out: list[tuple[float, str]] = []
+    for index, item in enumerate(raw):
+        if isinstance(item, dict):
+            if "t" not in item:
+                raise AstridError(f"hits[{index}] needs a t in seconds")
+            t_s, kind = float(item["t"]), str(item.get("kind", "stab"))
+        else:
+            t_s, kind = float(item), "stab"
+        if kind not in HIT_KINDS:
+            raise AstridError(f"hits[{index}].kind {kind!r} is not one of {list(HIT_KINDS)}")
+        if not 0.0 <= t_s < duration_s:
+            raise AstridError(f"hits[{index}] at {t_s}s falls outside the cue (0..{duration_s}s)")
+        out.append((t_s, kind))
+    return sorted(out)
+
+
 def compose_music(
     *,
     duration_s: float,
@@ -466,10 +547,10 @@ def compose_music(
     key: str,
     seed: int,
     sections: list[dict[str, Any]],
-    hits: Sequence[float] = (),
+    hits: Sequence[Any] = (),
     duck: Sequence[tuple[float, float, float]] = (),
     vo_mask: Sequence[tuple[float, float]] = (),
-    duck_db: float = -9.0,
+    duck_db: float = -10.0,
     master_db: float = -16.0,
     style: str = "nes",
 ) -> tuple[np.ndarray, dict[str, Any]]:
@@ -487,30 +568,32 @@ def compose_music(
     bar_s = 4.0 * beat_s
     eighth_s = beat_s / 2.0
     sixteenth_s = beat_s / 4.0
+    hit_list = normalize_hits(hits, duration_s)
 
     rng = np.random.default_rng(int(seed))
     bank = _noise_bank(rng)
     phrases = _motifs(rng)
-    snapped = _snap_sections(validate_sections(sections, duration_s), bar_s, duration_s)
+    planned = _plan_sections(validate_sections(sections, duration_s), bar_s, duration_s)
     buf = np.zeros((2, n), dtype=np.float32)
     lead_pan, arp_pan = -0.35, 0.35
     chord_for_time: list[tuple[float, float, tuple[int, str]]] = []
 
-    for sec in snapped:
+    for sec in planned:
         mood, energy = sec["mood"], sec["energy"]
         if mood == "silent" or energy <= 0.0:
             continue
+        origin, end_s, n_bars = sec["start_s"], sec["end_s"], sec["n_bars"]
         voicing = MOOD_VOICING[mood]
-        prog = PROGRESSIONS[(mode, mood)]
+        chords = _section_chords(mode, mood, n_bars, sec["cadence_bars"])
         gain = 0.35 + 0.65 * energy
         lead_oct = 12 if energy >= 0.7 else 0
         arp_octave = energy >= 0.75
         arp_step = eighth_s if energy < 0.45 else sixteenth_s
-        last_bar = sec["end_bar"] - 1
-        for bar in range(sec["start_bar"], sec["end_bar"]):
-            i = bar - sec["start_bar"]
-            bar_t = bar * bar_s
-            chord = prog[i % 4]
+        boundary_after = end_s < duration_s - 1e-6
+        fill_bar = sec["n_full_bars"] - 1
+        for i in range(n_bars):
+            bar_t = origin + i * bar_s
+            chord = chords[i]
             chord_pcs = _chord_pcs(root_pc, chord)
             chord_for_time.append((bar_t, bar_t + bar_s, chord))
             phrase = phrases[(i // 4) % 4]
@@ -528,7 +611,7 @@ def compose_music(
                     dur = dur8 * eighth_s * voicing["gap"]
                     sig = _oscillate("pulse", voicing["lead_duty"], np.full(int(dur * SAMPLE_RATE), hz(midi)))
                     sig = sig * _ramped(sig.shape[0])
-                    _place(buf, sig, bar_t + k * eighth_s, gain * 0.30 * (0.9 if energy >= 0.7 else 1.0), lead_pan)
+                    _emit(buf, sig, bar_t + k * eighth_s, end_s, gain * 0.30 * (0.9 if energy >= 0.7 else 1.0), lead_pan)
 
             # Arpeggio: chord tones at tempo-locked steps.
             if energy >= 0.25:
@@ -542,7 +625,7 @@ def compose_music(
                     dur = arp_step * 0.8
                     sig = _oscillate("pulse", voicing["arp_duty"], np.full(int(dur * SAMPLE_RATE), hz(midi)))
                     sig = sig * _ramped(sig.shape[0])
-                    _place(buf, sig, bar_t + step * arp_step, gain * 0.16, arp_pan)
+                    _emit(buf, sig, bar_t + step * arp_step, end_s, gain * 0.16, arp_pan)
 
             # Bass: triangle roots, density by energy.
             bass_root = _reg(chord_pcs[0], 40)
@@ -557,7 +640,7 @@ def compose_music(
                 dur = beats_long * beat_s * 0.92
                 sig = _oscillate("triangle", 0.5, np.full(int(dur * SAMPLE_RATE), hz(midi)))
                 sig = sig * _ramped(sig.shape[0])
-                _place(buf, sig, bar_t + at_beat * beat_s, gain * 0.45)
+                _emit(buf, sig, bar_t + at_beat * beat_s, end_s, gain * 0.45)
 
             # Drums: kick, snare, hats; density by energy.
             if energy >= 0.2:
@@ -567,51 +650,60 @@ def compose_music(
                 if energy >= 0.85:
                     kick_slots = [0, 4, 8, 12]
                 for slot in kick_slots:
-                    _place(buf, _kick_sig(), bar_t + slot * sixteenth_s, gain * 0.55)
+                    _emit(buf, _kick_sig(), bar_t + slot * sixteenth_s, end_s, gain * 0.55)
             if energy >= 0.35:
                 for slot in (4, 12):
-                    _place(buf, _snare_sig(bank, rng), bar_t + slot * sixteenth_s, gain * 0.28)
+                    _emit(buf, _snare_sig(bank, rng), bar_t + slot * sixteenth_s, end_s, gain * 0.28)
             if energy >= 0.45:
                 hat_slots = list(range(16)) if energy >= 0.8 else [2, 6, 10, 14]
                 for slot in hat_slots:
-                    _place(buf, _hat_sig(bank, rng), bar_t + slot * sixteenth_s, gain * (0.14 if energy < 0.8 else 0.09))
-            if bar == last_bar and energy >= 0.2 and sec["end_s"] < duration_s - 1e-6:
+                    _emit(buf, _hat_sig(bank, rng), bar_t + slot * sixteenth_s, end_s, gain * (0.14 if energy < 0.8 else 0.09))
+            # Fill: the last complete bar before a boundary rolls into the next section.
+            if i == fill_bar and energy >= 0.2 and boundary_after:
                 for slot_index, slot in enumerate(range(8, 16)):
                     ramp = 0.35 + 0.65 * slot_index / 7.0
-                    _place(buf, _snare_sig(bank, rng, level=ramp), bar_t + slot * sixteenth_s, gain * 0.30)
-                _place(buf, _kick_sig(), bar_t + 12 * sixteenth_s, gain * 0.5)
+                    _emit(buf, _snare_sig(bank, rng, level=ramp), bar_t + slot * sixteenth_s, end_s, gain * 0.30)
+                _emit(buf, _kick_sig(), bar_t + 12 * sixteenth_s, end_s, gain * 0.5)
             if i == 0 and sec["index"] > 0 and energy >= 0.5:
-                _place(buf, _crash_sig(bank, rng), bar_t, gain * 0.5)
+                _emit(buf, _crash_sig(bank, rng), bar_t, end_s, gain * 0.5)
 
-    # Stabs on exact times, voiced on the chord sounding at that moment.
-    for hit_s in sorted(float(h) for h in hits):
-        if not 0.0 <= hit_s < duration_s:
+    # Ducks (explicit gain and voice-over masks). Accents are mixed after the duck,
+    # so a hit on speech still lands.
+    duck_items = [(float(s), float(e), float(g)) for s, e, g in duck]
+    duck_items += [(float(s), float(e), float(duck_db)) for s, e in vo_mask]
+    gain_curve = _duck_gain(n, duck_items)
+    if gain_curve is not None:
+        buf *= gain_curve.astype(np.float32)[None, :]
+
+    # Accents on exact times. Stabs are voiced on the chord sounding then; thuds are low and dry.
+    for hit_s, kind in hit_list:
+        if kind == "thud":
+            _place(buf, render_sfx("thud", variant=1, duration_s=0.42), hit_s, 0.6)
             continue
         chord = next((c for start, end, c in chord_for_time if start <= hit_s < end), (0, "M"))
         base, third, fifth = _chord_pcs(root_pc, chord)
         stab_len = int(0.22 * SAMPLE_RATE)
         stab = np.zeros(stab_len)
         for pc in (base, third, fifth):
-            midi = _reg(pc, 60)
-            stab += _oscillate("pulse", 0.5, np.full(stab_len, hz(midi)))
+            stab += _oscillate("pulse", 0.5, np.full(stab_len, hz(_reg(pc, 60))))
         stab += 0.8 * _oscillate("triangle", 0.5, np.full(stab_len, hz(_reg(base, 40))))
         stab *= _decay(stab_len, 0.08) * 0.5
         _place(buf, stab, hit_s, 0.4)
 
-    # Tempo-locked grid, for editors.
-    beats = [round(k * beat_s, 6) for k in range(int(math.floor(duration_s / beat_s)) + 1) if k * beat_s < duration_s - 1e-9]
-    downbeats = [round(k * bar_s, 6) for k in range(int(math.floor(duration_s / bar_s)) + 1) if k * bar_s < duration_s - 1e-9]
-    phrase_starts = [round(k * 4 * bar_s, 6) for k in range(int(math.floor(duration_s / (4 * bar_s))) + 1) if k * 4 * bar_s < duration_s - 1e-9]
+    # Tempo grid per section, from each section's own start. Editors cut on these.
+    beats: set[float] = set()
+    downbeats: set[float] = set()
+    phrase_starts: set[float] = set()
+    for sec in planned:
+        origin, span = sec["start_s"], sec["end_s"] - sec["start_s"]
+        beats.update(round(origin + k * beat_s, 6) for k in range(int(math.ceil(span / beat_s - 1e-9))))
+        downbeats.update(round(origin + k * bar_s, 6) for k in range(sec["n_bars"]))
+        phrase_starts.update(round(origin + k * 4 * bar_s, 6) for k in range(int(math.ceil(sec["n_bars"] / 4))))
 
-    # Ducks (explicit gain and voice-over masks), then DC removal and loudness.
-    duck_items = [(float(s), float(e), float(g)) for s, e, g in duck]
-    duck_items += [(float(s), float(e), float(duck_db)) for s, e in vo_mask]
-    gain_curve = _duck_gain(n, duck_items)
-    if gain_curve is not None:
-        buf *= gain_curve.astype(np.float32)[None, :]
     if n > 0:
+        active = ((np.abs(buf[0]) + np.abs(buf[1])) > 0.0).astype(np.float64)
         for ch in range(2):
-            buf[ch] = _remove_dc(buf[ch].astype(np.float64), SAMPLE_RATE).astype(np.float32)
+            buf[ch] = _remove_dc_active(buf[ch].astype(np.float64), active, SAMPLE_RATE).astype(np.float32)
     fade = max(1, int(round(EDGE_S * SAMPLE_RATE)))
     if n > 2 * fade:
         buf[:, :fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)[None, :]
@@ -629,29 +721,30 @@ def compose_music(
             buf = _limit(buf, ceiling)
 
     section_meta = []
-    for sec in snapped:
-        chords = [
-            _chord_name(root_pc, PROGRESSIONS[(mode, sec["mood"])][(bar - sec["start_bar"]) % 4])
-            for bar in range(sec["start_bar"], sec["end_bar"])
-        ] if sec["mood"] != "silent" else []
+    for sec in planned:
+        chords = (
+            [_chord_name(root_pc, c) for c in _section_chords(mode, sec["mood"], sec["n_bars"], sec["cadence_bars"])]
+            if sec["mood"] != "silent" else []
+        )
         section_meta.append({
             "index": sec["index"],
             "mood": sec["mood"],
             "energy": round(sec["energy"], 4),
-            "requested_start_s": round(sec["start_s"], 6),
-            "requested_end_s": round(sec["end_s"], 6),
-            "start_s": sec["snapped_start_s"],
-            "end_s": sec["snapped_end_s"],
-            "bars": sec["end_bar"] - sec["start_bar"],
-            "chords": chords[:4],
+            "start_s": round(sec["start_s"], 6),
+            "end_s": round(sec["end_s"], 6),
+            "grid_origin_s": round(sec["start_s"], 6),
+            "bars": sec["n_bars"],
+            "cadence_bars": min(sec["cadence_bars"], sec["n_bars"]),
+            "chords": chords,
         })
     meta = {
         "bpm": bpm,
         "bar_s": round(bar_s, 6),
-        "beats": beats,
-        "downbeats": downbeats,
-        "bars": phrase_starts,
+        "beats": sorted(beats),
+        "downbeats": sorted(downbeats),
+        "bars": sorted(phrase_starts),
         "sections": section_meta,
+        "hits": [{"t": round(t, 6), "kind": kind} for t, kind in hit_list],
         "key": f"{_NOTE_NAMES[root_pc]} {mode}",
     }
     return buf, meta
@@ -815,6 +908,6 @@ def to_int16_mono(samples: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "SAMPLE_RATE", "EDGE_S", "PEAK_CEILING_DB", "MOODS", "SFX_KINDS", "SFX_DEFAULT_SECONDS",
-    "compose_music", "measure_db", "parse_key", "parse_number_list", "parse_structured",
+    "compose_music", "measure_db", "normalize_hits", "parse_hits", "parse_key", "parse_number_list", "parse_structured",
     "render_sfx", "to_int16_mono", "to_int16_stereo", "validate_sections",
 ]
