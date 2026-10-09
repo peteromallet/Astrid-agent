@@ -186,3 +186,75 @@ match the render.
 - `am-sprite` `slideIn` moves from the rest position by `slideDistance`, not from
   the canvas edge.
 - Only Gelasio 400 and 700 are vendored, so `am-callout` weight 650 renders at 700.
+
+## am-presenter: animated pixel presenter overlay
+
+Draws the speaker's mouth, blinks, a head bob and an optional zoom punch on top
+of a presenter plate, plus a placeholder slate. Put its track earlier in the
+clip array than the plate, so it draws on top (rule 5). It is not a plate and
+does not replace one: the plate is an `am-snap-plate` clip on the track below.
+
+- `zoom` 1|2|3 and `focus` {x, y}: the same view as `am-snap-plate`. The focus
+  lands on the frame centre after clamping, so both layers stay registered.
+- `mouth` {x, y, w}: top-left and width of the closed mouth line on the native
+  plate. `skin` erases it, `lip` is the dark opening, `inner` the interior line.
+- `words` [[start_s, end_s], ...]: seconds from clip start (Edge TTS word
+  boundaries). Inside a word the mouth cycles closed, half, open on a 3-frame
+  cycle, offset per word by the seed. A gap of 0.12 s or less holds the last
+  state. A longer gap closes the mouth. Pixel states only, no interpolation.
+- `eyes` [{x, y, w}] (top row of each eye), `blinkEvery` seconds (30% seeded
+  jitter), `noBlink` [[s, e]] spans where a blink may not start, `seed`.
+- `bob` 0|1: a 1 px downward nudge on the first frame of every 3rd word.
+- `punchAt` [frames]: zoom +1 (capped at 4) for 6 frames.
+- `label` (default `PLACEHOLDER · POM ON CAMERA · TAKE 03`), `timecodeStart`
+  (HH:MM:SS:FF, default 01:02:14:00; REC timecode runs from it), `chip`
+  {text, swapTo?, swapAt?}: the text swaps on frame `swapAt`, with a 2-frame
+  orange flash.
+
+**Punch and bob must match on the plate.** Both are view changes, so the plate
+must apply them too. Give the presenter plate the same `zoom`, `focus`,
+`punchAt`, `words`, `seed` and `bob`, with `pan` 0. Then both use
+`presenterView()` in `am-presenter/presenter-core.ts`. As of this commit,
+`am-snap-plate` does not read `punchAt` or `bob`, so punches and bobs drift
+until it does. Its focus and zoom geometry already matches `presenterView()`.
+
+Logical px are 320x180 at 6 px per px at zoom 1. Overlay pixels are absolutely
+positioned divs, not canvas, so edges stay crisp. The label, REC row and chip use
+Departure Mono, and the crop marks are inset 48 px.
+
+## am-discord: pixel-styled Discord channel reconstruction
+
+A reconstruction, not a screenshot. It has no Discord logo or wordmark. The
+window is 1280x720, centred, with a 2 px outline and a hard 12 px shadow.
+Message text is Inter (Noto Sans is not shipped), names are Inter bold, and
+timestamps and system lines are Departure Mono. Palette values come from the
+lore notes (04-lore.md B3) and are [S] or [U] there. Check them against a real
+client before sign-off.
+
+- `channel`, `server`, `channels`: header and sidebar text, verbatim.
+- `messages` [{author, tag, avatarColor, time, lines, appearAt, typeOn}]:
+  `lines` are paragraphs, shown verbatim. `@everyone` renders as a mention pill.
+  `{u:word}` marks a word that the `underline` list can target. `time` is shown
+  as given. With `typeOn`, characters reveal on `typeStepFrames` (default 2)
+  steps.
+- `dateDividers` [{label, at, jump?}]: after the first divider, the date flips
+  split-flap through the days between dates over `jumpFrames` (default 12, the
+  day step is ease-out), then lands. `jump: false` lands at once.
+- `reactions` [{emoji, countFrom, countTo, startAt, stepFrames, onMessage?,
+  mine?}]: a pill with a stamp entrance (0.6, 1.1, 1.0), counting in
+  `stepFrames`. Attaches to `onMessage`, or else to the latest message posted
+  by `startAt`. Emoji is Unicode, or a path or URL for a pixel icon.
+- `joins` [{name, at, time?}]: system lines with a green pixel arrow, stacking
+  upward. Accelerate them by shrinking the gaps between `at` values.
+- `underline` [{word, at, color}]: draws in over 6 frames, one step per frame.
+- `strike` [{word, at}]: rust bar on frame `at`, orange bar one frame later,
+  offset by 3 px. `word` matches the first occurrence, or use `onMessage`.
+- `badge` (default `RECONSTRUCTION · REACTIONS & JOINS ILLUSTRATIVE`, empty to
+  hide) sits under the window's bottom-right. `frame` {width, height, radius,
+  outline, shadow} sets the window.
+
+Messages, joins and dividers interleave by `at`, newest at the bottom, and the
+top fades out. Keep the joins and reactions labelled illustrative (the badge).
+
+The element validates against the 500-char description limit and keywords with
+no spaces, so write multi-word keywords with hyphens.
