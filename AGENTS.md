@@ -15,3 +15,15 @@ For the human setup path, see
 > the CLI census and the core skill — it is a redirect, not a full skill
 > document. Pack-level AGENTS.md files within each pack follow the
 > structured-section format; this root file does not.
+
+## Backup and snapshot policy
+
+- Persist a full workspace or realm backup only when the user explicitly asks
+  for one. Do not create extra full copies, archives, or rollback snapshots
+  before routine edits, launches, migrations, or repairs.
+- Use the runtime-owned `astrid backup create --out <external-path>` flow for
+  a requested realm backup. Do not copy the live realm or `.otto` run history
+  as a substitute.
+- The multi-root rollback snapshot utility is also persistent backup creation.
+  It requires both `--retain-backup` and an explicit `--out-dir` outside the
+  repository and projects root.

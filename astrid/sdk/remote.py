@@ -988,6 +988,19 @@ class RemoteTimelines(_RemoteFamily):
             receipt=inspected.receipt,
             idempotency_key=inspected.idempotency_key,
         )
+    def script(self, project, ref, *, revision_id=None, occurrence=None, kind="voiceover_script"):
+        """Read selected placed narration from one immutable composition closure.
+
+        Text is resolved from each pinned shot revision, never the mutable
+        binding head. Missing bindings and deliberately empty text differ.
+        """
+        from astrid.sdk.timeline_script import read_composition_script
+
+        return read_composition_script(
+            self, self._client, project, ref, revision_id=revision_id,
+            occurrence=occurrence, kind=kind,
+        )
+
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
         return self._retired_document_route("save", idempotency_key=idempotency_key)
     def replace_clip(
@@ -1231,9 +1244,50 @@ class RemoteTimelines(_RemoteFamily):
             )
     def history(self, project, ref, *, cursor=None, limit=50):
         return self._typed("list_timeline_history", ref, cursor=cursor, limit=limit)
-    def diff(self, project, ref, *, from_version=None, to_version=None):
-        if from_version is None or to_version is None: return DomainResult.failure(ErrorObject("validation_error", "timeline diff requires from_version and to_version", {}))
-        return self._typed("diff_timeline", ref, from_version=from_version, to_version=to_version)
+    def diff(self, project, ref, *, from_version=None, to_version=None,
+             from_revision=None, to_revision=None):
+        """Compare two exact canonical closures, or explicit legacy versions."""
+        revisions = from_revision is not None or to_revision is not None
+        versions = from_version is not None or to_version is not None
+        if revisions == versions or (revisions and not all(
+            isinstance(value, str) and value.strip() for value in (from_revision, to_revision)
+        )) or (versions and (from_version is None or to_version is None)):
+            return DomainResult.failure(ErrorObject(
+                "validation_error", "supply exactly one complete from_revision/to_revision or from_version/to_version pair", {}
+            ))
+        resolved = self._resolve_timeline(project, ref)
+        if not resolved.ok:
+            return resolved
+        timeline_id = resolved.data["timeline_id"]
+        if versions:
+            return self._typed("diff_timeline", timeline_id, from_version=from_version, to_version=to_version)
+        from astrid.core.timeline.authoring_bundle import AuthoringBundleError
+        from astrid.core.timeline.authoring_revision_diff import diff_authoring_revisions
+        from .authoring_revision_diff import read_authoring_revision
+
+        shown = self._typed("get_project", resolved.data["project_ref"])
+        if not shown.ok:
+            return shown
+        if not isinstance(shown.data, Mapping):
+            return DomainResult.failure(ErrorObject("protocol_error", "project response is not an object", {}))
+        project_id = shown.data.get("project_id") or shown.data.get("id")
+        if not isinstance(project_id, str) or not project_id:
+            return DomainResult.failure(ErrorObject("protocol_error", "project response has no canonical identity", {}))
+        if resolved.data.get("project_id", project_id) != project_id:
+            return DomainResult.failure(ErrorObject("integrity_error", "timeline listing belongs to a different project", {}))
+        before = read_authoring_revision(self, project_id, timeline_id, from_revision)
+        if not before.ok:
+            return before
+        after = read_authoring_revision(self, project_id, timeline_id, to_revision)
+        if not after.ok:
+            return after
+        try:
+            return DomainResult.success(diff_authoring_revisions(before.data, after.data))
+        except AuthoringBundleError as exc:
+            return DomainResult.failure(ErrorObject("integrity_error", str(exc), {
+                "project_id": project_id, "timeline_id": timeline_id,
+                "from_revision": from_revision, "to_revision": to_revision,
+            }))
     def _version(self, project, ref, expected_version):
         if expected_version is not None: return int(expected_version)
         current = self._resolve_timeline(project, ref)

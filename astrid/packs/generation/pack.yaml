@@ -9,16 +9,16 @@ support: core
 visibility: visible
 permissions:
   - id: subprocess
-    reason: Runs vibecomfy and ComfyUI locally for image and video generation.
+    reason: Runs vibecomfy/ComfyUI plus Edge TTS, ffmpeg, and ffprobe generation tools.
   - id: network
-    reason: Calls fal.ai cloud API and downloads models for cloud backends.
+    reason: Calls cloud generation APIs, the Edge TTS speech service, and model downloads.
   - id: project_files
     reason: Reads reference images and prompt files; writes generated outputs.
   - id: environment
     reason: Reads FAL_KEY for cloud generation backends.
 description: Text-to-image and text-to-video generation across local (vibecomfy/ComfyUI) and cloud (fal, OpenAI) backends, with t2i/i2i/edit and t2v/i2v/flf modes.
 keywords: [image, video, generate, flux, fal, vibecomfy, t2i, t2v]
-capabilities: [generate_image, generate_image_cloud_i2i, generate_image_edit, generate_image_upscale, generate_image_openai, generate_video, generate_audio]
+capabilities: [generate_image, generate_image_cloud_i2i, generate_image_edit, generate_image_upscale, generate_image_openai, generate_video, generate_audio, generate_speech]
 extensions:
   generation:
     features:
@@ -26,9 +26,9 @@ extensions:
         label: Mask reference
         description: Typed CAS-backed image mask used by bounded image inpainting.
 agent:
-  purpose: "Use to synthesize new image or video frames from text prompts (optionally with reference images), choosing a model and a local or cloud execution backend."
-  do_not_use_for: "Editing/arranging existing footage (use video_editing for end-to-end assembly or editorial for analysis stages), Foley/audio generation (use the foley or fal packs), or lossless clip trimming (use the media pack)."
-  normal_entrypoints: [generation.generate_image, generation.generate_image_upscale, generation.generate_video, generation.generate_image_openai, generation.generate_audio]
+  purpose: "Use to synthesize images, video, music, or spoken text from prompts (optionally with reference images), choosing a model and a local or cloud execution backend."
+  do_not_use_for: "Editing/arranging existing footage (use video_editing for end-to-end assembly or editorial for analysis stages), Spatial Foley effects (use the foley or fal packs), or lossless clip trimming (use the media pack)."
+  normal_entrypoints: [generation.generate_image, generation.generate_image_upscale, generation.generate_video, generation.generate_image_openai, generation.generate_audio, generation.generate_speech]
 content:
   executors: executors
 documentation:

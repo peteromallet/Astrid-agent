@@ -18,7 +18,6 @@ from pathlib import Path
 from astrid.core.foundation.paths import REPO_ROOT as DEFAULT_REPO_ROOT
 from astrid.core.foundation.project_paths import resolve_projects_root
 
-DEFAULT_SNAPSHOT_ROOT = Path("~/astrid-snapshots")
 _SKIP_DIR_NAMES = {
     ".git",
     ".mypy_cache",
@@ -62,15 +61,16 @@ def _resolve_existing_dir(path: Path, label: str) -> Path:
     return resolved
 
 
-def _ensure_outside_repo(out_dir: Path, repo_root: Path) -> Path:
+def _ensure_outside_roots(out_dir: Path, *, repo_root: Path, projects_root: Path) -> Path:
     resolved = out_dir.expanduser().resolve()
-    repo = repo_root.resolve()
-    try:
-        inside_repo = resolved == repo or resolved.is_relative_to(repo)
-    except AttributeError:
-        inside_repo = resolved == repo or repo in resolved.parents
-    if inside_repo:
-        raise SystemExit(f"ERROR: snapshot out-dir must live outside the repo: {resolved}")
+    for label, root in (("repo", repo_root), ("projects root", projects_root)):
+        boundary = root.resolve()
+        try:
+            inside_root = resolved == boundary or resolved.is_relative_to(boundary)
+        except AttributeError:
+            inside_root = resolved == boundary or boundary in resolved.parents
+        if inside_root:
+            raise SystemExit(f"ERROR: snapshot out-dir must live outside the {label}: {resolved}")
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
 
@@ -132,10 +132,19 @@ def _add_path(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
     tar.add(path, arcname=arcname, recursive=False)
 
 
-def create_snapshot(*, projects_root: Path, repo_root: Path, out_dir: Path, timestamp: str | None = None) -> Path:
+def create_snapshot(
+    *,
+    projects_root: Path,
+    repo_root: Path,
+    out_dir: Path,
+    timestamp: str | None = None,
+    retain_backup: bool = False,
+) -> Path:
+    if not retain_backup:
+        raise SystemExit("ERROR: persistent snapshots require explicit retain_backup=True")
     projects_root = _resolve_existing_dir(projects_root, "projects root")
     repo_root = _resolve_existing_dir(repo_root, "repo root")
-    out_dir = _ensure_outside_repo(out_dir, repo_root)
+    out_dir = _ensure_outside_roots(out_dir, repo_root=repo_root, projects_root=projects_root)
     stamp = timestamp or _timestamp()
     tarball = out_dir / f"astrid-state-{stamp}.tar.gz"
     if tarball.exists():
@@ -185,8 +194,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_SNAPSHOT_ROOT,
-        help=f"External snapshot directory (default: {DEFAULT_SNAPSHOT_ROOT}).",
+        required=True,
+        help="Explicit external directory for the persistent snapshot.",
+    )
+    parser.add_argument(
+        "--retain-backup",
+        action="store_true",
+        required=True,
+        help="Confirm that this user-requested snapshot should persist.",
     )
     parser.add_argument(
         "--timestamp",
@@ -203,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         repo_root=args.repo_root,
         out_dir=args.out_dir,
         timestamp=args.timestamp,
+        retain_backup=args.retain_backup,
     )
     print(tarball)
     return 0

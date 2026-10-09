@@ -24,6 +24,8 @@ the `tasks` / `runs` families:
 ```python
 import astrid.sdk as sdk
 
+client = sdk.AstridClient.open_from_launcher(start_pack_host=True)
+
 result = sdk.invoke(
     "generation.generate_image",
     kind="executor",
@@ -34,7 +36,7 @@ result = sdk.invoke(
         "prompt": "a serene mountain lake at dawn",
     },
     project="demo",                # every executor run belongs to exactly one project
-    wait=True,
+    client=client, wait=True,
 )
 print(result.ok, result.outputs.get("artifacts", []))
 ```
@@ -54,6 +56,18 @@ declared media files to its content-addressed store, and records the task and
 generation associations. Do not invoke `run.py` with a cwd-relative output
 directory or maintain a second workspace cache. A custom filesystem path is
 an explicit export after the runtime result has settled.
+
+## Managed Codex edits
+
+For Codex-backed image editing use the public `generation.generate_image` SDK
+entrypoint with explicit `client`, `model="qwen-image-edit"`, `mode="edit"`,
+and `execution="codex"`. Follow the
+[complete managed reference recipe](../../../skill/references/managed-codex-images.md).
+It defines every variable and covers importing local source files before
+admission. Pass managed descriptors with `digest`, `object_id`, a safe
+`filename`, and `media_type`; do not pass caller-local paths to the worker.
+`image_ref`, optional `style_ref`, and optional `brand_ref` must refer to
+distinct images; omit unused or duplicate roles.
 
 ## Canonical image modes
 

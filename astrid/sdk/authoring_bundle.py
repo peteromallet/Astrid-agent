@@ -14,13 +14,15 @@ from astrid.core.timeline.authoring_bundle import (
     inspect_authoring_candidate,
     open_authoring_bundle,
     preview_authoring_candidate,
-    publish_authoring_candidate,
     promote_approved_authoring_candidate,
+    publish_authoring_candidate,
     validate_authoring_candidate,
 )
+from astrid.core.timeline.authoring_diff_format import format_authoring_revision_diff
 
-from .authoring_render_preview import render_authoring_candidate_preview
+from .authoring_media import import_authoring_media, plan_authoring_media
 from .authoring_remote import AuthoringRemoteError, TargetBoundAuthoringBundle
+from .authoring_render_preview import render_authoring_candidate_preview
 
 __all__ = [
     "authoring_media_inventory",
@@ -29,8 +31,11 @@ __all__ = [
     "compile_authoring_candidate",
     "diff_authoring_candidate",
     "format_authoring_inspection",
+    "format_authoring_revision_diff",
     "inspect_authoring_candidate",
     "open_authoring_bundle",
+    "plan_authoring_media",
+    "import_authoring_media",
     "preview_authoring_candidate",
     "render_authoring_candidate_preview",
     "publish_authoring_candidate",

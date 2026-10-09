@@ -27,6 +27,16 @@ requests: pack builder handles the latter, including deciding what to reuse.
 
 On a new machine, complete the [setup checklist](../../../../docs/setup/SKILL.md) before beginning project work.
 
+## Backup policy
+
+Persist a full workspace or realm backup only when the user explicitly asks
+for one. Do not make extra full copies or rollback archives before routine
+edits, launches, migrations, or repairs. For a requested realm backup, use the
+runtime-owned `astrid backup create --out <external-path>` command. The
+multi-root snapshot utility also persists a full projects-root copy and may be
+used only with explicit `--retain-backup` and `--out-dir` arguments outside
+both the repository and projects root.
+
 ## Start here
 
 **Establish the current project when opening or switching project work.**

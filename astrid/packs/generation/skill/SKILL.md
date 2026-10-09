@@ -4,7 +4,7 @@ description: >
   Generate images and videos from text prompts using the elegant
   `astrid.generate` facade.  Image, audio, and video generation route through
   the same runtime-owned executor code path. Covers generate_image, generate_video, and
-  generate_audio, and generate_image_openai (executor-only).
+  generate_audio, generate_speech, and generate_image_openai (executor-only).
 ---
 
 # Generation
@@ -17,12 +17,18 @@ and automation use.
 
 Use the runtime-backed SDK generation facade. Successful managed calls return
 runtime artifact references (digest, media type, size, and name); the runtime
-owns durable storage and task/run state.
+owns durable storage and task/run state. Pass an explicit connected `client`
+to every managed `sdk.invoke` call. For image edits, follow the complete
+[managed Codex image recipe](references/managed-codex-images.md): it includes
+reference import, safe filename descriptors, distinct reference roles, output
+inspection, and provenance-preserving timeline handoff.
 
 ### Image
 
 ```python
 import astrid.sdk as sdk
+
+client = sdk.AstridClient.open_from_launcher(start_pack_host=True)
 
 # Simplest: text-to-image in the selected runtime project
 img = sdk.invoke(
@@ -35,34 +41,17 @@ img = sdk.invoke(
         "execution": "cloud",
         "prompt": "a serene mountain lake at dawn",
     },
-    wait=True,
+    client=client, wait=True,
 )
 img.outputs["artifacts"]  # runtime-published image artifact references
 img.ok                    # True on success
 ```
 
-Mode (`t2i` / `i2i`) and execution (`cloud` / `local`) are inferred when
-possible (SD-002).  Pass them explicitly to override:
-
-```python
-# Image-to-image (image_ref triggers i2i inference); input files must be
-# runtime-owned references or an admitted materialization.
-img = astrid.generate.image(
-    model="flux-dev",
-    image_ref="./sketch.png",
-    prompt="turn this into a watercolor painting",
-    strength=0.7,
-)
-
-# Explicit mode + execution
-img = astrid.generate.image(
-    model="flux-dev",
-    mode="t2i",
-    execution="cloud",
-    prompt="cyberpunk city",
-    seed=42,
-)
-```
+For SDK calls, pass `mode` and `execution` explicitly. For image edits,
+reference images must be managed Runtime descriptors, not local path strings.
+Use the [complete Codex edit example](references/managed-codex-images.md) with
+`model="qwen-image-edit", mode="edit", execution="codex"`. The examples below
+reuse the connected `client` opened above; close it when finished.
 
 `execution` is the sole facade backend parameter.  The retired `backend`
 spelling is rejected before invocation admission; an unavailable pair (for
@@ -86,7 +75,7 @@ clip = sdk.invoke(
         "execution": "cloud",
         "prompt": "a wave crashing on rocks",
     },
-    wait=True,
+    client=client, wait=True,
 )
 clip.outputs["artifacts"]  # runtime-published video artifact references
 ```
@@ -106,9 +95,33 @@ sound = sdk.invoke(
         "prompt": "a two-second gentle water splash",
         "duration": 2.0,
     },
-    wait=True,
+    client=client, wait=True,
 )
 sound.ok
+```
+
+### Speech
+
+`generation.generate_speech` creates one WAV file from exact text using Edge
+TTS. Invoke it through the SDK so the WAV and provenance manifest are stored as
+runtime-managed artifacts (pass your connected `AstridClient` as `client`):
+
+```python
+speech = sdk.invoke(
+    "generation.generate_speech",
+    kind="executor",
+    project="demo",
+    inputs={
+        "text": "The train will arrive in five minutes.",
+        "provider": "edge-tts",
+        "voice": "en-US-ChristopherNeural",
+        "rate": "+0%",
+        "volume": "+0%",
+        "pitch": "+0Hz",
+    },
+    client=client, wait=True,
+)
+speech.outputs["artifacts"]  # managed WAV and speech_manifest provenance references
 ```
 
 All three typed facades run the same read-only preflight before dry-run or
@@ -199,6 +212,8 @@ and project relation in the runtime database. Staging paths are temporary.
 ```python
 import astrid.sdk as sdk
 
+client = sdk.AstridClient.open_from_launcher(start_pack_host=True)
+
 result = sdk.invoke(
     "generation.generate_image",
     kind="executor",
@@ -209,7 +224,7 @@ result = sdk.invoke(
         "execution": "cloud",
         "prompt": "test",
     },
-    wait=True,
+    client=client, wait=True,
 )
 result.outputs["artifacts"]  # digest, media type, size, and name
 ```
@@ -246,6 +261,8 @@ another working directory:
 # my_experiment.py
 import astrid.sdk as sdk
 
+client = sdk.AstridClient.open_from_launcher(start_pack_host=True)
+
 result = sdk.invoke(
     "generation.generate_image",
     kind="executor",
@@ -256,7 +273,7 @@ result = sdk.invoke(
         "execution": "cloud",
         "prompt": "a glass teapot on basalt",
     },
-    wait=True,
+    client=client, wait=True,
 )
 print(result.outputs["artifacts"])
 ```
@@ -292,6 +309,7 @@ The pack's three executors remain available for direct use through the SDK
 | Executor | What it does |
 |---|---|
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends; the current mode is `music`. |
+| `generation.generate_speech` | Synthesize exact text as WAV with configurable Edge TTS voice settings. |
 | `generation.generate_image` | Generate images from text prompts via local (vibecomfy), cloud (fal), or Codex backends. v2: model→mode→backend taxonomy with a required `mode` input. Supports t2i, i2i, and edit modes. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v, i2v, and flf (first-last-frame) modes. |
 | `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. Requires `OPENAI_API_KEY`. |
@@ -316,28 +334,30 @@ the host supplies its private staging `out` value.
 ```python
 import astrid.sdk as sdk
 
+client = sdk.AstridClient.open_from_launcher(start_pack_host=True)
+
 # Image from text (cloud, fast)
 result = sdk.invoke("generation.generate_image", inputs={
     "model": "flux-schnell", "mode": "t2i", "execution": "cloud",
     "prompt": "a serene mountain lake at dawn",
-}, project="demo", wait=True)
+}, kind="executor", project="demo", client=client, wait=True)
 
 # Image from text (local, open model)
 result = sdk.invoke("generation.generate_image", inputs={
     "model": "z-image", "mode": "t2i", "execution": "local",
     "prompt": "a serene mountain lake at dawn",
-}, project="demo", wait=True)
+}, kind="executor", project="demo", client=client, wait=True)
 
 # Video from text (cloud)
 result = sdk.invoke("generation.generate_video", inputs={
     "model": "wan-2.2", "mode": "t2v", "execution": "cloud",
     "prompt": "a wave crashing on rocks",
-}, project="demo", wait=True)
+}, kind="executor", project="demo", client=client, wait=True)
 
 # OpenAI image generation from a prompt file
 result = sdk.invoke("generation.generate_image_openai", inputs={
     "prompts_file": "./prompts.jsonl",
-}, project="demo", wait=True)
+}, kind="executor", project="demo", client=client, wait=True)
 ```
 
 ## When to use

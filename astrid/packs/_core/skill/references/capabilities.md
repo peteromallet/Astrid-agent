@@ -29,16 +29,25 @@
 | `foley.foley_review` | Build a static review.html pairing each tile clip with its generated Foley audio for sense-checking. |
 | `foley.tile_video` | Crop a video into an MxN grid of overlapping spatial tiles plus first-frame PNGs. |
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends. v2: model→mode→backend with music mode. |
-| `generation.generate_image` | Generate images from text prompts via local, cloud, or Codex backends. v2: model→mode→backend. |
+| `generation.generate_image` | Bounded registry-backed cloud text-to-image generation. |
+| `generation.generate_image_cloud_i2i` | One bounded z-image cloud i2i task with CAS source custody and enforced storage limits. |
+| `generation.generate_image_codex` | Generate or edit up to four images using Codex ChatGPT authentication with ordered source, style and brand references. |
+| `generation.generate_image_edit` | One bounded typed cloud edit task with source/mask CAS custody. |
 | `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. |
+| `generation.generate_image_upscale` | One bounded SeedVR2 image upscale task. |
+| `generation.generate_speech` | Generate WAV speech from exact text with configurable Edge TTS voice settings. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v/i2v/flf/v2v modes. |
-| `hivemind.contribute` | Submit and review immutable Hivemind resource revisions and evidence. |
+| `h3_av.compile` | Compile a prepared request into the repaired H3 workflow bindings and managed assets. |
+| `h3_av.compose` | Settle an H3 candidate with explicit changed and protected permissions. |
+| `h3_av.prepare` | Normalize an H3 audiovisual request into masks and asset evidence. |
+| `h3_av.verify` | Verify H3 artifact custody and protected-source evidence. |
+| `hivemind.contribute` | Submit a resource or distillation to the Hivemind corpus via the contribute edge function. |
 | `hivemind.get_item` | Fetch a single full row from the Hivemind corpus by kind and id. |
 | `hivemind.ingest_article` | Fetch a web article, extract readable text, and submit as a resource. |
 | `hivemind.ingest_workflow` | Parse a ComfyUI workflow JSON and submit as a resource with model metadata. |
 | `hivemind.ingest_youtube` | Extract YouTube captions via yt-dlp and submit as a transcript resource. |
 | `hivemind.refresh_media` | Refresh expiring Discord CDN attachment URLs for a message. |
-| `hivemind.search` | Search Discord messages and accepted current resource heads with per-token matching and client-side ranking. |
+| `hivemind.search` | Search the Hivemind corpus (messages, resources, distillations) with per-token matching and client-side ranking. |
 | `iteration.assemble` | Adapt runtime-materialized iteration data into result-only timeline and render artifacts. |
 | `iteration.experiment_import` | Import an unmanaged run root into an experiment without rewriting history or guessing ambiguous associations. |
 | `iteration.experiment_prepare` | Normalize an experiment's provider manifests into a provider-independent review model with diagnostics. |
@@ -52,7 +61,7 @@
 | `rendering.render` | Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected backend. |
 | `rendering.sprite_sheet` | Generate, slice, and preview GPT Image sprite sheets for batch image work. |
 | `rendering.timeline_storyboard` | Build a static visual storyboard of image inputs associated with timeline shots. |
-| `timelines visualize` | Inspect declared timeline inputs by default, or inspect an explicitly selected composed render. |
+| `rendering.timeline_visualize` | Private backend for composed timeline visualization. |
 | `runpod.exec` | Execute a script on an existing RunPod pod and download artifacts. |
 | `runpod.provision` | Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
 | `runpod.pull` | Pull artifacts from an existing RunPod pod into local storage. |
@@ -70,11 +79,13 @@
 | `understanding.understand` | Dispatch to the audio, visual, or video understanding executor based on --mode. |
 | `understanding.video_understand` | Inspect synchronized audio+video windows with a video-understanding model. |
 | `understanding.visual_understand` | Inspect images or sampled video frames with a vision LLM — free-text or JSON-schema-constrained. |
+| `vibecomfy.character_animation` | Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
 | `vibecomfy.edit` | Create an immutable canonical successor through a typed edit or explicit capture. |
 | `vibecomfy.import` | Import a ComfyUI workflow into VibeComfy's canonical editable bundle. |
 | `vibecomfy.inspect` | Render a ComfyUI workflow as readable Python-like VibeComfy IR. |
 | `vibecomfy.run` | Run a VibeComfy / ComfyUI workflow and settle its artifact inventory. |
-| `vibecomfy.validate` | Validate a VibeComfy workflow without running generation. |
+| `vibecomfy.validate` | Validate workflow structure offline; runtime checks belong to vibecomfy.run. |
+| `vibecomfy.video_enhance` | Bounded VibeComfy video upscale with source-FPS/audio preservation. |
 | `video_editing.cut` | Build a result-only hype timeline, assets, and metadata JSON triple from arrangement. |
 | `wan2gp.generate_video` | One-shot native Wan2GP video generation with private spool. |
 | `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
@@ -86,6 +97,7 @@
 | id | short_description |
 | --- | --- |
 | `foley.foley_map` | Spatial Foley pipeline: tile a video, prompt a VLM, and score Foley per tile. |
+| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
 | `iteration.experiment_review_session` | Interactive rubric review session over a prepared experiment, reusing editorial.human_review with safe mounted media. |
 | `stream_content.distill` | Distill a long event stream into segments, extracted blocks, candidates, and a review page. |
 | `training.dataset_build` | Build a generic reviewed video training dataset from configured sources. |
@@ -95,6 +107,7 @@
 | `video_editing.hype` | Run the canonical runtime-hosted hype editing pipeline end-to-end (transcribe → cut → render → validate). |
 | `video_editing.iteration_video` | Discover runtime project runs, assemble render inputs, render, and finalize iteration video outputs. |
 | `video_editing.logo_ideas` | Generate a grid of distinct logo concepts via Kimi K2 prompts + GPT Image 2 (or z-image) renders. |
+| `video_editing.sync_draft_voiceover` | Regenerate changed draft narration and publish one validated canonical timeline revision. |
 | `video_editing.thumbnail_maker` | Plan source evidence and thumbnail generation candidates for a video/query pair. |
 | `video_editing.vary_grid` | Iterative grid editor: take an existing grid image and emit a new grid of variations via fal. |
 

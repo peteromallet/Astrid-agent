@@ -1628,3 +1628,43 @@ def test_stamped_top_layer_via_real_service_is_mov_prores_with_alpha(
             # conversion can shift the exact RGB values by a few levels.
             assert corner[3] == 255, corner
             assert max(corner[:3]) <= 24, corner
+
+
+def test_end_spanning_cards_resolve_managed_registry_without_changing_authored_params():
+    clip = {"params": {"cardAssets": {"card4": "old-man"}}}
+    registry = {"assets": {"old-man": {"media_id": "sha256:example", "file": "http://127.0.0.1:3456/media.png"}}}
+    assert remotion._resolve_end_spanning_card_assets(clip, registry) == {"card4": "http://127.0.0.1:3456/media.png"}
+    assert clip == {"params": {"cardAssets": {"card4": "old-man"}}}
+    assert remotion._resolve_end_spanning_card_assets({"params": {}}, registry) == {}
+
+
+@pytest.mark.parametrize("overrides", [{"card4": "missing"}, {"card6": "old-man"}, {"card4": ""}, []])
+def test_end_spanning_cards_reject_unresolvable_overrides(overrides):
+    with pytest.raises(ValueError, match="end-spanning-layer"):
+        remotion._resolve_end_spanning_card_assets({"params": {"cardAssets": overrides}}, {"assets": {}})
+
+
+def test_end_spanning_card_staging_overrides_only_the_requested_clip(tmp_path: Path):
+    from types import SimpleNamespace
+
+    (tmp_path / 'default.png').write_bytes(b'pack-default')
+    effect = SimpleNamespace(
+        assets=[SimpleNamespace(name='card4', path='default.png')],
+        root=tmp_path, metadata={'pack_id': 'local'}, source='pack:local',
+    )
+    timeline = {'clips': [
+        {'id': 'new', 'clipType': 'end-spanning-layer', 'params': {'cardAssets': {'card4': 'old-man'}}},
+        {'id': 'legacy', 'clipType': 'end-spanning-layer'},
+    ]}
+    with (
+        mock.patch.object(remotion, 'load_default_registry', return_value=object()),
+        mock.patch.object(remotion, '_effect_registry_for_assets', return_value=({'end-spanning-layer': effect}, {})),
+        mock.patch.object(remotion, '_resolve_timeline_element_references', return_value={}),
+    ):
+        remotion._stage_effect_assets_for_timeline(
+            timeline, project_dir=tmp_path / 'render', theme_path=None, render_hash='cards',
+            asset_registry={'assets': {'old-man': {'file': 'http://127.0.0.1/media.png'}}},
+        )
+    assert timeline['clips'][0]['params']['__astridAssets']['card4'] == 'http://127.0.0.1/media.png'
+    assert timeline['clips'][1]['params']['__astridAssets']['card4'] == 'astrid-effects/cards/end-spanning-layer/default.png'
+    assert (tmp_path / 'default.png').read_bytes() == b'pack-default'
