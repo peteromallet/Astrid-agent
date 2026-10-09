@@ -194,9 +194,15 @@ def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool) ->
     if until:
         timing.append(f"until {until}")
     elif length is not None:
-        timing.append(f"for {length:g}s")
+        timing.append(f"for {_length_text(length, tl.fps)}")
     track = clip.track if not clip.is_audio else (clip.track or "sfx")
     return [gutter, track, name, _short(clip.element), what, " ".join(bits), " ".join(timing)]
+
+
+def _length_text(seconds: float, fps: float) -> str:
+    """``1.9s`` for tenths of a second, ``88f`` for whole frames, else seconds to the millisecond."""
+    text = mo.offset_text(seconds, fps).lstrip("+")
+    return text or "0s"
 
 
 def _align(rows: list[list[str]]) -> list[str]:
@@ -219,7 +225,11 @@ def parse_sheet(text: str) -> dict[str, Any]:
     sheet: dict[str, Any] = {"lines": {}, "cuts": []}
     section = None
     cut = None
+    fps = 30.0
     for number, raw in enumerate(text.splitlines(), 1):
+        if raw.startswith("film "):
+            m = re.search(r"([\d.]+) fps", raw)
+            fps = float(m.group(1)) if m else fps
         line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue
@@ -252,7 +262,7 @@ def parse_sheet(text: str) -> dict[str, Any]:
             cut["why"] = body[4:].strip()
             continue
         try:
-            cut["layers"].append(_parse_layer(body, number))
+            cut["layers"].append(_parse_layer(body, number, fps))
         except SheetError as exc:
             raise SheetError(_with_text(str(exc), number, body)) from None
         cut["layers"][-1]["text_line"] = body
@@ -331,7 +341,7 @@ def _tokens(body: str) -> list[str]:
     return out
 
 
-def _parse_layer(body: str, number: int) -> dict[str, Any]:
+def _parse_layer(body: str, number: int, fps: float = 30.0) -> dict[str, Any]:
     tokens = _tokens(body)
     if tokens and re.fullmatch(r"\d+(\.\d+)?", tokens[0]):
         tokens = tokens[1:]  # the time gutter
@@ -349,7 +359,7 @@ def _parse_layer(body: str, number: int) -> dict[str, Any]:
         if not value:
             raise SheetError(f"line {number}: {current} needs a value (e.g. {current} \"Astrid\")")
         if current == "for":
-            layer["for"] = _read_seconds(value, number)
+            layer["for"] = _read_seconds(value, number, fps)
         else:
             layer[current] = _canon(value, number)
 
@@ -388,11 +398,11 @@ def _read_value(value: str, number: int) -> Any:
         return value
 
 
-def _read_seconds(value: str, number: int) -> float:
+def _read_seconds(value: str, number: int, fps: float = 30.0) -> float:
     m = re.fullmatch(r"([\d.]+)\s*(s|f)?", value.strip())
     if not m:
         raise SheetError(f"line {number}: for takes a length like 1.9s or 12f; got {value!r}")
-    return float(m.group(1)) / (30.0 if m.group(2) == "f" else 1.0) if m.group(2) == "f" else float(m.group(1))
+    return float(m.group(1)) / fps if m.group(2) == "f" else float(m.group(1))
 
 
 def _canon(text: str, number: int) -> str:
@@ -497,7 +507,9 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
     if not is_picture:
         if layer["on"] != intent.on(data):
             clip.on(layer["on"]) if layer["on"] else tl._place_on(clip, None)
-    if layer["until"] != intent.until(data) or layer["for"] != intent.for_s(data):
+    same_for = (layer["for"] is None and intent.for_s(data) is None) or (
+        layer["for"] is not None and intent.for_s(data) is not None and abs(layer["for"] - intent.for_s(data)) < 0.5 / tl.fps)
+    if layer["until"] != intent.until(data) or not same_for:
         if layer["until"]:
             clip.until(layer["until"])
         elif layer["for"] is not None:

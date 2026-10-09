@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable, Protocol, Sequence
 
 CUT_ID_RE = re.compile(r"^c\d+[a-z]?$")
+FRAME_EPSILON = 0.02  # frames: times arrive through ms placements, so allow ~0.6 ms of rounding
 _TOKEN_RE = re.compile(r'"[^"]*"|“[^”]*”|#\d+|[+-]\d+(?:\.\d+)?[fs]\b|[^\s"]+')
 _OFFSET_RE = re.compile(r"^([+-])(\d+(?:\.\d+)?)([fs])$")
 
@@ -173,7 +174,7 @@ def offset_text(seconds: float, fps: float) -> str:
     if abs(seconds) < 1e-9:
         return ""
     frames = seconds * fps
-    if abs(frames - round(frames)) < 1e-3:
+    if abs(frames - round(frames)) < FRAME_EPSILON:
         whole = int(round(frames))
         tenth = fps / 10
         if abs(whole / tenth - round(whole / tenth)) < 1e-6:
@@ -238,9 +239,6 @@ def resolve(moment: Moment | str, ctx: Context, *, in_point: bool = False) -> fl
     else:
         raise MomentError(f"unknown moment {m!r}")
     return t + m.offset_s + m.offset_frames / ctx.fps
-
-
-FRAME_EPSILON = 0.02  # frames: times arrive through ms placements, so allow ~0.6 ms of rounding
 
 
 def floor_frame(seconds: float, fps: float) -> float:

@@ -122,8 +122,9 @@ def carry_across(tl: Any, walls: list[float]) -> list[str]:
     merged = []
     fps = tl.fps
     for wall in walls:
-        ending = [c for c in tl.clips() if abs(c.end - wall) < 0.5 / fps and not c.is_audio]
-        starting = [c for c in tl.clips() if abs(c.start - wall) < 0.5 / fps and not c.is_audio]
+        # never a cut's picture: a cut stays a cut even when the same plate continues under it
+        ending = [c for c in tl.clips() if abs(c.end - wall) < 0.5 / fps and not c.is_audio and not tl._is_picture(c)]
+        starting = [c for c in tl.clips() if abs(c.start - wall) < 0.5 / fps and not c.is_audio and not tl._is_picture(c)]
         for a in ending:
             b = next((c for c in starting if c.data is not a.data and _same_layer(a, c)), None)
             if b is None:
