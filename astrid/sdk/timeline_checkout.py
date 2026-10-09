@@ -857,6 +857,62 @@ class Checkout:
             intent.set_anchor(clip.data, anchor)
         return moved
 
+    def _fit_sequences(self) -> list[str]:
+        """Re-lay every sequence that has a fit (see ``timeline_intent.sequence_fit``) so it lands on its word."""
+        groups: dict[str, list[Clip]] = {}
+        for clip in self.clips():
+            tag = intent.sequence(clip.data)
+            if tag:
+                groups.setdefault(tag[0], []).append(clip)
+        changes = []
+        for seq_id, steps in groups.items():
+            steps.sort(key=lambda c: intent.sequence(c.data)[1])
+            fit = intent.sequence_fit(steps[0].data)
+            if not fit:
+                continue
+            land = self._as_word(str((fit.get("land") or {}).get("word") or "")) or self.word(str((fit.get("land") or {}).get("text")))
+            start, end = steps[0].start, steps[-1].end
+            total = int(round((end - start) * self.fps))
+            life = int(round((land.start - start) * self.fps))
+            cycle = list(fit.get("cycle") or [steps[0].asset])
+            lead = [int(n) for n in fit.get("lead") or []]
+            plan = [(cycle[i % len(cycle)], n) for i, n in enumerate(lead)]
+            left = life - sum(lead)
+            race_frames = [int(n) for n in fit.get("race") or [2]]
+            race: list[int] = []
+            k = 0
+            while left > 0:
+                n = race_frames[min(k, len(race_frames) - 1)]
+                race.append(min(n, left))
+                left -= race[-1]
+                k += 1
+            plan += [(cycle[(len(cycle) - 1 - (len(race) - 1 - i)) % len(cycle)], n) for i, n in enumerate(race)]
+            plan.append((fit.get("then") or cycle[-1], max(1, total - sum(n for _a, n in plan))))
+            current = [(c.asset, int(round(c.duration * self.fps))) for c in steps]
+            if current == plan:
+                continue
+            template = copy.deepcopy(steps[0].data)
+            sid = steps[0].shot_id
+            rows = self._internal(sid)["clips"]
+            at = _num(template.get("at"))
+            for c in steps:
+                c.remove()
+            frame = 0
+            for i, (asset, n) in enumerate(plan):
+                new = copy.deepcopy(template)
+                new["id"] = f"{seq_id}-{i:02d}"
+                new["asset"] = self._register_asset(sid, asset)
+                new["at"] = _r(at + frame / self.fps)
+                new.pop("from", None), new.pop("to", None)
+                new["hold"] = _r(n / self.fps)
+                set_fit = intent.sequence_fit(new) if i == 0 else None
+                intent.set_sequence_fit(new, set_fit)
+                intent.set_sequence(new, seq_id, i)
+                rows.append(new)
+                frame += n
+            changes.append(f"sequence {seq_id}: {len(steps)} → {len(plan)} steps, lands on {land.text!r} at frame {life}")
+        return changes
+
     def _roll(self, clip: Clip, target: float) -> None:
         """Move a picture clip's start to ``target`` and keep its end; the abutting picture before it follows."""
         old_start, old_end = clip.start, clip.end
@@ -890,6 +946,7 @@ class Checkout:
         Paths look like ``params.words``, ``params.punchAt[0]``, ``params.keyframes[2].frame``. Returns what changed.
         """
         changes = [f"{cid}: start {old:.3f} → {new:.3f} s (anchored to its word)" for cid, old, new in self.retime()]
+        changes += self._fit_sequences()
         words = self.words()
         by_id = {w.id: w for w in words}
         slots = self.slots

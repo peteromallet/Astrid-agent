@@ -179,4 +179,39 @@ def clear_standin(clip: dict[str, Any]) -> None:
 
 def has_intent(clip: Mapping[str, Any]) -> bool:
     """True if a clip carries anything this module owns (used for display: the ⚓ / ƒ marks)."""
-    return bool(anchor(clip) or formulas(clip) or slot(clip) or standin(clip))
+    return bool(anchor(clip) or formulas(clip) or slot(clip) or standin(clip) or sequence_fit(clip))
+
+
+# ---- sequences: one picture cut made of stepped clips (a time-lapse) -----------------
+def sequence(clip: Mapping[str, Any]) -> tuple[str, int] | None:
+    """``(sequence id, step index)`` for a step of a sequence, or None."""
+    app = _app(clip)
+    if not app.get("sequence"):
+        return None
+    return str(app["sequence"]), int(app.get("sequence_index") or 0)
+
+
+def set_sequence(clip: dict[str, Any], sequence_id: str, index: int) -> None:
+    app = _app_w(clip)
+    app["sequence"] = sequence_id
+    app["sequence_index"] = int(index)
+
+
+def sequence_fit(clip: Mapping[str, Any]) -> dict[str, Any] | None:
+    """How a sequence lays its steps out against the voice (on its first step), or None.
+
+    ``{"land": {"word": "v20c:9", "text": "lifetime"}, "lead": [12, 10, 10, 10, 14],
+    "race": [6, 5, 4, 4, 3, 3, 3, 2], "cycle": ["RW-00", …], "then": "RW-04"}``: the
+    ``lead`` steps (frames each, assets from ``cycle``), then a race through ``cycle`` with
+    shrinking steps (the last value repeats) that ends exactly on the word, then ``then``
+    to the end of the sequence."""
+    value = _app(clip).get("sequence_fit")
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def set_sequence_fit(clip: dict[str, Any], spec: Mapping[str, Any] | None) -> None:
+    if spec:
+        _app_w(clip)["sequence_fit"] = dict(spec)
+    else:
+        _app_w(clip).pop("sequence_fit", None)
+        _tidy(clip)

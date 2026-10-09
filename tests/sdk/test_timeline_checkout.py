@@ -287,3 +287,25 @@ def test_a_tightened_line_keeps_its_inner_silence():
     assert tl.word("viral").start == pytest.approx(1.6, abs=1 / FPS)
     assert tl.word("Live").start == pytest.approx(6.2, abs=1 / FPS)
     assert report and report[0].startswith("s1 ('viral')")
+
+
+def test_a_sequence_fit_races_through_its_steps_and_lands_on_the_word():
+    data = bundle()
+    clips = data["shots"]["A"]["internal_timeline"]["clips"]
+    plate = clips.pop(0)
+    for i in range(3):
+        step = copy.deepcopy(plate)
+        step.update({"id": f"seq-{i}", "at": round(i * 4 / 3, 6), "hold": round(4 / 3, 6), "asset": "P" if i % 2 else "Q"})
+        step["app"] = {"sequence": "seq", "sequence_index": i}
+        clips.append(step)
+    clips[-3]["app"]["sequence_fit"] = {"land": {"word": "s1:2", "text": "viral"}, "lead": [12], "race": [6, 4, 2],
+                                        "cycle": ["P", "Q"], "then": "R"}
+    tl = Checkout(data)
+    changes = tl.resolve()  # "viral" at 1.3 s = frame 39: 12 lead, then 6+4+2+2+2+2+2+2+2+2+2 = 27, then R to frame 120
+    steps = sorted((c for c in tl.clips() if c.id.startswith("seq-")), key=lambda c: c.start)
+    assert any("lands on 'viral' at frame 39" in line for line in changes)
+    assert [round(c.duration * FPS) for c in steps][:4] == [12, 6, 4, 2]
+    landing = next(c for c in steps if c.asset == "R")
+    assert landing.start == pytest.approx(1.3) and landing.end == pytest.approx(4.0)
+    assert len(tl.cuts) == 2  # still one cut per shot: the steps are one sequence
+    assert tl.resolve() == []  # resolving again changes nothing
