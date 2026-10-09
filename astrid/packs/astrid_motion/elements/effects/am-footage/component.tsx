@@ -26,8 +26,14 @@ import {MosaicImage, mosaicBlockAt, paintMosaic, type MosaicRamp, type Rect} fro
 //
 // faceZone and handMark are declarations in canvas px (1920x1080). Lint reads
 // them (no overlay may cover the face zone); the slot card draws them.
+//
+// inset places the picture in a framed rect on the `background` field instead of
+// filling the frame: a real screenshot (the Discord post, a repo page, the app)
+// shown as a document on the page. zoom, focus, push and the mosaic ramps work
+// inside the rect; the label sits under it.
 
 type Zone = {x: number; y: number; w: number; h: number};
+type Inset = {x: number; y: number; w: number; h: number; radius?: number; shadow?: boolean | string; border?: string};
 type Params = {
   src?: string;
   slot?: string;
@@ -56,6 +62,28 @@ type Params = {
   sourceSize?: string;
   background?: string;
   tint?: {color?: string; opacity?: number} | null;
+  /** Framed rect (canvas px) for the picture on the background field. Omit to fill the frame. */
+  inset?: Inset | null;
+};
+
+const SOFT_SHADOW = '0 28px 64px rgba(21, 19, 17, 0.18), 0 3px 8px rgba(21, 19, 17, 0.10)';
+
+const insetOf = (value: unknown, width: number, height: number): (Required<Pick<Inset, 'x' | 'y' | 'w' | 'h' | 'radius'>> & {shadow: string; border: string | null}) | null => {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Inset;
+  const w = Math.round(clamp(finiteNumber(v.w, 0), 0, width));
+  const h = Math.round(clamp(finiteNumber(v.h, 0), 0, height));
+  if (w < 2 || h < 2) return null;
+  const shadow = v.shadow === false ? 'none' : typeof v.shadow === 'string' ? v.shadow : SOFT_SHADOW;
+  return {
+    x: Math.round(finiteNumber(v.x, (width - w) / 2)),
+    y: Math.round(finiteNumber(v.y, (height - h) / 2)),
+    w,
+    h,
+    radius: Math.max(0, finiteNumber(v.radius, 12)),
+    shadow,
+    border: typeof v.border === 'string' ? v.border : null,
+  };
 };
 
 const MONO = `'${FAMILY.label}', monospace`;
@@ -197,12 +225,16 @@ export default function AmFootage(props: ElementComponentProps): ReactElement | 
   }
 
   // ---- Real media (or a stand-in still) on the slot.
-  const size = parseSize((props.assetEntry as {resolution?: string} | undefined)?.resolution) ?? parseSize(p.sourceSize) ?? {w: width, h: height};
+  const inset = insetOf(p.inset, width, height);
+  // The picture box: the inset rect, or the whole frame.
+  const boxW = inset ? inset.w : width;
+  const boxH = inset ? inset.h : height;
+  const size = parseSize((props.assetEntry as {resolution?: string} | undefined)?.resolution) ?? parseSize(p.sourceSize) ?? {w: boxW, h: boxH};
   const zoom0 = Math.max(1, finiteNumber(p.zoom, 1));
   const zoomTo = p.push && typeof p.push === 'object' ? Math.max(1, finiteNumber(p.push.to, zoom0)) : zoom0;
   const zoom = zoom0 + (zoomTo - zoom0) * clamp(frame / Math.max(1, total - 1), 0, 1);
   const focus = {x: clamp(finiteNumber(p.focus?.x, 0.5), 0, 1), y: clamp(finiteNumber(p.focus?.y, 0.5), 0, 1)};
-  const rect = coverRect(size, width, height, zoom, focus);
+  const rect = coverRect(size, boxW, boxH, zoom, focus);
   const video = isVideo((props.assetEntry as {type?: string} | undefined)?.type, url);
   const trimBefore = Math.max(0, Math.round(finiteNumber(p.in, 0) * fps));
   const volume = clamp(finiteNumber(p.volume, 0), 0, 1);
@@ -222,26 +254,59 @@ export default function AmFootage(props: ElementComponentProps): ReactElement | 
           onVideoFrame={(source) => {
             const canvas = canvasRef.current;
             const ctx = canvas?.getContext('2d');
-            if (ctx && block > 0) paintMosaic(ctx, source, rect, block, width, height, background);
+            if (ctx && block > 0) paintMosaic(ctx, source, rect, block, boxW, boxH, background);
           }}
         />
         {block > 0 ? (
-          <canvas ref={canvasRef} width={width} height={height} style={{position: 'absolute', left: 0, top: 0, width, height}} />
+          <canvas ref={canvasRef} width={boxW} height={boxH} style={{position: 'absolute', left: 0, top: 0, width: boxW, height: boxH}} />
         ) : null}
       </>
     );
   } else if (block > 0) {
-    picture = <MosaicImage url={url} rect={rect} block={block} width={width} height={height} background={background} />;
+    picture = <MosaicImage url={url} rect={rect} block={block} width={boxW} height={boxH} background={background} />;
   } else {
     picture = <Img src={url} crossOrigin="anonymous" style={mediaStyle} />;
+  }
+
+  const tintLayer = tint?.color ? (
+    <AbsoluteFill style={{background: tint.color, opacity: clamp(finiteNumber(tint.opacity, 0.25), 0, 1)}} />
+  ) : null;
+
+  if (inset) {
+    // The label hangs under the inset's left edge, or sits inside it when there is no room below.
+    const below = inset.y + inset.h + 18 + 30 <= height;
+    const insetLabel: CSSProperties = below
+      ? {...labelStyle, left: inset.x, top: inset.y + inset.h + 18, bottom: undefined}
+      : {...labelStyle, left: inset.x + 16, top: inset.y + inset.h - 46, bottom: undefined};
+    const ring = inset.border ? `0 0 0 1px ${inset.border}` : null;
+    return (
+      <AbsoluteFill style={{background, overflow: 'hidden'}}>
+        <div
+          style={{
+            position: 'absolute',
+            left: inset.x,
+            top: inset.y,
+            width: inset.w,
+            height: inset.h,
+            overflow: 'hidden',
+            borderRadius: inset.radius,
+            boxShadow: [ring, inset.shadow === 'none' ? null : inset.shadow].filter(Boolean).join(', ') || 'none',
+            background,
+          }}
+        >
+          {picture}
+          {tintLayer}
+        </div>
+        {p.guides ? <Guides face={face} hand={hand} /> : null}
+        {placeholder && label ? <div style={insetLabel}>{label}</div> : null}
+      </AbsoluteFill>
+    );
   }
 
   return (
     <AbsoluteFill style={{background, overflow: 'hidden'}}>
       {picture}
-      {tint?.color ? (
-        <AbsoluteFill style={{background: tint.color, opacity: clamp(finiteNumber(tint.opacity, 0.25), 0, 1)}} />
-      ) : null}
+      {tintLayer}
       {p.guides ? <Guides face={face} hand={hand} /> : null}
       {placeholder && label ? <div style={labelStyle}>{label}</div> : null}
     </AbsoluteFill>

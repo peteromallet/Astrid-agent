@@ -45,6 +45,9 @@ schema:
     italicWord:
       type: string
       description: "First matching word renders in Gelasio Italic, rust #A94714."
+    italicColor:
+      type: string
+      description: Colour of the italic word. Default rust (#A94714); on a charcoal field use orange (#FF7A2E).
     font:
       type: string
       enum: [display, label]

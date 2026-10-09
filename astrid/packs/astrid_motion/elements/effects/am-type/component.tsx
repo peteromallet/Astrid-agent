@@ -17,6 +17,8 @@ import {
 type Params = {
   text?: string;
   italicWord?: string;
+  /** Colour of the italic word (default rust #A94714; use orange on charcoal, where rust is too dark). */
+  italicColor?: string;
   font?: 'display' | 'label';
   size?: number;
   color?: string;
@@ -119,7 +121,7 @@ export default function AmType(props: ElementComponentProps): ReactElement | nul
     // an inline span did not paint in the Remotion renderer.
     const runStyle: CSSProperties = {};
     if (run.italic) {
-      Object.assign(runStyle, {fontFamily: FAMILY.display, fontStyle: 'italic', color: COLOR.rust, textTransform: 'none'});
+      Object.assign(runStyle, {fontFamily: FAMILY.display, fontStyle: 'italic', color: params.italicColor ?? COLOR.rust, textTransform: 'none'});
     }
     if (run.underline) {
       runStyle.position = 'relative';

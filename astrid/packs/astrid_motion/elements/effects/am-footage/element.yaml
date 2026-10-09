@@ -120,6 +120,23 @@ schema:
       description: Source WxH when the registry has no resolution.
     background:
       type: string
+      description: The field behind the picture (and around the inset).
+    inset:
+      type: object
+      description: 'Place the picture in a framed rect on the background field instead of filling the frame (a real screenshot shown as a document on the page). Canvas px {x, y, w, h}, radius (12), shadow (true = soft drop shadow, false, or a CSS box-shadow), border (CSS colour for a 1 px ring). zoom, focus, push and mosaic work inside the rect; the label hangs under it.'
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+        radius:
+          type: number
+        border:
+          type: string
     tint:
       type: object
       properties:

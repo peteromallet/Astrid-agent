@@ -93,6 +93,7 @@ A transparent cutout (managed PNG on `clip.asset`) placed on the logical grid.
 | `x`, `y`, `width` | 96, 96, 1200 | canvas px. |
 | `reveal` | `slideUp` | `slideUp` (masked, 8 frames, ease-out), `type` (one char every 2 frames), or `none`. |
 | `italicWord` | none | first matching word in Gelasio Italic, rust `#A94714`. |
+| `italicColor` | `#A94714` | colour of the italic word. Rust is too dark on charcoal: use orange `#FF7A2E` there. |
 | `underlineWord` / `underlineAt` | none / 0 | first matching word gets an orange underline. It draws in over 6 frames from `underlineAt`. |
 | `tracking` / `lineHeight` | -0.01 / 0.95 display; 0.12 / 1.3 label | em. |
 
@@ -421,7 +422,10 @@ fractions) crop it, `push.to` zooms slowly over the clip, `volume` defaults to 0
 `{x, y, size}` (canvas px) declare where the face and the palm sit, so overlays
 avoid the face and composites land on the palm. With no asset it draws the slot
 card (slot id, framing note, dashed face zone, dashed hand outline and palm
-mark), so the edit reads before anything is filmed.
+mark), so the edit reads before anything is filmed. `inset` `{x, y, w, h, radius, shadow, border}` (canvas px) frames the
+picture on the `background` field instead of filling the frame: a real screenshot (the Discord post, a repo
+page, the app) shown as a document on the page, with zoom/focus/push/mosaic working inside the rect and the
+label hanging under it. A plain field with nothing on it is an `am-snap-plate` of a flat 320x180 PNG.
 
 **am-tweet.** A reconstructed post card: generic silhouette avatar (never a
 likeness), `name`, `handle`, `date`, a dashed slot body (default
