@@ -998,9 +998,9 @@ def _prepare_managed_render_inputs(
         review_shots: list[dict[str, Any]] = []
         review_phrases: list[dict[str, Any]] = []
         shot_occurrences: list[dict[str, Any]] = []
-        shot_records: dict[str, dict[str, Any]] = {}
-        review_bindings: dict[str, list[dict[str, Any]]] = {}
-        from .render_shot_snapshot import shot_text_snapshot
+        shot_records: dict[tuple[str, str], dict[str, Any]] = {}
+        review_bindings: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        from .remote import RemoteShots
         raw_clips = snapshot.config.get("clips", [])
         canonical_expansion = snapshot.expansion if isinstance(snapshot.expansion, Mapping) and snapshot.expansion.get("canonical") is True else None
         if canonical_expansion is not None:
@@ -1008,22 +1008,47 @@ def _prepare_managed_render_inputs(
                 if not isinstance(shot, Mapping) or not isinstance(shot.get("shot_id"), str):
                     continue
                 shot_id = str(shot["shot_id"])
+                revision_id = shot.get("revision_id")
+                if not isinstance(revision_id, str) or not revision_id:
+                    raise CapabilityValidationError(
+                        f"canonical shot {shot_id!r} has no immutable revision identity"
+                    )
+                shot_key = (shot_id, revision_id)
                 bindings = [dict(item) for item in shot.get("text_bindings", []) if isinstance(item, Mapping)]
-                shot_records[shot_id] = {
+                if values.get("review") is True:
+                    verified_bindings = []
+                    text_reader = getattr(_client, "shots", None)
+                    if not callable(getattr(text_reader, "_text_binding_content", None)):
+                        text_reader = RemoteShots(_client)
+                    for binding in bindings:
+                        if binding.get("kind") != "voiceover_script":
+                            verified_bindings.append(binding)
+                            continue
+                        verified = text_reader._text_binding_content(binding)
+                        if not verified.ok:
+                            message = getattr(verified.error, "message", "pinned narration could not be verified")
+                            raise CapabilityValidationError(str(message))
+                        verified_bindings.append(dict(verified.data))
+                    bindings = verified_bindings
+                shot_records[shot_key] = {
                     "shot_id": shot_id,
+                    "revision_id": revision_id,
                     "name": str(shot.get("name") or shot_id),
-                    "version": shot.get("revision_id"),
+                    "version": revision_id,
                     "text_bindings": [{key: value for key, value in binding.items() if key != "text"} for binding in bindings],
                 }
-                review_bindings[shot_id] = bindings
+                review_bindings[shot_key] = bindings
             for occurrence in canonical_expansion.get("occurrences", []):
                 if not isinstance(occurrence, Mapping):
                     continue
                 shot_id = occurrence.get("shot_id")
+                revision_id = occurrence.get("revision_id")
                 occurrence_id = occurrence.get("occurrence_id")
-                if not isinstance(shot_id, str) or not isinstance(occurrence_id, str):
+                if (not isinstance(shot_id, str) or not isinstance(revision_id, str)
+                        or not isinstance(occurrence_id, str)):
                     continue
-                name = str(shot_records.get(shot_id, {}).get("name") or occurrence.get("name") or shot_id)
+                shot_key = (shot_id, revision_id)
+                name = str(shot_records.get(shot_key, {}).get("name") or occurrence.get("name") or shot_id)
                 at = float(occurrence.get("at", float(occurrence.get("at_ms", 0)) / 1000.0))
                 hold = float(occurrence.get("hold", float(occurrence.get("duration_ms", 0)) / 1000.0))
                 shot_occurrences.append({
@@ -1035,10 +1060,10 @@ def _prepare_managed_render_inputs(
                     "timeline_document_id": str(occurrence.get("parent_document_id") or snapshot.timeline_id),
                     "source_index": int(occurrence.get("ordinal", len(shot_occurrences))),
                     "output_identity": occurrence.get("output_identity"),
-                    "revision_id": occurrence.get("revision_id"),
+                    "revision_id": revision_id,
                 })
                 review_shots.append({"shot_id": shot_id, "name": name, "at": at, "hold": hold})
-                for binding in review_bindings.get(shot_id, []):
+                for binding in review_bindings.get(shot_key, []):
                     text = binding.get("text")
                     if binding.get("kind") != "voiceover_script" or not isinstance(text, str) or not text.strip():
                         continue

@@ -337,6 +337,155 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
+    "componentPath": "packs/local/elements/effects/animated-media-transform/component.tsx",
+    "defaults": {
+      "fit": "contain",
+      "keyframes": [
+        {
+          "at": 0,
+          "height": 1080,
+          "opacity": 1,
+          "width": 1920,
+          "x": 0,
+          "y": 0
+        }
+      ]
+    },
+    "description": "Clip-local transform keyframes interpolate in authored canvas pixels. Optional source playback segments independently preserve trims, speed changes and deliberate source resets inside one timeline clip. Uses the same component in live preview and Remotion rendering.",
+    "id": "animated-media-transform",
+    "keywords": [
+      "media",
+      "video",
+      "image",
+      "zoom",
+      "pan",
+      "fade",
+      "keyframes"
+    ],
+    "kind": "effect",
+    "label": "Animated Media Transform",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "contain",
+        "description": "",
+        "label": "Fit",
+        "name": "fit",
+        "options": [
+          {
+            "label": "Contain",
+            "value": "contain"
+          },
+          {
+            "label": "Cover",
+            "value": "cover"
+          },
+          {
+            "label": "Fill",
+            "value": "fill"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:2fc05a91c7884fb33795c9c695c05b7e827ada44bb6712e3d3632b0afab93ce4",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "enum": [
+            "contain",
+            "cover",
+            "fill"
+          ],
+          "type": "string"
+        },
+        "keyframes": {
+          "description": "Increasing clip-local seconds with x/y/width/height in canvas pixels and opacity0–1. Values interpolate linearly and clamp outside the range.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "height": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "opacity": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "width": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "x",
+              "y",
+              "width",
+              "height",
+              "opacity"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "sourceSegments": {
+          "description": "Video playback sections starting at clip-local seconds; first at0. Each plays sourceStart seconds onward at speed until the next section or clip end. Rounded frame boundaries must be distinct.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "sourceStart": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "speed": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "sourceStart",
+              "speed"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "keyframes"
+      ],
+      "type": "object"
+    },
+    "shortDescription": "Animate one managed image or video through editable position, size and opacity keyframes.",
+    "source": "pack:local"
+  },
+  {
     "componentPath": "packs/rendering/elements/effects/audio-reactive-colour/component.tsx",
     "defaults": {
       "events": [],
@@ -578,6 +727,20 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
         "type": "number"
       },
       {
+        "description": "Clip-relative delay before the complete overlay is revealed.",
+        "label": "Reveal Delay Seconds",
+        "min": 0,
+        "name": "revealDelaySeconds",
+        "type": "number"
+      },
+      {
+        "description": "Fade duration after the reveal delay; zero reveals immediately.",
+        "label": "Reveal Duration Seconds",
+        "min": 0,
+        "name": "revealDurationSeconds",
+        "type": "number"
+      },
+      {
         "description": "",
         "label": "Selected Segment Index",
         "min": 0,
@@ -596,7 +759,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:f769f6f4e7e871ccb3cb93850d8c5e3690f4877f51bdd98b097ef5dc15844264",
+    "revision": "sha256:a182f03d983b38c9a278581bed9fca988f796997a7e21867b8158ee05fc2926d",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -662,6 +825,16 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
           "type": "number"
         },
         "prepSourceStart": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDelaySeconds": {
+          "description": "Clip-relative delay before the complete overlay is revealed.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDurationSeconds": {
+          "description": "Fade duration after the reveal delay; zero reveals immediately.",
           "minimum": 0,
           "type": "number"
         },

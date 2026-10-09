@@ -33,6 +33,28 @@ python3 -m astrid --help
 python3 -m astrid timelines --help
 ```
 
+## Edit an existing timeline as a JSON document
+
+For “check it out, edit it in a text document, then check it back in”, use the
+[complete checkout/edit/check-in recipe](references/document-checkout.md) and
+its runnable [SDK example](scripts/timeline_document.py). Start with the
+connected runtime's project and timeline slugs: export the complete pinned
+composition, edit its JSON, validate and inspect the diff, then publish one
+revision against the original head. The example defines every variable; no
+pre-supplied `target`, `pinned_parent`, or `runtime_writer` is needed.
+Temporary local media paths in the edited document are probed during the
+read-only check. Publication imports them through the existing project catalog,
+rewrites durable IDs and selected-media mirrors, then validates and publishes.
+Image, video, and audio imports appear in the ordinary gallery; audio keeps its
+own type and native playback controls. An unchanged checkout has an empty diff.
+
+This bundle includes parent layers, shot placements, and internal clips.
+Narration is read through `timelines script`, which resolves the selected composition's pinned text bindings in occurrence order. Rendering is optional:
+a saved revision can be reviewed in Reigh. The recipe includes the authoritative
+field map, media/gallery distinction, and common recovery paths.
+
+For repeatable draft narration synchronization, use `video_editing.sync_draft_voiceover` as documented in the [video editing skill](../../video_editing/skill/SKILL.md). It reads the timeline's pinned script, synthesizes through `generation.generate_speech`, and publishes one validated revision. Empty scripts are skipped and existing final or unadopted audio stays protected. For a one-off manual import, see the [placeholder voiceover recipe](references/placeholder-voiceover.md). Neither workflow needs a video render.
+
 ## Agent operating contract
 
 The timeline is one canonical authoring composition. `timelines show` (and the
@@ -207,6 +229,54 @@ and report/edit guide are in
 
 ### Renderer and skill boundary
 
+#### When to use Remotion
+
+Ordinary arrangement, media replacement, trimming, and supported effect controls
+are timeline document edits. Use the existing Remotion element parameters for
+animated layouts, screen transforms, procedural graphics, and synchronized
+multi-phase overlays. Change a Remotion component only when the requested visual
+behavior is not exposed by the existing element or shared renderer. Inspect the
+owning component and schema first; do not build a new renderer or export a video
+merely to adjust an effect in a live editing session.
+
+Keep composition timing in the timeline and effect behavior in the element.
+Distinguish global timeline seconds from clip-relative frames, and distinguish
+moving a clip (which restarts its local animation) from changing its visibility.
+For multi-layer transitions, identify the layers and the shared start/end times
+before editing. Reuse existing element controls when possible; a missing control
+usually belongs in that element's schema and component with backward-compatible
+defaults. Source changes and canonical timeline parameter publication are
+separate steps; verify both reach the live preview.
+
+At shot boundaries, a blink can come from a timing gap, media readiness, or a
+component remount. Check adjacent intervals and the rendered element/media
+identity before choosing a fix. Reusing an asset ID alone does not prove that
+its DOM node survives a boundary. Seek checks show individual frames; also play
+across the boundary to catch transient loading or mounting flashes.
+
+For a custom Remotion overlay that appears too early or needs a fade, first
+inspect its exact `clipType`, clip `at`, and the owning element's `element.yaml`
+and `component.tsx`. Generic media entrance/opacity controls are not necessarily
+applied to extension clips; a parameter only works if the component consumes it.
+Prefer changing reveal timing over moving `at` when later animation phases must
+stay synchronized. Reveal delays are clip-relative: subtract clip `at` from the
+desired timeline reveal time.
+
+The local `end-spanning-layer` element supports `params.revealDelaySeconds` and
+`params.revealDurationSeconds`. Both default to zero. For example, a clip at
+33.8s with delay 1.1s and duration 0.5s stays hidden until 34.9s and becomes fully
+visible at 35.4s, without changing its internal phase timing. These controls
+apply to the whole overlay and multiply its existing fade-out. Find this
+element under `astrid/packs/local/elements/effects/end-spanning-layer` in a
+source checkout; do not assume other clip types support the same parameters.
+
+If a required control is absent, identify that promptly instead of trying
+unsupported JSON fields. A small component/schema change may be needed; preserve
+default behavior and refresh its generated catalog. In local Reigh development,
+Vite can reload imported Astrid component changes without restarting the
+workspace runtime. Verify the live preview before, during, and after the fade;
+successful timeline validation alone does not establish visual behavior.
+
 Remotion and timeline effects stay on this route: edit the admitted internal
 timeline `effects`/clip `app` or `params`, freeze the candidate, and use
 `render_authoring_candidate_preview` when composed pixels are required. Do not
@@ -215,7 +285,7 @@ production orchestrators in `video_editing`. The source pack directory and
 capability IDs intentionally remain `rendering` for runtime compatibility;
 the agent-facing skill name is `timeline_editing`. After changing this skill,
 refresh the writable views with `python3 -m astrid.skills sync --all` and verify
-with `python3 -m astrid.skills sync --check --json` so the root gateway and
+with `python3 -m astrid.skills sync --all --check --json` so the root gateway and
 installed pack view do not route existing-timeline work back to video editing.
 
 ## Discover and inspect
@@ -486,8 +556,9 @@ Placements are candidate rows describing where an item is placed in the
 detached edit; parent occurrences are committed closure identities used for
 readback and navigation. A placement may carry an occurrence reference, but
 it is not a new parent occurrence and must not be substituted for one.
-Timing is nested at `row["placement"]["start_ms"]` and
-`row["placement"]["duration_ms"]`; do not add flat timing fields to the row.
+Start timing normally uses `row["placement"]["start_ms"]`; an existing
+`row["at_ms"]` takes precedence, so preserve the opened convention. Duration
+uses **`row["duration_ms"]` at the row level**, not inside `placement`.
 
 The older `timelines save --config ... --registry ... --expected-version ...`
 command below is a separate legacy whole-document compare-and-swap interface.
@@ -548,6 +619,58 @@ python3 -m astrid timelines shots text list --project <project> \
   --kind voiceover_script
 ```
 
+For timeline-wide draft VO updates, the owner is
+`video_editing.sync_draft_voiceover`; this timeline skill defines the structure
+and timing rules it preserves. The workflow reads script text pinned to the
+selected composition revision. Missing or invalid script bindings are reported,
+and an intentionally empty script is skipped. It only replaces VO that it owns
+as draft; existing final, recorded, or locked audio is protected. Adopting a
+legacy clip requires its exact clip ID in `adopt_clip_ids`.
+
+The sync can keep every shot window with `timing_policy="preserve"`; narration
+that exceeds a window then fails before publication. With
+`timing_policy="ripple"`, duration changes move later shots and parent visual
+layers. Ripple rejects overlapping shot placements, source offsets or non-unit
+speed, parent or internal audio that would need stretching, and parameterized
+layers without an explicit `app.draft_voiceover_timing="stretch"` declaration.
+Inspect its detached plan and diff before deciding whether to apply it. It does
+not render a preview or change the live timeline while preparing speech; a
+successful apply validates the candidate and saves one revision through the
+authoring bundle's head check.
+
+Publication accepts registered text descriptors in `shot["payload"]["text_bindings"]`.
+The descriptor's `binding_id`, `head`, `media_id`, `content_hash`, and byte size pin
+one verified revision; publication checks the registered head for a changed shot
+revision. Arbitrary embedded-only narration and conflicting metadata copies are
+rejected. Keep the registration receipt and publish that exact descriptor. For a
+new reusable shot, publish its media/structure first to register it, register its
+narration with head `0`, then publish the descriptor through the parent CAS. These
+are explicit supported steps; registration alone does not change an existing
+composition's pinned narration. A stale head requires a fresh checkout and explicit
+reconciliation, never substitution of the latest text.
+
+The runnable checkout example includes this complete path for a registered shot:
+
+```bash
+python3 scripts/timeline_document.py checkout --project <project> --timeline <timeline> --file /tmp/edit.json
+python3 scripts/timeline_document.py bind-script --file /tmp/edit.json --shot <registered-shot-id> \
+  --text-file <script.txt> --expected-head 0 --idempotency-key narration-01
+python3 scripts/timeline_document.py check --file /tmp/edit.json
+python3 scripts/timeline_document.py publish --file /tmp/edit.json --idempotency-key pin-narration-01
+python3 -m astrid timelines script <timeline> --project <project> --json
+# Historical read: use the publication receipt's exact parent revision.
+python3 -m astrid timelines script <timeline> --project <project> --revision <parent-revision> --json
+```
+
+`client.timelines.script(project, timeline, revision_id=None, occurrence=None)`
+is the same public reader. It returns names, occurrence identities, declared
+track/timing, verified text and binding provenance, excludes unplaced shots,
+and marks missing narration separately from deliberately empty text. It never
+silently reads the latest binding for a pinned composition. Single-click and
+open in the timeline editor address the placed occurrence, including a shot
+whose internal timeline has no clips. Temporal overlap does not establish child
+ownership; occurrence placement controls the shot's lane and window.
+
 `list` and `show <binding-id>` include the verified text. Use head `0` to create
 a binding; read its current head before updating it. The binding belongs to
 the registered shot referenced by the timeline; it does not add visible text
@@ -589,9 +712,16 @@ still use their current path. Stream copy is disabled for this overlay path.
 
 ## Render and open
 
-When a rendered editorial feedback cycle is requested (including reference-frame
-and storyboard previews), render with `--review` by default and keep it enabled for subsequent
-revisions. Deliver and open that review render so the user can identify frames
+Before starting or repeating a preview render, ask whether the user is reviewing
+the timeline in the live interface, unless that is already established in the
+conversation. Remember their answer for the session. If they are using the live
+interface, save and validate edits for live review; do not render previews unless
+they explicitly request an export or rendered preview. Only use preview renders
+for the feedback cycle when they are not using the live interface. A previous
+render does not by itself authorize re-rendering after subsequent edits.
+
+When a preview render is needed (including reference-frame and storyboard
+previews), use `--review` by default. Deliver and open that review render so the user can identify frames
 by shot name and timecode. Use meaningful registered shot names, and check that
 the labels are visible in the exported video. A filmstrip viewer is useful
 alongside the video, but does not replace its review overlay. Omit `--review`

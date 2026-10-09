@@ -27,6 +27,7 @@ def _snapshot_fixture(tmp_path: Path) -> Path:
         repo_root=repo_root,
         out_dir=out_dir,
         timestamp="20260524-030405",
+        retain_backup=True,
     )
 
 

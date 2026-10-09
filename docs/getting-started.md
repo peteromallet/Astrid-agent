@@ -166,8 +166,10 @@ through `AstridClient.open_from_launcher()`. Ordinary SDK
 The seven top-level gateway families are `projects`, `timelines`, `media`,
 `tasks`, `runs`, `doctor`, and `backup`; `timelines shots` and `media
 references` are nested mounts. `doctor`
-and `backup` use runtime routes. Backup supports create/restore/export and realm
-lifecycle operations, with `--json` for a machine-readable result.
+and `backup` use runtime routes. Persist a realm backup only when you want a
+retained copy; create one explicitly with `python3 -m astrid backup create
+--out <external-path>`. Backup also supports restore/export and realm lifecycle
+operations, with `--json` for a machine-readable result.
 
 Runtime health, project identity, media objects, timeline versions, task/run
 state, receipts, and events are authoritative only in the workspace runtime.
@@ -186,8 +188,10 @@ The command locates the existing workspace, stops its idle runtime and pack
 host, applies the required migrations, moves an older store into the configured
 Astrid data folder when needed, then restarts and verifies both services.
 It preserves project identities and media, refuses to interrupt active work,
-and can be rerun safely. Migration archives are retained for recovery; only the
-current store is used during normal operation.
+and can be rerun safely. Migration uses temporary rollback state and does not
+keep an extra full archive by default. If you want a persistent copy, create it
+explicitly with `python3 -m astrid backup create --out <external-path>` before
+upgrading.
 
 For the complete project, timeline, media, recovery, and failure journeys,
 continue with [CLI journeys](guides/cli-journeys.md). For renderer-specific

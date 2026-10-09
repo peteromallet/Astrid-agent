@@ -319,4 +319,7 @@ class TargetBoundAuthoringBundle:
             "candidate_digest": result.get("candidate_digest"),
             "identity_mapping": result.get("identity_mapping"),
             "publication": result.get("publication"),
+            "update": result.get("update"),
+            "summary": result.get("summary"),
+            "next_actions": result.get("next_actions"),
         }

@@ -348,6 +348,16 @@ class AstridClient:
         return None
 
     @property
+    def endpoint(self) -> str:
+        """Connected Runtime URL for a same-connection authoring target.
+
+        Credentials remain private to the connection; this exposes only the
+        identity already required by the target-bound authoring seam.
+        """
+        endpoint = self._remote._transport.endpoint
+        return str(getattr(endpoint, "url", endpoint))
+
+    @property
     def projects(self) -> Any:
         return self._remote.projects
 
