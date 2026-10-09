@@ -1,0 +1,171 @@
+# Megado configuration. Latest explicit user model/review choices are authoritative.
+mode: scoped_integration
+source_custody: worktree
+roles:
+  coordinator:
+    model: gpt-6-luna
+    reasoning: medium
+  worker_normal:
+    model: gpt-6-luna
+    reasoning: xhigh
+  worker_xhard:
+    model: gpt-6.1-sol
+    reasoning: high
+  reviewer_normal:
+    model: gpt-6-luna
+    reasoning: medium
+  reviewer_xhard:
+    model: gpt-6.1-sol
+    reasoning: high
+  oracle:
+    model: gpt-6-astra
+    reasoning: high
+  final_reviewer:
+    model: gpt-6-astra
+    reasoning: medium
+oracle:
+  authority: Astra is the single execution advisor/oracle for consequential judgment
+    and blockers; coordinator applies its rulings within user authority.
+  conversation_policy: one_resumable_advisor_conversation
+  triggers:
+  - blocker
+  - consequential_judgment
+  - conflicting_contracts
+  - repeated_failed_correction
+  - exception_request
+review_stages:
+- id: integrated_final
+  after: I09_COMPLETE
+  reviewer_role: final_reviewer
+  lens: completion_and_strategy
+  scope_tasks:
+  - I00
+  - I01
+  - I02
+  - I03
+  - I04
+  - I05
+  - I06
+  - I07
+  - I08
+  - I09
+  criteria_source: tasklist.md
+  criteria:
+  - C01
+  - C02
+  - C03
+  - C04
+  - C05
+  - C06
+  - C07
+  - C08
+  - C09
+  - C10
+  max_rounds: 7
+  stop_on_uncontested_pass: true
+  subsequent_rounds: only after actionable findings, corrections and affected checks;
+    no quota-filling or equivalent extra gates
+run_id: three-effort-post-completion-integration-20261001
+project_root: .
+source_custody_policy:
+  recommended: worktree
+  authorization: explicit_user_20261003_isolated_custody_and_20261004_staged_non_pack_now_pack_last_preserve_original_mains
+  path_if_selected: <each-repository>/.otto/worktrees/three-effort-post-completion-integration-20261001
+  create_now: true
+  mutation_boundary: non_pack_now_after_exact_slice_preflight_in_fresh_isolated_custody; pack_transfer_and_migrations_last_after_terminal_acceptance_and_pre_pack_freeze
+model_binding_basis:
+  user_override: 'Latest instruction: Astra advisor; subagents for substantive work;
+    GPT-6.1 Sol for XHARD; Luna for the rest. Final Astra reviews remain the earlier
+    explicit exception.'
+  availability: Use exposed gpt-6-luna; validate model/effort before dispatch on a
+    different runtime.
+advisor:
+  role: oracle
+  same_conversation: true
+  consultations: unlimited; max_calls omitted
+  independent_final_review: false
+start_conditions:
+- explicit_delivery_start_or_activated_watch_goal_readiness_gate
+- accepted_scenes_exact_triplet_verified_as_provisional_baseline; pack_terminal_acceptance_is_gate_for_pack_wave_only
+- each_consumed_t2_slice_has_exact_owner_astra_approved_cpu_source_handoff
+- each_applied_donor_slice_has_stable_identity_and_accepted_declared_scope
+- source_custody_choice_recorded
+- required_model_bindings_available
+preservation:
+  default: preserve_and_integrate_code_and_useful_data
+  scope_authority: plan.md scope section; preserve all useful goals of all six efforts, with proven equivalents for consolidated behavior
+  incidental_artifacts: exclude_from_merge_inputs_without_deleting_user_files
+  prior_exclusions: reopen_for_accounting; never inherit as automatic exclusions
+  archive_only_satisfies_required_behavior: false
+  unknown_owner: preserve_pending_resolution
+  feature_removal: requires existing specific user authority or new user decision;
+    neither coordinator nor advisor can invent it
+  final_accounting: no_unaccounted_in_scope_items_and_no_unresolved_required_features
+parallelism:
+  initial_workers: 2
+  shared_path_writers: 1
+  expansion: only_after_capacity_check_and_disjoint_dependency_scope
+role_assignment:
+  coordinator: Luna drives progress, delegates substantive work and applies existing
+    decisions without routine signoffs.
+  normal: Luna subagents
+  xhard: GPT-6.1 Sol subagents; state concrete coupled reasoning challenge
+  advisor_oracle: one Astra conversation; direct guidance, no intermediate Sol approval
+  final_reviewer: fresh independent Astra conversation under the single declared final
+    stage
+process_policy:
+  delegation: All substantive exploration, implementation, validation and review go
+    to subagents; coordinator keeps dispatch, short briefs and state.
+  progress: Continue ready in-scope work; pause only affected dependencies; diagnose
+    and fix blockers rather than repeatedly report them.
+  tracking: Six Megado controls, generated source index and actual evidence; no extra
+    approval gates or mandatory tracking framework.
+  review: One final stage; stop on uncontested PASS; remaining rounds only verify
+    concrete corrections.
+  outcome_owner: One owner may prepare, implement and perform admitted affected
+    validation for one bounded outcome. Keep one preflight at mutation or execution
+    entry; reopen only when scope, dependency, custody, resource or authority changes.
+  evidence_reuse: Link immutable receipts once and refresh mutable facts at the
+    actual gate. Do not regenerate unchanged custody, checksum, census or HOLD
+    packets merely to restate an existing disposition.
+  review_exclusions: Routine freezes, unchanged HOLDs, metadata-only corrections
+    and ordinary focused checks are not consequential-judgment triggers. Review the
+    changed contract once; do not create a review stage for every packet.
+
+monitoring_handoff:
+  document: watch-and-integrate.md
+  activation: prior_user_activated_watch_recorded_in_status
+  current_amendment: user_20261004_authorizes_staged_non_pack_execution_now_pack_last
+  cadence: hourly_same_thread_wakeup_look_3540_then_60_seconds
+  primary_threads: [] # Thread IDs are machine/account-local and intentionally omitted.
+  readiness: non_pack_per_slice_exact_accepted_source_dependency_custody_and_capacity; pack_committed_terminal_acceptance_only_for_final_wave_after_pre_pack_handoff
+  closeout_source: research/closeout-source-observation-20261003.json
+  closeout_owner_terminal_acceptance: unverified
+  closeout_hold: affected_input_and_lifecycle_claims_only; no_final_six_effort_acceptance_until_required_proof_closes
+  added_efforts: [runpod-execution-simplification-20261002, runpod-worker-preparation-20261002, astrid-preferences-and-documents-20261002]
+  runpod_preparation_watch:
+    # Thread ID omitted; use the named run below to locate current status.
+    title: Assess RunPod workflow architecture
+    run: ../runpod-worker-preparation-20261002
+    cadence: existing_hourly_readiness_pass_alongside_scenes_and_pack
+    observed_status: completed_terminal_owner_accepted
+    acceptance: P1_P5_R1_R12_CPU_software_100_percent_final_Astra_PASS_round3_of5_gpu_excluded
+    dependency: accepted_non_pack_input_requires_exact_source_freeze_and_affected_I02_contracts; final_v3_adaptation_in_pack_wave
+    method: read_only_status_and_receipt_refresh_no_owner_resume_or_message
+  independent_lane: non_pack_now; stable_accepted_source_scope_and_target_adapter_tests_and_disjoint_contracts_and_capacity_required
+  authority: explicit_user_20261004_staged_delivery_start_after_strategic_GO; final_pack_wave_after_its_terminal_handoff_and_pre_pack_freeze
+
+current_assignment_override:
+  integrator: gpt-6-astra
+  reasoning: xhigh
+  basis: explicit_user_request_for_this_six_effort_integration
+  normal_workers: gpt-6-luna_xhigh_per_existing_binding
+  final_stage_unchanged: true
+
+staged_integration:
+  ruling: research/pack-last-staged-integration-20261004.md
+  first_wave: accepted_non_pack_slices_on_exact_scenes_triplet
+  pack_wave: last_donor_and_all_final_migrations; committed_terminal_acceptance_and_frozen_pre_pack_candidate_required
+  source_policy: never_rewrite_or_import_moving_pack_donor; one_writer_per_shared_contract_cluster
+  final_join: all_donor_behaviors_and_canonical_v3_source_staged_installed_closure_before_I09_COMPLETE
+  review_stages_and_counters_unchanged: true
