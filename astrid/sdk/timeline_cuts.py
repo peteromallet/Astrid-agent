@@ -272,6 +272,7 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "say": text,
             "vo": vo_ids,
             "deliberate_hold": cut["deliberate_hold"],
+            "sequence": cut.get("sequence"),
         })
     return {
         "fps": fps,
@@ -348,6 +349,9 @@ def _row_lines(row: Mapping[str, Any], fps: float, width: int) -> list[str]:
         parts.append(str(row["asset"]))
     if row.get("text"):
         parts.append(f'"{row["text"]}"')
+    sequence = row.get("sequence") or {}
+    if sequence:
+        parts.append(f"sequence ×{sequence.get('steps')} steps")
     head = (
         f"{row['index']:>3}  {row['start']:6.2f}–{row['end']:<6.2f} {row['duration']:5.2f}s  "
         f"{row['tc_in']}  {row.get('clip_id') or '(no picture clip)'}"

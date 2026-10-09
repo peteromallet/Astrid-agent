@@ -64,6 +64,12 @@ class Element:
     occurrence_id: str = ""
 
     @property
+    def sequence(self) -> str | None:
+        """``app.sequence``: this clip is one step of a sequence (one picture cut, many clips)."""
+        value = _map(self.clip.get("app")).get("sequence")
+        return str(value) if isinstance(value, (str, int)) and str(value) else None
+
+    @property
     def short_id(self) -> str:
         return self.id.rsplit(":", 1)[-1]
 

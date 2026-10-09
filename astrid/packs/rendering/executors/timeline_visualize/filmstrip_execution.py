@@ -1835,6 +1835,7 @@ def execute_filmstrip(args, *, authority=None):
         'compose_s': round(composed_at - capture_ended_at, 3),
         'total_s': round(composed_at - started_at, 3),
         'frames': len(result.get('cards') or []),
+        'tiles': ((result.get('frame_index') or {}).get('contact') or {}).get('tiles'),
         'view': options.get('view') or 'filmstrip',
         'resolution': options.get('resolution'),
         'evidence_source': 'composed_capture' if capture_mode else 'render_extract',

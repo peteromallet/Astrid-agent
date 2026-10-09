@@ -56,11 +56,24 @@ def plan_motion_frames(
     end_f = min(total, max(start_f + 1, int(round(float(cut["end"]) * rate))))
     low, high = max(0, start_f - 2), min(total, end_f + 2)
     events = [start_f]
+    steps: list[int] = []
     for element in model.in_window(elements, float(cut["start"]), float(cut["end"])):
+        if element.sequence:
+            # a sequence's steps get one frame each (its first), not a dense run apiece
+            steps.append(int(round(element.start * rate)))
+            continue
         for event in model.events(element, rate):
             frame = int(round(event.t * rate))
             if event.kind in ("enter", "key") and start_f < frame < end_f - 1:
                 events.append(frame)
+    chosen_steps: dict[int, set[str]] = {}
+    if steps:
+        steps = sorted(set(f for f in steps if start_f <= f < end_f))
+        room = max(3, budget * 2 // 3 - 1)
+        stride = max(1, math.ceil(len(steps) / room))
+        for frame in steps[::stride] + steps[-1:]:
+            chosen_steps.setdefault(frame, set()).add("motion")
+        budget = max(1, budget - len(chosen_steps))
     events = sorted(set(events))
     collapsed: list[int] = []
     for frame in events:
@@ -84,6 +97,8 @@ def plan_motion_frames(
             frame += step
         if end_f - 1 >= start_f and len(chosen) < budget:
             chosen.setdefault(end_f - 1, set()).add("motion")
+    for frame, why in chosen_steps.items():
+        chosen.setdefault(frame, set()).update(why)
     return chosen
 
 
@@ -96,11 +111,15 @@ def build_context(
     start, end = float(cut["start"]), float(cut["end"])
     window = (max(0.0, start - PAD_SECONDS), end + PAD_SECONDS)
     inside = model.in_window(elements, start, end)
-    visual_events = sorted(
-        (event for element in inside for event in model.events(element, fps)
-         if window[0] <= event.t <= window[1]),
-        key=lambda event: event.t,
-    )
+    visual_events = [event for element in inside if not element.sequence for event in model.events(element, fps)
+                     if window[0] <= event.t <= window[1]]
+    # A sequence is one picture cut: its steps are keys on one lane, not entrances of many clips.
+    steps = sorted((e for e in inside if e.sequence), key=lambda e: e.start)
+    for index, step in enumerate(steps):
+        if window[0] <= step.start <= window[1]:
+            visual_events.append(model.Event(step.start, "key", f"sequence:{step.sequence}",
+                                             f"sequence step {index + 1}/{len(steps)}", "step"))
+    visual_events.sort(key=lambda event: event.t)
     ctx = LayerContext(
         cut=cut,
         cuts=cuts,
@@ -136,6 +155,9 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
         layers.append(element.label + (f" @+{enters:.2f}" if enters > 1 / ctx.fps else ""))
     said = " ".join(w.text for w in ctx.words if float(cut["start"]) <= (w.start + w.end) / 2 < float(cut["end"]))
     picture = next((e.label for e in ctx.elements if e.id == cut.get("clip_id")), cut.get("clip_id") or "(no picture clip)")
+    sequence = cut.get("sequence") or {}
+    if sequence:
+        picture = f"sequence {sequence.get('id')}, {sequence.get('steps')} steps (from {picture})"
     return [
         f"picture {picture}" + (f"  +  {' · '.join(layers)}" if layers else ""),
         f'VO "{said}"' if said else "VO (none under this cut)",

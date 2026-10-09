@@ -1615,8 +1615,9 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     resolution = timing.get("resolution") or inputs.get("resolution")
     if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
         resolution = f"{resolution[0]}x{resolution[1]}"
+    tiles = timing.get("tiles") or frames
     what = {
-        "contact": f"{frames} tiles, one per picture cut (#N = cut number in timelines show)",
+        "contact": f"{tiles} tiles, one per picture cut (#N = cut number in timelines show)",
         "motion": f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance",
     }.get(view, f"{frames} frames")
     lines.append(f"  {what}" + (f" · frames {resolution}" if resolution else ""))

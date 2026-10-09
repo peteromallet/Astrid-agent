@@ -187,8 +187,8 @@ def _accent_events(cut: Mapping[str, Any], elements: Sequence[model.Element], fp
     frame = 1.0 / fps
     found = [model.Event(start, "cut", str(cut.get("clip_id") or ""), "the cut", "cut")]
     for element in elements:
-        if element.audio or element.type in ("am-snap-plate", "am-churn"):
-            continue
+        if element.audio or element.type in model.PLATE_TYPES or element.sequence:
+            continue  # the picture and a sequence's steps are the cut itself, not accents on it
         for event in model.accents(element, fps):
             if start + frame - 1e-6 < event.t < end - frame + 1e-6:
                 found.append(event)

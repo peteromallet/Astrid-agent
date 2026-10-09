@@ -452,3 +452,55 @@ def test_contact_and_motion_draw_audio_and_preview(tmp_path, monkeypatch):
     assert _filmstrip_sidecars(Path(outputs["pack_root"]))["preview"].endswith("motion-cut-01.gif")
     with pytest.raises(ValueError, match="--view motion"):
         filmstrip_options({"view": "contact", "preview": True})
+
+
+# --- sequences: many stepped clips, one picture cut --------------------------------------
+
+def _sequence_snapshot(steps: int = 6) -> dict:
+    snapshot = layered_snapshot()
+    occ = "occ-ch02"
+    snapshot["clips"] = [c for c in snapshot["clips"] if not c["id"].endswith(":p3")]
+    for k in range(steps):
+        snapshot["clips"].append(_clip(f"s{k:02d}", "plate", "visual", 3.0 + k * 2.0 / steps, 2.0 / steps, occ,
+                                       clipType="am-snap-plate", params={}, app={"sequence": "c20-seq0", "sequence_index": k}))
+    return snapshot
+
+
+def test_a_sequence_of_stepped_clips_is_one_cut_everywhere():
+    snapshot = _sequence_snapshot()
+    cuts = picture_cuts(occurrences_from_snapshot(snapshot), fps=FPS)
+    assert len(cuts) == 3
+    seq = cuts[2]
+    assert seq["sequence"]["steps"] == 6 and seq["sequence"]["id"] == "c20-seq0"
+    assert (seq["start"], seq["end"]) == (3.0, 5.0)
+    assert all(not layer["clip"].get("app", {}).get("sequence") for layer in seq["layers"])
+    assert find_cut(cuts, "s03")["index"] == 3  # any step's clip id finds the cut
+    # lint: the steps are the picture, not six entrances to sync
+    elements = model.elements_from_occurrences(occurrences_from_snapshot(snapshot))
+    findings = dict((cut["index"], fs) for cut, fs in lint.lint_cuts(cuts, elements, FPS))
+    assert not [f for f in findings[3] if f.code in ("SYNC", "BEAT")]
+
+
+def test_contact_shows_a_sequence_as_one_tile_with_steps(tmp_path, monkeypatch):
+    result = _execute(tmp_path, _sequence_snapshot(), {"view": "contact"}, monkeypatch)
+    index = json.loads((Path(result["outputs"]["pack_root"]) / "timing.json").read_text())
+    assert index["tiles"] == 3 and index["frames"] == 5  # 3 tiles + first/last step of the sequence
+    motion = _execute(tmp_path / "m", _sequence_snapshot(steps=30), {"view": "motion", "cut": "3"}, monkeypatch)
+    lines = motion["outputs"]["findings"]
+    assert lines[0].startswith("MOTION cut 3 ")
+    assert any("sequence c20-seq0: 30 steps" in line for line in lines)
+    assert json.loads((Path(motion["outputs"]["pack_root"]) / "timing.json").read_text())["frames"] <= 60
+
+
+def test_show_marks_a_sequence_row():
+    from astrid.sdk.timeline_cuts import build_cut_table, render_cut_table
+
+    tracks = [{"id": "plate", "kind": "visual"}]
+    clips = [{"id": f"c20-{k:02d}", "track": "plate", "clipType": "am-snap-plate", "at": k * 0.2, "hold": 0.2,
+              "app": {"sequence": "c20-seq0", "sequence_index": k}} for k in range(5)]
+    clips.append({"id": "c21", "track": "plate", "clipType": "am-snap-plate", "at": 1.0, "hold": 1.0})
+    bundle = {"shots": {"s": {"payload": {"name": "05"}, "internal_timeline": {"tracks": tracks, "clips": clips}}},
+              "placements": [{"shot_id": "s", "occurrence_id": "o", "placement": {"start_ms": 0}, "duration_ms": 2000}]}
+    table = build_cut_table(bundle)
+    assert [row["clip_id"] for row in table["rows"]] == ["c20-00", "c21"]
+    assert "sequence ×5 steps" in render_cut_table(table, table["rows"], title="t")

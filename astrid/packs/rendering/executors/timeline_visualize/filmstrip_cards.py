@@ -912,6 +912,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         if mode == 'cuts' and options.get('view') == 'contact':
             for cut in picture:
                 add(cut['tile_frame'], 'cut_tile')
+                if cut.get('sequence'):
+                    # a sequence is one tile; its first and last steps ride along as a mini-strip
+                    add(cut['start_frame'], 'sequence_step')
+                    add(cut['end_frame'] - 1, 'sequence_step')
         elif mode == 'cuts' or (mode == 'interval' and include_cuts):
             for cut in picture:
                 start, end = cut['start_frame'], cut['end_frame']
@@ -945,7 +949,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     if options.get('view') == 'contact':
         from .contact_sheet import CONTACT_MAX_TILES, contact_reasons
         reasons, thinned_from = contact_reasons(reasons, mode=mode, limit=CONTACT_MAX_TILES)
-        contact_info = {'tiles': len(reasons), 'cap': CONTACT_MAX_TILES, 'sample': mode, 'thinned_from': thinned_from}
+        tiles = sum(1 for why in reasons.values() if set(why) != {'sequence_step'})
+        contact_info = {'tiles': tiles, 'cap': CONTACT_MAX_TILES, 'sample': mode, 'thinned_from': thinned_from}
+        if len(reasons) > tiles:
+            contact_info['sequence_steps'] = len(reasons) - tiles
     if boundary_index is None:
         boundary_index = _boundary_index(snapshot, clips, spans, total, fps)
         selected = set(reasons)
@@ -967,7 +974,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     def cut_of(frame):
         for cut in picture:
             if cut['start_frame'] <= frame < cut['end_frame']:
-                return {key: cut[key] for key in ('index', 'start', 'end', 'clip_id', 'shot', 'say')}
+                row = {key: cut[key] for key in ('index', 'start', 'end', 'clip_id', 'shot', 'say')}
+                if cut.get('sequence'):
+                    row['sequence'] = {'id': cut['sequence']['id'], 'steps': cut['sequence']['steps']}
+                return row
         return None
     for frame, why in sorted(reasons.items()):
         time = Fraction(frame, 1) / fps

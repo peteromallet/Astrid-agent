@@ -9,7 +9,9 @@ means the same thing in every view.
 when the shot has one, otherwise the visual track whose clips cover most of
 the shot. A stretch of a shot with no bed clip is a cut with no picture clip
 (``clip`` is ``None``). Every other visual clip overlapping the cut is a
-*layer* over it; a layer edge is never a cut.
+*layer* over it; a layer edge is never a cut. Consecutive bed clips that
+share ``app.sequence`` (a time-lapse or stepped animation the builder lays
+out clip by clip) are ONE cut; ``cut["sequence"]`` lists its steps.
 
 The function is pure and representation-neutral: callers adapt their own
 timeline shape into *occurrences* (one placed shot each) whose *spans* are
@@ -36,6 +38,7 @@ __all__ = [
     "occurrences_from_snapshot",
     "cut_sample_time",
     "find_cut",
+    "sequence_id",
 ]
 
 AUDIO_KINDS = frozenset({"audio", "voice", "voiceover", "vo", "music", "sound", "sfx"})
@@ -90,6 +93,14 @@ def is_deliberate(clip: Mapping[str, Any] | None) -> bool:
     return any(bool(app.get(key) or params.get(key)) for key in DELIBERATE_KEYS)
 
 
+def sequence_id(clip: Mapping[str, Any] | None) -> str | None:
+    """``app.sequence`` of a clip: picture clips sharing it in a row are one cut."""
+    if not isinstance(clip, Mapping):
+        return None
+    value = _map(clip.get("app")).get("sequence")
+    return str(value) if isinstance(value, (str, int)) and str(value) else None
+
+
 def is_audio_span(span: Mapping[str, Any]) -> bool:
     return bool(span.get("audio"))
 
@@ -141,23 +152,42 @@ def picture_cuts(occurrences: Iterable[Mapping[str, Any]], *, fps: float = 30.0)
         bed = picture_bed(spans, occurrence.get("track_order") or ())
         visual = [s for s in spans if not s["audio"] and s["end"] - s["start"] > 0]
         bed_spans = sorted((s for s in visual if s["track"] == bed), key=lambda s: (s["start"], s["id"]))
-        windows: list[tuple[float, float, Mapping[str, Any] | None]] = []
+        windows: list[tuple[float, float, Mapping[str, Any] | None, list[Mapping[str, Any]]]] = []
         cursor = start
         for span in bed_spans:
+            sequence = sequence_id(span["clip"])
+            previous = windows[-1] if windows else None
+            if (sequence and previous is not None and previous[2] is not None
+                    and sequence_id(previous[2]["clip"]) == sequence and span["start"] <= previous[1] + half):
+                # One editorial cut: consecutive picture clips of one sequence
+                # (a time-lapse or stepped animation built clip by clip).
+                windows[-1] = (previous[0], max(previous[1], span["end"]), previous[2], previous[3] + [span])
+                cursor = max(cursor, span["end"])
+                continue
             if span["start"] > cursor + half:
-                windows.append((cursor, span["start"], None))
-            windows.append((span["start"], span["end"], span))
+                windows.append((cursor, span["start"], None, []))
+            windows.append((span["start"], span["end"], span, [span]))
             cursor = max(cursor, span["end"])
         if not bed_spans or cursor < end - half:
-            windows.append((cursor, end, None))
-        for win_start, win_end, base in windows:
+            windows.append((cursor, end, None, []))
+        for win_start, win_end, base, members in windows:
             if win_end - win_start <= _EPS:
                 continue
+            own = {id(member) for member in members}
             layers = [
                 s for s in visual
-                if s is not base and s["end"] > win_start + half and s["start"] < win_end - half
+                if id(s) not in own and s["end"] > win_start + half and s["start"] < win_end - half
             ]
             clip = base["clip"] if base else None
+            if len(members) > 1:
+                sequence = {
+                    "id": sequence_id(clip),
+                    "steps": len(members),
+                    "clip_ids": [member["id"] for member in members],
+                    "starts": [round(member["start"], 6) for member in members],
+                }
+            else:
+                sequence = None
             cuts.append({
                 "start": round(win_start, 6),
                 "end": round(win_end, 6),
@@ -171,6 +201,7 @@ def picture_cuts(occurrences: Iterable[Mapping[str, Any]], *, fps: float = 30.0)
                 "type": base["type"] if base else None,
                 "layers": layers,
                 "deliberate_hold": is_deliberate(clip),
+                "sequence": sequence,
             })
     cuts.sort(key=lambda cut: (cut["start"], cut["end"]))
     for index, cut in enumerate(cuts, start=1):
@@ -195,8 +226,8 @@ def find_cut(cuts: Sequence[Mapping[str, Any]], selector: Any) -> Mapping[str, A
             return cuts[number - 1]
         raise ValueError(f"cut {number} does not exist; this timeline has cuts 1–{len(cuts)}")
     for cut in cuts:
-        clip_id = cut.get("clip_id") or ""
-        if clip_id == text or clip_id.endswith(":" + text):
+        clip_ids = [cut.get("clip_id") or ""] + list(_map(cut.get("sequence")).get("clip_ids") or [])
+        if any(clip_id == text or clip_id.endswith(":" + text) for clip_id in clip_ids):
             return cut
     raise ValueError(f"no cut matches {selector!r}; pass a cut number 1–{len(cuts)}, a picture clip id or @SECONDS")
 

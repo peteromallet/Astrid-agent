@@ -57,6 +57,18 @@ def contact_silence_findings(audio, *, minimum: float = 1.0) -> list[str]:
     return lines[:24] + audio.notes[:3]
 
 
+def split_sequence_steps(cards: Sequence[Mapping[str, Any]]) -> tuple[list, dict[int, list]]:
+    """Tiles, and the extra step frames of sequence cuts keyed by cut number (drawn as a mini-strip)."""
+    tiles, steps = [], {}
+    for card in cards:
+        cut = card.get('cut') if isinstance(card.get('cut'), Mapping) else None
+        if cut and set(card.get('sample_reasons') or []) == {'sequence_step'}:
+            steps.setdefault(int(cut['index']), []).append(card)
+        else:
+            tiles.append(card)
+    return tiles, steps
+
+
 def contact_reasons(reasons: Mapping[int, set], *, mode: str, limit: int = CONTACT_MAX_TILES) -> tuple[dict, int | None]:
     """Reduce planned frames to one tile per cut (or per shot), bounded by ``limit``.
 
@@ -121,7 +133,10 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
     from PIL import Image, ImageDraw
 
     columns = max(1, min(int(columns or CONTACT_DEFAULT_COLUMNS), 12))
+    cards, sequence_steps = split_sequence_steps(cards)
     tile_w = CONTACT_TILE_WIDTH
+    mini_w = (tile_w - 4) // 3
+    mini_h = max(1, round(mini_w * 9 / 16))
     stride = tile_w + CONTACT_GUTTER
     width = CONTACT_MARGIN * 2 + columns * stride - CONTACT_GUTTER
     measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
@@ -148,8 +163,9 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
         if excerpt:
             word_lines[-1] = _png_ellipsis(measure, word_lines[-1], words_font, tile_w - 8)
         text_h = 4 + 17 + 18 + 16 * len(word_lines) + 4
-        tile_layouts.append({'image_h': image_h, 'time': time_text, 'name': name_text,
-                             'words': word_lines, 'height': 3 + image_h + 6 + text_h})
+        strip_h = mini_h + 3 if cut and cut.get('sequence') and show_output else 0
+        tile_layouts.append({'image_h': image_h, 'time': time_text, 'name': name_text, 'strip_h': strip_h,
+                             'words': word_lines, 'height': 3 + image_h + strip_h + 6 + text_h})
 
     rows = [tile_layouts[start:start + columns] for start in range(0, len(tile_layouts), columns)]
     row_heights = [max((tile['height'] for tile in row), default=0) for row in rows]
@@ -248,9 +264,20 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
                 if overlay is not None:
                     frame = overlay(frame, float(card.get('time_seconds') or 0.0))
                 sheet.paste(frame, (x, image_y))
+                cut = card.get('cut') if isinstance(card.get('cut'), Mapping) else None
+                if cut and cut.get('sequence'):
+                    badge = f"SEQUENCE · {cut['sequence']['steps']} steps"
+                    draw.rectangle((x, image_y, x + _png_text_width(draw, badge, chrome_font) + 8, image_y + 16), fill='#000000')
+                    _png_draw_text(draw, (x + 4, image_y + 1), badge, chrome_font, fill='#facc15')
+                    minis = sorted(sequence_steps.get(int(cut['index']), []) + [card], key=lambda c: int(c['frame']))
+                    minis = [minis[0], card, minis[-1]] if len(minis) >= 3 else minis
+                    for slot, mini in enumerate(minis[:3]):
+                        with Image.open(Path(out_root) / mini['image']) as source:
+                            thumb = source.convert('RGB').resize((mini_w, mini_h), Image.LANCZOS)
+                        sheet.paste(thumb, (x + slot * (mini_w + 2), image_y + tile['image_h'] + 3))
             else:
                 draw.rectangle((x, image_y, x + tile_w, image_y + tile['image_h']), fill='#162630', outline='#405769')
-            text_y = image_y + tile['image_h'] + 6
+            text_y = image_y + tile['image_h'] + tile['strip_h'] + 6
             _png_draw_text(draw, (x + 4, text_y), tile['time'], time_font, fill=_CONTACT_TIME)
             _png_draw_text(draw, (x + 4, text_y + 17), tile['name'], name_font, fill='white')
             for line_no, line in enumerate(tile['words']):

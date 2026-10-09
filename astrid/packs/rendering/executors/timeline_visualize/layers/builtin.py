@@ -171,6 +171,8 @@ def render_sync(ctx: LayerContext) -> LayerResult:
     start, end = float(ctx.cut["start"]), float(ctx.cut["end"])
     marks = [(t, kind) for t, kind in ctx.beats.get("hits") or []] + [(t, "downbeat") for t in ctx.beats.get("downbeats") or []]
     for element in ctx.elements:
+        if element.sequence or element.type in model.PLATE_TYPES:
+            continue  # the picture (and a sequence's steps) is the cut, not an accent on it
         for event in model.accents(element, ctx.fps):
             if not start + 1 / ctx.fps <= event.t < end - 1 / ctx.fps:
                 continue
@@ -205,7 +207,7 @@ def render_sync(ctx: LayerContext) -> LayerResult:
 
 def render_curves(ctx: LayerContext) -> LayerResult:
     """Each element's animated properties per frame, from the element models (no pixels)."""
-    elements = [e for e in ctx.elements if not e.audio]
+    elements = [e for e in ctx.elements if not e.audio and not e.sequence]
     rows = []
     start, end = ctx.window
     frames = range(int(math.floor(start * ctx.fps)), int(math.ceil(end * ctx.fps)))
@@ -214,6 +216,25 @@ def render_curves(ctx: LayerContext) -> LayerResult:
         keys = sorted({k for _t, props in samples for k in props})
         moving = [k for k in keys if len({round(props.get(k, math.nan), 3) for _t, props in samples if k in props}) > 1]
         rows.append((element, samples, moving or (["visible"] if "visible" in keys else [])))
+    # one row per sequence: which step is on screen (its steps are one picture cut)
+    sequences: dict[str, list] = {}
+    for element in ctx.elements:
+        if element.sequence and not element.audio:
+            sequences.setdefault(element.sequence, []).append(element)
+    for name, steps in sequences.items():
+        steps.sort(key=lambda e: e.start)
+        lead = model.Element(f"sequence:{name}", f"sequence ({len(steps)} steps)", steps[0].track, steps[0].start,
+                             steps[-1].end, {}, {})
+        samples = []
+        for f in frames:
+            t = f / ctx.fps + 1e-6
+            index = next((i for i, step in enumerate(steps) if step.start <= t < step.end), None)
+            samples.append((t, {"step": float(index + 1)} if index is not None else {}))
+        rows.append((lead, samples, ["step"]))
+        holds = [round(step.end - step.start, 3) for step in steps]
+        findings_steps = (f"CURVE  sequence {name}: {len(steps)} steps over {steps[-1].end - steps[0].start:.2f} s, "
+                          f"{min(holds) * ctx.fps:.0f}–{max(holds) * ctx.fps:.0f} frames each")
+        ctx.shared.setdefault("sequence_findings", []).append(findings_steps)
     row_h = 40
     image = ctx.panel(30 + row_h * max(1, len(rows)) + 8, title="curves (from data)")
     draw = ImageDraw.Draw(image)
@@ -252,6 +273,7 @@ def render_curves(ctx: LayerContext) -> LayerResult:
                                 f"{ctx.rel(min(moving_frames))}")
         if not keys:
             draw_text(draw, (ctx.plot_left + 4, top + 12), "static (no animated property in its model)", 11, PALETTE["muted"])
+    findings.extend(ctx.shared.pop("sequence_findings", []))
     stamps = [e.label for e in elements if e.type == "am-sprite" and (e.params.get("enter") == "stamp")
               and float(ctx.cut["start"]) + 1 / ctx.fps < e.start < float(ctx.cut["end"])]
     if stamps:
@@ -401,7 +423,7 @@ def render_strip(ctx: LayerContext) -> LayerResult:
         if len(group) > 1:
             t_end = group[-1] / ctx.fps
             draw.rectangle((x, y, x + thumb_w - 1, y + thumb_h - 1), outline=PALETTE["bad"], width=3)
-            draw_text(draw, (x + 2, y + thumb_h + 2), f"HOLD {ctx.rel(t)}…{ctx.rel(t_end)} ×{len(group)}", 12, PALETTE["bad"])
+            draw_text(draw, (x + 2, y + thumb_h + 2), f"HOLD {ctx.rel(t)}…{ctx.rel(t_end)} ({len(group)} same)", 12, PALETTE["bad"])
             if inside and t_end - t >= 0.5:
                 findings.append(f"STRIP  identical frames {ctx.rel(t)}…{ctx.rel(t_end)} ({t_end - t:.2f} s, {len(group)} samples)")
         else:
