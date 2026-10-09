@@ -118,3 +118,48 @@ def test_store_command_reads_secret_without_echoing_it(monkeypatch, tmp_path: Pa
     assert secret not in output.out
     assert secret not in output.err
     assert target.read_text(encoding="utf-8") == f"RUNPOD_API_KEY='{secret}'\n"
+
+
+def test_list_prints_only_names_of_stored_credentials(monkeypatch, tmp_path: Path, capsys) -> None:
+    from astrid.core.util.credential_store import list_credential_names
+
+    target = tmp_path / "astrid.env"
+    secret = "list-must-never-print-this-value"
+    target.write_text(
+        f"# comment\nRUNPOD_API_KEY='{secret}'\nEMPTY_ONE=\nOPENAI_API_KEY=also-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ASTRID_ENV_FILE", str(target))
+
+    assert list_credential_names() == ["OPENAI_API_KEY", "RUNPOD_API_KEY"]
+    assert main(["list"]) == 0
+
+    output = capsys.readouterr()
+    assert output.out == "OPENAI_API_KEY\nRUNPOD_API_KEY\n"
+    assert secret not in output.out + output.err
+    assert "also-secret" not in output.out + output.err
+
+
+def test_list_reports_an_empty_store_without_creating_it(monkeypatch, tmp_path: Path, capsys) -> None:
+    target = tmp_path / "missing" / "astrid.env"
+    monkeypatch.setenv("ASTRID_ENV_FILE", str(target))
+
+    assert main(["list"]) == 0
+
+    assert "no credentials stored in" in capsys.readouterr().out
+    assert not target.exists()
+
+
+def test_list_refuses_to_read_through_a_symlink(monkeypatch, tmp_path: Path, capsys) -> None:
+    from astrid.core.util.credential_store import list_credential_names
+
+    actual = tmp_path / "actual.env"
+    actual.write_text("OPENAI_API_KEY=secret\n", encoding="utf-8")
+    link = tmp_path / "link.env"
+    link.symlink_to(actual)
+    monkeypatch.setenv("ASTRID_ENV_FILE", str(link))
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        list_credential_names()
+    assert main(["list"]) == 1
+    assert "secret" not in capsys.readouterr().err

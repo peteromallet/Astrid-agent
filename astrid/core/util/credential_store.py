@@ -99,12 +99,31 @@ def store_credential(provider: str, value: str, *, env_file: Path | None = None)
     return target
 
 
+def list_credential_names(*, env_file: Path | None = None) -> list[str]:
+    """Return the sorted names of stored credentials. Values are never returned."""
+
+    target = (env_file or astrid_env_file_path()).expanduser()
+    if target.is_symlink():
+        raise ValueError("refusing to read a credential file through a symbolic link")
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ValueError(f"could not read the shared Astrid environment file: {exc}") from exc
+    parsed = dotenv_values(stream=StringIO(text), interpolate=False)
+    return sorted(name for name, value in parsed.items() if value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="astrid-credential",
         description="Store an API credential in Astrid's shared user-level astrid.env file.",
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers.add_parser(
+        "list", help="list stored credential names (values are never shown)"
+    )
     set_parser = subparsers.add_parser("set", help="prompt for and store a provider credential")
     supported = ", ".join(sorted(_PROVIDER_ENV))
     set_parser.add_argument(
@@ -112,6 +131,20 @@ def main(argv: list[str] | None = None) -> int:
         help=f"provider ({supported}) or uppercase environment-variable name",
     )
     args = parser.parse_args(argv)
+
+    if args.action == "list":
+        try:
+            names = list_credential_names()
+            path = astrid_env_file_path()
+        except ValueError as exc:
+            print(f"astrid-credential: {exc}", file=sys.stderr)
+            return 1
+        if not names:
+            print(f"no credentials stored in {path}")
+            return 0
+        for name in names:
+            print(name)
+        return 0
 
     try:
         _credential_variable(args.provider)
