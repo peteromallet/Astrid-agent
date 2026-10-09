@@ -23,12 +23,15 @@ type Params = {
   anchor?: {x: number; y: number};
   drawFrames?: number;
   stepFrames?: 2 | 3;
+  /** Title and body type sizes in canvas px (default 40 and 24). */
+  titleSize?: number;
+  bodySize?: number;
 };
 
 type Pt = {x: number; y: number};
 
-// Title line centre, measured from the card top: 22 px padding + half a line.
-const TITLE_LINE_Y = 44;
+// Title line centre, measured from the card top: 22 px padding + half a line
+// (22 + 0.55 * titleSize; 44 at the default 40 px title).
 const CONNECTOR_SAMPLES = 96;
 
 const bezierAt = (p0: Pt, c1: Pt, c2: Pt, p3: Pt, t: number): Pt => {
@@ -76,8 +79,11 @@ export default function AmCallout(props: ElementComponentProps): ReactElement | 
   const stepFrames = Math.round(clamp(finiteNumber(params.stepFrames, 2), 2, 3));
 
   // Attach to the card's nearer side at the title line.
+  const titleSize = Math.max(12, finiteNumber(params.titleSize, 40));
+  const bodySize = Math.max(12, finiteNumber(params.bodySize, 24));
+  const titleLineY = 22 + Math.round(0.55 * titleSize);
   const onRight = anchor.x >= x + cardWidth / 2;
-  const start: Pt = {x: onRight ? x + cardWidth : x, y: y + TITLE_LINE_Y};
+  const start: Pt = {x: onRight ? x + cardWidth : x, y: y + titleLineY};
   const dir = anchor.x >= start.x ? 1 : -1;
   const span = Math.abs(anchor.x - start.x);
   const c1: Pt = {x: start.x + dir * span * 0.5, y: start.y};
@@ -104,7 +110,7 @@ export default function AmCallout(props: ElementComponentProps): ReactElement | 
     margin: 0,
     fontFamily: FAMILY.display,
     fontWeight: 650,
-    fontSize: 40,
+    fontSize: titleSize,
     lineHeight: 1.1,
     letterSpacing: '-0.005em',
     color: COLOR.ink,
@@ -112,7 +118,7 @@ export default function AmCallout(props: ElementComponentProps): ReactElement | 
   const bodyStyle: CSSProperties = {
     margin: title ? '10px 0 0' : 0,
     fontFamily: FAMILY.body,
-    fontSize: 24,
+    fontSize: bodySize,
     lineHeight: 1.4,
     color: COLOR.muted,
   };

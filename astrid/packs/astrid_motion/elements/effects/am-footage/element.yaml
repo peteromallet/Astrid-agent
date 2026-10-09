@@ -2,7 +2,7 @@ schema_version: 1
 id: am-footage
 kind: effect
 pack_id: astrid_motion
-short_description: Real-footage slot. A filmed shot (video or still) cover-fitted with crop, push and the pixelate transition; with no media, a labelled slot card showing the shot spec.
+short_description: 'Real-footage slot: a filmed shot with crop, push and pixelate in/out; a slot card when the media is missing.'
 description: Plays a real shot from clip.asset (video via OffthreadVideo, or a still) cover-fitted to the frame. zoom and focus (fractions of the source) crop it, push.to slowly zooms over the clip, and mosaicIn / mosaicOut pixelate it into 6, 12, 24 and 48 px blocks on hard steps (the move between real footage and the 320x180 pixel world). faceZone and handMark declare where the face and the palm must sit, in canvas px, so overlays and lint can keep them clear.
 keywords:
 - footage

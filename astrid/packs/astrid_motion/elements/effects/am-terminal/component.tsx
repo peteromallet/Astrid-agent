@@ -8,7 +8,7 @@ import {COLOR, FAMILY, finiteNumber, narrowParams, type ElementComponentProps} f
 // shown as evidence). Optional badge chips stamp in under the window.
 
 type Progress = {from?: number; to?: number; frames?: number; etaFrom?: number; etaTo?: number};
-type LineSpec = {at?: number; text?: string; kind?: string; typeStep?: number; progress?: Progress};
+type LineSpec = {at?: number; text?: string; kind?: string; typeStep?: number; charsPerFrame?: number; progress?: Progress};
 type Badge = {at?: number; text?: string; color?: string; ink?: string};
 type Params = {
   title?: string;
@@ -51,7 +51,8 @@ export default function AmTerminal(props: ElementComponentProps): ReactElement |
     let text = typeof l.text === 'string' ? l.text : '';
     if (kind === 'cmd') {
       const step = Math.max(1, Math.round(finiteNumber(l.typeStep, 1)));
-      const shown = Math.min(text.length, Math.floor((frame - at) / step) + 1);
+      const cpf = Math.max(1, Math.round(finiteNumber(l.charsPerFrame, 1)));
+      const shown = Math.min(text.length, (Math.floor((frame - at) / step) + 1) * cpf);
       if (shown < text.length) typingIndex = i;
       text = text.slice(0, shown);
     }

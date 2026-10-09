@@ -416,6 +416,23 @@ def face_box(element: Element, clip_frame: int = 0) -> tuple[float, float, float
     return (ox + left * scale, oy + top * scale, ox + right * scale, oy + bottom * scale)
 
 
+# Full-frame picture elements: real footage, plates and procedural backgrounds.
+PLATE_TYPES = ("am-snap-plate", "am-churn", "am-footage", "am-droste", "am-seasons")
+
+
+def declared_face(element: Element) -> tuple[float, float, float, float] | None:
+    """A face zone declared on the clip (``params.faceZone`` {x, y, w, h}, canvas px).
+
+    Real-footage slots (am-footage) and slot-tagged placeholders carry the zone
+    where the filmed face must sit; it wins over a face derived from anchors.
+    """
+    zone = _map(element.params.get("faceZone"))
+    if not all(key in zone for key in ("x", "y", "w", "h")):
+        return None
+    x, y, w, h = (_num(zone.get(key)) for key in ("x", "y", "w", "h"))
+    return (x, y, x + w, y + h) if w > 0 and h > 0 else None
+
+
 def mouth_box(element: Element, clip_frame: int = 0) -> tuple[float, float, float, float] | None:
     mouth = _map(element.params.get("mouth"))
     if not mouth:
@@ -563,6 +580,7 @@ def boxes_at(element: Element, t: float, fps: float) -> list[Box]:
     params = element.params
     frame = int(math.floor((t - element.start) * fps + 1e-6))
     kind = element.type
+    declared = declared_face(element)
     if kind == "am-sprite":
         props = _sprite_props(element, frame, fps)
         scale = _int(params.get("scale"), 1, 24, 6)
@@ -585,10 +603,12 @@ def boxes_at(element: Element, t: float, fps: float) -> list[Box]:
     if kind == "am-callout":
         x, y, width = _num(params.get("x"), 1200), _num(params.get("y"), 160), max(1.0, _num(params.get("width"), 520))
         inner = width - 52
-        title_lines = _wrap_lines(str(params.get("title") or ""), 40, inner, 0.55)
-        body_lines = _wrap_lines(str(params.get("body") or ""), 24, inner, 0.5)
-        height = 22 + 24 + title_lines * 44 + (10 if title_lines and body_lines else 0) + body_lines * 33.6
-        box = Box(element, "card", (x, y, x + width, y + height), element.label, text_px=24.0 if body_lines else 40.0)
+        title_px, body_px = _num(params.get("titleSize"), 40.0), _num(params.get("bodySize"), 24.0)
+        title_lines = _wrap_lines(str(params.get("title") or ""), title_px, inner, 0.55)
+        body_lines = _wrap_lines(str(params.get("body") or ""), body_px, inner, 0.5)
+        height = (22 + 24 + title_lines * title_px * 1.1 + (10 if title_lines and body_lines else 0)
+                  + body_lines * body_px * 1.4)
+        box = Box(element, "card", (x, y, x + width, y + height), element.label, text_px=body_px if body_lines else title_px)
         anchor = _map(params.get("anchor"))
         if anchor:
             ax, ay = _num(anchor.get("x"), 960), _num(anchor.get("y"), 540)
@@ -603,10 +623,11 @@ def boxes_at(element: Element, t: float, fps: float) -> list[Box]:
         label_h = 40 if params.get("label") else 0
         return [Box(element, "text", (x, y, x + width, y + label_h + tile_h), element.label, text_px=tile_h * 0.7)]
     if kind == "am-presenter":
-        face = face_box(element, frame)
+        face = declared or face_box(element, frame)
         return [Box(element, "face", face, "face")] if face else []
-    if kind in ("am-snap-plate", "am-churn"):
-        return [Box(element, "plate", (0, 0, CANVAS[0], CANVAS[1]), element.label)]
+    if kind in PLATE_TYPES:
+        plate = [Box(element, "plate", (0, 0, CANVAS[0], CANVAS[1]), element.label)]
+        return plate + ([Box(element, "face", declared, "face")] if declared else [])
     if all(key in params for key in ("x", "y", "width", "height")):
         x, y = _num(params.get("x")), _num(params.get("y"))
         box = Box(element, "panel", (x, y, x + _num(params.get("width")), y + _num(params.get("height"))), element.label)

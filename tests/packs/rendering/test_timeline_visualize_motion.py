@@ -248,6 +248,42 @@ def test_lint_flags_face_frame_small_and_sync():
     assert "60 px past the frame edge" in texts[0]
 
 
+def test_declared_face_zone_on_real_footage_is_linted():
+    """A real-footage slot declares params.faceZone; an overlay on it is a FACE finding, and the
+    footage itself (a full-frame plate) never counts as covering anything."""
+    snapshot = layered_snapshot()
+    occ = "occ-ch02"
+    snapshot["clips"] = [c for c in snapshot["clips"] if c["occurrence_id"] != occ] + [
+        _clip("foot", "plate", "visual", 3.0, 2.0, occ, clipType="am-footage", asset=f"{occ}:slot-A1",
+              params={"slot": "A1", "faceZone": {"x": 700, "y": 110, "w": 500, "h": 610}}),
+        _clip("claw", "sprite", "visual", 3.2, 1.0, occ, clipType="am-sprite", asset=f"{occ}:D-06",
+              params={"scale": 6, "x": 130, "y": 40}),
+        _clip("side", "fx", "visual", 3.2, 1.0, occ, clipType="am-callout",
+              params={"title": "SIDE", "x": 1300, "y": 160, "width": 400, "titleSize": 56}),
+    ]
+    snapshot["registry"]["assets"][f"{occ}:D-06"] = {"resolution": "87x140"}
+    occurrences = occurrences_from_snapshot(snapshot)
+    elements = model.elements_from_occurrences(occurrences, snapshot["registry"]["assets"])
+    foot = next(e for e in elements if e.type == "am-footage")
+    boxes = model.boxes_at(foot, 3.5, FPS)
+    assert [b.kind for b in boxes] == ["plate", "face"]
+    assert boxes[1].rect == (700, 110, 1200, 720)
+    cuts = picture_cuts(occurrences, fps=FPS)
+    findings = [f for cut, fs in lint.lint_cuts(cuts, elements, FPS) if cut["index"] == 3 for f in fs]
+    face = [f.message for f in findings if f.code == "FACE"]
+    assert len(face) == 1 and "D-06" in face[0]   # the claw sits on the declared face; the side card does not
+
+
+def test_callout_box_reads_its_type_sizes():
+    big = model.Element("c", "am-callout", "fx", 0, 1, {"title": "TESTERS WANTED", "body": "any machine",
+                                                        "x": 100, "y": 100, "width": 700, "titleSize": 64, "bodySize": 36}, {})
+    small = model.Element("c", "am-callout", "fx", 0, 1, {"title": "TESTERS WANTED", "body": "any machine",
+                                                          "x": 100, "y": 100, "width": 700}, {})
+    (b,), (s,) = model.boxes_at(big, 0.5, FPS), model.boxes_at(small, 0.5, FPS)
+    assert b.text_px == 36 and s.text_px == 24
+    assert b.rect[3] > s.rect[3]
+
+
 def test_presenter_face_box_follows_zoom_and_focus():
     element = model.Element("p", "am-presenter", "sprite", 0, 1, {"eyes": [{"x": 140, "y": 74, "w": 8}],
                             "mouth": {"x": 150, "y": 98, "w": 16}, "zoom": 2, "focus": {"x": 158, "y": 100}}, {})
