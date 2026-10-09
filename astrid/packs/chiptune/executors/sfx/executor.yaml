@@ -38,8 +38,8 @@ outputs:
   - name: sfx
     type: file
     path_template: "{out}/sfx.wav"
-    artifact_type: audio
-    description: Mono 48 kHz 16-bit one-shot peak-normalised to -3.1 dBFS (single mode).
+    artifact_type: null
+    description: Mono 48 kHz 16-bit one-shot peak-normalised to -3.1 dBFS (single mode). Not a declared media port, so batch mode can run without it.
   - name: sfx_meta
     type: file
     path_template: "{out}/sfx.json"
