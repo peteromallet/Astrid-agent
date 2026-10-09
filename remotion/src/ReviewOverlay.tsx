@@ -6,10 +6,16 @@ export type ReviewContext = {
   render_dimensions?: {width: number; height: number};
   speech?: {
     status?: string;
+    // One caption phrase at a time, built by astrid/core/timeline/review_captions.py:
+    // word-timed (timing_basis 'vo_word', word_aligned true) or a distributed
+    // sentence of the shot script ('shot_script_distributed', word_aligned false).
+    // Phrases never overlap in practice; when they do, the latest start wins.
     phrases?: Array<{
       id?: string;
       text?: string;
       status?: string;
+      timing_basis?: string;
+      word_aligned?: boolean;
       render_interval?: {
         start?: number | [number, number];
         end?: number | [number, number];

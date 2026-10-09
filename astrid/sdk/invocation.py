@@ -1090,23 +1090,26 @@ def _prepare_managed_render_inputs(
                     "revision_id": occurrence.get("revision_id"),
                 })
                 review_shots.append({"shot_id": shot_id, "name": name, "at": at, "hold": hold})
-                for binding in review_bindings.get(shot_id, []):
-                    text = binding.get("text")
-                    if binding.get("kind") != "voiceover_script" or not isinstance(text, str) or not text.strip():
-                        continue
-                    review_phrases.append({
-                        "id": f"shot-script:{occurrence_id}:{binding.get('binding_id', 'binding')}",
-                        "shot_id": shot_id,
-                        "shot_occurrence_id": occurrence_id,
-                        "text": text.strip(),
-                        "status": "projected",
-                        "render_interval": {"start": at, "end": at + hold},
-                        "timing_basis": "shot_script",
-                        "word_aligned": False,
-                        "binding_id": binding.get("binding_id"),
-                        "head": binding.get("head"),
-                        "media_id": binding.get("media_id"),
-                    })
+                # The review caption is a phrase at a time, never the whole
+                # chapter script: phrases are timed to the VO word timings
+                # when present, else split and distributed over the shot.
+                from astrid.core.timeline.review_captions import review_speech_phrases, vo_words_for_occurrence
+
+                voice_bindings = [
+                    binding for binding in review_bindings.get(shot_id, [])
+                    if binding.get("kind") == "voiceover_script"
+                    and isinstance(binding.get("text"), str) and binding["text"].strip()
+                ]
+                voice = max(voice_bindings, key=lambda item: int(item.get("head") or 0), default=None)
+                review_phrases.extend(review_speech_phrases(
+                    occurrence_id=occurrence_id,
+                    shot_id=shot_id,
+                    shot_start=at,
+                    shot_end=at + hold,
+                    words=vo_words_for_occurrence(raw_clips, occurrence_id),
+                    script_text=voice["text"] if voice is not None else None,
+                    binding=voice,
+                ))
 
         if any(
             isinstance(clip, Mapping) and clip.get("clipType") == "shot"
