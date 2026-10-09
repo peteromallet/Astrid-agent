@@ -22,6 +22,7 @@ interior, and the dark 1 px outline are kept.
 - `fit` (default `contain`): fit used with an explicit grid. `contain` keeps the whole subject.
 - `trim` (default `true`) and `trim_padding` (default 2): crop to the alpha bounding box.
 - `keep_largest` (default `true`): drop detached specks smaller than 5% of the largest component.
+- `holes` (default `false`): also remove key-coloured pixels enclosed by the sprite (magenta showing between a tower's legs or inside a chain link). Without it they stay and a later palette snap maps them to the nearest art colour.
 
 ## Outputs
 

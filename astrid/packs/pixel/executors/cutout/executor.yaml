@@ -7,8 +7,8 @@ short_description: Remove a flat, chroma-key, or light background into hard-alph
 description: >-
   Crops (optional), optionally snaps to a logical grid first (grid=auto or WxH), then
   removes the background: chroma (key colour, default magenta), flat (dominant border
-  colour detected automatically), or luma (light backdrop). Only background connected to
-  the border is removed, so enclosed key-coloured pixels and the dark outline survive.
+  colour), or luma (light backdrop). Background connected to the border is removed;
+  holes=true also removes enclosed key colour. The dark outline survives.
   Alpha is strictly 0 or 255. Optionally trims to the alpha bounding box with padding and
   drops small detached specks. Outputs an RGBA PNG and a JSON report.
 keywords: [pixel, pixel-art, cutout, transparency, chroma-key, background-removal, alpha, sprite]
@@ -61,6 +61,11 @@ inputs:
     required: false
     default: true
     description: Drop detached specks smaller than 5% of the largest foreground component.
+  - name: holes
+    type: boolean
+    required: false
+    default: false
+    description: Also remove key-coloured pixels enclosed by the sprite (gaps between legs, chain links). For chroma keys that never occur in the art.
 outputs:
   - name: cutout
     type: file
@@ -95,6 +100,8 @@ command:
     - "{trim_padding}"
     - "--keep-largest"
     - "{keep_largest}"
+    - "--holes"
+    - "{holes}"
   input_args:
     - input: crop
       flag: "--crop"

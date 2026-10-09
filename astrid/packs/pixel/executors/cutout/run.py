@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trim", type=_boolean, default=True)
     parser.add_argument("--trim-padding", type=int, default=2)
     parser.add_argument("--keep-largest", type=_boolean, default=True)
+    parser.add_argument("--holes", type=_boolean, default=False, help="Also remove key-coloured pixels enclosed by the sprite.")
     return parser
 
 
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             trim=bool(args.trim),
             trim_padding=int(args.trim_padding),
             keep_largest=bool(args.keep_largest),
+            holes=bool(args.holes),
         )
         report["crop"] = crop
         report["source_size"] = {"width": int(source_arr.shape[1]), "height": int(source_arr.shape[0])}
@@ -93,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                 "fit": args.fit,
                 "trim": bool(args.trim),
                 "keep_largest": bool(args.keep_largest),
+                "holes": bool(args.holes),
             },
             outputs=[
                 {"name": "cutout", "path": "cutout.png", "type": "file", "artifact_type": "image", "role": "result", "is_primary": True},

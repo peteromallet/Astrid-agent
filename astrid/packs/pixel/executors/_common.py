@@ -602,11 +602,15 @@ def cutout_image(
     trim: bool = True,
     trim_padding: int = 2,
     keep_largest: bool = True,
+    holes: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Remove a background into hard alpha. Returns (rgba, report).
 
     Background = candidate pixels connected to the image border. Pixels inside
-    the sprite (for example magenta enclosed by an outline) are never removed.
+    the sprite (for example magenta enclosed by an outline) are kept, unless
+    ``holes`` is true: then every candidate pixel is background, so the key
+    colour showing through gaps (between a tower's legs, inside a chain link)
+    is removed too. Use it for chroma keys that never occur in the art.
     Alpha is strictly 0 or 255. When ``grid`` is set the cutout runs on the
     snapped native image, so every logical pixel is either fully in or out.
     """
@@ -658,8 +662,9 @@ def cutout_image(
         candidate = (luminance >= 255 - tolerance) | transparent
         report["key"] = None
 
-    background = _border_connected(candidate)
+    background = candidate.copy() if holes else _border_connected(candidate)
     foreground = ~background
+    report["holes"] = bool(holes)
     report["background_pixels"] = int(background.sum())
 
     specks = {"components": 0, "pixels": 0}

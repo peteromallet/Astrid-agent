@@ -274,6 +274,16 @@ def test_cutout_keeps_enclosed_key_coloured_pixels() -> None:
     assert rgba[12, 20, 3] == 255
 
 
+def test_cutout_holes_removes_enclosed_key_coloured_pixels() -> None:
+    native = _sprite()
+    native[12, 20, :3] = MAGENTA  # enclosed by the body
+    rgba, report = px.cutout_image(native, mode="chroma", key="#FF00FF", tolerance=48, trim=False, holes=True)
+    assert rgba[12, 20, 3] == 0
+    assert report["holes"] is True
+    outline = _outline_mask()
+    assert int(((rgba[..., 3] == 255) & outline).sum()) == int(outline.sum())
+
+
 def test_cutout_flat_detects_border_colour_and_removes_it() -> None:
     native = _sprite()
     native[..., :3] = np.where(np.all(native[..., :3] == MAGENTA, axis=2, keepdims=True), (0x12, 0xAB, 0x34), native[..., :3])
