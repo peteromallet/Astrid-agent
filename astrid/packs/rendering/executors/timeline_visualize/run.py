@@ -259,6 +259,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--window", dest="window_s", type=float, help="window width in seconds around --at")
     parser.add_argument("--rules", help="project rules JSON resolved by the client (thresholds, severities)")
     parser.add_argument("--cuts", help="contact view: only these cut numbers (comma-separated)")
+    parser.add_argument("--render-every", dest="render_every", type=float, default=None,
+                        help="contact view with a render: seconds between sampled frames (default 5)")
     parser.add_argument("--preview", action="store_true", default=False,
                         help="motion view: also write an animated GIF of the cut for humans (no extra capture)")
     parser.add_argument(

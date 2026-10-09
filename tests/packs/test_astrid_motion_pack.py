@@ -13,7 +13,7 @@ SKILL = PACK / "skill" / "SKILL.md"
 SHARED = PACK / "elements" / "_shared" / "am.tsx"
 ELEMENTS = {
     element_id: PACK / "elements" / "effects" / element_id
-    for element_id in ("am-snap-plate", "am-sprite", "am-type", "am-callout", "am-pixel-wipe")
+    for element_id in ("am-snap-plate", "am-sprite", "am-type", "am-callout", "am-pixel-wipe", "am-pixel-shape")
 }
 
 

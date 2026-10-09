@@ -1705,6 +1705,12 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         index['frame_capture'] = capture_info
         index['provenance']['frame_capture'] = capture_info
     capture_ended_at = time.time()
+    if options.get('view') == 'contact' and video_path is not None:
+        # Render review: sample the rendered file itself and measure its audio.
+        from .render_review import review_render
+        review = review_render(video_path, out_root, every=float(options.get('render_every') or 5.0))
+        index['render_review'] = review
+        index['provenance']['render_review'] = {'contact': review['contact'], 'json': 'render-review.json'}
     media_record = None
     if options.get('include_media'):
         if video_path is None:

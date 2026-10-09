@@ -133,6 +133,15 @@ def beats_value(value: Any) -> dict[str, Any] | None:
     return out
 
 
+def _render_every(value: Any) -> float:
+    """Seconds between frames sampled from the rendered video (default 5, 0.5 to 60)."""
+    if value in (None, ''):
+        return 5.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0.5 <= value <= 60:
+        raise ValueError('render_every must be a number of seconds from 0.5 to 60')
+    return float(value)
+
+
 def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize only public controls; never accept an unbounded sampling job."""
     # Component/target grammar is shared with SDK admission. Keep the
@@ -209,6 +218,8 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         # Occurrence is the canonical placement selector. Keep it distinct
         # from shot/clip aliases so repeated shots remain addressable.
         'occurrence': shared['occurrence'],
+        # Render review (contact view with a render): seconds between sampled frames.
+        'render_every': _render_every(values.get('render_every')),
     })
     # Keep omission distinguishable from an explicit page-size override. The
     # paired renderer uses that distinction to make the normal input+output

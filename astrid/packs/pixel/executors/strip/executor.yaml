@@ -1,0 +1,93 @@
+schema_version: 1
+id: pixel.strip
+name: Pixel Strip
+kind: built_in
+version: 1.0.0
+short_description: Pack same-grid pixel frames into one horizontal sprite strip with am-sprite frame metadata.
+description: >-
+  Joins an ordered list of managed frame images on one shared logical grid into one
+  horizontal RGBA strip, snapping each frame as pixel.snap does. Frames with no grid
+  set must share one size. Outputs the strip and a metadata JSON whose am_sprite_frames
+  block is the am-sprite frames param, so the loop stays editable by handle.
+keywords: [pixel, sprite, strip, frames, animation, loop, grid, sprite-sheet, run-cycle]
+inputs:
+  - name: frame
+    type: file
+    required: true
+    repeatable: true
+    artifact_type: image
+    description: Ordered managed image handles, one per frame. Repeat the input or pass a list. Order is playback order.
+  - name: grid_width
+    type: integer
+    required: false
+    default: 0
+    description: Shared logical grid width in cells. 0 uses the frames' own size (they must match).
+  - name: grid_height
+    type: integer
+    required: false
+    default: 0
+    description: Shared logical grid height in cells. 0 uses the frames' own size (they must match).
+  - name: fit
+    type: string
+    required: false
+    default: cover
+    description: "How a frame is fitted to an explicit grid: cover, contain or none (as pixel.snap)."
+  - name: palette
+    type: string
+    required: false
+    description: Preset name (astrid) or comma-separated hex colours, applied to every frame so the strip shares one palette.
+  - name: max_colors
+    type: integer
+    required: false
+    description: Quantise all frames to this many colours (2-256) when no palette is given.
+  - name: fps
+    type: number
+    required: false
+    default: 8
+    description: Playback rate written to the metadata. am-sprite frames advance at this rate.
+outputs:
+  - name: strip
+    type: file
+    path_template: "{out}/strip.png"
+    artifact_type: image
+    description: Horizontal RGBA strip, frames left to right, hard alpha, on the shared grid.
+  - name: metadata
+    type: file
+    path_template: "{out}/strip.json"
+    artifact_type: null
+    description: Frame size, count, fps and the am_sprite_frames block for am-sprite.
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.pixel.executors.strip.run
+    - "--out"
+    - "{out}"
+    - "--grid-width"
+    - "{grid_width}"
+    - "--grid-height"
+    - "{grid_height}"
+    - "--fit"
+    - "{fit}"
+    - "--fps"
+    - "{fps}"
+  input_args:
+    - input: frame
+      flag: "--frame"
+      repeatable: true
+    - input: palette
+      flag: "--palette"
+      optional: true
+    - input: max_colors
+      flag: "--max-colors"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.pixel.executors.strip.run
+  output_result_manifest: true

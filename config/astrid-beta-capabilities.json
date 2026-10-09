@@ -1107,6 +1107,16 @@
    "required_packages": ["PIL", "numpy"]
   },
   {
+   "id": "pixel.strip",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy grid snap and horizontal strip join of same-grid frames; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": ["PIL", "numpy"]
+  },
+  {
    "id": "pixel.snap",
    "disposition": "optional",
    "evidence_reason": "Local Pillow/numpy pixel-grid snap and palette quantize; no network, no GPU.",

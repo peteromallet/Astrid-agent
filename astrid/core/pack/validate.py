@@ -584,6 +584,7 @@ class PackValidator:
                 self._validate_component_manifest_file(
                     pack, comp_dir, manifest_path, "orchestrator"
                 )
+        self._validate_discovery_folders(pack)
         for kind, elem_dir in iter_element_roots(pack):
             manifest_path = find_component_manifest(elem_dir, "element")
             if manifest_path is not None:
@@ -647,6 +648,8 @@ class PackValidator:
         version = self._validate_manifest(data, manifest_kind, rel)
         if version is None:
             return
+        if manifest_kind in ("executor", "orchestrator"):
+            self._validate_discovery_loader(component_dir, manifest_kind)
         component_id = data.get("id")
         if isinstance(component_id, str):
             self._register_capability_id(component_id, rel)
@@ -670,6 +673,49 @@ class PackValidator:
         stage_path = component_dir / stage
         if not stage_path.is_file():
             self.warnings.append(f"{self._rel(stage_path)}: STAGE.md not found")
+
+    def _validate_discovery_folders(self, pack: PackDefinition) -> None:
+        """Load every executor/orchestrator folder discovery would find under this pack.
+
+        Discovery scans the whole packs root for executor and orchestrator folders,
+        not only the declared content roots, so a stray folder with an executor.py
+        that discovery cannot load is silently skipped. Folders already validated
+        through their declared content root are not loaded twice.
+        """
+        from astrid.core.execution.executor.folder import discover_folder_executor_roots
+        from astrid.core.execution.orchestrator.folder import discover_folder_orchestrator_roots
+
+        checked: set[Path] = set()
+        for comp_dir in iter_executor_roots(pack):
+            if find_component_manifest(comp_dir, "executor") is not None:
+                checked.add(comp_dir.resolve())
+        for comp_dir in iter_orchestrator_roots(pack):
+            if find_component_manifest(comp_dir, "orchestrator") is not None:
+                checked.add(comp_dir.resolve())
+        for folder in discover_folder_executor_roots(pack.root):
+            if folder.resolve() not in checked:
+                self._validate_discovery_loader(folder, "executor")
+        for folder in discover_folder_orchestrator_roots(pack.root):
+            if folder.resolve() not in checked:
+                self._validate_discovery_loader(folder, "orchestrator")
+
+    def _validate_discovery_loader(self, component_dir: Path, manifest_kind: str) -> None:
+        """Run the same folder loader discovery uses for one executor or orchestrator.
+
+        Discovery (``GenericPackHost.discover`` / ``admit``) skips a manifest its
+        loader rejects, so a description over the shared limit would vanish at
+        runtime while ``packs validate`` passed. The loader's message already names
+        the manifest file, the id, the field, the length and the limit, so it is
+        recorded as-is; the validator and doctor print the identical text.
+        """
+        if manifest_kind == "executor":
+            from astrid.core.execution.executor.folder import load_folder_executor as load_one
+        else:
+            from astrid.core.execution.orchestrator.folder import load_folder_orchestrator as load_one
+        try:
+            load_one(component_dir)
+        except (OSError, ValueError) as exc:
+            self.errors.append(str(exc))
 
     def _validate_runtime_definition(
         self, data: dict[str, Any], manifest_kind: str, rel: str

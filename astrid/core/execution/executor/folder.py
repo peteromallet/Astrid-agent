@@ -72,7 +72,8 @@ def _load_folder_executor_definitions(executor_root: str | Path) -> tuple[Execut
             for definition in load_executor_manifest_definitions(manifest_path):
                 definitions.append(_attach_folder_metadata(definition, root, manifest_path))
         except ExecutorValidationError as exc:
-            raise FolderExecutorError(f"{manifest_path}: {exc}") from exc
+            # load_executor_manifest_definitions already names the manifest path.
+            raise FolderExecutorError(str(exc)) from exc
         if not definitions:
             raise FolderExecutorError(f"folder executor manifest emitted no metadata for {manifest_path}")
         return tuple(definitions)
