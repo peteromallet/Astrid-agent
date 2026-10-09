@@ -14,31 +14,31 @@ on without opening an image:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..layers.base import Finding
 from . import model
 
-MIN_TEXT_PX = 32.0
-SYNC_TOLERANCE_S = 0.10
-SYNC_SEARCH_S = 0.35
-SHORT_CUT_S = 0.5
-HOLD_S = 2.5
-FACE_FRACTION = 0.05
+# Defaults; every one is a threshold key a project rules file may set
+# (astrid-lint.toml), read through ``params``.
+DEFAULTS = {
+    "min_text_px": 32.0,
+    "stamp_to_word_max_s": 0.10,
+    "sync_search_s": 0.35,
+    "short_cut_s": 0.5,
+    "hold_s": 2.5,
+    "face_fraction": 0.05,
+    "beat_near_miss_s": 0.2,
+}
+MIN_TEXT_PX = DEFAULTS["min_text_px"]
 SETTLE_S = 0.4
 
+__all__ = ["Finding", "DEFAULTS", "composition", "timing", "lint_cuts"]
 
-@dataclass(frozen=True)
-class Finding:
-    code: str
-    cut: int
-    t: float  # timeline seconds
-    message: str
-    severity: str = "warn"  # warn | info
 
-    def line(self, cut_start: float | None = None) -> str:
-        rel = f" {self.t - cut_start:+.2f}s" if cut_start is not None else ""
-        return f"{self.code:<6} cut {self.cut}{rel} {self.message}"
+def _p(params: Mapping[str, Any] | None, key: str) -> float:
+    value = (params or {}).get(key)
+    return float(DEFAULTS[key] if value is None else value)
 
 
 def _z(element: model.Element, track_order: Sequence[str]) -> int:
@@ -65,20 +65,22 @@ def _sample_times(cut: Mapping[str, Any], elements: Sequence[model.Element], fps
     return sorted(t for t in times if start <= t <= last)
 
 
-def _fit_hint(box: model.Box, side: str, overshoot: float) -> str:
-    """``; set params.x ≤ 1104`` for a text/card box whose position is params.x/y in screen px."""
+def _fit_hint(box: model.Box, side: str, overshoot: float) -> tuple[str, dict | None]:
+    """``; set params.x ≤ 1104`` (and the matching fix) for a text/card box placed by params.x/y px."""
     params = box.element.params
     if side in ("left", "right") and isinstance(params.get("x"), (int, float)):
         target = params["x"] - overshoot if side == "right" else params["x"] + overshoot
-        return f"; set params.x {'≤' if side == 'right' else '≥'} {target:.0f}"
+        return (f"; set params.x {'≤' if side == 'right' else '≥'} {target:.0f}",
+                {"clip": box.element.short_id, "set": {"params.x": round(target)}})
     if side in ("top", "bottom") and isinstance(params.get("y"), (int, float)):
         target = params["y"] - overshoot if side == "bottom" else params["y"] + overshoot
-        return f"; set params.y {'≤' if side == 'bottom' else '≥'} {target:.0f}"
-    return ""
+        return (f"; set params.y {'≤' if side == 'bottom' else '≥'} {target:.0f}",
+                {"clip": box.element.short_id, "set": {"params.y": round(target)}})
+    return "", None
 
 
-def _clear_face(box: model.Box, face: model.Box) -> str:
-    """The smallest move that clears the face box, in the element's own units."""
+def _clear_face(box: model.Box, face: model.Box) -> tuple[str, dict | None]:
+    """The smallest move that clears the face box, in the element's own units (and the fix)."""
     moves = {
         "left": box.rect[2] - face.rect[0], "right": face.rect[2] - box.rect[0],
         "down": face.rect[3] - box.rect[1], "up": box.rect[3] - face.rect[1],
@@ -90,39 +92,64 @@ def _clear_face(box: model.Box, face: model.Box) -> str:
     sign = -1 if side in ("left", "up") else 1
     if box.element.type == "am-sprite" and isinstance(params.get(axis), (int, float)):
         steps = -(-distance // model.LOGICAL_PX)
-        return f"; clear it: params.{axis} {params[axis]:g} → {params[axis] + sign * steps:g} (logical px)"
+        value = params[axis] + sign * steps
+        return (f"; clear it: params.{axis} {params[axis]:g} → {value:g} (logical px)",
+                {"clip": box.element.short_id, "set": {f"params.{axis}": value}})
     if isinstance(params.get(axis), (int, float)):
-        return f"; clear it: params.{axis} {params[axis]:g} → {params[axis] + sign * distance:.0f}"
-    return f"; clear it: move {distance:.0f} px {side}"
+        value = round(params[axis] + sign * distance)
+        return (f"; clear it: params.{axis} {params[axis]:g} → {value:.0f}",
+                {"clip": box.element.short_id, "set": {f"params.{axis}": value}})
+    return f"; clear it: move {distance:.0f} px {side}", None
+
+
+def _data_faces(tracks: Sequence[Any], t: float) -> list[model.Box]:
+    """Face boxes from data tracks named ``face`` (a face tracker's boxes on real footage)."""
+    found = []
+    for track in tracks:
+        if track.name == "face" and track.kind == "boxes":
+            for rect in track.boxes_at(t):
+                stub = model.Element(track.clip_id, "face-track", "", t, t, {}, {})
+                found.append(model.Box(stub, "face", rect, "tracked face"))
+    return found
 
 
 def composition(
     cut: Mapping[str, Any], elements: Sequence[model.Element], fps: float, *,
-    track_order: Sequence[str] = (), min_text_px: float = MIN_TEXT_PX,
+    track_order: Sequence[str] = (), min_text_px: float | None = None,
+    params: Mapping[str, Any] | None = None, tracks: Sequence[Any] = (),
 ) -> list[Finding]:
-    """FACE / SAFE / SMALL / COVER / EDGE for one cut."""
+    """FACE / FRAME / SAFE / SMALL / COVER / EDGE for one cut.
+
+    A ``face`` boxes data track (real footage) wins over faces derived from
+    presenter anchors.
+    """
     index = int(cut["index"])
     title = model.safe_rect(model.TITLE_SAFE)
+    min_text_px = float(min_text_px) if min_text_px is not None else _p(params, "min_text_px")
+    face_fraction = _p(params, "face_fraction")
     found: dict[tuple[str, str, str], Finding] = {}
 
-    def add(code: str, key: str, t: float, message: str, severity: str = "warn") -> None:
-        found.setdefault((code, key, message.split(" (")[0]), Finding(code, index, t, message, severity))
+    def add(code: str, key: str, t: float, message: str, severity: str = "warn", fix: dict | None = None) -> None:
+        found.setdefault((code, key, message.split(" (")[0]), Finding(code, index, t, message, severity, fix, "composition"))
 
     for t in _sample_times(cut, elements, fps):
         boxes = [box for element in elements for box in model.boxes_at(element, t, fps)]
-        faces = [box for box in boxes if box.kind == "face"]
+        tracked = _data_faces(tracks, t)
+        faces = tracked or [box for box in boxes if box.kind == "face"]
         for box in boxes:
             if box.kind in ("plate", "face"):
                 continue
             for face in faces:
                 overlap = model.intersection(box.rect, face.rect)
                 share = overlap / max(1.0, model.area(face.rect))
-                if share >= FACE_FRACTION:
+                if share >= face_fraction:
                     x0, y0, x1, y1 = face.rect
+                    hint, fix = _clear_face(box, face)
+                    whose = "tracked face" if face.label == "tracked face" else "presenter face"
                     add("FACE", box.element.id, t,
-                        f"{box.label} covers {share:.0%} of the presenter face "
+                        f"{box.label} covers {share:.0%} of the {whose} "
                         f"(face {x0:.0f},{max(0, y0):.0f}–{x1:.0f},{min(1080, y1):.0f}; {box.kind} "
-                        f"{box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f}){_clear_face(box, face)}")
+                        f"{box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f}){hint}", fix=fix)
             if box.kind in ("text", "card"):
                 off = max(-box.rect[0], -box.rect[1], box.rect[2] - model.CANVAS[0], box.rect[3] - model.CANVAS[1])
                 if off > 2:
@@ -134,8 +161,9 @@ def composition(
                 }
                 worst = max(out, key=lambda side: out[side])
                 if out[worst] > 2:
+                    hint, fix = _fit_hint(box, worst, out[worst])
                     add("SAFE", box.element.id, t, f"{box.label} is {out[worst]:.0f} px outside title-safe ({worst})"
-                        f"{_fit_hint(box, worst, out[worst])}")
+                        f"{hint}", fix=fix)
             if box.text_px is not None and box.text_px < min_text_px:
                 what = "body text" if box.kind == "card" else "text"
                 add("SMALL", box.element.id, t, f"{box.label} {what} {box.text_px:.0f} px < {min_text_px:.0f} px at 1080p")
@@ -198,13 +226,21 @@ def _accent_events(cut: Mapping[str, Any], elements: Sequence[model.Element], fp
 def timing(
     cut: Mapping[str, Any], elements: Sequence[model.Element], words: Sequence[model.Word], fps: float, *,
     beats: Mapping[str, list] | None = None, sfx: Sequence[tuple[float, float, str]] = (),
+    params: Mapping[str, Any] | None = None,
 ) -> list[Finding]:
     """SYNC / BEAT / SFX / SHORT / HOLD for one cut (data only)."""
     index = int(cut["index"])
     start, end = float(cut["start"]), float(cut["end"])
+    tolerance, search = _p(params, "stamp_to_word_max_s"), _p(params, "sync_search_s")
+    short, hold = _p(params, "short_cut_s"), _p(params, "hold_s")
+    near_miss = _p(params, "beat_near_miss_s")
     found: list[Finding] = []
-    if end - start < SHORT_CUT_S - 1e-6:
-        found.append(Finding("SHORT", index, start, f"{end - start:.2f} s (< {SHORT_CUT_S} s)"))
+
+    def finding(code: str, t: float, message: str, severity: str = "warn", fix: dict | None = None) -> Finding:
+        return Finding(code, index, t, message, severity, fix, "timing")
+
+    if end - start < short - 1e-6:
+        found.append(finding("SHORT", start, f"{end - start:.2f} s (< {short:g} s)"))
     accents = _accent_events(cut, elements, fps)
     onsets = [w for w in words if start - 0.5 <= w.start <= end + 0.5]
     for event in accents:
@@ -214,11 +250,14 @@ def timing(
         if word is None:
             continue
         offset = event.t - word.start
-        if SYNC_TOLERANCE_S < abs(offset) <= SYNC_SEARCH_S:
+        if tolerance < abs(offset) <= search:
             side = "after" if offset > 0 else "before"
-            found.append(Finding("SYNC", index, event.t,
+            fix = {"clip": event.element.rsplit(":", 1)[-1], "move_s": round(-offset, 3)}
+            if event.kind == "key":
+                fix["key"] = event.label
+            found.append(finding("SYNC", event.t,
                                  f"{event.label} {event.kind}s {abs(offset):.2f} s {side} \"{word.text}\" "
-                                 f"(onset {word.start:.2f}; move {-offset:+.2f} s){_next_word(onsets, word)}"))
+                                 f"(onset {word.start:.2f}; move {-offset:+.2f} s){_next_word(onsets, word)}", fix=fix))
     # Music accents: hits (stab/thud/blip) and downbeats. A near miss (0.1–0.2 s)
     # reads as late/early; further away it is simply not on the beat.
     marks = [(t, kind) for t, kind in (beats or {}).get("hits") or []]
@@ -228,15 +267,15 @@ def timing(
             break
         mark, kind = min(marks, key=lambda m: abs(m[0] - event.t))
         offset = event.t - mark
-        if SYNC_TOLERANCE_S < abs(offset) <= 0.2:
-            found.append(Finding("BEAT", index, event.t,
+        if tolerance < abs(offset) <= near_miss:
+            found.append(finding("BEAT", event.t,
                                  f"{event.label} is {offset:+.2f} s off the music {kind} at {mark:.2f}", "info"))
     for hit_start, _hit_end, name in sfx:
         if not start - 1e-6 <= hit_start < end:
             continue
         visual = min(accents, key=lambda e: abs(e.t - hit_start), default=None)
-        if visual is not None and SYNC_TOLERANCE_S < abs(hit_start - visual.t) <= SYNC_SEARCH_S:
-            found.append(Finding("SFX", index, hit_start,
+        if visual is not None and tolerance < abs(hit_start - visual.t) <= search:
+            found.append(finding("SFX", hit_start,
                                  f"sfx {name} at {hit_start:.2f} is {hit_start - visual.t:+.2f} s from {visual.label} "
                                  f"{visual.kind} ({visual.t:.2f})"))
     if not cut.get("deliberate_hold"):
@@ -245,8 +284,8 @@ def timing(
         if not talking:
             gaps = [(b - a, a) for a, b in zip(moments, moments[1:])]
             longest, at = max(gaps, default=(0.0, start))
-            if longest >= HOLD_S:
-                found.append(Finding("HOLD", index, at,
+            if longest >= hold:
+                found.append(finding("HOLD", at,
                                      f"{longest:.2f} s with no element event and no presenter "
                                      "(not marked deliberate_hold; check stillness in --view motion)"))
     return sorted(found, key=lambda f: (f.t, f.code))
@@ -254,15 +293,16 @@ def timing(
 
 def lint_cuts(
     cuts: Iterable[Mapping[str, Any]], elements: Sequence[model.Element], fps: float, *,
-    track_order: Sequence[str] = (), beats: Mapping[str, Any] | None = None, min_text_px: float = MIN_TEXT_PX,
+    track_order: Sequence[str] = (), beats: Mapping[str, Any] | None = None,
+    min_text_px: float | None = None, params: Mapping[str, Any] | None = None,
+    severity: Mapping[str, str] | None = None,
 ) -> list[tuple[Mapping[str, Any], list[Finding]]]:
-    words = model.words(elements)
-    sfx = model.sfx(elements)
-    results = []
-    for cut in cuts:
-        inside = model.in_window(elements, float(cut["start"]), float(cut["end"]))
-        mapped = model.timeline_beats(beats, elements, float(cut["start"]) - 0.5, float(cut["end"]) + 0.5)
-        findings = composition(cut, inside, fps, track_order=track_order, min_text_px=min_text_px)
-        findings += timing(cut, inside, words, fps, beats=mapped, sfx=sfx)
-        results.append((cut, sorted(findings, key=lambda f: (f.t, f.code))))
-    return results
+    """Every registered doc check (built-in and pack) over ``cuts``; see ``conditions.run_checks``."""
+    from .conditions import run_checks
+
+    merged = dict(params or {})
+    if min_text_px is not None:
+        merged["min_text_px"] = min_text_px
+    per_cut, _timeline = run_checks(list(cuts), elements, fps, track_order=track_order, beats=beats,
+                                    params=merged, severity=severity)
+    return per_cut

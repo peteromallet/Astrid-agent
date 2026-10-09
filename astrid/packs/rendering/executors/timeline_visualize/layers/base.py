@@ -24,13 +24,101 @@ class LayerResult:
     page: str = "data"  # "data" (time-aligned page) or "frames" (pixel page)
 
 
+SEVERITIES = ("error", "warn", "info")
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One condition result: what, where, how bad, and (when known) the exact fix.
+
+    ``fix`` is machine-applicable: ``{"clip": id, "set": {"params.x": 1104}}``,
+    ``{"clip": id, "move_s": 0.12}`` or ``{"clip": id, "set": {"volume": 0.8}}``.
+    """
+
+    code: str
+    cut: int | None
+    t: float | None  # timeline seconds
+    message: str
+    severity: str = "warn"
+    fix: Mapping[str, Any] | None = None
+    check: str = ""
+
+    def line(self, cut_start: float | None = None) -> str:
+        where = f" cut {self.cut}" if self.cut is not None else " timeline"
+        rel = f" {self.t - cut_start:+.2f}s" if cut_start is not None and self.t is not None else (
+            f" {self.t:.2f}s" if self.t is not None and self.cut is None else "")
+        return f"{self.code:<6}{where}{rel} {self.message}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "severity": self.severity, "cut": self.cut,
+                "t": None if self.t is None else round(self.t, 3), "message": self.message,
+                "fix": dict(self.fix) if self.fix else None, "check": self.check}
+
+
+@dataclass
+class CheckContext:
+    """What a check reads. Per-cut checks get ``cut``; timeline checks get ``cut=None``.
+
+    ``params`` holds every threshold (defaults merged with the project rules
+    file); ``tracks`` are the data tracks in reach (``motion.data``); ``frames``
+    is non-empty only inside ``visualize --view motion``.
+    """
+
+    cut: Mapping[str, Any] | None
+    cuts: Sequence[Mapping[str, Any]]
+    fps: float
+    elements: list[Any]
+    all_elements: list[Any]
+    words: list[Any]
+    beats: Mapping[str, list]
+    sfx: list[tuple[float, float, str]]
+    tracks: list[Any]
+    params: Mapping[str, Any]
+    track_order: Sequence[str] = ()
+    frames: Mapping[int, Path] = field(default_factory=dict)
+    shared: dict[str, Any] = field(default_factory=dict)
+
+    def param(self, key: str) -> Any:
+        return self.params.get(key)
+
+    def finding(self, code: str, message: str, *, t: float | None = None, severity: str = "warn",
+                fix: Mapping[str, Any] | None = None) -> Finding:
+        """A finding for this context's cut (``t`` defaults to the cut start)."""
+        cut = int(self.cut["index"]) if self.cut else None
+        if t is None and self.cut:
+            t = float(self.cut["start"])
+        return Finding(code, cut, t, message, severity, fix)
+
+
+@dataclass(frozen=True)
+class Check:
+    """A condition. ``run(ctx) -> iterable of Finding`` (use ``ctx.finding(...)``).
+
+    ``params`` maps each threshold key to its default (``None`` = off until a
+    rules file sets it); keys are shared across checks, so one ``min_text_px``
+    feeds every check that reads it. ``scope`` is "cut" (run per cut) or
+    "timeline" (once). ``needs=("frames",)`` runs only where frames exist
+    (``visualize --view motion``); doc checks also run in ``timelines lint``.
+    """
+
+    name: str
+    help: str
+    run: Callable[[CheckContext], Any]
+    params: Mapping[str, Any] = field(default_factory=dict)
+    scope: str = "cut"
+    needs: tuple[str, ...] = ("doc",)
+    codes: tuple[str, ...] = ()
+    source: str = "built-in"
+
+
 @dataclass(frozen=True)
 class Layer:
     """A registered view.
 
     ``render(ctx) -> LayerResult``. ``frame_budget`` is the number of extra
     frames the layer asks the planner for (the whole sheet is capped).
-    ``experimental`` layers run only when named explicitly.
+    ``experimental`` layers run only when named explicitly. ``checks`` are
+    conditions shipped with the view (registered with it).
     """
 
     name: str
@@ -43,21 +131,59 @@ class Layer:
     order: int = 100
     source: str = "built-in"
     default: bool = True  # runs when no --layer is given (experimental layers never do)
+    checks: tuple[Check, ...] = ()
 
 
 _REGISTRY: dict[str, Layer] = {}
+_CHECKS: dict[str, Check] = {}
 _BROKEN: dict[str, str] = {}
 _DISCOVERED = False
 
 
+def _short_word(kind: str, name: str) -> None:
+    if not name or not name.replace("-", "").replace("_", "").isalnum():
+        raise ValueError(f"{kind} name {name!r} must be a short word (letters, digits, - or _)")
+
+
+def register_check(check: Check) -> Check:
+    _short_word("check", check.name)
+    if check.scope not in ("cut", "timeline"):
+        raise ValueError(f"check {check.name!r}: scope must be 'cut' or 'timeline'")
+    unknown = set(check.needs) - set(NEEDS)
+    if unknown:
+        raise ValueError(f"check {check.name!r} needs unknown inputs: {sorted(unknown)}")
+    for key, default in check.params.items():
+        for other in _CHECKS.values():
+            if other.name != check.name and key in other.params and other.params[key] != default:
+                raise ValueError(f"check {check.name!r}: param {key!r} default {default!r} conflicts with "
+                                 f"{other.name!r} ({other.params[key]!r}); share one default or rename the key")
+    _CHECKS[check.name] = check
+    return check
+
+
 def register(layer: Layer) -> Layer:
-    if not layer.name or not layer.name.replace("-", "").replace("_", "").isalnum():
-        raise ValueError(f"layer name {layer.name!r} must be a short word")
+    _short_word("layer", layer.name)
     unknown = set(layer.needs) - set(NEEDS)
     if unknown:
         raise ValueError(f"layer {layer.name!r} needs unknown inputs: {sorted(unknown)}")
     _REGISTRY[layer.name] = layer
+    for check in layer.checks:
+        register_check(Check(**{**check.__dict__, "source": layer.source if check.source == "built-in" else check.source}))
     return layer
+
+
+def checks() -> dict[str, Check]:
+    """Every registered check (built-in and pack-provided)."""
+    discover()
+    return dict(_CHECKS)
+
+
+def check_defaults() -> dict[str, Any]:
+    """Every threshold key any check reads, with its default."""
+    defaults: dict[str, Any] = {}
+    for check in checks().values():
+        defaults.update(check.params)
+    return defaults
 
 
 def _packs_root() -> Path:
@@ -69,7 +195,10 @@ def discover(*, packs_root: Path | None = None, refresh: bool = False) -> dict[s
     global _DISCOVERED
     if _DISCOVERED and not refresh and packs_root is None:
         return dict(_REGISTRY)
-    from . import builtin  # noqa: F401  (registers the built-ins)
+    from . import (
+        builtin,  # noqa: F401  (registers the built-in layers)
+        builtin_checks,  # noqa: F401  (registers the built-in checks)
+    )
 
     root = packs_root or _packs_root()
     for path in sorted(root.glob("*/visualize_layers/*.py")):
@@ -86,11 +215,17 @@ def discover(*, packs_root: Path | None = None, refresh: bool = False) -> dict[s
             layers = list(getattr(module, "LAYERS", None) or [])
             if getattr(module, "LAYER", None) is not None:
                 layers.append(module.LAYER)
-            if not layers:
-                raise ValueError("defines no LAYER")
+            found_checks = list(getattr(module, "CHECKS", None) or [])
+            if getattr(module, "CHECK", None) is not None:
+                found_checks.append(module.CHECK)
+            if not layers and not found_checks:
+                raise ValueError("defines no LAYER, LAYERS, CHECK or CHECKS")
+            source = f"{path.parent.parent.name} pack ({path.relative_to(root.parent.parent).as_posix()})"
             for layer in layers:
-                source = f"{path.parent.parent.name} pack ({path.relative_to(root.parent.parent).as_posix()})"
-                register(Layer(**{**layer.__dict__, "source": source}))
+                register(Layer(**{**layer.__dict__, "source": source,
+                                  "checks": tuple(Check(**{**c.__dict__, "source": source}) for c in layer.checks)}))
+            for check in found_checks:
+                register_check(Check(**{**check.__dict__, "source": source}))
         except Exception as exc:  # noqa: BLE001 - a broken pack layer must not break visualize
             _BROKEN[f"{path.parent.parent.name}/{path.stem}"] = f"{type(exc).__name__}: {exc}"
     _DISCOVERED = True
@@ -140,7 +275,28 @@ def layer_help() -> str:
         lines.append(f"  {layer.name:<9} {layer.help}  [{'; '.join(tags)}]")
     for name, error in sorted(_BROKEN.items()):
         lines.append(f"  (broken) {name}: {error}")
-    lines.append("Add one: a module astrid/packs/<pack>/visualize_layers/<name>.py defining LAYER = Layer(...).")
+    lines.append("Add one: a module astrid/packs/<pack>/visualize_layers/<name>.py defining LAYER = Layer(...) "
+                 "(and CHECK = Check(...) for a condition); see the visualize extension guide.")
+    return "\n".join(lines)
+
+
+def check_help() -> str:
+    """The ``timelines lint --list-checks`` text."""
+    registry = checks()
+    lines = ["Checks (timelines lint runs every doc check; frame checks run in --view motion):"]
+    for check in sorted(registry.values(), key=lambda c: c.name):
+        tags = [check.scope, "needs " + "+".join(check.needs)]
+        if check.codes:
+            tags.append("codes " + ",".join(check.codes))
+        if check.source != "built-in":
+            tags.append("from " + check.source)
+        lines.append(f"  {check.name:<16} {check.help}  [{'; '.join(tags)}]")
+        for key, default in check.params.items():
+            lines.append(f"      {key} = {default!r}" + ("   (off until set)" if default is None else ""))
+    for name, error in sorted(_BROKEN.items()):
+        lines.append(f"  (broken) {name}: {error}")
+    lines.append("Thresholds: astrid-lint.toml (found from the working directory upwards) or --rules FILE, "
+                 "e.g. `max_cut_s = 4` and `[severity] EDGE = \"off\"`.")
     return "\n".join(lines)
 
 
@@ -161,6 +317,7 @@ class LayerContext:
     sfx: list[tuple[float, float, str]] = field(default_factory=list)
     events: list[Any] = field(default_factory=list)  # motion.model.Event in the window
     frames: dict[int, Path] = field(default_factory=dict)  # timeline frame -> captured PNG
+    tracks: list[Any] = field(default_factory=list)  # motion.data.Track: app.data.* on clips in the window (+ derived)
     frame_size: tuple[int, int] = (480, 270)
     width: int = 1600
     gutter: int = 150
@@ -191,7 +348,9 @@ class LayerContext:
         return frame / self.fps
 
     def rel(self, t: float) -> str:
-        """``+1.23s`` relative to the cut start."""
+        """``+1.23s`` relative to the cut start; plain timeline seconds (``7.20s``) for a range window."""
+        if self.cut.get("window"):
+            return f"{t:.2f}s"
         return f"{t - float(self.cut['start']):+.2f}s"
 
     def panel(self, height: int, *, title: str = "", axis: bool = True):

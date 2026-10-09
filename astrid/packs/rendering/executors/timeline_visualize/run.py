@@ -255,6 +255,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beats", help="music beats JSON (beats, downbeats, hits in cue seconds)")
     parser.add_argument("--frame-budget", dest="frame_budget", type=int,
                         help="motion view: maximum captured frames (default 60)")
+    parser.add_argument("--preset", help="window preset: scan, motion, beat, frame or cut")
+    parser.add_argument("--window", dest="window_s", type=float, help="window width in seconds around --at")
+    parser.add_argument("--rules", help="project rules JSON resolved by the client (thresholds, severities)")
+    parser.add_argument("--cuts", help="contact view: only these cut numbers (comma-separated)")
     parser.add_argument("--preview", action="store_true", default=False,
                         help="motion view: also write an animated GIF of the cut for humans (no extra capture)")
     parser.add_argument(

@@ -1214,16 +1214,26 @@ def _render_view(view: str, bundle: Mapping[str, Any], parsed: argparse.Namespac
 
 
 def _cmd_lint(parsed: argparse.Namespace) -> int:
-    """Composition and timing findings for every picture cut, from timeline data (no capture)."""
+    """Every registered check (built-in and pack) over every picture cut, from timeline data (no capture)."""
     from astrid.core.timeline.cuts import (
         bundle_fps,
         find_cut,
         occurrences_from_bundle,
         picture_cuts,
     )
-    from astrid.packs.rendering.executors.timeline_visualize.motion import lint as lint_rules
+    from astrid.packs.rendering.executors.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.executors.timeline_visualize.motion import model
+    from astrid.packs.rendering.executors.timeline_visualize.motion.conditions import run_checks
+    from astrid.packs.rendering.executors.timeline_visualize.motion.rules import resolve_rules
 
+    if getattr(parsed, "list_checks", False):
+        print(check_help())
+        return 0
+    try:
+        rules = resolve_rules(getattr(parsed, "rules", None), search=not getattr(parsed, "no_rules", False))
+    except (OSError, ValueError) as exc:
+        print(f"error validation_error: {exc}", file=sys.stderr)
+        return 2
     opener = getattr(parsed.client.timelines, "open_bundle", None)
     if not callable(opener):
         print("error unavailable: this client cannot open a timeline bundle", file=sys.stderr)
@@ -1234,58 +1244,71 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     bundle = opened.data["bundle"]
     fps = bundle_fps(bundle)
     occurrences = occurrences_from_bundle(bundle)
-    cuts = picture_cuts(occurrences, fps=fps)
+    all_cuts = picture_cuts(occurrences, fps=fps)
+    cuts = all_cuts
     try:
         if getattr(parsed, "cut", None):
-            cuts = [find_cut(cuts, parsed.cut)]
+            cuts = [find_cut(all_cuts, parsed.cut)]
         elif getattr(parsed, "range", None):
             from astrid.sdk.timeline_cuts import _parse_range
 
             low, high = _parse_range(parsed.range)
-            cuts = [cut for cut in cuts if cut["end"] > low and cut["start"] < high]
+            cuts = [cut for cut in all_cuts if cut["end"] > low and cut["start"] < high]
         beats = json.loads(_read_beats(parsed.beats)) if getattr(parsed, "beats", None) else None
     except (OSError, ValueError) as exc:
         print(f"error validation_error: {exc}", file=sys.stderr)
         return 2
     elements = model.elements_from_occurrences(occurrences)
     track_order = next((o.get("track_order") for o in occurrences if o.get("track_order")), [])
-    results = lint_rules.lint_cuts(cuts, elements, fps, track_order=track_order, beats=beats,
-                                   min_text_px=float(parsed.min_text_px))
+    params = dict((rules or {}).get("params") or {})
+    if getattr(parsed, "min_text_px", None) is not None:
+        params["min_text_px"] = float(parsed.min_text_px)
+    results, timeline_findings = run_checks(
+        cuts, elements, fps, track_order=track_order, beats=beats, params=params,
+        severity=(rules or {}).get("severity"), disable=(rules or {}).get("disable") or (), all_cuts=all_cuts,
+    )
     if parsed.json:
-        rows = [
-            {"cut": cut["index"], "start": cut["start"], "end": cut["end"], "code": f.code, "severity": f.severity,
-             "t": round(f.t, 3), "message": f.message}
-            for cut, findings in results for f in findings
-        ]
+        rows = [{**f.as_dict(), "cut_start": cut["start"], "cut_end": cut["end"]}
+                for cut, findings in results for f in findings]
+        rows += [f.as_dict() for f in timeline_findings]
         print(json.dumps({"ok": True, "data": {"timeline_id": opened.data.get("timeline_id"),
-                                                "revision_id": opened.data.get("revision_id"), "findings": rows},
+                                                "revision_id": opened.data.get("revision_id"),
+                                                "rules": (rules or {}).get("path"), "findings": rows},
                           "error": None}, indent=2))
         return 0
     counts: dict[str, int] = {}
     info: dict[str, int] = {}
+    rules_line = (f"rules: {rules['path']} ({len(rules['params'])} thresholds, {len(rules['severity'])} severities)"
+                  if rules else "rules: built-in defaults (add astrid-lint.toml to set your own; --list-checks)")
     lines = [
         f"Timeline {opened.data.get('timeline_id')} · {len(results)} cut(s) · revision {opened.data.get('revision_id')}",
-        "Checks from timeline data: FACE (layer over a presenter face), FRAME/SAFE (outside the frame / title-safe), "
-        f"SMALL (text < {parsed.min_text_px:g} px at 1080p), COVER, SYNC (accent 0.10–0.35 s off a word onset), SFX, "
-        "SHORT (< 0.5 s), HOLD (no event for 2.5 s). Pixel stillness: --view motion.",
+        rules_line,
     ]
+    rank = {"error": 0, "warn": 1, "info": 2}
+
+    def emit(finding, start=None) -> None:
+        bucket = info if finding.severity == "info" else counts
+        bucket[finding.code] = bucket.get(finding.code, 0) + 1
+        if finding.severity != "info" or parsed.all:
+            prefix = "ERROR " if finding.severity == "error" else ""
+            lines.append(prefix + finding.line(start))
+
+    for finding in sorted(timeline_findings, key=lambda f: rank.get(f.severity, 3)):
+        emit(finding)
     for cut, findings in results:
         for finding in findings:
-            if finding.severity == "warn":
-                counts[finding.code] = counts.get(finding.code, 0) + 1
-            else:
-                info[finding.code] = info.get(finding.code, 0) + 1
-            if finding.severity == "warn" or parsed.all:
-                lines.append(finding.line(cut["start"]))
+            emit(finding, cut["start"])
     summary = ", ".join(f"{code} {n}" for code, n in sorted(counts.items(), key=lambda item: -item[1])) or "none"
-    lines.append(f"warnings: {summary}" + (
+    lines.append(f"findings: {summary}" + (
         f"; info hidden ({', '.join(f'{c} {n}' for c, n in sorted(info.items()))}; --all shows them)" if info and not parsed.all else ""))
     project = str(parsed.project or "<project>")
     lines.append("see one: " + shlex.join(["python3", "-m", "astrid", "timelines", "visualize", "--project", project,
                                            "--timeline-slug", str(parsed.ref), "--view", "motion", "--cut", "N"])
-                 + "   ·   boxes on tiles: --view contact --layer bounds")
+                 + "   ·   machine-applicable fixes: --json")
     print("\n".join(lines))
-    return 0
+    errors = sum(1 for _cut, fs in results for f in fs if f.severity == "error") + sum(
+        1 for f in timeline_findings if f.severity == "error")
+    return 1 if errors and getattr(parsed, "strict", False) else 0
 
 
 def _cmd_history(parsed: argparse.Namespace) -> int:
@@ -1426,6 +1449,9 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
 
         print(layer_help())
         return 0
+    if getattr(parsed, "preset", None) == "compare" or getattr(parsed, "view", None) == "diff":
+        return _cmd_visualize_diff(parsed)
+    _resolve_view(parsed)
     human_outputs: Mapping[str, Any] | None = None
 
     # Normalize repeatable and comma-separated spellings before the one
@@ -1451,10 +1477,16 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
             inputs[name] = value
     if timeline_slug not in (None, ""):
         inputs["timeline_slug"] = timeline_slug
-    if inputs.get("view") in ("contact", "motion") and not inputs.get("resolution"):
-        # Review scale for the many-frame views (the executor defaults the same;
+    if getattr(parsed, "size", None) and not inputs.get("resolution"):
+        inputs["resolution"] = parsed.size
+    if inputs.get("view") == "contact" and not inputs.get("resolution"):
+        # Review scale for the overview (the executor defaults the same;
         # sending it keeps an older host from capturing at full canvas).
         inputs["resolution"] = "480x270"
+    if inputs.get("view") == "motion":
+        inputs["preset"] = parsed.preset
+        if getattr(parsed, "window_s", None) is not None:
+            inputs["window_s"] = parsed.window_s
     layers = [
         part.strip() for value in (getattr(parsed, "layers", None) or []) + (getattr(parsed, "overlay", None) or [])
         for part in str(value).split(",") if part.strip()
@@ -1467,6 +1499,16 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs["frame_budget"] = parsed.frame_budget
     if getattr(parsed, "preview", False):
         inputs["preview"] = True
+    if inputs.get("view") == "motion":
+        from astrid.packs.rendering.executors.timeline_visualize.motion.rules import resolve_rules
+
+        try:
+            rules = resolve_rules(getattr(parsed, "rules", None), search=not getattr(parsed, "no_rules", False))
+        except (OSError, ValueError) as exc:
+            print(f"error validation_error: {exc}", file=sys.stderr)
+            return 2
+        if rules:
+            inputs["rules"] = json.dumps(rules, separators=(",", ":"))
     if getattr(parsed, "beats", None):
         try:
             inputs["beats"] = _read_beats(parsed.beats)
@@ -1485,6 +1527,8 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         mode = "inputs"
     else:
         mode = getattr(parsed, "mode", "auto")
+    if getattr(parsed, "plan", False):
+        return _visualize_plan(parsed, inputs)
     requested_at = time.time()
     result = parsed.client.timelines.visualize(
         parsed.project,
@@ -1576,6 +1620,142 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     return 0
 
 
+# Flags that only mean something to the paired filmstrip (input lanes, pages).
+_FILMSTRIP_ONLY = ("sample", "show", "hide", "track", "page_size", "include_media", "detail", "render_run",
+                   "occurrence", "clip", "asset", "shot", "context", "neighbors", "include_cuts")
+
+
+def _resolve_view(parsed: argparse.Namespace) -> None:
+    """Fill ``parsed.view``/``parsed.preset`` from what was asked: presets first, then the window given.
+
+    No window → overview; ``--range`` → scan; ``--at``/``--frame`` → frame; ``--cut`` → cut;
+    filmstrip-only flags (``--show``, ``--sample`` …) keep the paired filmstrip.
+    """
+    preset = getattr(parsed, "preset", None)
+    if preset == "overview":
+        parsed.view = "contact"
+        return
+    if preset:
+        parsed.view = "motion"
+        return
+    if parsed.view == "motion" and not getattr(parsed, "cut", None):
+        parsed.preset = "frame" if (parsed.at is not None or parsed.frame is not None) and not parsed.range else "scan"
+        return
+    if parsed.view == "motion":
+        parsed.preset = "cut"
+        return
+    if parsed.view is not None:
+        return
+    if any(getattr(parsed, name, None) not in (None, "", [], False) for name in _FILMSTRIP_ONLY):
+        parsed.view = "filmstrip"
+    elif getattr(parsed, "cut", None):
+        parsed.view, parsed.preset = "motion", "cut"
+    elif parsed.range:
+        parsed.view, parsed.preset = "motion", "scan"
+    elif parsed.at is not None or parsed.frame is not None:
+        parsed.view, parsed.preset = "motion", ("motion" if getattr(parsed, "window_s", None) else "frame")
+    elif parsed.every is not None or parsed.every_frames is not None:
+        parsed.view = "filmstrip"
+    else:
+        parsed.view = "contact"
+
+
+def _cmd_visualize_diff(parsed: argparse.Namespace) -> int:
+    """Before/after tiles for the cuts an edit changed, plus the SCOPE condition (client-side)."""
+    from astrid.packs.rendering.executors.timeline_visualize.motion.diffview import (
+        compare,
+        compose_page,
+        frames_by_cut,
+    )
+
+    old = getattr(parsed, "from_revision", None)
+    if not old:
+        print("error validation_error: --view diff needs --from <revision id> (timelines history / an edit's "
+              ".publication.json old_head)", file=sys.stderr)
+        return 2
+    ref = parsed.timeline_slug or parsed.timeline_ref
+    opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not callable(opener):
+        print("error unavailable: this client cannot open a timeline bundle", file=sys.stderr)
+        return 1
+    before = opener(parsed.project, ref, revision_id=old)
+    after = opener(parsed.project, ref, revision_id=getattr(parsed, "to_revision", None))
+    for opened in (before, after):
+        if not opened.ok or not isinstance(opened.data, Mapping):
+            return print_result(opened, as_json=parsed.json)
+    new = str(after.data.get("revision_id"))
+    try:
+        edited = [int(n) for n in str(getattr(parsed, "edited", None) or "").split(",") if n.strip()]
+    except ValueError:
+        print("error validation_error: --edited takes cut numbers, e.g. 4,5", file=sys.stderr)
+        return 2
+    report = compare(before.data["bundle"], after.data["bundle"], edited=edited)
+    page = None
+    notes = []
+    window_given = any(getattr(parsed, name, None) not in (None, "") for name in ("range", "at", "cut"))
+    if getattr(parsed, "preset", None) == "compare" and window_given and not getattr(parsed, "no_capture", False):
+        from astrid.packs.rendering.executors.timeline_visualize.motion.diffview import compose_compare, window_frames_of
+
+        frames, roots = {}, {}
+        options = {"view": "motion", "preset": "scan", "formats": ["png"]}
+        for name in ("range", "at", "cut", "every", "every_frames"):
+            if getattr(parsed, name, None) not in (None, ""):
+                options[name] = getattr(parsed, name)
+        for side, revision in (("before", old), ("after", new)):
+            try:
+                result = parsed.client.timelines.visualize(parsed.project, ref, mode="auto", revision_id=revision,
+                                                           options={**options, "revision_id": revision})
+                outputs = result.outputs if hasattr(result, "outputs") else (result.data or {})
+                if not getattr(result, "ok", False) or not outputs.get("pack_root"):
+                    raise RuntimeError(str(getattr(result, "error", None) or "no pack_root in the result"))
+                roots[side] = Path(outputs["pack_root"])
+                frames[side] = window_frames_of(roots[side])
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"{side} frames not captured: {exc}")
+        if len(frames) == 2:
+            out = roots["after"].parent / f"compare-{old[-8:]}-{new[-8:]}.png"
+            page = compose_compare(frames["before"], frames["after"], out,
+                                   title=f"{ref} · {old[-12:]} (top) vs {new[-12:]} (bottom)")
+    if page is None and (report["changed_after"] or report["changed_before"]) and not getattr(parsed, "no_capture", False):
+        captures, roots = {}, {}
+        for side, revision, numbers, opened in (("before", old, report["changed_before"], before),
+                                                ("after", new, report["changed_after"], after)):
+            if not numbers:
+                continue
+            try:
+                result = parsed.client.timelines.visualize(
+                    parsed.project, ref, mode="auto", revision_id=revision,
+                    options={"view": "contact", "cuts": ",".join(map(str, numbers[:12])), "resolution": "480x270",
+                             "formats": ["png"], "revision_id": revision},
+                )
+                outputs = result.outputs if hasattr(result, "outputs") else (result.data or {})
+                if not getattr(result, "ok", False) or not isinstance(outputs, Mapping) or not outputs.get("pack_root"):
+                    raise RuntimeError(str(getattr(result, "error", None) or "no pack_root in the result"))
+                roots[side] = Path(outputs["pack_root"])
+                captures[side] = frames_by_cut(roots[side], opened.data["bundle"])
+            except Exception as exc:  # noqa: BLE001 - the data diff stands without pictures
+                notes.append(f"{side} tiles not captured: {exc}")
+        if captures:
+            out = (roots.get("after") or roots["before"]).parent / f"diff-{old[-8:]}-{new[-8:]}.png"
+            page = compose_page(report, captures.get("before", {}), captures.get("after", {}), out,
+                                title=f"{ref} · {old[-12:]} → {new[-12:]} · changed cuts")
+    if parsed.json:
+        print(json.dumps({"ok": True, "data": {"from": old, "to": new, "page": str(page) if page else None,
+                                                "findings": [f.as_dict() for f in report["findings"]],
+                                                "notes": notes}, "error": None}, indent=2))
+        return 0
+    lines = [f"diff page: {page}" if page else "diff page: (none: no changed cuts, --no-capture, or capture failed)",
+             f"  {report['before_cuts']} → {report['after_cuts']} cuts · changed {len(report['changed_after'])}, "
+             f"removed {sum(1 for r in report['rows'] if r['status'] == 'removed')}"]
+    lines += [f"  {note}" for note in notes]
+    lines += [f.line() for f in report["findings"]]
+    scope = [f for f in report["findings"] if f.code == "SCOPE"]
+    lines.append("SCOPE ok: nothing outside --edited changed" if edited and not scope else
+                 ("" if edited else "tip: --edited 4,5 turns any change outside those cuts into a SCOPE warning"))
+    print("\n".join(line for line in lines if line))
+    return 0
+
+
 def _read_beats(path: str) -> str:
     """A cue's beats.json reduced to what the sync layer and lint read (cue seconds)."""
     data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
@@ -1604,7 +1784,8 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     pages = [str(page) for page in outputs.get("pages") or [] if page]
     primary = outputs.get("primary_page") or (pages[0] if pages else None) or outputs.get("png")
     timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
-    label = {"contact": "contact sheet", "motion": "motion sheet", "filmstrip": "filmstrip"}.get(view, view)
+    label = {"contact": "contact sheet", "motion": "motion sheet" if inputs.get("preset") == "cut" else
+             f"{inputs.get('preset')} view", "filmstrip": "filmstrip"}.get(view, view)
     lines = [f"{label}: {primary or '(no page produced; see --json)'}"]
     for page in pages:
         if page != primary:
@@ -1616,9 +1797,13 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
         resolution = f"{resolution[0]}x{resolution[1]}"
     tiles = timing.get("tiles") or frames
+    window_info = outputs.get("window") if isinstance(outputs.get("window"), Mapping) else {}
+    preset = inputs.get("preset")
     what = {
         "contact": f"{tiles} tiles, one per picture cut (#N = cut number in timelines show)",
-        "motion": f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance",
+        "motion": (f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance" if preset == "cut" else
+                   f"{preset} {float(window_info.get('start', 0)):.2f}–{float(window_info.get('end', 0)):.2f} s: "
+                   f"{frames} frames on one page"),
     }.get(view, f"{frames} frames")
     lines.append(f"  {what}" + (f" · frames {resolution}" if resolution else ""))
     if timing.get("capture_s") is not None:
@@ -1642,14 +1827,21 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     lint = ["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]
     show = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
     beats = ["--beats", str(parsed.beats)] if getattr(parsed, "beats", None) else []
-    if view == "motion":
+    window = outputs.get("window") if isinstance(outputs.get("window"), Mapping) else None
+    if view == "motion" and window and inputs.get("preset") != "cut":
+        nexts = _window_navigation(window, base)
+    elif view == "motion":
         cut = str(inputs.get("cut") or "N")
         following = str(int(cut) + 1) if cut.isdigit() else "N"
         nexts = [
-            ("next cut", base + ["--view", "motion", "--cut", following] + beats),
+            ("next cut", base + ["--cut", following] + beats),
             ("lint the whole edit", lint + beats),
-            ("whole film again", base + ["--view", "contact"]),
+            ("whole film again", base + ["--preset", "overview"]),
         ]
+        if window and window.get("busiest") is not None:
+            t = float(window["busiest"])
+            nexts.insert(1, (f"biggest frames at the busiest moment ({t:.2f} s)",
+                             base + ["--preset", "motion", "--range", f"{max(0.0, t - 1.5):.2f}..{t + 1.5:.2f}"]))
     else:
         nexts = [
             ("motion of one cut", base + ["--view", "motion", "--cut", "N"] + beats),
@@ -1661,6 +1853,83 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     lines.extend(f"  {name:<{width}}  {shlex.join(argv)}" for name, argv in nexts)
     lines.append("(--json prints the full SDK envelope; --list-layers lists the views you can add with --layer)")
     return "\n".join(lines)
+
+
+def _visualize_plan(parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> int:
+    """``--plan``: resolve the view, window and frames without capturing (reads the timeline only)."""
+    import math
+
+    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_cards import plan_filmstrip
+    from astrid.packs.rendering.executors.timeline_visualize.filmstrip_options import filmstrip_options
+    from astrid.packs.rendering.executors.timeline_visualize.motion.window import fit_columns, preset_settings
+    from astrid.sdk.timeline_filmstrip import prepare_filmstrip
+
+    values = dict(inputs)
+    values["composed_capture"] = True
+    try:
+        authority = prepare_filmstrip({**values, "view": "filmstrip"}, project=parsed.project, client=parsed.client)
+        options = filmstrip_options(values)
+        index = plan_filmstrip(authority["capture_snapshot"], options)
+    except Exception as exc:  # noqa: BLE001 - a plan reports what would fail
+        print(f"plan: would fail: {exc}")
+        return 2
+    frames = len(index["cards"])
+    view = options["view"]
+    lines = [f"plan: view {view}" + (f", preset {options.get('preset')}" if view == "motion" else "")]
+    if view == "motion":
+        motion = index.get("motion") or {}
+        window = motion.get("window") or [0, 0]
+        settings = preset_settings(options.get("preset"))
+        size = options.get("resolution") or list(settings["size"])
+        columns, shown = fit_columns(frames, int(options.get("columns") or settings["columns"]),
+                                     int(size[0]) if options.get("size_explicit") else int(settings["tile_w"]),
+                                     int(size[1]))
+        lines.append(f"  window {float(window[0]):.2f}–{float(window[1]):.2f} s · cuts {motion.get('cuts_in')}")
+        lines.append(f"  {frames} frames captured at {size[0]}x{size[1]}, shown {shown} px wide, {columns} per row, "
+                     f"{math.ceil(frames / columns)} rows on ONE page")
+    elif view == "contact":
+        lines.append(f"  {frames} tiles at {options['resolution'][0]}x{options['resolution'][1]} on one page")
+    else:
+        lines.append(f"  {frames} frames on {math.ceil(frames / max(1, int(options.get('page_size') or 50)))} page(s)")
+    lines.append(f"  expect ~{max(8, round(5 + frames * 0.3))} s of capture when the host is free (frames are cached "
+                 "after the first run)")
+    lines.append("  run it: the same command without --plan")
+    print("\n".join(lines))
+    return 0
+
+
+def _window_navigation(window: Mapping[str, Any], base: list[str]) -> list[tuple[str, list[str]]]:
+    """Neighbour windows as copyable commands: earlier, later, zoom in/out, another preset, the cut."""
+    preset = str(window.get("preset") or "scan")
+
+    def view(name: str, low: float, high: float) -> list[str]:
+        if name == "motion" and high - low > 3.0:
+            name = "scan"
+        return base + ["--preset", name, "--range", f"{low:.2f}..{high:.2f}"]
+
+    rows: list[tuple[str, list[str]]] = []
+    start, end = float(window["start"]), float(window["end"])
+    if window.get("earlier"):
+        a, b = window["earlier"]
+        rows.append((f"earlier {a:.2f}–{b:.2f} s", view(preset, a, b)))
+    if window.get("later"):
+        a, b = window["later"]
+        rows.append((f"later {a:.2f}–{b:.2f} s", view(preset, a, b)))
+    if window.get("zoom_in"):
+        a, b = window["zoom_in"]
+        where = f"the busiest moment {window['busiest']:.2f} s" if window.get("busiest") is not None else "the middle"
+        rows.append((f"zoom in on {where}", view("motion" if b - a <= 3.0 else preset, a, b)))
+    if window.get("zoom_out") and preset != "frame":
+        a, b = window["zoom_out"]
+        rows.append(("zoom out", view("scan", a, b)))
+    other = {"scan": "beat", "beat": "scan", "motion": "beat", "frame": "motion"}.get(preset, "scan")
+    if other == "motion" and preset == "frame":
+        rows.append(("this moment moving (motion, 3 s)", base + ["--preset", "motion", "--at", f"{start:.2f}"]))
+    else:
+        rows.append((f"same window as {other}", view(other, start, end)))
+    if window.get("cut") is not None:
+        rows.append((f"the cut it is in (#{window['cut']})", base + ["--cut", str(window["cut"])]))
+    return rows
 
 
 def _visualization_timing(outputs: Mapping[str, Any], requested_at: float) -> dict[str, Any] | None:
@@ -2304,10 +2573,11 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     subparser.description = (
-        "Composition and timing checks for every picture cut, from timeline data alone (about a second, no "
-        "capture): a layer over a presenter's face, text outside the frame or title-safe, text smaller than "
-        "--min-text-px at 1080p, layers covering each other, accents 0.10–0.35 s off a word onset, sfx off "
-        "their visual, cuts under 0.5 s and stretches with no event. Each line names the fix."
+        "Run every registered check (built-in and pack-provided) over every picture cut, from timeline data "
+        "alone (about a second, no capture): faces covered, text off-frame/outside title-safe/too small, layers "
+        "covering each other, accents off their word, sfx off their visual, short/long cuts, holds, presenter "
+        "share, VO level jumps. Thresholds come from astrid-lint.toml (or --rules). Each line names the fix; "
+        "--json carries machine-applicable fixes."
     )
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", nargs="?", default=None, help="Timeline UUID, ULID, or slug (default: the project's).")
@@ -2317,8 +2587,16 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--beats", default=None, metavar="BEATS_JSON",
                            help="Override the beats the music clips carry (app.beats, written by the EDL builder) "
                                 "with a cue's beats.json. Beats add accents 0.10–0.20 s off a music hit or downbeat.")
-    subparser.add_argument("--min-text-px", dest="min_text_px", type=float, default=32.0,
-                           help="Smallest acceptable text size in px at 1080p (default 32).")
+    subparser.add_argument("--min-text-px", dest="min_text_px", type=float, default=None,
+                           help="Smallest acceptable text size in px at 1080p (default 32, or the rules file's).")
+    subparser.add_argument("--rules", default=None, metavar="FILE",
+                           help="Project rules (thresholds/severities) TOML; default: the nearest astrid-lint.toml "
+                                "from the working directory upwards.")
+    subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
+                           help="Ignore any astrid-lint.toml and use the checks' defaults.")
+    subparser.add_argument("--list-checks", dest="list_checks", action="store_true",
+                           help="List every registered check (built-in and pack), its threshold keys and defaults.")
+    subparser.add_argument("--strict", action="store_true", help="Exit 1 when any finding has severity error.")
     subparser.add_argument("--all", action="store_true", help="Also print info lines (EDGE crops, BEAT near-misses).")
     _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_lint)
@@ -2392,14 +2670,27 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         ),
     )
     subparser.add_argument(
+        "--preset",
+        choices=("overview", "scan", "motion", "beat", "frame", "cut", "compare"),
+        default=None,
+        help=(
+            "What you want to see, one page each: overview (whole film, one tile per cut); scan (a --range at "
+            "2 fps, 8 per row, up to 30 s); motion (<= 3 s at every 2nd frame, big 640x360 frames, 3 per row, onion "
+            "skins + curves); beat (a frame at each word onset, music hit and sfx, labelled); frame (one exact "
+            "frame, 1280x720, with --at or --frame); cut (a cut's motion sheet, with --cut); compare (--from REV: "
+            "before/after of what changed). Defaults: no window → overview, --range → scan, --at → frame, --cut → cut."
+        ),
+    )
+    subparser.add_argument(
         "--view",
-        choices=("filmstrip", "contact", "motion"),
-        default="filmstrip",
+        choices=("filmstrip", "contact", "motion", "diff"),
+        default=None,
         help=(
             "Rendered paired filmstrip (default; the only view for drill-down pages). "
             "contact: ONE overview page of the whole video, one tile per picture cut (capped at 120), 480x270. "
             "motion: one cut (--cut N) as a motion sheet you can judge as stills: frame strip, onion skins, "
-            "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270)."
+            "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270). "
+            "diff (--from REV): before/after tiles of only the cuts an edit changed, and the SCOPE condition."
         ),
     )
     subparser.add_argument(
@@ -2429,6 +2720,21 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         help="motion view: also write an animated GIF of the cut (<= 480x270, the captured frames at their real "
              "timing) for people; agents read the sheets.",
     )
+    subparser.add_argument("--from", dest="from_revision", default=None,
+                           help="diff view: the revision before the edit (e.g. an edit's .publication.json old_head).")
+    subparser.add_argument("--to", dest="to_revision", default=None, help="diff view: the revision after (default: head).")
+    subparser.add_argument("--edited", default=None, metavar="N[,M]",
+                           help="diff view: the cuts you meant to edit; a change anywhere else is a SCOPE warning.")
+    subparser.add_argument("--no-capture", dest="no_capture", action="store_true",
+                           help="diff view: compare the documents only (no before/after tiles).")
+    subparser.add_argument("--rules", default=None, metavar="FILE",
+                           help="motion view: project rules TOML (default: the nearest astrid-lint.toml).")
+    subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
+                           help="motion view: ignore astrid-lint.toml.")
+    subparser.add_argument(
+        "--plan", action="store_true",
+        help="Resolve the view, window, frame count and page layout without capturing (about a second).",
+    )
     subparser.add_argument(
         "--list-layers", dest="list_layers", action="store_true",
         help="List the registered visualize layers (built-in and pack-contributed) and exit.",
@@ -2437,9 +2743,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
                            help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")
     sampling = subparser.add_mutually_exclusive_group()
     sampling.add_argument("--every", type=float, default=None,
-                          help="Filmstrip interval in seconds (default: 0.5); rerun with --range START..END to zoom.")
+                          help="Sample every N seconds (overrides the preset: scan 0.5 s; filmstrip 0.5 s).")
     sampling.add_argument("--every-frames", type=int, default=None,
-                          help="Filmstrip interval in exact rendered frames; replaces --every (rerun for finer samples).")
+                          help="Sample every N frames (overrides the preset: motion 2); replaces --every.")
     subparser.add_argument(
         "--include-cuts", action="store_true", default=None,
         help="With interval sampling, also capture visual cut-neighbor frames.",
@@ -2452,9 +2758,15 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         ),
     )
     subparser.add_argument("--columns", type=int, default=None,
-                           help="Filmstrip contact sheet columns (default: 5; paired pages use one row by default).")
+                           help="Frames per row: window presets 1–16 (scan 8, beat 6, motion 3; the page shrinks "
+                                "tiles to stay one page); contact 1–12 (default 10); filmstrip 1–8 (default 5).")
     subparser.add_argument("--page-size", type=int, default=None,
                            help="Filmstrip cards per static page (default: 50 standalone; paired pages use one row, or explicitly opt into up to two rows / 10 cards).")
+    subparser.add_argument("--size", default=None, metavar="WIDTHxHEIGHT",
+                           help="Frame size for the window presets, e.g. 960x540 (scan/beat 480x270, motion 640x360, "
+                                "frame 1280x720 by default).")
+    subparser.add_argument("--window", dest="window_s", type=float, default=None, metavar="SECONDS",
+                           help="With --at: the window width centred on it (motion 3 s, scan 10 s, beat 6 s).")
     subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
                            help="Frame resolution, e.g. 960x540 (default: 480x270 for contact and motion, "
                                 "the canvas for filmstrip); applied exactly by the executor.")

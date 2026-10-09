@@ -181,6 +181,30 @@
       "description": "Motion view: maximum captured frames (default 60, at most 120)."
     },
     {
+      "name": "preset",
+      "type": "string",
+      "required": false,
+      "description": "Window preset for view=motion: scan (any window, every 0.5 s), motion (<= 3 s, every 2nd frame, big frames), beat (frames at words, hits, sfx), frame (one frame), cut (the motion sheet of one cut)."
+    },
+    {
+      "name": "window_s",
+      "type": "number",
+      "required": false,
+      "description": "Window width in seconds centred on --at (default from the preset)."
+    },
+    {
+      "name": "rules",
+      "type": "string",
+      "required": false,
+      "description": "Project rules resolved by the client from astrid-lint.toml: JSON {params, severity, disable} for the registered checks."
+    },
+    {
+      "name": "cuts",
+      "type": "string",
+      "required": false,
+      "description": "Contact view: tiles for only these cut numbers (comma-separated); the diff view uses it for before/after tiles."
+    },
+    {
       "name": "preview",
       "type": "boolean",
       "required": false,
@@ -435,6 +459,26 @@
       {
         "input": "preview",
         "flag": "--preview",
+        "optional": true
+      },
+      {
+        "input": "preset",
+        "flag": "--preset",
+        "optional": true
+      },
+      {
+        "input": "window_s",
+        "flag": "--window",
+        "optional": true
+      },
+      {
+        "input": "rules",
+        "flag": "--rules",
+        "optional": true
+      },
+      {
+        "input": "cuts",
+        "flag": "--cuts",
         "optional": true
       },
       {

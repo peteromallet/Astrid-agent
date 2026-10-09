@@ -25,46 +25,45 @@ to find its generation capability, then return here to assemble the result.
 
 ## See the whole video before rendering
 
-One tile per picture cut (`#N` = the cut number in `timelines show`), 480x270, about a minute, no render:
+One command per question, one page each, no render. `--plan` says what it will capture first.
 
 ```bash
-python3 -m astrid timelines show <timeline> --project <project>                  # cut table: numbers, layers, words
-python3 -m astrid timelines visualize <timeline> --project <project> --view contact   # --layer bounds: boxes
-python3 -m astrid timelines lint <timeline> --project <project>                  # ~1 s, no capture
-python3 -m astrid timelines visualize <timeline> --project <project> --range 10..20 --every-frames 10
+python3 -m astrid timelines visualize <timeline> --project <project>                         # overview: a tile per cut
+python3 -m astrid timelines visualize <timeline> --project <project> --range 5..10            # scan: 2 fps, 8 per row
+python3 -m astrid timelines visualize <timeline> --project <project> --preset motion --at 5.3  # big frames, 1 s, every 2nd frame
+python3 -m astrid timelines visualize <timeline> --project <project> --preset beat --range 5..10  # a frame per word/hit/sfx
+python3 -m astrid timelines visualize <timeline> --project <project> --at 7.2                 # one frame, 1280x720
+python3 -m astrid timelines lint <timeline> --project <project>                               # checks, ~1 s
 ```
 
-Each run prints the page path, tile/frame count, `wall = queued + capture + compose`
-and the next three commands; `--json` gives the SDK envelope. Under the chapter band an
-audio lane shows music (up), VO (down), gaps without VO (amber) and dead air (red).
-Read the sheet first, fix what `lint` names (each line ends with the fix), then drill in.
+Each run prints the page, the counts, `wall = queued + capture + compose` and `next:` commands
+(earlier, later, zoom in on the busiest moment, zoom out, another preset, the cut). Override with
+`--every`, `--columns` (≤ 16) and `--size WxH`; a window over budget says which preset fits.
 
 ## How an agent edits motion (you cannot watch video; read these instead)
 
 ```bash
-python3 -m astrid timelines visualize <timeline> --project <project> --view motion --cut 17
+python3 -m astrid timelines visualize <timeline> --project <project> --cut 17
 ```
 
-1. Read `findings` (also `findings.txt` next to the page): FACE/FRAME/SAFE/SMALL/SYNC lines name
-   the clip and the change (`set params.x ≤ 1104`, `move +0.12 s`); STILL/STRIP give holds;
-   TIME gives each entrance's distance to its word, music hit and sfx; CURVE says stepped vs eased.
-2. Open `motion-cut-17.png` (sync lanes, curves, stillness, pixel change, lip-sync on one time
-   axis) and `motion-cut-17-frames.png` (strip with HOLD tiles; onion skins t-2…t+6 per entrance).
-3. Edit (checkout → edit → check → publish), re-run the same command (cached frames: seconds),
-   then `timelines diff --from <old head>`. Mark intended freezes `app.deliberate_hold: true`.
-4. Render only when the sheets read right. Beats come from the music clip's `app.beats` (the EDL
-   builder copies the cue's beats.json there; `--beats FILE` overrides); `--preview` adds a GIF for people.
+1. Read `findings` (also `findings.txt`): FACE/FRAME/SAFE/SMALL/SYNC lines name the clip and the
+   change (`set params.x ≤ 1104`, `move +0.12 s`); STILL/STRIP give holds; TIME gives each entrance's
+   distance to its word, music hit and sfx; CURVE says stepped vs eased.
+2. Open `motion-cut-17.png` (sync, curves, stillness, pixel change, lip-sync on one axis) and
+   `motion-cut-17-frames.png` (strip with HOLD tiles; onion skins t-2…t+6 per entrance).
+3. Edit (checkout → edit → check → publish), re-run (cached frames: seconds), then
+   `timelines visualize --view diff --from <old head> --edited 17` (before/after + SCOPE).
+4. Render only when the sheets read right. Beats come from the music clip's `app.beats`;
+   `--preview` adds a GIF for people; mark intended freezes `app.deliberate_hold: true`.
 
-## Add a visualize layer
+## Extend visualize: layers, checks, rules, data tracks
 
-A layer is one PNG panel plus terse findings for one cut. To add one, create
-`astrid/packs/<pack>/visualize_layers/<name>.py` defining
-`LAYER = Layer("<name>", "<help line>", render, needs=("doc",))` with
-`render(ctx) -> LayerResult(image, ["CODE  one-line finding"])`
-(import both from `astrid.packs.rendering.executors.timeline_visualize.layers`).
-`ctx` has the cut, all cuts, elements, words, beats, sfx, events and any captured
-frames; `ctx.panel(h)` draws on the shared time axis. Commit with the pack and
-promote; `timelines visualize --list-layers` shows it (example: `editorial/visualize_layers/rhythm.py`).
+Read [visualize-extend.md](references/visualize-extend.md). In short: a pack module
+`astrid/packs/<pack>/visualize_layers/<name>.py` defines `LAYER` (a panel + findings) and/or
+`CHECK` (a condition `timelines lint` runs); an `astrid-lint.toml` next to your work sets thresholds
+(`max_cut_s = 4`) and severities without Python; data tracks (`app.data.<name>` on a clip:
+points | intervals | series | boxes) are read by every layer and check
+(`timeline_data.py add|loudness|list`). Check with `--list-layers` and `timelines lint --list-checks`.
 
 ## Start a new timeline
 

@@ -135,6 +135,9 @@ def build_context(
         frame_size=frame_size,
         width=SHEET_WIDTH,
     )
+    from . import data as data_tracks
+
+    ctx.tracks = data_tracks.tracks(model.in_window(elements, window[0], window[1]), start=window[0], end=window[1])
     track_order = []
     for occurrence in occurrences:
         if occurrence["occurrence_id"] == cut.get("occurrence_id"):
@@ -192,12 +195,42 @@ def _finding_rank(line: str) -> tuple[int, int]:
     return rank, 0 if " cut " in line[:16] else 1
 
 
+def _busiest(ctx: LayerContext) -> float | None:
+    """Midpoint of the sampled frame pair with the most pixel change that does not span a picture cut."""
+    series = ctx.shared.get("motion_series") or []
+    cut_frames = {int(round(float(c["start"]) * ctx.fps)) for c in ctx.cuts}
+    best = None
+    for item in series:
+        if any(item["a"] < f <= item["b"] for f in cut_frames):
+            continue
+        if best is None or item["fraction"] > best["fraction"]:
+            best = item
+    if best is None or best["fraction"] <= 0:
+        return None
+    return (best["a"] + best["b"]) / 2 / ctx.fps
+
+
 def compose_motion_sheet(
     ctx: LayerContext, layer_names: Sequence[str] | None, out_root: Path, *, timeline_label: str,
 ) -> dict[str, Any]:
-    """Run the layers and write the two pages. Returns ``{png: [...], findings: [...], layers: [...]}``."""
+    """Run the layers and write the page(s): ONE page when only frame layers run, else data + frames.
+
+    Returns ``{png, findings, layers, preview, navigation}``.
+    """
+    import json
+
+    from .window import fit_columns, navigation
+
     layers = resolve_layers(layer_names, view="motion")
     ctx.shared["layer_names"] = tuple(layer.name for layer in layers)
+    window = ctx.shared.get("window") or {"preset": "cut", "start": ctx.cut["start"], "end": ctx.cut["end"],
+                                          "cuts_in": [ctx.cut["index"]]}
+    columns = int(ctx.shared.get("columns") or 8)
+    tile_w = int(ctx.shared.get("tile_w") or ctx.frame_size[0])
+    count = max(1, len(ctx.frames))
+    columns, shown_w = fit_columns(count, columns, tile_w, int(tile_w * ctx.frame_size[1] / max(1, ctx.frame_size[0])))
+    ctx.shared["columns"], ctx.shared["tile_w"] = columns, shown_w
+    ctx.width = max(SHEET_WIDTH, columns * shown_w + 20 + (columns - 1) * 8)
     results: list[tuple[str, LayerResult]] = []
     for layer in layers:
         try:
@@ -206,31 +239,50 @@ def compose_motion_sheet(
             result = LayerResult(None, [f"ERROR  layer {layer.name}: {type(exc).__name__}: {exc}"], layer.name)
         results.append((layer.name, result))
     cut = ctx.cut
-    number = int(cut["index"])
-    head = (f"cut {number} · {float(cut['start']):.2f}–{float(cut['end']):.2f} s ({float(cut['duration']):.2f} s) · "
-            f"{cut.get('shot') or ''}")
-    findings = [f"MOTION cut {number} {float(cut['start']):.2f}–{float(cut['end']):.2f}s ({float(cut['duration']):.2f}s) "
-                f"{cut.get('shot') or ''}; {len(ctx.frames)} frames at {ctx.frame_size[0]}x{ctx.frame_size[1]}"]
+    preset = window["preset"]
+    if cut.get("window"):
+        numbers = list(window.get("cuts_in") or [])
+        span = f"cut {numbers[0]}" if len(numbers) == 1 else (f"cuts {numbers[0]}–{numbers[-1]}" if numbers else "")
+        head = (f"{preset} · {float(cut['start']):.2f}–{float(cut['end']):.2f} s ({float(cut['duration']):.2f} s) · "
+                f"{span} · {cut.get('shot') or ''}")
+        findings = [f"VIEW   {preset} {float(cut['start']):.2f}–{float(cut['end']):.2f}s ({span}); "
+                    f"{len(ctx.frames)} frames at {ctx.frame_size[0]}x{ctx.frame_size[1]}, {columns} per row"]
+        stem = f"view-{preset}-{float(cut['start']):.2f}-{float(cut['end']):.2f}"
+    else:
+        number = int(cut["index"])
+        head = (f"cut {number} · {float(cut['start']):.2f}–{float(cut['end']):.2f} s ({float(cut['duration']):.2f} s) · "
+                f"{cut.get('shot') or ''}")
+        findings = [f"MOTION cut {number} {float(cut['start']):.2f}–{float(cut['end']):.2f}s ({float(cut['duration']):.2f}s) "
+                    f"{cut.get('shot') or ''}; {len(ctx.frames)} frames at {ctx.frame_size[0]}x{ctx.frame_size[1]}"]
+        stem = f"motion-cut-{number:02d}"
     collected = [line for _name, result in results for line in result.findings]
     findings.extend(sorted(collected, key=_finding_rank))
+    data_panels = [r.image for _n, r in results if r.page == "data" and r.image is not None]
+    frame_panels = [r.image for _n, r in results if r.page == "frames" and r.image is not None]
+    if cut.get("window"):
+        # a window preset is ONE page: frames first, then whatever data layers were asked for
+        plan = [("one", "", frame_panels + data_panels, True)]
+    else:
+        plan = ([("data", "", data_panels, True)] if data_panels else []) + (
+            [("frames", "-frames" if data_panels else "", frame_panels, not data_panels)] if frame_panels else [])
+    if not plan:
+        plan = [("data", "", [], True)]
     pages: list[str] = []
-    for page, suffix in (("data", ""), ("frames", "-frames")):
-        panels = [result.image for _name, result in results if result.page == page and result.image is not None]
-        if page == "frames" and not panels:
-            continue
+    width = ctx.width
+    for _page, suffix, panels, with_findings in plan:
         measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
         header = [head] + _summary_lines(ctx)
-        header_lines = [line for text in header for line in _wrap(measure, text, 15, SHEET_WIDTH - 20)]
+        header_lines = [line for text in header for line in _wrap(measure, text, 15, width - 20)]
         finding_lines = []
-        if page == "data":
+        if with_findings:
             for text in findings:
-                finding_lines.extend(_wrap(measure, text, 13, SHEET_WIDTH - 20))
+                finding_lines.extend(_wrap(measure, text, 13, width - 20))
         height = 16 + 24 + 20 * (len(header_lines) - 1) + 10 + sum(p.size[1] + 6 for p in panels)
         height += (24 + 18 * len(finding_lines)) if finding_lines else 0
-        sheet = Image.new("RGB", (SHEET_WIDTH, height + 10), PALETTE["bg"])
+        sheet = Image.new("RGB", (width, height + 10), PALETTE["bg"])
         draw = ImageDraw.Draw(sheet)
         y = 10
-        draw_text(draw, (10, y), f"{timeline_label} · motion · {header_lines[0]}", 20, "white")
+        draw_text(draw, (10, y), f"{timeline_label} · {header_lines[0]}", 20, "white")
         y += 28
         for line in header_lines[1:]:
             draw_text(draw, (10, y), line, 14, PALETTE["muted"])
@@ -246,11 +298,15 @@ def compose_motion_sheet(
                 colour = PALETTE["warn"] if line.split(" ", 1)[0] in ("FACE", "SAFE", "FRAME", "SMALL", "SYNC", "HOLD", "SHORT", "COVER") else PALETTE["ink"]
                 draw_text(draw, (10, y), line, 13, colour)
                 y += 18
-        path = Path(out_root) / f"motion-cut-{number:02d}{suffix}.png"
+        path = Path(out_root) / f"{stem}{suffix}.png"
         sheet.save(path)
         pages.append(str(path))
     preview = write_preview(ctx, out_root) if ctx.shared.get("preview") else None
-    return {"png": pages, "findings": findings, "layers": [name for name, _r in results], "preview": preview}
+    duration = max([float(c["end"]) for c in ctx.cuts] or [float(cut["end"])])
+    nav = navigation(window, duration=duration, busiest=_busiest(ctx), cuts=ctx.cuts)
+    (Path(out_root) / "window.json").write_text(json.dumps(nav, sort_keys=True), encoding="utf-8")
+    return {"png": pages, "findings": findings, "layers": [name for name, _r in results], "preview": preview,
+            "navigation": nav}
 
 
 PREVIEW_MAX_SIZE = (480, 270)

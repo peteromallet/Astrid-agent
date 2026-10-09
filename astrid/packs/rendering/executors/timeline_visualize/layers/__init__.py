@@ -6,7 +6,8 @@ findings** terse enough to act on without opening the image. ``timelines
 visualize --view motion --cut N --layer sync,onion,…`` stacks the chosen
 layers into a motion sheet; ``--list-layers`` prints the registry.
 
-Adding a layer (the seam, on purpose the same shape as a pack element):
+Adding a layer or a check (the seam, on purpose the same shape as a pack element;
+the full guide is astrid/packs/rendering/skill/references/visualize-extend.md):
 
     # astrid/packs/<your_pack>/visualize_layers/<name>.py
     from astrid.packs.rendering.executors.timeline_visualize.layers import Layer, LayerResult
@@ -26,21 +27,33 @@ is pinned and is promoted with its pack exactly like an element.
 from __future__ import annotations
 
 from .base import (
+    Check,
+    CheckContext,
+    Finding,
     Layer,
     LayerContext,
     LayerResult,
+    check_help,
+    checks,
     discover,
     layer_help,
     register,
+    register_check,
     resolve_layers,
 )
 
 __all__ = [
+    "Check",
+    "CheckContext",
+    "Finding",
     "Layer",
     "LayerContext",
     "LayerResult",
+    "check_help",
+    "checks",
     "discover",
     "layer_help",
     "register",
+    "register_check",
     "resolve_layers",
 ]

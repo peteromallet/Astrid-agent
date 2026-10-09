@@ -12,9 +12,18 @@ from typing import Any, Sequence
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-from ..motion import lint as lint_rules
 from ..motion import model
-from .base import PALETTE, SERIES, Layer, LayerContext, LayerResult, draw_text, register, text_width
+from .base import (
+    PALETTE,
+    SERIES,
+    Check,
+    Layer,
+    LayerContext,
+    LayerResult,
+    draw_text,
+    register,
+    text_width,
+)
 
 # Pixel-change thresholds on 8-bit luminance differences at review size.
 CHANGE_LEVEL = 18
@@ -69,6 +78,8 @@ def _focus_events(ctx: LayerContext, limit: int = 4) -> list[model.Event]:
             if any(abs(event.t - other.t) < 4 * frame for other in picked):
                 continue
             picked.append(event)
+    if ctx.cut.get("window"):
+        return picked[:limit]  # a window's start is not a cut
     picked = picked[: limit - 1]
     picked.insert(0, model.Event(start, "cut", str(ctx.cut.get("clip_id") or ""), f"cut {ctx.cut['index']} in", "cut"))
     return picked[:limit]
@@ -97,7 +108,10 @@ def _offset_note(ctx: LayerContext, t: float, *, context: bool = False) -> str:
 def render_sync(ctx: LayerContext) -> LayerResult:
     """One time axis: words, music beats/hits, sfx, element events and cuts, with offsets."""
     audio = ctx.shared.get("audio")
-    rows = [("VO words", 34), ("music", 26), ("sfx", 24)] + ([("audio", 34)] if audio is not None else [])
+    # any app.data.* track (not the derived words/beats already drawn) gets its own lane
+    extra = [t for t in ctx.tracks if not t.derived and t.kind in ("points", "intervals", "series", "boxes")][:6]
+    rows = ([("VO words", 34), ("music", 26), ("sfx", 24)] + ([("audio", 34)] if audio is not None else [])
+            + [(f"data:{t.name}", 26) for t in extra])
     event_rows = sorted({e.element for e in ctx.events if e.kind != "cut"})
     height = 30 + sum(h for _n, h in rows) + 22 * max(1, len(event_rows)) + 12
     image = ctx.panel(height, title="sync")
@@ -145,6 +159,9 @@ def render_sync(ctx: LayerContext) -> LayerResult:
         draw_lane(draw, audio, x0=ctx.plot_left, x1=ctx.plot_right, y0=y + 2, y1=y + 32,
                   colours={"music": "#5b4a86", "vo": "#5fd4c4", "sfx": PALETTE["hit"]}, silence_colour=PALETTE["warn"])
         y += rows[3][1]
+    for track in extra:
+        _draw_track_lane(ctx, draw, track, y)
+        y += 26
     # element events
     labels = {e.id: e.label for e in ctx.elements}
     labels.update({e.element: e.label for e in ctx.events if e.element not in labels})
@@ -201,6 +218,38 @@ def render_sync(ctx: LayerContext) -> LayerResult:
                 findings.append(f"AUDIO  dead air {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s): no VO, music or sfx")
         findings.extend(f"AUDIO  {note}" for note in audio.notes[:2])
     return LayerResult(image, findings[:12], "sync")
+
+
+def _draw_track_lane(ctx: LayerContext, draw, track, y: float) -> None:
+    """One lane for a data track: points as ticks, intervals as bars, a series as a line, boxes as ticks."""
+    label = track.name + (f" ({track.units})" if track.units else "")
+    draw_text(draw, (10, y + 4), label[:22], 12, PALETTE["muted"])
+    colour = SERIES[sum(map(ord, track.name)) % len(SERIES)]
+    if track.kind == "points":
+        for t, text in track.points:
+            if ctx.visible(t):
+                x = ctx.x_of(t)
+                draw.line((x, y + 3, x, y + 21), fill=colour, width=2)
+                if text:
+                    draw_text(draw, (x + 3, y + 3), text[:14], 10, colour)
+    elif track.kind == "intervals":
+        for t0, t1, text in track.intervals:
+            if ctx.visible(t0, t1):
+                draw.rectangle((ctx.x_of(t0), y + 6, max(ctx.x_of(t0) + 2, ctx.x_of(t1)), y + 20), fill=colour)
+                if text:
+                    draw_text(draw, (ctx.x_of(t0) + 2, y + 6), text[:14], 10, PALETTE["bg"])
+    elif track.kind == "series":
+        values = [(t, v) for t, v in track.series if ctx.visible(t) and math.isfinite(v)]
+        if values:
+            low, high = min(v for _t, v in values), max(v for _t, v in values)
+            span = (high - low) or 1.0
+            points = [(ctx.x_of(t), y + 22 - (v - low) / span * 18) for t, v in values]
+            draw.line(points, fill=colour, width=2) if len(points) > 1 else None
+            draw_text(draw, (ctx.plot_right - 120, y + 2), f"{low:.1f}…{high:.1f}", 10, PALETTE["muted"])
+    else:
+        for t, *_rest in track.boxes:
+            if t is not None and ctx.visible(t):
+                draw.line((ctx.x_of(t), y + 8, ctx.x_of(t), y + 18), fill=colour, width=1)
 
 
 # ---------------------------------------------------------------- curves (data)
@@ -390,16 +439,20 @@ def render_strip(ctx: LayerContext) -> LayerResult:
     groups = _strip_groups(ctx)
     if not groups:
         return LayerResult(None, ["STRIP  no frames captured"], "strip", page="frames")
-    columns = 8
-    thumb_w = (ctx.width - 20 - (columns - 1) * 8) // columns
+    columns = int(ctx.shared.get("columns") or 8)
+    thumb_w = int(ctx.shared.get("tile_w") or (ctx.width - 20 - (columns - 1) * 8) // columns)
     thumb_h = int(thumb_w * ctx.frame_size[1] / ctx.frame_size[0])
+    labels = ctx.shared.get("frame_labels") or {}
     rows = math.ceil(len(groups) / columns)
     cell_h = thumb_h + 34
     image = Image.new("RGB", (ctx.width, 30 + rows * cell_h), PALETTE["bg"])
     draw = ImageDraw.Draw(image)
     total = sum(len(group) for group in groups)
-    draw_text(draw, (10, 6), f"frames ({total} sampled; dense after each event; identical runs collapse to one HOLD tile; "
-              "times relative to the cut start)", 15, PALETTE["ink"])
+    window = ctx.shared.get("window") or {}
+    how = {"scan": "every 0.5 s", "motion": "every 2nd frame", "beat": "at each word, hit and sfx",
+           "frame": "one frame"}.get(window.get("preset"), "dense after each event")
+    draw_text(draw, (10, 6), f"frames ({total} sampled {how}; identical runs collapse to one HOLD tile; "
+              "times relative to the window start)", 15, PALETTE["ink"])
     event_frames: dict[int, list[model.Event]] = {}
     for event in ctx.events:
         event_frames.setdefault(int(round(event.t * ctx.fps)), []).append(event)
@@ -427,9 +480,14 @@ def render_strip(ctx: LayerContext) -> LayerResult:
             if inside and t_end - t >= 0.5:
                 findings.append(f"STRIP  identical frames {ctx.rel(t)}…{ctx.rel(t_end)} ({t_end - t:.2f} s, {len(group)} samples)")
         else:
-            draw_text(draw, (x + 2, y + thumb_h + 2), f"{ctx.rel(t)} f{frame - cut_frame:+d}", 12, colour)
+            frame_label = f"f{frame}" if ctx.cut.get("window") else f"f{frame - cut_frame:+d}"
+            draw_text(draw, (x + 2, y + thumb_h + 2), f"{ctx.rel(t)} {frame_label}", 12, colour)
         tags = [event for member in group for event in event_frames.get(member, [])]
-        if tags:
+        label = next((labels[member] for member in group if member in labels), None)
+        if label:
+            draw.rectangle((x, y, x + thumb_w - 1, y + thumb_h - 1), outline=PALETTE["hit"], width=2)
+            draw_text(draw, (x + 2, y + thumb_h + 17), label[:max(8, thumb_w // 7)], 11, PALETTE["hit"])
+        elif tags:
             if len(group) == 1:
                 draw.rectangle((x, y, x + thumb_w - 1, y + thumb_h - 1), outline=PALETTE["enter"], width=2)
             draw_text(draw, (x + 2, y + thumb_h + 17), _event_label(tags[0])[:30], 11, PALETTE["enter"])
@@ -625,12 +683,54 @@ def render_still(ctx: LayerContext) -> LayerResult:
 # ---------------------------------------------------------------- lint (data)
 
 def render_lint(ctx: LayerContext) -> LayerResult:
-    """Composition and timing checks for this cut (the same rules as ``timelines lint``)."""
-    findings = lint_rules.composition(ctx.cut, ctx.elements, ctx.fps, track_order=ctx.shared.get("track_order", ()))
-    findings += lint_rules.timing(ctx.cut, ctx.elements, ctx.words, ctx.fps,
-                                  beats=ctx.beats, sfx=ctx.sfx)
-    lines = [f.line(float(ctx.cut["start"])) for f in sorted(findings, key=lambda f: (f.severity != "warn", f.t))]
-    return LayerResult(None, lines or [f"LINT   cut {ctx.cut['index']}: no composition or timing findings"], "lint")
+    """Every registered check for this cut (``timelines lint``'s, plus checks that need the captured frames)."""
+    from ..motion.conditions import run_checks
+
+    rules = ctx.shared.get("rules") or {}
+    per_cut, _timeline = run_checks(
+        [ctx.cut], ctx.all_elements, ctx.fps, track_order=ctx.shared.get("track_order", ()),
+        beats=ctx.shared.get("beats_override"), params=rules.get("params"), severity=rules.get("severity"),
+        needs={"doc", "frames"}, frames=ctx.frames, all_cuts=ctx.cuts, shared=ctx.shared,
+        disable=rules.get("disable") or (),
+    )
+    findings = per_cut[0][1] if per_cut else []
+    rank = {"error": 0, "warn": 1, "info": 2}
+    lines = [f.line(float(ctx.cut["start"])) for f in sorted(findings, key=lambda f: (rank.get(f.severity, 3), f.t or 0))]
+    ctx.shared["check_findings"] = [f.as_dict() for f in findings]
+    return LayerResult(None, lines or [f"LINT   cut {ctx.cut['index']}: no findings from the registered checks"], "lint")
+
+
+def _frozen(ctx) -> list:
+    """Pixel holds inside the cut longer than max_frozen_s, unless the picture is a deliberate hold."""
+    limit = ctx.param("max_frozen_s")
+    if limit is None or not ctx.frames or not ctx.cut or ctx.cut.get("deliberate_hold"):
+        return []
+    start, end = float(ctx.cut["start"]) * ctx.fps, float(ctx.cut["end"]) * ctx.fps
+    frames = sorted(f for f in ctx.frames if start - 1e-6 <= f < end)
+    runs, begin, previous = [], None, None
+    for frame in frames:
+        with Image.open(ctx.frames[frame]) as source:
+            image = source.convert("RGB")
+        if previous is not None:
+            fraction, _mask = _diff_fraction(previous[1], image)
+            if fraction < FROZEN_FRACTION:
+                begin = previous[0] if begin is None else begin
+                runs.append((begin, frame))
+            else:
+                begin = None
+        previous = (frame, image)
+    longest = max(((b - a) / ctx.fps, a) for a, b in runs) if runs else (0.0, 0)
+    if longest[0] <= float(limit):
+        return []
+    t = longest[1] / ctx.fps
+    return [ctx.finding("FROZEN", f"{longest[0]:.2f} s with no pixel change from {t - float(ctx.cut['start']):+.2f}s "
+                        f"(max_frozen_s = {float(limit):g}; add motion or mark app.deliberate_hold: true)", t=t,
+                        fix={"clip": str(ctx.cut.get('clip_id') or '').rsplit(':', 1)[-1],
+                             "set": {"app.deliberate_hold": True}, "alternative": "add motion"})]
+
+
+FROZEN_CHECK = Check("frozen", "pixel holds longer than max_frozen_s in the captured frames (motion view)",
+                     _frozen, params={"max_frozen_s": 1.5}, needs=("frames",), codes=("FROZEN",))
 
 
 # ---------------------------------------------------------------- bounds (overlay)
@@ -674,7 +774,7 @@ register(Layer("sync", "words, music beats/hits, sfx, element events and cuts on
 register(Layer("curves", "x/y/scale/reveal/mouth of every element per frame, from the element models",
                render_curves, needs=("doc",), order=20))
 register(Layer("still", "holds: share of the cut with ~zero pixel change, longest frozen run",
-               render_still, needs=("frames",), order=30))
+               render_still, needs=("frames",), order=30, checks=(FROZEN_CHECK,)))
 register(Layer("diff", "where and when pixels change between sampled frames",
                render_diff, needs=("frames",), order=35))
 register(Layer("lipsync", "presenter mouth state per frame vs VO words; mouth-region pixel check",

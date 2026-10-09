@@ -67,6 +67,46 @@ def layer_names(value: Any) -> list[str]:
     return names
 
 
+def rules_value(value: Any) -> dict[str, Any] | None:
+    """Project rules the client resolved (``{params, severity, disable, path}``), as JSON text or a mapping."""
+    if value in (None, ''):
+        return None
+    if isinstance(value, str):
+        import json
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            raise ValueError('rules must be JSON: {"params": {...}, "severity": {...}, "disable": [...]}') from None
+    if not isinstance(value, Mapping):
+        raise ValueError('rules must be an object')
+    params = value.get('params') or {}
+    severity = value.get('severity') or {}
+    disable = value.get('disable') or []
+    if not isinstance(params, Mapping) or not isinstance(severity, Mapping) or not isinstance(disable, list):
+        raise ValueError('rules needs params (object), severity (object) and disable (list)')
+    return {'params': {str(k): v for k, v in params.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
+            'severity': {str(k): str(v) for k, v in severity.items()},
+            'disable': [str(name) for name in disable], 'path': str(value.get('path') or '')}
+
+
+def cut_numbers(value: Any) -> list[int]:
+    """``--cuts 4,5,19`` as a sorted list of positive cut numbers."""
+    if value in (None, '', []):
+        return []
+    items = value if isinstance(value, (list, tuple)) else str(value).split(',')
+    numbers = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        if not text.isdigit() or int(text) < 1:
+            raise ValueError(f'cuts must be positive cut numbers (got {text!r})')
+        numbers.append(int(text))
+    if len(numbers) > 120:
+        raise ValueError('at most 120 cuts')
+    return sorted(set(numbers))
+
+
 def beats_value(value: Any) -> dict[str, Any] | None:
     """Music beats as ``{beats, downbeats, hits}`` in cue seconds (a beats.json, already read by the client)."""
     if value in (None, ''):
@@ -106,12 +146,20 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     contact = view == 'contact'
     motion = view == 'motion'
     every, frames = values.get('every'), values.get('every_frames')
+    preset = values.get('preset') or None
     if motion:
-        if values.get('cut') in (None, ''):
-            raise ValueError('--view motion needs --cut N (a cut number from timelines show, a picture clip id, or @SECONDS)')
-        for name in ('range', 'at', 'frame', 'every', 'every_frames', 'sample'):
-            if values.get(name) not in (None, '', 'motion'):
-                raise ValueError(f'--view motion plans its own frames for one cut; drop --{name.replace("_", "-")}')
+        from .motion.window import WINDOW_PRESETS
+
+        windows = [name for name in ('cut', 'range', 'at', 'frame') if values.get(name) not in (None, '')]
+        if not windows:
+            raise ValueError('choose a window: --cut N, --range A..B, --at T (centred) or --frame N; '
+                             'presets: --preset scan|motion|beat|frame|cut')
+        if len(windows) > 1:
+            raise ValueError(f'choose one window, not {" and ".join("--" + w for w in windows)}')
+        if preset is not None and preset not in WINDOW_PRESETS:
+            raise ValueError(f'preset {preset!r} is not a window preset; window presets: {", ".join(WINDOW_PRESETS)}')
+        if values.get('sample') not in (None, '', 'motion'):
+            raise ValueError('--sample belongs to the filmstrip view; window views sample by preset (--every to override)')
     # An overview samples one frame per cut unless a density was asked for.
     default_sample = 'interval' if (every is not None or frames is not None) else ('cuts' if contact else 'interval')
     sample = 'motion' if motion else (values.get('sample') or default_sample)
@@ -124,7 +172,7 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     if every is not None and (isinstance(every, bool) or not isinstance(every, (float, int))
                               or not math.isfinite(every) or every <= 0):
         raise ValueError('every must be a finite positive number of seconds')
-    if sample != 'interval' and (every is not None or frames is not None):
+    if sample not in ('interval', 'motion') and (every is not None or frames is not None):
         raise ValueError('every/every_frames apply only to sample=interval')
     # Keep the distinction between an omitted density (which requests the
     # bounded adaptive overview) and an explicit interval request.  Applying
@@ -166,7 +214,7 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     # paired renderer uses that distinction to make the normal input+output
     # view one row wide while still allowing a caller to request denser pages.
     result['page_size_explicit'] = values.get('page_size') is not None
-    columns_default, columns_max = (10, 12) if contact else (5, 8)
+    columns_default, columns_max = (10, 12) if contact else ((8, 16) if motion else (5, 8))
     for name, default, maximum in [('columns', columns_default, columns_max), ('page_size', 50, 100)]:
         n = values.get(name, default)
         if n is None:
@@ -201,13 +249,27 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     # and can exceed the settlement size limit, and 480x270 is what the page shows.
     result['resolution'] = resolution(values.get('resolution')) or (list(REVIEW_RESOLUTION) if contact or motion else None)
     if motion:
-        result['cut'] = str(values.get('cut')).strip()
+        from .motion.window import preset_settings
+
+        name = preset or ('cut' if values.get('cut') not in (None, '') else 'scan')
+        settings = preset_settings(name)
+        result['preset'] = name
+        result['cut'] = str(values.get('cut')).strip() if values.get('cut') not in (None, '') else None
+        result['size_explicit'] = values.get('resolution') not in (None, '')
+        if not result['size_explicit']:
+            result['resolution'] = list(settings['size'])
+        result['columns_explicit'] = values.get('columns') is not None
+        if not result['columns_explicit']:
+            result['columns'] = settings['columns']
+        result['window_s'] = values.get('window_s')
         budget = values.get('frame_budget', None)
         if budget in (None, ''):
-            budget = MOTION_FRAME_BUDGET
-        if type(budget) is not int or not 8 <= budget <= MOTION_FRAME_BUDGET_MAX:
-            raise ValueError(f'frame_budget must be an integer between 8 and {MOTION_FRAME_BUDGET_MAX}')
+            budget = settings['budget']
+        if type(budget) is not int or not 1 <= budget <= MOTION_FRAME_BUDGET_MAX:
+            raise ValueError(f'frame_budget must be an integer between 1 and {MOTION_FRAME_BUDGET_MAX}')
         result['frame_budget'] = budget
+        if values.get('layers') in (None, '', []) and settings.get('layers'):
+            values = {**values, 'layers': list(settings['layers'])}
     preview = values.get('preview') or False
     if not isinstance(preview, bool):
         raise ValueError('preview must be a boolean')
@@ -215,6 +277,10 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError('--preview applies to --view motion (an animated GIF of that cut for humans)')
     result['preview'] = preview
     result['layers'] = layer_names(values.get('layers'))
+    result['rules'] = rules_value(values.get('rules'))
+    result['cuts'] = cut_numbers(values.get('cuts'))
+    if result['cuts'] and not contact:
+        raise ValueError('--cuts applies to --view contact (tiles for only those cut numbers)')
     result['beats'] = beats_value(values.get('beats'))
     result['request'] = {
         'range': result['range'],

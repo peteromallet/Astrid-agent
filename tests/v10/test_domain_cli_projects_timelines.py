@@ -1718,10 +1718,12 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
     assert kwargs["kind"] == "executor"
     assert kwargs["project"] == "demo"
     assert kwargs["wait"] is True
+    # No window asked for: the overview (one tile per cut) at review size.
     assert kwargs["inputs"] == {
         "formats": ["png", "md", "md"],
         "timeline_slug": "01TIMELINE",
-        "view": "filmstrip",
+        "view": "contact",
+        "resolution": "480x270",
     }
     envelope = json.loads(capsys.readouterr().out)
     assert set(envelope) == ENVELOPE_KEYS

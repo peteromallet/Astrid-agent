@@ -732,6 +732,10 @@ def _full_overview(snapshot, clips, spans, total, fps, limit):
                      'rendered_frame_count': total, 'entries': entries}, coverage
 
 
+def total_frames_of(snapshot: Mapping) -> int:
+    return int(snapshot['duration_frames'])
+
+
 def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dict]:
     """The shared picture cuts (``astrid.core.timeline.cuts``) on this render's frame clock."""
     from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot, picture_cuts
@@ -772,25 +776,28 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     if mode not in ('interval', 'clips', 'cuts', 'shots', 'motion'):
         raise ValueError(f'Unknown sampling mode: {mode}')
     motion_cut = None
+    motion_window = None
     if options.get('view') == 'motion' or mode == 'motion':
-        from .motion.sheet import select_cut
-        motion_cut = select_cut(snapshot, options.get('cut'), float(fps))
+        from .motion.window import resolve_window
+        motion_window = resolve_window(snapshot, options, float(fps), total_frames_of(snapshot))
+        motion_cut = motion_window['cut']
     lo, hi = Fraction(0), duration
     requested_frame = options.get('frame')
     if requested_frame is not None:
         if type(requested_frame) is not int or requested_frame < 0 or requested_frame >= total:
             raise ValueError(f'Requested frame {requested_frame!r} is outside the rendered extent 0..{total - 1}.')
         lo, hi = Fraction(requested_frame, 1) / fps, Fraction(requested_frame + 1, 1) / fps
-    if options.get('range') is not None:
+    if options.get('range') is not None and motion_window is None:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
-    if motion_cut is not None:
+    if motion_window is not None:
         from .motion.sheet import PAD_SECONDS
-        lo = max(Fraction(0), _q(motion_cut['start']) - _q(PAD_SECONDS))
-        hi = _q(motion_cut['end']) + _q(PAD_SECONDS)
+        requested_frame = None
+        lo = max(Fraction(0), _q(motion_window['start']) - _q(PAD_SECONDS))
+        hi = min(Fraction(total, 1) / fps, _q(motion_window['end']) + _q(PAD_SECONDS))
     resolved_at_frame = None
-    if options.get('at') is not None:
+    if options.get('at') is not None and motion_window is None:
         if options.get('range') is not None or requested_frame is not None:
             raise ValueError('Choose frame, range, or at/context, not more than one.')
         at = _q(options['at'])
@@ -867,11 +874,11 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     include_cuts = bool(options.get('include_cuts'))
     is_full_overview = (mode == 'interval' and not filtered and options.get('range') is None
                         and options.get('at') is None and not explicit_interval)
-    if motion_cut is not None:
-        from .motion.sheet import plan_motion_frames, snapshot_elements
-        _occurrences, motion_elements = snapshot_elements(snapshot)
-        for frame, why in plan_motion_frames(motion_cut, motion_elements, fps, total,
-                                             budget=int(options.get('frame_budget') or 60)).items():
+    window_labels = {}
+    if motion_window is not None:
+        from .motion.window import window_frames
+        planned, window_labels = window_frames(motion_window, snapshot, options, fps, total)
+        for frame, why in planned.items():
             for reason in why:
                 add(frame, reason)
     elif requested_frame is not None:
@@ -910,7 +917,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         # (astrid.core.timeline.cuts), never a layer edge: the contact view
         # takes one settled still per cut, cut sampling the frames either side.
         if mode == 'cuts' and options.get('view') == 'contact':
+            wanted = set(options.get('cuts') or ())
             for cut in picture:
+                if wanted and cut['index'] not in wanted:
+                    continue
                 add(cut['tile_frame'], 'cut_tile')
                 if cut.get('sequence'):
                     # a sequence is one tile; its first and last steps ride along as a mini-strip
@@ -1004,8 +1014,10 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     coverage['page_size'] = page_size
     coverage['selected_frame_ids'] = [card['id'] for card in cards]
     motion_info = None
-    if motion_cut is not None:
-        motion_info = {key: motion_cut[key] for key in ('index', 'start', 'end', 'duration', 'clip_id', 'shot', 'occurrence_id', 'deliberate_hold')}
+    if motion_window is not None:
+        motion_info = {key: motion_cut.get(key) for key in ('index', 'start', 'end', 'duration', 'clip_id', 'shot', 'occurrence_id', 'deliberate_hold')}
+        motion_info.update({'preset': motion_window['preset'], 'window': [motion_window['start'], motion_window['end']],
+                            'cuts_in': motion_window['cuts_in'], 'labels': {str(k): v for k, v in window_labels.items()}})
     return {'navigation': navigation, 'schema': 'astrid.filmstrip.v1', 'view': options.get('view') or 'filmstrip', 'contact': contact_info, 'motion': motion_info,
             'provenance': {k: snapshot.get(k) for k in ('project_slug', 'timeline_id', 'timeline_name', 'render_run_id', 'video_digest', 'fps_rational', 'duration_frames', 'metadata')},
             'audio': snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else navigation['audio'],
@@ -1741,13 +1753,23 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
             from PIL import Image
             with Image.open(next(iter(frames.values()))) as first_frame:
                 size = first_frame.size
-        from .motion.sheet import select_cut
-        cut = select_cut(snapshot, options.get('cut'), fps_value)
+        motion_meta = index.get('motion') or {}
+        from .motion.window import resolve_window
+        window = resolve_window(snapshot, options, fps_value, int(snapshot['duration_frames']))
+        cut = window['cut']
         context = build_context(snapshot, cut, frames, fps=fps_value, frame_size=size,
                                 beats=options.get('beats'), layer_names=options.get('layers') or ())
+        context.shared['window'] = window
+        context.shared['frame_labels'] = {int(k): v for k, v in (motion_meta.get('labels') or {}).items()}
+        from .motion.window import preset_settings
+        settings = preset_settings(window['preset'])
+        context.shared['columns'] = int(options.get('columns') or settings['columns'])
+        # shown width: the preset's, or the asked --size (capture width) when one was given
+        context.shared['tile_w'] = int((options.get('resolution') or [0])[0]) if options.get('size_explicit') else int(settings['tile_w'])
         context.shared['audio'] = _audio_envelope(snapshot, asset_files, context.window[0], context.window[1],
                                                   context.plot_right - context.plot_left)
         context.shared['preview'] = bool(options.get('preview'))
+        context.shared['rules'] = options.get('rules') or {}
         sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
         paths = {'png': sheet['png']}
         if sheet.get('preview'):

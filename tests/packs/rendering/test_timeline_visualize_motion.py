@@ -136,9 +136,9 @@ def test_motion_frames_are_dense_after_events_and_bounded():
     assert len(frames) <= 40
     stamp = 15
     assert {stamp - 1, stamp, stamp + 1, stamp + 2} <= set(frames)
-    with pytest.raises(ValueError, match="--cut"):
+    with pytest.raises(ValueError, match="--cut N, --range"):
         filmstrip_options({"view": "motion"})
-    with pytest.raises(ValueError, match="drop --range"):
+    with pytest.raises(ValueError, match="choose one window"):
         filmstrip_options({"view": "motion", "cut": "1", "range": "0..1"})
 
 
@@ -364,7 +364,7 @@ def test_timelines_lint_prints_one_line_per_finding(capsys):
     assert "FACE   cut 1" in out and "am-sprite C-1 covers" in out and "clear it: params." in out
     assert "FRAME  cut 1" in out and "60 px past the frame edge" in out
     assert "SAFE   cut 1" in out and "set params.x ≤ 1104" in out
-    assert out.strip().splitlines()[-2].startswith("warnings: ")
+    assert out.strip().splitlines()[-2].startswith("findings: ")
 
 
 # --- beats on the timeline, audio lanes, preview -----------------------------------------
@@ -504,3 +504,162 @@ def test_show_marks_a_sequence_row():
     table = build_cut_table(bundle)
     assert [row["clip_id"] for row in table["rows"]] == ["c20-00", "c21"]
     assert "sequence ×5 steps" in render_cut_table(table, table["rows"], title="t")
+
+
+# --- windows and presets: one fast capture path, one page ---------------------------------
+
+def test_window_presets_sample_and_fit_one_page(tmp_path, monkeypatch):
+    snapshot = layered_snapshot()
+    scan = _execute(tmp_path / "scan", snapshot, {"view": "motion", "preset": "scan", "range_value": "0..4"}, monkeypatch)
+    timing = json.loads((Path(scan["outputs"]["pack_root"]) / "timing.json").read_text())
+    assert timing["frames"] == 9 and timing["resolution"] == [480, 270]  # every 0.5 s over 4 s, plus the end
+    assert [Path(p).name for p in scan["outputs"]["pages"]] == ["view-scan-0.00-4.00.png"]
+    window = json.loads((Path(scan["outputs"]["pack_root"]) / "window.json").read_text())
+    assert window["preset"] == "scan" and window["later"] == [4.0, 5.0] and window["earlier"] is None
+    assert window["cut"] == 2
+    motion = _execute(tmp_path / "motion", snapshot, {"view": "motion", "preset": "motion", "range_value": "0..2"}, monkeypatch)
+    assert json.loads((Path(motion["outputs"]["pack_root"]) / "timing.json").read_text())["resolution"] == [640, 360]
+    with Image.open(motion["outputs"]["primary_page"]) as page:
+        assert page.size[0] >= 3 * 640  # big frames, 3 per row
+    frame = _execute(tmp_path / "frame", snapshot, {"view": "motion", "preset": "frame", "at": "1.5"}, monkeypatch)
+    assert json.loads((Path(frame["outputs"]["pack_root"]) / "timing.json").read_text())["frames"] == 1
+    beat = _execute(tmp_path / "beat", snapshot, {"view": "motion", "preset": "beat", "range_value": "0..1"}, monkeypatch)
+    labels = json.loads((Path(beat["outputs"]["pack_root"]) / "frame-index.json").read_text())
+    assert labels  # frames at "It", "wasn't", the thud and the stamp
+    with pytest.raises(ValueError, match="at most 3 s"):
+        filmstrip_options({"view": "motion", "preset": "motion", "range": "0..5"})  # options parse; window check below
+        _execute(tmp_path / "long", snapshot, {"view": "motion", "preset": "motion", "range_value": "0..5"}, monkeypatch)
+
+
+def test_cli_window_navigation_offers_neighbours():
+    from astrid.packs.timeline import cli
+
+    window = {"preset": "scan", "start": 5.0, "end": 10.0, "earlier": [0.0, 5.0], "later": [10.0, 15.0],
+              "zoom_in": [6.5, 9.0], "zoom_out": [2.5, 12.5], "busiest": 7.75, "cut": 3, "cuts_in": [2, 3]}
+    rows = dict((name, " ".join(argv)) for name, argv in cli._window_navigation(window, ["visualize"]))
+    assert rows["earlier 0.00–5.00 s"].endswith("--preset scan --range 0.00..5.00")
+    assert rows["later 10.00–15.00 s"].endswith("--range 10.00..15.00")
+    assert rows["zoom in on the busiest moment 7.75 s"].endswith("--preset motion --range 6.50..9.00")
+    assert rows["zoom out"].endswith("--preset scan --range 2.50..12.50")
+    assert rows["same window as beat"].endswith("--preset beat --range 5.00..10.00")
+    assert rows["the cut it is in (#3)"].endswith("--cut 3")
+
+
+# --- the platform: pack layers + checks, project rules, data tracks, diff ----------------
+
+GUIDE_MODULE = '''
+from PIL import ImageDraw
+from astrid.packs.rendering.executors.timeline_visualize.layers import Check, Layer, LayerResult
+from astrid.packs.rendering.executors.timeline_visualize.layers.base import PALETTE
+
+def render(ctx):
+    image = ctx.panel(60, title="cut length")
+    ImageDraw.Draw(image).rectangle((ctx.x_of(float(ctx.cut["start"])), 30, ctx.x_of(float(ctx.cut["end"])), 50),
+                                    fill=PALETTE["key"])
+    return LayerResult(image, [f"LENGTH cut {ctx.cut['index']} is {float(ctx.cut['duration']):.2f} s"])
+
+def run(ctx):
+    limit = ctx.param("max_words_on_screen")
+    return [ctx.finding("WORDY", f"{e.label} shows {len(str(e.params.get('text')).split())} words", t=e.start,
+                        fix={"clip": e.short_id, "set": {"params.text": "..."}})
+            for e in ctx.elements if e.type == "am-type" and len(str(e.params.get("text") or "").split()) > limit]
+
+LAYER = Layer("cutlength", "the cut's span", render, needs=("doc",))
+CHECK = Check("wordy-type", "type longer than max_words_on_screen words", run,
+              params={"max_words_on_screen": 1}, scope="cut", codes=("WORDY",))
+'''
+
+
+def test_the_guide_examples_register_and_run(tmp_path):
+    from astrid.packs.rendering.executors.timeline_visualize.layers import base as layer_base
+    from astrid.packs.rendering.executors.timeline_visualize.motion.conditions import run_checks
+
+    folder = tmp_path / "packs" / "mypack" / "visualize_layers"
+    folder.mkdir(parents=True)
+    (folder / "cut_length.py").write_text(GUIDE_MODULE)
+    layer_base.discover(packs_root=tmp_path / "packs", refresh=True)
+    assert "cutlength" in layer_base.layer_help() and "wordy-type" in layer_base.check_help()
+    snapshot = layered_snapshot()
+    occurrences = occurrences_from_snapshot(snapshot)
+    elements = model.elements_from_occurrences(occurrences)
+    cuts = picture_cuts(occurrences, fps=FPS)
+    per_cut, _timeline = run_checks(cuts, elements, FPS)
+    wordy = [f for _c, fs in per_cut for f in fs if f.code == "WORDY"]
+    assert wordy and wordy[0].check == "wordy-type" and wordy[0].fix["set"] == {"params.text": "..."}
+    per_cut, _ = run_checks(cuts, elements, FPS, params={"max_words_on_screen": 5})
+    assert not [f for _c, fs in per_cut for f in fs if f.code == "WORDY"]
+
+
+def test_project_rules_set_thresholds_and_severities(tmp_path):
+    from astrid.packs.rendering.executors.timeline_visualize.motion.conditions import run_checks
+    from astrid.packs.rendering.executors.timeline_visualize.motion.rules import find_rules, load_rules
+
+    rules_file = tmp_path / "astrid-lint.toml"
+    rules_file.write_text('max_cut_s = 1.5\nmax_presenter_share = 0.2\n[severity]\nLONG = "error"\nEDGE = "off"\n')
+    (tmp_path / "sub").mkdir()
+    assert find_rules(tmp_path / "sub") == rules_file
+    rules = load_rules(rules_file)
+    snapshot = layered_snapshot()
+    occurrences = occurrences_from_snapshot(snapshot)
+    elements = model.elements_from_occurrences(occurrences)
+    cuts = picture_cuts(occurrences, fps=FPS)
+    per_cut, timeline = run_checks(cuts, elements, FPS, params=rules["params"], severity=rules["severity"])
+    longs = [f for _c, fs in per_cut for f in fs if f.code == "LONG"]
+    assert longs and all(f.severity == "error" for f in longs)  # cuts 1 and 3 are 2.0 s
+    assert any(f.code == "SHARE" for f in timeline)  # presenter on 2 of 5 s
+    bad = tmp_path / "bad.toml"
+    bad.write_text("max_cut = 4\n")
+    with pytest.raises(ValueError, match="unknown key 'max_cut'.*max_cut_s"):
+        load_rules(bad)
+
+
+def test_data_tracks_of_every_kind_read_in_timeline_seconds(tmp_path):
+    from astrid.packs.rendering.executors.timeline_visualize.motion import data
+
+    snapshot = layered_snapshot()
+    stamp = next(c for c in snapshot["clips"] if c["id"].endswith(":stamp"))
+    data.attach(stamp, "claw", data.make_track("points", [[0.1, "close"], [0.5, "open"]], units="s"))
+    data.attach(stamp, "hold", data.make_track("intervals", [[0.0, 0.3, "still"]]))
+    data.attach(stamp, "energy", data.make_track("series", {"t0": 0.0, "step": 0.5, "values": [1, 2, 3]}, units="x"))
+    data.attach(stamp, "face", data.make_track("boxes", [[0.2, 700, 100, 300, 300, "face"]], units="px"))
+    with pytest.raises(ValueError, match="kind must be"):
+        data.make_track("blobs", [])
+    elements = model.elements_from_occurrences(occurrences_from_snapshot(snapshot))
+    found = {t.name: t for t in data.tracks(elements) if not t.derived}
+    assert found["claw"].points == [(0.6, "close"), (1.0, "open")]  # the stamp clip starts at 0.5
+    assert found["hold"].intervals == [(0.5, 0.8, "still")]
+    assert [t for t, _v in found["energy"].series] == [0.5, 1.0, 1.5]
+    assert found["face"].boxes_at(0.7) == [(700, 100, 1000, 400)]
+    derived = {t.name for t in data.tracks(elements) if t.derived}
+    assert {"words", "presenter_words"} <= derived
+
+
+def test_timeline_data_script_adds_lists_and_validates(tmp_path, capsys):
+    from astrid.packs.rendering.skill.scripts import timeline_data
+
+    bundle = {"shots": {"s": {"internal_timeline": {"clips": [{"id": "v17-04-am-sprite", "track": "sprite"}]}}}}
+    document = tmp_path / "edit.json"
+    document.write_text(json.dumps(bundle))
+    track = tmp_path / "track.json"
+    track.write_text(json.dumps({"kind": "points", "units": "s", "time": "clip", "items": [[0.4, "claw closes"]]}))
+    assert timeline_data.main(["add", "--file", str(document), "--clip", "v17-04-am-sprite", "--name", "claw_contact",
+                               "--track", str(track)]) == 0
+    assert timeline_data.main(["list", "--file", str(document)]) == 0
+    assert "claw_contact points (1 items" in capsys.readouterr().out
+    assert timeline_data.main(["validate", "--file", str(document)]) == 0
+
+
+def test_diff_view_scope_condition():
+    from astrid.packs.rendering.executors.timeline_visualize.motion.diffview import compare
+
+    def bundle(x):
+        clips = [{"id": "p1", "track": "plate", "at": 0.0, "hold": 2.0}, {"id": "p2", "track": "plate", "at": 2.0, "hold": 2.0},
+                 {"id": "t2", "track": "type", "clipType": "am-type", "at": 2.2, "hold": 1.0, "params": {"x": x}}]
+        tracks = [{"id": "type", "kind": "visual"}, {"id": "plate", "kind": "visual"}]
+        return {"shots": {"s": {"internal_timeline": {"tracks": tracks, "clips": clips}}},
+                "placements": [{"shot_id": "s", "occurrence_id": "o", "placement": {"start_ms": 0}, "duration_ms": 4000}]}
+
+    report = compare(bundle(100), bundle(140), edited=[1])
+    scope = [f for f in report["findings"] if f.code == "SCOPE"]
+    assert report["changed_after"] == [2] and scope and "params.x 100→140" in scope[0].message
+    assert not [f for f in compare(bundle(100), bundle(140), edited=[2])["findings"] if f.code == "SCOPE"]

@@ -63,19 +63,30 @@ def test_visualize_help_exposes_managed_render_provenance(parser):
     assert "latest" in help_text
     assert "only view" in help_text
     assert "structure" not in help_text
-    assert "--preset" not in help_text
+    # --preset names intents (overview/scan/motion/beat/frame/cut/compare), not the removed structural presets
+    assert "--preset {overview,scan,motion,beat,frame,cut,compare}" in help_text
     assert "--resolution" in help_text
 
 
-def test_visualize_defaults_to_rendered_filmstrip(parser):
-    parsed = parser.parse_args(["visualize", "main", "--project", "demo"])
+def test_visualize_default_view_follows_the_window(parser):
+    from astrid.packs.timeline.cli import _resolve_view
 
-    assert parsed.view == "filmstrip"
+    def resolved(*argv):
+        parsed = parser.parse_args(["visualize", "main", "--project", "demo", *argv])
+        _resolve_view(parsed)
+        return parsed.view, parsed.preset
+
+    assert resolved() == ("contact", None)
+    assert resolved("--range", "5..10") == ("motion", "scan")
+    assert resolved("--at", "7.2") == ("motion", "frame")
+    assert resolved("--at", "7.2", "--preset", "motion") == ("motion", "motion")
+    assert resolved("--cut", "17") == ("motion", "cut")
+    assert resolved("--range", "5..10", "--show", "inputs") == ("filmstrip", None)
+    assert resolved("--preset", "overview") == ("contact", "overview")
     help_text = " ".join(
         parser._subparsers._group_actions[0].choices["visualize"].format_help().split()
     )
     assert "Rendered paired filmstrip" in help_text
-    assert "default" in help_text
     assert "synchronized inputs" in help_text
 
 

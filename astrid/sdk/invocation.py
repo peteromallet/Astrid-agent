@@ -1284,7 +1284,7 @@ def _runtime_data_root() -> Path | None:
 # Page files a visualize bundle may carry at its root, in reading order after
 # the manifest's primary page: the one-page overview, motion sheets, then the
 # numbered filmstrip pages.  Frames and input bands are evidence, not pages.
-_FILMSTRIP_PAGE_PREFIXES = ("contact-sheet", "motion-", "filmstrip-")
+_FILMSTRIP_PAGE_PREFIXES = ("contact-sheet", "view-", "motion-", "filmstrip-")
 
 
 def _filmstrip_pages(root: Path, document: Mapping[str, Any] | None) -> list[str]:
@@ -1322,6 +1322,14 @@ def _filmstrip_sidecars(root: Path) -> dict[str, Any]:
             cards = None
         if isinstance(cards, list):
             found["timing"] = {"frames": len(cards)}
+    window = root / "window.json"
+    if window.is_file() and window.stat().st_size < 65536:
+        try:
+            value = json.loads(window.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            value = None
+        if isinstance(value, Mapping):
+            found["window"] = dict(value)
     previews = sorted(root.glob("motion-*.gif"))
     if previews:
         found["preview"] = str(previews[0])
