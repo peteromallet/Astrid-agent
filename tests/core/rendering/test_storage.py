@@ -290,36 +290,53 @@ def test_used_effect_asset_sizes_are_exact_and_deduplicated(tmp_path: Path) -> N
     assert sizes == {str(asset_path.resolve()): 5}
 
 
-def test_opaque_frame_sequence_is_charged_with_the_guard() -> None:
+def test_streamed_render_keeps_no_frame_sequence() -> None:
     estimate = estimate_managed_render_storage(
         timeline=_timeline(),
         registry={"assets": {}},
         object_sizes={},
     )
-    # 300 frames at 1920x1080, PNG 0.6 bytes per pixel, 20% guard.
+    # Opaque Remotion renders pipe frames into the encoder (stream-frames.ts).
+    assert estimate["streams_frames"] is True
     assert estimate["frame_image_format"] == "png"
-    assert estimate["frame_sequence_bytes"] == 447_897_600
+    assert estimate["frame_sequence_bytes"] == 0
+
+
+def test_unstreamed_frame_sequence_is_charged_with_the_guard() -> None:
+    estimate = estimate_managed_render_storage(
+        timeline=_timeline(),
+        registry={"assets": {}},
+        object_sizes={},
+        streams_frames=False,
+    )
+    # 300 frames at 1920x1080, PNG 1.6 bytes per pixel (measured peak), 20% guard.
+    assert estimate["streams_frames"] is False
+    assert estimate["frame_sequence_bytes"] == 1_194_393_600
     assert estimate["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
         frames=300, width=1920, height=1080, image_format="png"
     )
 
 
-def test_review_output_is_review_scale_but_frames_are_captured_at_full_canvas() -> None:
+def test_review_frames_are_captured_at_the_emitted_review_size() -> None:
     export = estimate_managed_render_storage(
-        timeline=_timeline(), registry={"assets": {}}, object_sizes={}
+        timeline=_timeline(), registry={"assets": {}}, object_sizes={}, streams_frames=False
     )
     review = estimate_managed_render_storage(
-        timeline=_timeline(), registry={"assets": {}}, object_sizes={}, review=True
+        timeline=_timeline(),
+        registry={"assets": {}},
+        object_sizes={},
+        review=True,
+        streams_frames=False,
     )
     assert (review["width"], review["height"]) == (640, 360)
     assert review["review_render"] is True
-    assert (review["frame_capture_width"], review["frame_capture_height"]) == (1920, 1080)
-    # Review frames default to JPEG; the capture canvas is still 1920x1080.
-    assert review["frame_image_format"] == "jpeg"
+    # --scale is Chromium's device scale factor: frames are 640x360 (measured).
+    assert (review["frame_capture_width"], review["frame_capture_height"]) == (640, 360)
+    assert review["frame_image_format"] == "png"
     assert review["frame_sequence_bytes"] == remotion_frame_sequence_bytes(
-        frames=300, width=1920, height=1080, image_format="jpeg"
+        frames=300, width=640, height=360, image_format="png"
     )
-    assert review["frame_sequence_bytes"] < export["frame_sequence_bytes"]
+    assert review["frame_sequence_bytes"] * 9 == export["frame_sequence_bytes"]
     assert review["estimated_output_bytes"] < export["estimated_output_bytes"]
 
 
@@ -351,8 +368,12 @@ def test_alpha_frame_workspace_is_not_charged_twice() -> None:
 
 
 def test_remotion_frame_format_defaults_by_render_kind() -> None:
-    assert remotion_frame_format(review=True, environ={}) == "jpeg"
+    # Frames stream, so PNG costs no disk; JPEG makes full-range H.264.
+    assert remotion_frame_format(review=True, environ={}) == "png"
     assert remotion_frame_format(review=False, environ={}) == "png"
+    assert remotion_frame_format(
+        review=True, environ={"ASTRID_RENDER_REVIEW_FRAME_FORMAT": "jpeg"}
+    ) == "jpeg"
     assert remotion_frame_format(review=False, alpha=True, environ={}) == "png"
     assert remotion_frame_format(
         review=True, environ={"ASTRID_RENDER_REVIEW_FRAME_FORMAT": "png"}

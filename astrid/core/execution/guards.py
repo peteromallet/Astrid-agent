@@ -146,7 +146,7 @@ class EvidenceBudget:
             if observed > cap:
                 raise EvidenceCapError(
                     f"this task generated {observed} bytes of evidence, over its "
-                    f"{cap}-byte cap. Render a shorter range or use review (JPEG) "
+                    f"{cap}-byte cap. Render a shorter range or use a review render (640x360) "
                     "frames, then re-run. Other tasks are unaffected.",
                     diagnostic={
                         "category": "attempt_cap_exceeded",
@@ -185,6 +185,14 @@ class ExecutionGuardPolicy:
         compare=False,
         repr=False,
     )
+    # Input digests keyed by file identity and change stamps. The live guard
+    # samples the attempt many times per second; an unchanged input must not
+    # be re-read and re-hashed on every sample.
+    _digest_cache: dict[tuple[str, int, int, int, int], str] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.evidence_cap_bytes <= 0:
@@ -209,6 +217,17 @@ class ExecutionGuardPolicy:
                 hashlib.sha256(payload).hexdigest(),
             )
         return baseline
+
+    def _cached_digest(self, path: Path, stat: os.stat_result) -> str:
+        """Hash an input once per (inode, size, mtime, ctime); reuse it after."""
+        key = (str(path), int(stat.st_ino), int(stat.st_size), int(stat.st_mtime_ns), int(stat.st_ctime_ns))
+        digest = self._digest_cache.get(key)
+        if digest is None:
+            if len(self._digest_cache) >= 4096:
+                self._digest_cache.clear()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self._digest_cache[key] = digest
+        return digest
 
     def evidence_bytes(
         self,
@@ -261,20 +280,27 @@ class ExecutionGuardPolicy:
         # Keep only the largest paths while scanning; a render may create
         # millions of short-lived frame/evidence files.
         entries: list[tuple[int, str, str]] = []
+        # rglob() never descends through a symlinked directory, so every file
+        # below the root resolves to the resolved root plus its relative path;
+        # one resolve() per sample instead of one realpath per file.
+        resolved_root = directory.resolve()
         try:
             for path in directory.rglob("*"):
                 try:
                     if path.is_symlink() or not path.is_file():
                         continue
-                    size = int(path.stat().st_size)
+                    stat = path.stat()
+                    size = int(stat.st_size)
                     relative = path.relative_to(directory).as_posix()
                     path_class = relative.split("/", 1)[0] if relative else "."
-                    identity = baseline.get(str(path.resolve()))
+                    identity = baseline.get(str(resolved_root / relative)) if baseline else None
                     unchanged = False
                     if identity is not None:
                         expected_size, expected_digest = identity
-                        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                        unchanged = size == expected_size and actual_digest == expected_digest
+                        unchanged = (
+                            size == expected_size
+                            and self._cached_digest(path, stat) == expected_digest
+                        )
                     if unchanged:
                         immutable_files += 1
                         immutable_bytes += size

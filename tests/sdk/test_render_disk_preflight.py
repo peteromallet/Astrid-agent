@@ -10,7 +10,8 @@ from astrid.sdk.exceptions import CapabilityPreconditionError
 
 def _estimate(**overrides) -> dict:
     value = {
-        "frame_sequence_bytes": 1000,
+        "frame_sequence_bytes": 0,
+        "estimated_scratch_bytes": 1000,
         "alpha_frame_working_bytes": 0,
         "estimated_output_bytes": 500,
         "frame_image_format": "png",
@@ -33,18 +34,17 @@ def _free(monkeypatch, free_bytes: int) -> None:
     )
 
 
-def test_preflight_passes_when_the_volume_covers_frames_and_output(monkeypatch) -> None:
+def test_preflight_passes_when_the_volume_covers_scratch_and_output(monkeypatch) -> None:
     _free(monkeypatch, 1501)
     invocation._assert_render_disk_preflight(_estimate(), volume="/scratch")
 
 
 def test_preflight_refuses_fast_and_names_the_options(monkeypatch) -> None:
     _free(monkeypatch, 1499)
-    with pytest.raises(CapabilityPreconditionError, match="scratch for 4980 png frames") as failure:
+    with pytest.raises(CapabilityPreconditionError, match="scratch and output for 4980 frames") as failure:
         invocation._assert_render_disk_preflight(_estimate(), volume="/scratch")
     message = str(failure.value)
-    assert "1920x1080" in message
-    assert "ASTRID_RENDER_EXPORT_FRAME_FORMAT=jpeg" in message
+    assert "640x360" in message
     assert "review" in message
     assert "TMPDIR" in message
 
@@ -52,17 +52,15 @@ def test_preflight_refuses_fast_and_names_the_options(monkeypatch) -> None:
 def test_review_refusal_does_not_offer_the_review_it_already_is(monkeypatch) -> None:
     _free(monkeypatch, 10)
     with pytest.raises(CapabilityPreconditionError) as failure:
-        invocation._assert_render_disk_preflight(
-            _estimate(review_render=True, frame_image_format="jpeg"), volume="/scratch"
-        )
+        invocation._assert_render_disk_preflight(_estimate(review_render=True), volume="/scratch")
     assert "already a review render" in str(failure.value)
 
 
-def test_alpha_preflight_uses_the_raw_frame_workspace(monkeypatch) -> None:
+def test_preflight_without_a_scratch_total_falls_back_to_frame_terms(monkeypatch) -> None:
     _free(monkeypatch, 1000)
     with pytest.raises(CapabilityPreconditionError):
         invocation._assert_render_disk_preflight(
-            _estimate(frame_sequence_bytes=0, alpha_frame_working_bytes=900, frame_image_format="png"),
+            _estimate(estimated_scratch_bytes=0, alpha_frame_working_bytes=900),
             volume="/scratch",
         )
 

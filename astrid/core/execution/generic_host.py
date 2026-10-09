@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 from datetime import datetime, timezone
+import faulthandler
 import hashlib
 import heapq
 import hmac
@@ -1634,6 +1635,45 @@ def _task_storage_estimate(task_data: Mapping[str, Any]) -> dict[str, int] | Non
     return {"scratch_bytes": scratch_bytes, "output_bytes": output_bytes}
 
 
+# Waiting reasons that belong to the offered task itself rather than to this
+# executor's capacity. Another capability's task may still be claimable.
+_TASK_SPECIFIC_WAITING_REASONS = frozenset(
+    {
+        "capability_unavailable",
+        "insufficient_storage",
+        "waiting_for_executor_facts",
+        "waiting_for_dependencies",
+        "provider_state_unknown",
+        "execution_binding_missing",
+        "execution_binding_mismatch",
+        "execution_qualification_mismatch",
+        "remote_activation_missing",
+    }
+)
+_CLAIM_HEAD_OF_LINE_SKIPS = 8
+# How often a running attempt's storage/evidence guards and Runtime state are
+# sampled. Each sample walks the attempt tree; the child poll stays at 50 ms.
+_LIVE_GUARD_INTERVAL_SECONDS = 0.5
+
+
+def _claim_field(claim: Any, name: str) -> Any:
+    if isinstance(claim, Mapping):
+        return claim.get(name)
+    return getattr(claim, name, None)
+
+
+def _claim_blocked_capability(claim: Any) -> str | None:
+    """Return the capability of an offered task that cannot run, else None."""
+    if _claim_field(claim, "attempt_id"):
+        return None
+    reason = _claim_field(claim, "waiting_reason")
+    if reason not in _TASK_SPECIFIC_WAITING_REASONS:
+        return None
+    task = _claim_field(claim, "task")
+    capability = _claim_field(task, "capability_id") if task is not None else None
+    return str(capability) if capability else None
+
+
 def _evidence_cap_message(detail: str | None) -> str:
     """Name the failed task's evidence overrun and the next step, for Runtime."""
     if not detail:
@@ -1691,7 +1731,7 @@ def _assert_live_storage_envelope(
         raise StorageEnvelopeError(
             f"live scratch bytes {scratch_bytes} exceed task scratch limit {estimate['scratch_bytes']}; "
             f"this task exceeded its scratch budget ({scratch_bytes} of {estimate['scratch_bytes']} bytes). "
-            "Re-run as a review render (JPEG frames), render a shorter range, or free disk on the "
+            "Re-run as a review render (640x360), render a shorter range, or free disk on the "
             "temporary volume. The host does not need a restart.",
             diagnostic=diagnostic,
         )
@@ -1745,7 +1785,7 @@ def _task_storage_envelope(
     if scratch_bytes > scratch_limit:
         raise HostError(
             f"attempt scratch bytes {scratch_bytes} exceed task scratch limit {scratch_limit}; "
-            "this task exceeded its scratch budget. Re-run as a review render (JPEG frames) or a "
+            "this task exceeded its scratch budget. Re-run as a review render (640x360) or a "
             "shorter range, or free disk on the temporary volume. The host does not need a restart."
         )
     return {
@@ -2640,6 +2680,8 @@ class GenericPackHost:
         # `astrid doctor` can report a blocked host from another process.
         self.cleanup_latch_path: Path | None = None
         self.evidence_status_path: Path | None = None
+        # Queued tasks already reported as unclaimable, as (task_id, reason).
+        self._reported_blocked_claims: set[tuple[str, str]] = set()
         self._last_cleanup_receipt: dict[str, Any] | None = None
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
@@ -4665,12 +4707,17 @@ class GenericPackHost:
         self._track_process(process)
         try:
             observe_tree(process)
+            guards_due = 0.0
             while process.poll() is None:
                 observe_tree(process)
-                _assert_live_storage_envelope(storage_estimate, attempt, output_root)
-                if cancelled is not None and cancelled():
-                    _terminate_process_group(process)
-                    raise HostCancelled(f"capability {record.id!r} cancelled")
+                # Storage, evidence and Runtime-state checks walk the attempt
+                # tree and call the Runtime; sample them at a bounded rate.
+                if time.monotonic() >= guards_due:
+                    guards_due = time.monotonic() + _LIVE_GUARD_INTERVAL_SECONDS
+                    _assert_live_storage_envelope(storage_estimate, attempt, output_root)
+                    if cancelled is not None and cancelled():
+                        _terminate_process_group(process)
+                        raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
             stdout, stderr = process.communicate()
             if cancelled is not None and cancelled():
@@ -4835,11 +4882,14 @@ class GenericPackHost:
         )
         self._track_process(process)
         try:
+            guards_due = 0.0
             while process.poll() is None:
-                _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs")
-                if cancelled is not None and cancelled():
-                    _terminate_process_group(process)
-                    raise HostCancelled(f"capability {capability_id!r} cancelled")
+                if time.monotonic() >= guards_due:
+                    guards_due = time.monotonic() + _LIVE_GUARD_INTERVAL_SECONDS
+                    _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs")
+                    if cancelled is not None and cancelled():
+                        _terminate_process_group(process)
+                        raise HostCancelled(f"capability {capability_id!r} cancelled")
                 time.sleep(0.05)
             stdout, stderr = process.communicate()
             if cancelled is not None and cancelled():
@@ -6192,6 +6242,36 @@ class GenericPackHost:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 
+    def _report_blocked_claim(self, claim: Any, capability: str) -> None:
+        """Log a queued task that cannot run, once per task and reason."""
+        task = _claim_field(claim, "task")
+        task_id = str(_claim_field(task, "task_id") or "") if task is not None else ""
+        reason = str(_claim_field(claim, "waiting_reason") or "")
+        key = (task_id, reason)
+        if key in self._reported_blocked_claims:
+            return
+        if len(self._reported_blocked_claims) >= 1024:
+            self._reported_blocked_claims.clear()
+        self._reported_blocked_claims.add(key)
+        admitted = _claim_field(task, "capability_digest") if task is not None else None
+        registered = (
+            self.capabilities[capability].capability_digest
+            if capability in self.capabilities
+            else None
+        )
+        detail = ""
+        if reason == "capability_unavailable" and admitted and registered and admitted != registered:
+            detail = (
+                f"; it was admitted against {admitted} but this host serves {registered} "
+                "(the capability changed since admission). Cancel it and submit it again"
+            )
+        print(
+            f"generic host: queued task {task_id} ({capability}) cannot be claimed: "
+            f"{reason}{detail}. Other capabilities stay claimable.",
+            file=sys.stderr,
+            flush=True,
+        )
+
     def claim_once(self) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._cleanup_uncertain:
@@ -6221,15 +6301,32 @@ class GenericPackHost:
         if not capability_ids:
             return None
         claim_target = _configured_claim_target()
-        claim = claim_next(
-            executor_id=self.executor_id,
-            capability_ids=capability_ids,
-            idempotency_key=f"claim-{self.executor_id}-{time.time_ns()}",
-            target=claim_target,
-        )
-        if claim is None:
-            return None
-        if getattr(claim, "waiting_reason", None) and not getattr(claim, "attempt_id", None):
+        # The Runtime offers only the oldest queued task among the requested
+        # capabilities. When that task cannot run (for example it was admitted
+        # against a capability digest a promote has since replaced), it would
+        # block every later task of every capability. Ask again without the
+        # blocked capability, a bounded number of times, so one stuck task
+        # holds back only its own capability.
+        excluded: set[str] = set()
+        claim = None
+        for _ in range(_CLAIM_HEAD_OF_LINE_SKIPS + 1):
+            candidates = [capability for capability in capability_ids if capability not in excluded]
+            if not candidates:
+                return None
+            claim = claim_next(
+                executor_id=self.executor_id,
+                capability_ids=candidates,
+                idempotency_key=f"claim-{self.executor_id}-{time.time_ns()}",
+                target=claim_target,
+            )
+            if claim is None:
+                return None
+            blocked = _claim_blocked_capability(claim)
+            if blocked is None or blocked in excluded:
+                break
+            self._report_blocked_claim(claim, blocked)
+            excluded.add(blocked)
+        if claim is None or _claim_field(claim, "waiting_reason") and not _claim_field(claim, "attempt_id"):
             return None
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
             "attempt_id": getattr(claim, "attempt_id", None),
@@ -6919,6 +7016,14 @@ def _cli() -> int:
 
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
+    # `kill -USR1 <pid>` writes every thread's Python stack to the host log,
+    # so a host that looks stuck can be diagnosed without stopping it.
+    if hasattr(signal, "SIGUSR1"):
+        try:
+            faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        except (OSError, ValueError, RuntimeError):
+            # stderr has no file descriptor (an embedding or test harness).
+            pass
     registration = None
     if args.register or not args.run_task:
         try:

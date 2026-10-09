@@ -54,13 +54,16 @@ _PARALLEL_ENCODE_WORKING_COPIES = 1
 _MANAGED_RENDERER_COPY_PASSES = 2
 
 
-# Remotion writes one image per frame into its temporary directory unless it
-# streams frames straight into ffmpeg. Streaming is gated on free RAM, so a
-# memory-tight host takes the file path and every frame is scratch until the
-# stitch finishes. The per-pixel rates are deliberately conservative (PNG 0.6
-# and JPEG 0.15 bytes per pixel) and the frame term carries a 20% guard.
+# Opaque Remotion H.264 renders pipe each frame straight into the encoder
+# (remotion/stream-frames.ts), so they keep no frame images in scratch. A
+# render that cannot stream (Three.js PCM/AAC capture) keeps one image per
+# frame until the stitch. Frames are captured at the emitted size: ``--scale``
+# is Chromium's device scale factor, so a review render captures 640x360.
+# Rates measured on project footage at 640x360: Chromium's fast PNG averaged
+# 1.17 and peaked at 1.56 bytes per pixel, JPEG about 0.25. The model uses
+# 1.6 and 0.3 and the frame term carries a 20% guard.
 REMOTION_FRAME_FORMATS = ("png", "jpeg")
-_FRAME_BYTES_PER_PIXEL = {"png": Fraction(3, 5), "jpeg": Fraction(3, 20)}
+_FRAME_BYTES_PER_PIXEL = {"png": Fraction(8, 5), "jpeg": Fraction(3, 10)}
 _FRAME_GUARD_PERCENT = 120
 REVIEW_MAX_WIDTH = 640
 REVIEW_MAX_HEIGHT = 360
@@ -80,8 +83,9 @@ def remotion_frame_format(
 ) -> str:
     """Return the Remotion frame image format for one render.
 
-    Review renders default to JPEG (preview quality, about a fifth of the PNG
-    bytes); clean exports default to PNG so pixel art stays exact. Alpha
+    PNG by default for review and export alike: frames stream into the
+    encoder, so the format no longer costs disk, and JPEG frames make the
+    H.264 output full-range (``yuvj420p``) and soften pixel edges. Alpha
     renders always need PNG. Override with ``ASTRID_RENDER_REVIEW_FRAME_FORMAT``
     or ``ASTRID_RENDER_EXPORT_FRAME_FORMAT`` set to ``png`` or ``jpeg``.
     """
@@ -90,7 +94,7 @@ def remotion_frame_format(
         return "png"
     env = os.environ if environ is None else environ
     name = REVIEW_FRAME_FORMAT_ENV if review else EXPORT_FRAME_FORMAT_ENV
-    default = "jpeg" if review else "png"
+    default = "png"
     value = str(env.get(name) or default).strip().lower()
     if value not in REMOTION_FRAME_FORMATS:
         raise StorageEstimateError(
@@ -318,8 +322,13 @@ def estimate_managed_render_storage(
     effect_asset_sizes: Mapping[str, int] | None = None,
     requested_profile: Mapping[str, Any] | RenderProfile | None = None,
     review: bool = False,
+    streams_frames: bool = True,
 ) -> dict[str, Any]:
     """Estimate peak task storage from one expanded canonical snapshot.
+
+    ``streams_frames`` is true when the renderer pipes frames into the encoder
+    (the Remotion backend's opaque H.264 renders); pass False for a renderer
+    that keeps one image per frame until the stitch (Three.js PCM capture).
 
     ``object_sizes`` must contain exact runtime-owned sizes, keyed by unique
     SHA-256 digest. The estimate models the measured materialization,
@@ -370,13 +379,13 @@ def estimate_managed_render_storage(
         effect_asset_bytes += size
 
     profile = _render_profile(timeline, registry, requested_profile)
-    # Remotion captures every frame at the full canvas and applies --scale only
-    # when encoding, so frame scratch is sized from the capture canvas.
-    capture_width, capture_height = profile.width, profile.height
     # A review render without an explicit profile is emitted at review scale.
     review_frames = bool(review) and requested_profile is None
     if review_frames:
         profile = review_render_profile(profile)
+    # ``--scale`` is Chromium's device scale factor, so frames are captured at
+    # the emitted size (measured: review frames are 640x360).
+    capture_width, capture_height = profile.width, profile.height
     fps = Fraction(*profile.fps_rational)
     authored_frames = timeline_duration_frames(timeline, float(fps))
     frames = timeline_render_duration_frames(timeline, float(fps))
@@ -384,8 +393,9 @@ def estimate_managed_render_storage(
     pixel_rate = Fraction(profile.width * profile.height, 1) * fps
     alpha = _is_alpha_timeline(timeline)
     frame_image_format = remotion_frame_format(review=review_frames, alpha=alpha)
-    # Alpha renders already charge their raw frame workspace above.
-    frame_sequence_bytes = 0 if alpha else remotion_frame_sequence_bytes(
+    # Alpha renders charge their raw frame workspace below; streamed renders
+    # keep no frame images at all.
+    frame_sequence_bytes = 0 if alpha or streams_frames else remotion_frame_sequence_bytes(
         frames=frames,
         width=capture_width,
         height=capture_height,
@@ -597,6 +607,7 @@ def estimate_managed_render_storage(
         "frame_capture_width": capture_width,
         "frame_capture_height": capture_height,
         "frame_image_format": frame_image_format,
+        "streams_frames": bool(streams_frames) and not alpha,
         "frame_sequence_bytes": frame_sequence_bytes,
         "parallel_encode_working_copies": _PARALLEL_ENCODE_WORKING_COPIES,
         "encoded_working_copy_bytes": encoded_working_copy_bytes,

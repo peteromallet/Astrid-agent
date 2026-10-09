@@ -900,44 +900,37 @@ def _assert_render_disk_preflight(
     *,
     volume: str | None = None,
 ) -> None:
-    """Fail fast when the scratch volume cannot hold the render's frames and output.
+    """Fail fast when the scratch volume cannot hold the render's envelope.
 
-    The frame sequence is the only term that grows with duration, and Remotion
-    writes it to the temporary directory before stitching. Checking it at
-    admission turns a mid-render ENOSPC into an immediate, actionable error.
+    The envelope is the admitted scratch plus output estimate, the same pair
+    the Runtime and the pack host enforce. Checking it at admission turns a
+    mid-render ENOSPC into an immediate, actionable error.
     """
 
     if "frame_sequence_bytes" not in storage_estimate:
-        # Only the managed render estimate carries a frame model to check.
+        # Only the managed render estimate carries this model.
         return
     target = volume or tempfile.gettempdir()
-    # Alpha renders charge their raw frame workspace instead of a frame sequence.
-    frame_bytes = int(storage_estimate["frame_sequence_bytes"]) or int(
-        storage_estimate.get("alpha_frame_working_bytes", 0)
+    scratch_bytes = int(storage_estimate.get("estimated_scratch_bytes") or 0) or (
+        int(storage_estimate["frame_sequence_bytes"])
+        or int(storage_estimate.get("alpha_frame_working_bytes", 0))
     )
     output_bytes = int(storage_estimate["estimated_output_bytes"])
-    required = frame_bytes + output_bytes
+    required = scratch_bytes + output_bytes
     free = int(shutil.disk_usage(target).free)
     if required <= free:
         return
-    fmt = str(storage_estimate["frame_image_format"])
-    width = int(storage_estimate["frame_capture_width"])
-    height = int(storage_estimate["frame_capture_height"])
     frames = int(storage_estimate["duration_frames"])
+    width = int(storage_estimate.get("width") or 0)
+    height = int(storage_estimate.get("height") or 0)
     if storage_estimate.get("review_render"):
-        options = (
-            "this is already a review render (JPEG frames); render a shorter timeline "
-            "or free disk space"
-        )
+        options = "this is already a review render; render a shorter timeline or free disk space"
     else:
-        options = (
-            "for a preview, render a review (640x360 JPEG frames); for a JPEG export set "
-            "ASTRID_RENDER_EXPORT_FRAME_FORMAT=jpeg; or render a shorter timeline"
-        )
+        options = "for a preview, render a review (640x360); or render a shorter timeline"
     raise CapabilityPreconditionError(
-        f"rendering.render needs about {required / _GIB:.2f} GiB of scratch for {frames} "
-        f"{fmt} frames at {width}x{height} plus output, but only {free / _GIB:.2f} GiB is free "
-        f"on {target}. Options: {options}; or free disk space, or point TMPDIR at a larger "
+        f"rendering.render needs about {required / _GIB:.2f} GiB of scratch and output for "
+        f"{frames} frames at {width}x{height}, but only {free / _GIB:.2f} GiB is free on "
+        f"{target}. Options: {options}; or free disk space, or point TMPDIR at a larger "
         "volume before the pack host starts."
     )
 
@@ -2848,6 +2841,8 @@ def invoke(
                     effect_asset_sizes=effect_sizes,
                     requested_profile=(inputs or {}).get("profile"),
                     review=review_flag is True or str(review_flag).lower() in {"true", "1", "yes"},
+                    # Only the Three.js PCM capture keeps one image per frame.
+                    streams_frames=str((inputs or {}).get("selector") or "") != "rendering.threejs",
                 )
             except StorageEstimateError as exc:
                 raise CapabilityValidationError(str(exc)) from exc
