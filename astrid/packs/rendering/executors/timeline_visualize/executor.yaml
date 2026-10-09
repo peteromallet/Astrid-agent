@@ -153,7 +153,7 @@
       "name": "view",
       "type": "string",
       "required": false,
-      "description": "Presentation: the paired rendered filmstrip as static PNG/Markdown/JSON evidence (the only supported view).",
+      "description": "Presentation: filmstrip (paired drill-down pages, default) or contact (one overview page of the whole video) as static PNG/Markdown/JSON evidence.",
       "default": "filmstrip"
     },
     {

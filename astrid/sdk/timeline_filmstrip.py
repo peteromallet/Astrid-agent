@@ -347,6 +347,22 @@ def _open_current_input_closure(
     return deepcopy(dict(projected_config)), deepcopy(dict(projected_registry)), authority
 
 
+def _occurrence_timing(occurrence: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the placement window of one occurrence as seconds (at/hold).
+
+    Runtime occurrence rows carry a rational placement ``speed`` object and
+    the projection already resolved ``at``/``hold`` (or ``at_ms``/``duration_ms``)
+    in seconds.  Timing validation only understands the clip shape, so reduce
+    the occurrence to that window before frame arithmetic; legacy fixtures that
+    already use ``at``/``hold`` pass through unchanged.
+    """
+    if 'at' in occurrence and 'hold' in occurrence:
+        return {'at': occurrence['at'], 'hold': occurrence['hold']}
+    if 'at_ms' in occurrence and 'duration_ms' in occurrence:
+        return {'at': float(occurrence['at_ms']) / 1000.0, 'hold': float(occurrence['duration_ms']) / 1000.0}
+    return occurrence
+
+
 def _digest(value: Any) -> str:
     raw = str(value or '').removeprefix('sha256:')
     if len(raw) != 64 or any(c not in '0123456789abcdef' for c in raw):
@@ -475,12 +491,17 @@ def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, ru
         if not isinstance(occurrence, Mapping):
             continue
         shot_id = occurrence.get('shot_id')
-        occurrence_id = occurrence.get('shot_occurrence_id')
+        # Runtime parent-revision projections name the placement ``occurrence_id``;
+        # the flattened-clip spelling ``shot_occurrence_id`` is the legacy key.
+        # Reading only the legacy key dropped every occurrence, which left clips
+        # unlabelled and suppressed the shot scripts (spoken text) entirely.
+        occurrence_id = occurrence.get('occurrence_id') or occurrence.get('shot_occurrence_id')
         shot = frozen_shots.get(shot_id)
         if not shot or not occurrence_id:
             continue
-        start_frame = clip_start_frame(occurrence, float(fps))
-        end_frame = clip_end_frame(occurrence, float(fps))
+        timing = _occurrence_timing(occurrence)
+        start_frame = clip_start_frame(timing, float(fps))
+        end_frame = clip_end_frame(timing, float(fps))
         start_frame = max(0, min(start_frame, authored_duration_frames))
         end_frame = max(start_frame, min(end_frame, authored_duration_frames))
         if end_frame <= start_frame:

@@ -242,9 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--view",
-        choices=StaticChoices(("filmstrip",)),
+        choices=StaticChoices(("filmstrip", "contact")),
         default="filmstrip",
-        help="Rendered paired filmstrip (the only supported timeline view).",
+        help="filmstrip: paired drill-down pages (default); contact: one overview page of the whole video.",
     )
     parser.add_argument(
         "--sample", choices=StaticChoices(("interval", "clips", "shots", "cuts"))
@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--columns",
         type=int,
-        help="combined filmstrip output cards per paired row (default 5; max 8)",
+        help="cards per row: paired filmstrip default 5 (max 8); contact overview default 10 (max 12)",
     )
     parser.add_argument("--page-size", type=int)
     parser.add_argument("--resolution", metavar="WIDTHxHEIGHT")

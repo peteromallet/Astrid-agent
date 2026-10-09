@@ -648,7 +648,11 @@ def test_paired_surface_centers_spoken_text_in_card_body(tmp_path, monkeypatch):
     # body rather than starting at the card's left padding or bottom edge.
     (x, y), _ = calls[0]
     assert x > 500
-    assert 320 <= y <= 370
+    # The 2:1 fixture frame reaches the 320px preview cap, so the caption block
+    # sits below the preview (header 52+54, preview 320, gap 8) and is centred
+    # in the panel that follows, not pinned to the card's bottom edge.
+    preview_bottom = 52 + 54 + 320
+    assert preview_bottom + 8 <= y <= preview_bottom + 48
 
 
 def test_paired_surface_omits_empty_lanes_but_preserves_canonical_track_metadata(tmp_path):

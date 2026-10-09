@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import textwrap
+import time
 from collections.abc import Mapping
 from copy import deepcopy
 from fractions import Fraction
@@ -83,6 +84,67 @@ def _speech_caption_records(snapshot, time):
     return [item[3] for item in matches]
 
 
+WORD_CAPTION_WINDOW_SECONDS = 1.0
+
+
+def _word_entry(raw):
+    """Return (start, end, text) for one VO word timing, or None if malformed.
+
+    The builder stores ``app.words`` as clip-relative ``[start, end]`` pairs
+    (timeline seconds).  A third element, or a ``text``/``tok``/``word`` key,
+    carries the token; timing-only entries cannot be captioned and are skipped
+    rather than guessed at.
+    """
+    if isinstance(raw, Mapping):
+        start, end = raw.get('s', raw.get('start')), raw.get('e', raw.get('end'))
+        text = raw.get('text', raw.get('tok', raw.get('word')))
+    elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        start, end = raw[0], raw[1]
+        text = raw[2] if len(raw) >= 3 else None
+    else:
+        return None
+    if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return None
+    if not isinstance(text, str) or not text.strip() or end <= start:
+        return None
+    return float(start), float(end), text.strip()
+
+
+def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS):
+    """Word-aligned VO text near ``time`` from the active clips' ``app.words``.
+
+    Only words whose interval overlaps ``[time - window, time + window)`` are
+    returned, so the caption describes what is spoken around the sampled frame
+    instead of repeating a whole shot script.  Clip ``at`` is the absolute
+    timeline start in the composed snapshot, so word times are offset by it.
+    """
+    low, high = float(time) - window, float(time) + window
+    records = []
+    for clip in clips:
+        if not isinstance(clip, Mapping):
+            continue
+        app = clip.get('app')
+        words = app.get('words') if isinstance(app, Mapping) else None
+        if not isinstance(words, list):
+            continue
+        try:
+            origin = float(clip.get('at') or 0.0)
+        except (TypeError, ValueError):
+            continue
+        for raw in words:
+            entry = _word_entry(raw)
+            if entry is None:
+                continue
+            start, end, text = entry
+            start, end = origin + start, origin + end
+            if end <= low or start >= high:
+                continue
+            records.append({'text': text, 'start': start, 'end': end,
+                            'clip_id': clip.get('id'), 'timing_basis': 'vo_word'})
+    records.sort(key=lambda item: (item['start'], item['end'], str(item['clip_id'])))
+    return records
+
+
 def _project_display_scripts(cards):
     """De-duplicate shot-script context for the human-facing card display.
 
@@ -106,6 +168,8 @@ def _project_display_scripts(cards):
         card['display_scripts'] = displayed
         if card.get('captions'):
             card['caption_status'] = 'timed caption'
+        elif card.get('timed_words'):
+            card['caption_status'] = 'word-aligned VO (app.words)'
         elif displayed:
             card['caption_status'] = 'shot script context (not word-aligned)'
         elif card.get('scripts'):
@@ -834,6 +898,11 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
                     add((start + end) // 2, 'shot_midpoint')
     if not reasons:
         raise ValueError('No rendered frames match the requested sample and filters.')
+    contact_info = None
+    if options.get('view') == 'contact':
+        from .contact_sheet import CONTACT_MAX_TILES, contact_reasons
+        reasons, thinned_from = contact_reasons(reasons, mode=mode, limit=CONTACT_MAX_TILES)
+        contact_info = {'tiles': len(reasons), 'cap': CONTACT_MAX_TILES, 'sample': mode, 'thinned_from': thinned_from}
     if boundary_index is None:
         boundary_index = _boundary_index(snapshot, clips, spans, total, fps)
         selected = set(reasons)
@@ -860,10 +929,12 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
         # contains frozen, timed speech annotations covering this frame.
         scripts = [s for s in snapshot.get('scripts', []) if _q(s['start']) <= time < _q(s['end'])]
         captions = _speech_caption_records(snapshot, time)
-        caption_status = 'timed caption' if captions else 'no timed text available'
+        timed_words = _timed_word_records(active, time)
+        caption_status = ('timed caption' if captions else 'word-aligned VO (app.words)' if timed_words
+                          else 'no timed text available')
         target = f"frame-{frame:09d}"
         extension = str(options.get('frame_extension') or 'jpg').lstrip('.')
-        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.{extension}', 'actions': {'target': '#' + target}})
+        cards.append({'id': target, 'frame': frame, 'time_seconds': float(time), 'time_rational': [time.numerator, time.denominator], 'time_label': f'{float(time):.3f}s', 'sample_reasons': sorted(why), 'clips': active, 'scripts': scripts, 'captions': captions, 'timed_words': timed_words, 'caption_status': caption_status, 'script_status': 'script segment (not word-aligned)' if scripts else 'no script', 'shot_ids': sorted({str(c['shot_id']) for c in active if c.get('shot_id')}), 'image': f'frames/{target}.{extension}', 'actions': {'target': '#' + target}})
     _project_display_scripts(cards)
     navigation = build_inspector_navigation(snapshot, cards)
     for card, target in zip(cards, navigation['frames']):
@@ -874,7 +945,7 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
     coverage['page_count'] = page_count
     coverage['page_size'] = page_size
     coverage['selected_frame_ids'] = [card['id'] for card in cards]
-    return {'navigation': navigation, 'schema': 'astrid.filmstrip.v1',
+    return {'navigation': navigation, 'schema': 'astrid.filmstrip.v1', 'view': options.get('view') or 'filmstrip', 'contact': contact_info,
             'provenance': {k: snapshot.get(k) for k in ('project_slug', 'timeline_id', 'timeline_name', 'render_run_id', 'video_digest', 'fps_rational', 'duration_frames', 'metadata')},
             'audio': snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else navigation['audio'],
             'boundary_index': boundary_index,
@@ -895,21 +966,31 @@ def plan_filmstrip(snapshot: dict, options: dict) -> dict:
             'cards': cards}
 
 
+def _word_caption_text(card):
+    """Joined word-aligned VO text for one card ('' when none is timed)."""
+    return ' '.join(str(word.get('text', '')) for word in card.get('timed_words') or [] if word.get('text'))
+
+
 def _lines(card):
-    shots = ', '.join(dict.fromkeys(str(c.get('shot_name') or c.get('shot_id')) for c in card['clips'] if c.get('shot_id') or c.get('shot_name')))
+    shots =', '.join(dict.fromkeys(str(c.get('shot_name') or c.get('shot_id')) for c in card['clips'] if c.get('shot_id') or c.get('shot_name')))
     clips = ', '.join(str(c.get('id')) for c in card['clips']) or 'no active clip'
     # ``scripts`` is the complete overlapping shot context retained for
     # machine-readable inspection.  The human-facing strip must use the
     # de-duplicated display channel when the planner provided it; otherwise a
     # coarse sample repeats one untimed shot script on every card.
+    word_text = _word_caption_text(card) if not card.get('captions') else ''
     if card.get('captions'):
         text_items = card['captions']
+    elif word_text:
+        text_items = [{'text': word_text}]
     elif 'display_scripts' in card:
         text_items = card.get('display_scripts') or []
     else:
         text_items = card.get('scripts') or []
     if card.get('captions'):
         status = 'timed caption'
+    elif word_text:
+        status = 'word-aligned VO (app.words)'
     elif card.get('display_scripts'):
         status = 'shot script context (not word-aligned)'
     elif 'display_scripts' in card:
@@ -970,22 +1051,34 @@ _PNG_FALLBACK_FONT_PATH = Path(__file__).with_name('fonts') / 'NotoSansSC-Regula
 _PNG_EMOJI_FONT_PATH = Path(__file__).with_name('fonts') / 'NotoEmoji-Regular.ttf'
 _PNG_PAGE_WIDTH_STRIDE = 344
 _PNG_CARD_WIDTH = 328
-_PNG_IMAGE_HEIGHT = 216
-_PNG_HEADER_HEIGHT = 56
+# Default preview height for a 16:9 frame at full card width.  Real cards use
+# their frame's own aspect (see ``_png_image_height``); this is the fallback.
+_PNG_IMAGE_HEIGHT = round(_PNG_CARD_WIDTH * 9 / 16)
+_PNG_FRAME_ASPECT_DEFAULT = 9 / 16
+# Card anatomy, top to bottom: label+time header, full-width preview at the
+# frame's aspect, optional waveform, and a text panel sized to its content.
+# Earlier layouts reserved a fixed 314px body, so a 16:9 preview filled only
+# about half of each card.
+_PNG_HEADER_PAD_TOP = 8
+_PNG_HEADER_LINE_HEIGHT = 22
+_PNG_HEADER_PAD_BOTTOM = 6
+_PNG_HEADER_HEIGHT = _PNG_HEADER_PAD_TOP + _PNG_HEADER_LINE_HEIGHT + _PNG_HEADER_PAD_BOTTOM
 # Give the measured mix enough vertical room to read at a glance.  The raw
 # bins remain unchanged; this is presentation chrome only.  This is a display
 # height, not a change to the waveform's sample/time resolution.
-_PNG_AUDIO_HEIGHT = 76
+_PNG_AUDIO_HEIGHT = 64
+_PNG_AUDIO_TOP_GAP = 6
+_PNG_AUDIO_BOTTOM_GAP = 8
 _PNG_AUDIO_BAR_COUNT = 72
 _PNG_AUDIO_BAR_WIDTH = 4
 _PNG_ROW_GAP = 26
 _PNG_ROW_RULE_COLOR = '#405769'
-# Keep spoken text in a stable, visually deliberate panel below the preview
-# and waveform.  The panel is larger than the text block so short captions do
-# not look pinned to the lower-left corner of a card.
+# Keep spoken text in a stable panel below the preview and waveform, sized to
+# the lines it carries (one line for "no timed text available").
 _PNG_TEXT_LINE_HEIGHT = 22
-_PNG_TEXT_AREA_MIN_HEIGHT = 72
-_PNG_TEXT_AREA_PADDING = 16
+_PNG_TEXT_AREA_MIN_HEIGHT = 0
+_PNG_TEXT_AREA_PADDING = 10
+_PNG_CARD_BOTTOM_PAD = 8
 
 
 class _PngFontChain:
@@ -1138,9 +1231,12 @@ def _png_script_lines(draw, card, font, *, show_text=True):
         return [], False
     if 'captions' in card:
         timed = card.get('captions') or []
-        source = timed or card.get('display_scripts') or []
-        text = '\n'.join(str(item.get('canonical_text') or item.get('text') or '')
-                          for item in source).strip()
+        # Precedence: frozen speech captions, then word-aligned VO from the
+        # clip's app.words, then the once-per-occurrence shot script.
+        words = '' if timed else _word_caption_text(card)
+        source = [] if (timed or words) else card.get('display_scripts') or []
+        text = words or '\n'.join(str(item.get('canonical_text') or item.get('text') or '')
+                                  for item in (timed or source)).strip()
         status = card.get('caption_status') or 'No timed text available'
         # Repeated samples inside one coarse shot are intentionally quiet in
         # the visual strip.  The machine-readable status remains available in
@@ -1153,11 +1249,9 @@ def _png_script_lines(draw, card, font, *, show_text=True):
         text = '\n'.join(str(script.get('text', '')) for script in card.get('scripts') or []).strip()
         empty_label = 'No spoken text'
     if not text:
-        return [empty_label, ''], False
+        return ([empty_label] if empty_label else []), False
     bounded = f'“{text[:1200]}”'
     lines, excerpt = _png_bounded_lines(draw, bounded, font, 308, 6)
-    if len(lines) < 2:
-        lines.append('')
     if len(text) > 1200:
         excerpt = True
     return lines, excerpt
@@ -1290,37 +1384,64 @@ def _png_waveform_display_amplitudes(
     ]
 
 
-def _png_card_metrics(draw, card, name_font, timestamp_font, script_font, audio=None, *, show_text=True, image_height=_PNG_IMAGE_HEIGHT):
+def _png_image_height(aspect, card_width=_PNG_CARD_WIDTH):
+    """Preview height that fills the card width at the frame's own aspect."""
+    try:
+        ratio = float(aspect)
+    except (TypeError, ValueError):
+        ratio = _PNG_FRAME_ASPECT_DEFAULT
+    if not math.isfinite(ratio) or ratio <= 0:
+        ratio = _PNG_FRAME_ASPECT_DEFAULT
+    # Bound portrait frames so one tall still cannot dominate a whole row.
+    return max(card_width // 2, min(int(card_width * 1.25), int(round(card_width * ratio))))
+
+
+def _png_frame_aspect(out_root, card):
+    """Height/width of a card's captured frame (16:9 when it cannot be read)."""
+    from PIL import Image
+    try:
+        with Image.open(Path(out_root) / card['image']) as source:
+            width, height = source.size
+    except (OSError, KeyError, TypeError, ValueError):
+        return _PNG_FRAME_ASPECT_DEFAULT
+    return height / width if width > 0 and height > 0 else _PNG_FRAME_ASPECT_DEFAULT
+
+
+def _png_card_metrics(draw, card, name_font, timestamp_font, script_font, audio=None, *, show_text=True, image_height=_PNG_IMAGE_HEIGHT, card_width=_PNG_CARD_WIDTH):
+    """Measure one card. ``height`` = header + body; body = preview + waveform + text."""
     timestamp = str(card.get('time_label', ''))
     timestamp_lines = _png_wrap(draw, timestamp, timestamp_font, 150)
     timestamp_width = max((_png_text_width(draw, line, timestamp_font) for line in timestamp_lines), default=0)
-    name_width = 308 - timestamp_width - 12
+    name_width = card_width - 20 - timestamp_width - 12
     separate_timestamp = name_width < 100
     if separate_timestamp:
-        name_width = 308
+        name_width = card_width - 20
     name_lines, name_excerpt = _png_bounded_lines(draw, _png_shot_label(card)[:1200], name_font, name_width, 2)
     if name_excerpt:
         name_lines[-1] = _png_ellipsis(draw, name_lines[-1], name_font, name_width)
     header_lines = max(len(name_lines), len(timestamp_lines), 1)
     if separate_timestamp:
         header_lines = max(header_lines + 1, 2)
-    extra_header_lines = max(0, header_lines - 2)
+    header_height = _PNG_HEADER_PAD_TOP + _PNG_HEADER_LINE_HEIGHT * header_lines + _PNG_HEADER_PAD_BOTTOM
     script_lines, excerpt = _png_script_lines(draw, card, script_font, show_text=show_text)
     waveform = _png_waveform_for_card(audio, card)
-    audio_extra = _PNG_AUDIO_HEIGHT + 8 if waveform is not None else 0
-    text_content_height = _PNG_TEXT_LINE_HEIGHT * len(script_lines) + (
+    top_gap = (_PNG_AUDIO_TOP_GAP + _PNG_AUDIO_HEIGHT + _PNG_AUDIO_BOTTOM_GAP
+               if waveform is not None else _PNG_AUDIO_TOP_GAP)
+    text_content_height = (_PNG_TEXT_LINE_HEIGHT * len(script_lines) + (
         _PNG_TEXT_LINE_HEIGHT if excerpt else 0
-    )
-    text_area_height = max(_PNG_TEXT_AREA_MIN_HEIGHT, text_content_height + _PNG_TEXT_AREA_PADDING)
-    height = 314 + (image_height - _PNG_IMAGE_HEIGHT) + audio_extra + text_area_height + 22 * extra_header_lines
+    )) if script_lines else 0
+    text_area_height = text_content_height + _PNG_TEXT_AREA_PADDING if text_content_height else 0
+    body_height = image_height + top_gap + text_area_height + _PNG_CARD_BOTTOM_PAD
     return {
         'timestamp': timestamp, 'timestamp_lines': timestamp_lines,
         'name_lines': name_lines, 'name_width': name_width,
         'separate_timestamp': separate_timestamp,
-        'header_lines': header_lines, 'extra_header_lines': extra_header_lines,
+        'header_lines': header_lines, 'extra_header_lines': max(0, header_lines - 2),
+        'header_height': header_height, 'image_height': image_height,
+        'body_height': body_height, 'height': header_height + body_height,
         'script_lines': script_lines, 'excerpt': excerpt, 'waveform': waveform,
-        'audio_extra': audio_extra, 'text_content_height': text_content_height,
-        'text_area_height': text_area_height, 'height': height,
+        'top_gap': top_gap, 'audio_extra': top_gap if waveform is not None else 0,
+        'text_content_height': text_content_height, 'text_area_height': text_area_height,
     }
 
 
@@ -1329,9 +1450,18 @@ def _static_png(cards, out_root, columns, page_size, timeline_name, render_run_i
     measure_image = Image.new('RGB', (1, 1))
     measure_draw = ImageDraw.Draw(measure_image)
     name_font, timestamp_font, script_font = _png_font(22 if detail else 18), _png_font(16 if detail else 14), _png_font(18 if detail else 16)
-    image_height = 288 if detail else _PNG_IMAGE_HEIGHT
     notice_font = _png_font(12)
-    layouts = [_png_card_metrics(measure_draw, card, name_font, timestamp_font, script_font, audio, show_text=show_text, image_height=image_height) for card in cards]
+    # Each preview takes its own frame's aspect at full card width, so a
+    # 16:9 still fills the card rather than letterboxing inside a fixed box.
+    image_heights = [
+        _png_image_height(_png_frame_aspect(out_root, card) if show_output else _PNG_FRAME_ASPECT_DEFAULT)
+        for card in cards
+    ]
+    layouts = [
+        _png_card_metrics(measure_draw, card, name_font, timestamp_font, script_font, audio,
+                          show_text=show_text, image_height=image_height)
+        for card, image_height in zip(cards, image_heights)
+    ]
     paths = []
     for page, offset in enumerate(range(0, len(cards), page_size), 1):
         group = cards[offset:offset + page_size]
@@ -1370,30 +1500,28 @@ def _static_png(cards, out_root, columns, page_size, timeline_name, render_run_i
                 y += row_heights[previous_row] + _PNG_ROW_GAP
                 separator_y = y - (_PNG_ROW_GAP // 2)
                 draw.line((12, separator_y, width - 12, separator_y), fill=_PNG_ROW_RULE_COLOR, width=2)
-            header_height = _PNG_HEADER_HEIGHT + 22 * layout['extra_header_lines']
-            name_y = y + 8
-            timestamp_y = y + 10
+            name_y = y + _PNG_HEADER_PAD_TOP
+            timestamp_y = y + _PNG_HEADER_PAD_TOP
             if layout['separate_timestamp']:
-                timestamp_y = y + 8
-                name_y = y + 30
+                name_y = y + _PNG_HEADER_PAD_TOP + _PNG_HEADER_LINE_HEIGHT
             for line_no, line in enumerate(layout['name_lines']):
-                _png_draw_text(draw, (x + 10, name_y + line_no * 22), line, name_font, fill='white')
+                _png_draw_text(draw, (x + 4, name_y + line_no * _PNG_HEADER_LINE_HEIGHT), line, name_font, fill='white')
             for line_no, line in enumerate(layout['timestamp_lines']):
-                right = x + 318
-                _png_draw_text(draw, (right - _png_text_width(draw, line, timestamp_font), timestamp_y + line_no * 22), line, timestamp_font, fill='#8ce0d0')
+                right = x + _PNG_CARD_WIDTH - 4
+                _png_draw_text(draw, (right - _png_text_width(draw, line, timestamp_font), timestamp_y + line_no * _PNG_HEADER_LINE_HEIGHT), line, timestamp_font, fill='#8ce0d0')
+            image_y = y + layout['header_height']
+            image_h = layout['image_height']
             if show_output:
                 with Image.open(out_root / card['image']) as source:
-                    source.thumbnail((_PNG_CARD_WIDTH, image_height))
-                    image_x = x + (_PNG_CARD_WIDTH - source.width) // 2
-                    image_y = y + header_height + (image_height - source.height) // 2
-                    sheet.paste(source, (image_x, image_y))
+                    frame = source.convert('RGB').resize((_PNG_CARD_WIDTH, image_h), Image.LANCZOS)
+                sheet.paste(frame, (x, image_y))
             else:
-                draw.rounded_rectangle((x, y + header_height, x + _PNG_CARD_WIDTH, y + header_height + image_height), radius=6, fill='#162630', outline='#405769', width=1)
-                _png_draw_text(draw, (x + 12, y + header_height + image_height // 2 - 8), 'Output hidden', timestamp_font, fill='#9fb0bf')
-            image_end = y + header_height + image_height
+                draw.rounded_rectangle((x, image_y, x + _PNG_CARD_WIDTH, image_y + image_h), radius=6, fill='#162630', outline='#405769', width=1)
+                _png_draw_text(draw, (x + 12, image_y + image_h // 2 - 8), 'Output hidden', timestamp_font, fill='#9fb0bf')
+            image_end = image_y + image_h
             if layout['waveform'] is not None:
-                wave_y = image_end + 6
-                wave_x, wave_width = x + 10, _PNG_CARD_WIDTH - 20
+                wave_y = image_end + _PNG_AUDIO_TOP_GAP
+                wave_x, wave_width = x, _PNG_CARD_WIDTH
                 draw.rounded_rectangle((wave_x, wave_y, wave_x + wave_width, wave_y + _PNG_AUDIO_HEIGHT), radius=5,
                                         fill='#0d1a22', outline='#467486', width=2)
                 center = wave_y + _PNG_AUDIO_HEIGHT // 2
@@ -1407,19 +1535,16 @@ def _static_png(cards, out_root, columns, page_size, timeline_name, render_run_i
                         draw.line((bar_x, center - bar_height, bar_x, center + bar_height), fill='#8ff6dd', width=_PNG_AUDIO_BAR_WIDTH)
                 cursor_x = wave_x + 8 + inner_width * layout['waveform']['cursor']
                 draw.line((cursor_x, wave_y + 3, cursor_x, wave_y + _PNG_AUDIO_HEIGHT - 3), fill='#ffc276', width=2)
-            body_y = image_end + 10 + layout['audio_extra']
-            text_area_height = layout['text_area_height']
-            text_block_height = layout['text_content_height']
-            text_y = body_y + max(0, (text_area_height - text_block_height) // 2)
+            text_top = image_end + layout['top_gap'] + _PNG_TEXT_AREA_PADDING // 2
             for line_no, line in enumerate(layout['script_lines']):
                 line_width = _png_text_width(draw, line, script_font)
-                text_x = x + 10 + max(0, (308 - line_width) / 2)
-                _png_draw_text(draw, (text_x, text_y + line_no * _PNG_TEXT_LINE_HEIGHT), line, script_font, fill='#e5e7eb')
+                text_x = x + max(0, (_PNG_CARD_WIDTH - line_width) / 2)
+                _png_draw_text(draw, (text_x, text_top + line_no * _PNG_TEXT_LINE_HEIGHT), line, script_font, fill='#e5e7eb')
             if layout['excerpt']:
                 notice = 'Excerpt; full text in JSON / Markdown'
                 notice_width = _png_text_width(draw, notice, notice_font)
-                notice_x = x + 10 + max(0, (308 - notice_width) / 2)
-                _png_draw_text(draw, (notice_x, text_y + _PNG_TEXT_LINE_HEIGHT * len(layout['script_lines']) + 6), notice, notice_font, fill='#acbbcb')
+                notice_x = x + max(0, (_PNG_CARD_WIDTH - notice_width) / 2)
+                _png_draw_text(draw, (notice_x, text_top + _PNG_TEXT_LINE_HEIGHT * len(layout['script_lines']) + 6), notice, notice_font, fill='#acbbcb')
         path = out_root / f'filmstrip-{page:03d}.png'
         sheet.save(path)
         paths.append(str(path))
@@ -1479,6 +1604,10 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         json.dumps(snapshot, indent=2, ensure_ascii=False), encoding='utf-8')
     cards = index['cards']
     capture_info = None
+    # Frame acquisition is the expensive step (Remotion capture or ffmpeg
+    # extraction).  Its wall-clock window is reported as timing so an agent can
+    # tell a slow capture from a slow composition or a queued task.
+    capture_started_at = time.time()
     if frame_provider is None:
         if video_path is None:
             raise ValueError('filmstrip requires either an admitted video or a frame provider')
@@ -1487,6 +1616,7 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         capture_info = frame_provider.capture(cards, out_root, options.get('resolution'))
         index['frame_capture'] = capture_info
         index['provenance']['frame_capture'] = capture_info
+    capture_ended_at = time.time()
     media_record = None
     if options.get('include_media'):
         if video_path is None:
@@ -1524,7 +1654,21 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
             card['script_status'] = 'text hidden'
             card['caption_status'] = 'text hidden'
     display_audio = index.get('audio') if 'audio' in (options.get('components') or ('output', 'text', 'audio')) else None
-    paths = _static(display_cards, out_root, columns, page_size, snapshot.get('timeline_name') or snapshot['timeline_id'], snapshot['render_run_id'], (snapshot.get('metadata') or {}).get('selection') or options.get('render_run') or 'latest', display_audio, components=options.get('components'), detail=bool(options.get('detail')))
+    render_selection = (snapshot.get('metadata') or {}).get('selection') or options.get('render_run') or 'latest'
+    timeline_label = snapshot.get('timeline_name') or snapshot['timeline_id']
+    if options.get('view') == 'contact':
+        from .contact_sheet import static_contact_png
+        duration = float(Fraction(int(snapshot['duration_frames']), 1) / Fraction(*snapshot['fps_rational']))
+        components = set(options.get('components') or ('output', 'text', 'audio'))
+        paths = {'png': static_contact_png(
+            display_cards, out_root, columns=columns, timeline_name=timeline_label,
+            render_run_id=snapshot['render_run_id'], render_selection=render_selection,
+            occurrences=[o for o in snapshot.get('occurrences') or [] if isinstance(o, Mapping)],
+            duration_seconds=duration, show_output='output' in components,
+            thinned_from=(index.get('contact') or {}).get('thinned_from'),
+        )}
+    else:
+        paths = _static(display_cards, out_root, columns, page_size, timeline_label, snapshot['render_run_id'], render_selection, display_audio, components=options.get('components'), detail=bool(options.get('detail')))
     for name, filename in [('json', 'frame-index.json'), ('markdown', 'filmstrip.md')]:
         paths[name] = str(out_root / filename)
     index['request'] = {
@@ -1585,4 +1729,5 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
     for card in cards:
         md += [f"## {card['id']}", '', f"![{card['time_label']}]({card['image']})", ''] + [html.escape(line) + '  ' for line in _lines(card)] + ['', '```sh', card['actions']['focus_command'], '```', '']
     Path(paths['markdown']).write_text('\n'.join(md), encoding='utf-8')
-    return {'frame_index': index, 'cards': cards, 'paths': paths}
+    return {'frame_index': index, 'cards': cards, 'paths': paths,
+            'capture_window': (capture_started_at, capture_ended_at)}

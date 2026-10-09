@@ -56,10 +56,16 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     # normalized fields alongside the resolved contract so the executor and
     # the public CLI describe the same filmstrip request.
     shared = inspection_options(values)
-    sample = values.get('sample') or 'interval'
+    view = values.get('view') or 'filmstrip'
+    if view not in {'filmstrip', 'contact'}:
+        raise ValueError('view must be filmstrip (paired drill-down) or contact (one overview page)')
+    contact = view == 'contact'
+    every, frames = values.get('every'), values.get('every_frames')
+    # An overview samples one frame per cut unless a density was asked for.
+    default_sample = 'interval' if (every is not None or frames is not None) else ('cuts' if contact else 'interval')
+    sample = values.get('sample') or default_sample
     if sample not in {'interval', 'clips', 'shots', 'cuts'}:
         raise ValueError('sample must be interval, clips, shots, or cuts')
-    every, frames = values.get('every'), values.get('every_frames')
     if every is not None and frames is not None:
         raise ValueError('choose every seconds or every_frames, not both')
     if frames is not None and (type(frames) is not int or frames < 1):
@@ -84,14 +90,18 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     normalized_every = every if every is not None else (None if frames else 0.5)
     density = ({'mode': 'every_frames', 'value': frames}
                if frames is not None else {'mode': 'every_seconds', 'value': normalized_every})
-    result: dict[str, Any] = {'sample': sample, 'every': normalized_every,
+    result: dict[str, Any] = {'view': view, 'sample': sample, 'every': normalized_every,
                               'every_frames': frames, 'density': density,
                               'explicit_interval': explicit_interval,
                               'include_cuts': include_cuts,
                               'max_frames': 2000,
                               'include_media': bool(values.get('include_media', False))}
+    components = list(shared['components']['resolved'])
+    if contact:
+        # The overview is output plus text; input lanes belong to the paired view.
+        components = [name for name in components if name != 'inputs']
     result.update({
-        'components': shared['components']['resolved'],
+        'components': components,
         'component_request': shared['components'],
         'track_ids': shared['tracks'],
         'detail': shared['detail'],
@@ -104,7 +114,8 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     # paired renderer uses that distinction to make the normal input+output
     # view one row wide while still allowing a caller to request denser pages.
     result['page_size_explicit'] = values.get('page_size') is not None
-    for name, default, maximum in [('columns', 5, 8), ('page_size', 50, 100)]:
+    columns_default, columns_max = (10, 12) if contact else (5, 8)
+    for name, default, maximum in [('columns', columns_default, columns_max), ('page_size', 50, 100)]:
         n = values.get(name, default)
         if n is None:
             n = default

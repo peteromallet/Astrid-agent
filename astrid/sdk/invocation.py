@@ -672,9 +672,9 @@ def _validate_timeline_visualize_inputs(
     # route were removed; all review navigation is render-scoped (range,
     # timestamp, shot, clip, asset, track, and density).
     view = values.get("view", "filmstrip")
-    if view != "filmstrip":
+    if view not in {"filmstrip", "contact"}:
         raise CapabilityValidationError(
-            "only view=filmstrip is supported; the structural timeline view was removed"
+            "only view=filmstrip or view=contact is supported; the structural timeline view was removed"
         )
     removed = [
         name for name in ("all", "from_view", "focus", "refresh_root", "layout", "filmstrip", "scope")

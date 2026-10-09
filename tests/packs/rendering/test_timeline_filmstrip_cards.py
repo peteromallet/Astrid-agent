@@ -494,7 +494,8 @@ def test_png_missing_script_is_explicit_and_bounded():
     measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
     fonts = [filmstrip_cards._png_font(size) for size in (18, 14, 16)]
     metrics = filmstrip_cards._png_card_metrics(measure, _static_card(script=None), *fonts)
-    assert metrics['script_lines'] == ['No spoken text', '']
+    # The text panel is sized to its content: one explicit line, no filler row.
+    assert metrics['script_lines'] == ['No spoken text']
     assert metrics['excerpt'] is False
 
 
@@ -558,8 +559,12 @@ def test_static_png_draw_geometry_contains_images_and_varies_row_height(tmp_path
     monkeypatch.setattr(Image.Image, 'paste', spy_paste)
     result = filmstrip_cards._static_png(cards, tmp_path, 8, 50, 'Geometry', 'run', 'selection')
     assert len(paste_calls) == 9
-    assert all(size[0] <= 328 and size[1] <= 216 for _box, size in paste_calls)
-    image_box_tops = [box[1] - (216 - size[1]) // 2 for box, size in paste_calls]
+    # Previews fill the card width at each frame's own aspect (16:9, portrait
+    # clamped to 1.25x width, square); nothing is letterboxed in a fixed box.
+    expected_heights = [filmstrip_cards._png_image_height(h / w) for w, h in
+                        [(160, 90), (90, 160), (160, 90), (90, 160), (160, 90), (90, 160), (160, 90), (90, 160), (24, 24)]]
+    assert [size for _box, size in paste_calls] == [(328, h) for h in expected_heights]
+    image_box_tops = [box[1] for box, _size in paste_calls]
     assert image_box_tops[0] == image_box_tops[1] == image_box_tops[7]
     assert image_box_tops[8] - image_box_tops[0] > 16 + 22 * 2
     assert Path(result[0]).exists()
@@ -570,11 +575,11 @@ def test_static_png_draw_geometry_contains_images_and_varies_row_height(tmp_path
     assert name_call and timestamp_call and spoken_call
     image_x, image_y = paste_calls[0][0]
     assert name_call[1] < image_y
-    assert spoken_call[1] > image_box_tops[0] + 216
+    assert spoken_call[1] > image_box_tops[0] + expected_heights[0]
     layout = filmstrip_cards._png_card_metrics(ImageDraw.Draw(Image.new('RGB', (1, 1))), cards[0], filmstrip_cards._png_font(18), filmstrip_cards._png_font(14), filmstrip_cards._png_font(16))
     assert not layout['separate_timestamp']
     assert name_call[0] + filmstrip_cards._png_text_width(ImageDraw.Draw(Image.new('RGB', (1, 1))), 'Geometry 0', filmstrip_cards._png_font(18)) <= timestamp_call[0] - 12
-    assert image_x - (328 - paste_calls[0][1][0]) // 2 == 16
+    assert image_x == 16
 
 
 def test_png_waveform_projects_frozen_audio_bins_into_card_strip(tmp_path):
@@ -606,7 +611,8 @@ def test_png_waveform_projects_frozen_audio_bins_into_card_strip(tmp_path):
     # peak normalization so its voice waveform remains legible in a card.
     assert max(metrics['waveform']['display_amplitudes']) == pytest.approx(0.96)
     assert metrics['waveform']['display_amplitudes'][30] == pytest.approx(0.0)
-    assert metrics['audio_extra'] == filmstrip_cards._PNG_AUDIO_HEIGHT + 8
+    assert metrics['audio_extra'] == (filmstrip_cards._PNG_AUDIO_TOP_GAP + filmstrip_cards._PNG_AUDIO_HEIGHT
+                                      + filmstrip_cards._PNG_AUDIO_BOTTOM_GAP)
     result = filmstrip_cards._static_png([card], tmp_path, 1, 50, 'A story', 'run', 'selection', audio)
     assert Path(result[0]).exists()
 

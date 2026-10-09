@@ -23,6 +23,20 @@ When the request also needs
 new generated media (for example Foley audio), use [creative work](../../_core/skill/creative-work/SKILL.md)
 to find its generation capability, then return here to assemble the result.
 
+## See the whole video before rendering
+
+Start with the overview. It captures one tile per cut (at most 120) and never renders the whole video.
+
+```bash
+python3 -m astrid timelines visualize <timeline> --project <project> --view contact --sample cuts
+python3 -m astrid timelines visualize <timeline> --project <project> --range 10..20 --every-frames 10
+python3 -m astrid timelines visualize <timeline> --project <project> --at 12 --context 2
+python3 -m astrid timelines visualize <timeline> --project <project> --every 1
+```
+
+Open the contact sheet first, then drill into a window, a moment, or a dense
+interval. Each run prints `captured N frames in T s (queued Q s)`.
+
 ## Start a new timeline
 
 Use this when the project has no timeline yet. A timeline has no head until its
@@ -337,7 +351,7 @@ media classifications, diagnostics, and scope-preserving actions used by
 `timelines show`; it does not create a second timeline document. The adapter's
 scope marks source-media actions as metadata-only until Runtime exposes a
 digest-bound source handle, so agents must not claim source playback or exact
-frame access from `media.show` alone:
+frame access from the media show action alone:
 
 ```python
 opened = client.timelines.open_composition(

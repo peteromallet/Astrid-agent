@@ -59,6 +59,7 @@ import argparse
 import json
 import re
 import shlex
+import time
 from collections.abc import Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -1257,6 +1258,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         mode = "inputs"
     else:
         mode = getattr(parsed, "mode", "auto")
+    requested_at = time.time()
     result = parsed.client.timelines.visualize(
         parsed.project,
         timeline_slug,
@@ -1337,11 +1339,44 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
                 },
             )
         )
+    if human_outputs is not None:
+        timing = _visualization_timing(human_outputs, requested_at)
+        if timing is not None:
+            human_outputs["timing"] = timing
     exit_status = print_result(envelope, as_json=parsed.json)
     if result.ok and not parsed.json:
         if human_outputs is not None:
+            _print_visualization_timing(human_outputs.get("timing"), requested_at)
             _print_visualization_navigation(human_outputs)
     return exit_status
+
+
+def _visualization_timing(outputs: Mapping[str, Any], requested_at: float) -> dict[str, Any] | None:
+    """Add queue time to the executor's timing: queued = executor start - request time.
+
+    The executor cannot see when its request was admitted, so the client, which
+    timed the request itself, computes the queue.  ``wall_s`` is the full
+    client-observed duration.
+    """
+    raw = outputs.get("timing")
+    timing = dict(raw) if isinstance(raw, Mapping) else {}
+    started = timing.get("started_at")
+    timing["queued_s"] = (
+        round(max(0.0, float(started) - requested_at), 3)
+        if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    )
+    timing["wall_s"] = round(time.time() - requested_at, 3)
+    return timing
+
+
+def _print_visualization_timing(timing: Any, requested_at: float) -> None:
+    """One human line: how many frames were captured, how long, and how long it queued."""
+    if not isinstance(timing, Mapping) or timing.get("capture_s") is None:
+        print(f"visualized in {time.time() - requested_at:.0f} s (executor timing unavailable)")
+        return
+    queued = timing.get("queued_s")
+    queue_text = f" (queued {float(queued):.0f} s)" if queued is not None else ""
+    print(f"captured {int(timing.get('frames') or 0)} frames in {float(timing['capture_s']):.0f} s{queue_text}")
 
 
 def _visualization_navigation_help(
@@ -1481,6 +1516,7 @@ def _visualization_navigation_help(
         "commands": {
             "rerun": shlex.join(base()),
             "visualize": shlex.join(base()),
+            "overview": shlex.join(identity + ["--view", "contact", "--sample", "cuts"]),
             "show": show_command,
             "controls": "python3 -m astrid timelines visualize --help",
             "zoom": shlex.join(clean + ["--range", "START..END", "--every", "0.25", *zoom_detail]),
@@ -1989,9 +2025,12 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--view",
-        choices=("filmstrip",),
+        choices=("filmstrip", "contact"),
         default="filmstrip",
-        help="Rendered paired filmstrip (only view for composed output).",
+        help=(
+            "Rendered paired filmstrip (default; the only view for drill-down pages). "
+            "contact: ONE overview page of the whole video (one tile per cut, capped at 120)."
+        ),
     )
     subparser.add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
                            help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")

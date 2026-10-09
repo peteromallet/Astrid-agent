@@ -7,6 +7,7 @@ import math
 import os
 import subprocess
 import tempfile
+import time
 import zipfile
 from collections.abc import Mapping
 from copy import deepcopy
@@ -1193,8 +1194,8 @@ def _render_paired_rows(
     from .filmstrip_cards import (
         _png_bounded_lines, _png_draw_text, _png_ellipsis, _png_font,
         _png_shot_label, _png_text_width, _png_waveform_for_card,
-        _png_card_metrics, _PNG_CARD_WIDTH, _PNG_IMAGE_HEIGHT, _PNG_AUDIO_HEIGHT,
-        _PNG_PAGE_WIDTH_STRIDE,
+        _png_card_metrics, _png_frame_aspect, _PNG_CARD_WIDTH, _PNG_IMAGE_HEIGHT, _PNG_AUDIO_HEIGHT,
+        _PNG_PAGE_WIDTH_STRIDE, _word_caption_text,
         _PNG_TEXT_LINE_HEIGHT,
     )
 
@@ -1280,9 +1281,14 @@ def _render_paired_rows(
                 box_right = int(round(lane_left + right_fraction * (lane_right - lane_left) - 4))
                 card_widths.append(max(32, min(width - 8, box_right) - box_left))
             min_card_width = min(card_widths, default=width - 32)
-            image_height = min(200, max(96, round((min_card_width - 10) * 9 / 16)))
+            # The preview takes the frame's own aspect (the tallest frame in the
+            # row, so none is cropped) at the narrowest card's width.
+            row_aspect = max((_png_frame_aspect(pack_root, card) for card in row_cards), default=9 / 16)
+            image_height = min(320, max(96, round((min_card_width - 10) * row_aspect)))
             layouts = [_png_card_metrics(measure, card, name_font, timestamp_font, script_font, audio if show_audio else None, show_text=show_text, image_height=image_height) for card in row_cards]
-            card_body_height = max((layout["height"] for layout in layouts), default=320)
+            # Header (time + label) is fixed at 54px in this row; the body is
+            # sized from the tallest card's real preview, waveform and text.
+            card_body_height = 54 + max((layout["body_height"] for layout in layouts), default=200)
             row_projection = _active_paired_projection(
                 _paired_projection(input_projection, round(row_start * float(fps)), round(row_end * float(fps)))
             )
@@ -1380,7 +1386,12 @@ def _render_paired_rows(
                             (cursor_x, wave_y + 3, cursor_x, wave_y + _PNG_AUDIO_HEIGHT - 3),
                             fill="#ffc276", width=2,
                         )
-                text_items = (card.get("captions") or []) if card.get("captions") else (card.get("display_scripts") or [])
+                if card.get("captions"):
+                    text_items = card["captions"]
+                else:
+                    # Word-aligned VO text outranks the once-per-occurrence shot script.
+                    words = _word_caption_text(card)
+                    text_items = [{"text": words}] if words else (card.get("display_scripts") or [])
                 text = " ".join(str(item.get("canonical_text") or item.get("text") or "") for item in text_items if isinstance(item, Mapping)).strip()
                 if show_text and text:
                     # Give the caption panel enough lines to carry the actual
@@ -1602,6 +1613,7 @@ def _compose_synchronized_surface(
 
 
 def execute_filmstrip(args, *, authority=None):
+    started_at = time.time()
     if args.filmstrip_authority:
         authority_value = args.filmstrip_authority
         try:
@@ -1902,12 +1914,27 @@ def execute_filmstrip(args, *, authority=None):
     if primary_png:
         entrypoints["png"] = f"filmstrip-view/{primary_png}"
     entrypoints["markdown"] = "filmstrip-view/filmstrip.md"
+    # Timing is measured here, inside the executor.  Queue time is not knowable
+    # from inside the attempt; the client computes queued = started_at - its own
+    # request time.  See ``timing`` in the CLI output.
+    finished_at = time.time()
+    capture_started_at, capture_ended_at = result.get('capture_window', (finished_at, finished_at))
+    timing = {
+        'started_at': round(started_at, 3),
+        'capture_started_at': round(capture_started_at, 3),
+        'capture_ended_at': round(capture_ended_at, 3),
+        'capture_s': round(capture_ended_at - capture_started_at, 3),
+        'compose_s': round(finished_at - capture_ended_at, 3),
+        'total_s': round(finished_at - started_at, 3),
+        'frames': len(result.get('cards') or []),
+        'evidence_source': 'composed_capture' if capture_mode else 'render_extract',
+    }
     return {'returncode': 0, 'run_root': str(out_root),
             'manifest_path': str(manifest_path), 'timeline_ids': [snapshot['timeline_id']],
             'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
-            'request': options.get('request'),
+            'request': options.get('request'), 'timing': timing,
             'outputs': {'pack_root': str(pack_root), 'manifest_path': str(manifest_path),
                         'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
-                        'request': options.get('request'),
+                        'request': options.get('request'), 'timing': timing,
                         **result['paths'], 'pages': result['paths']['png'],
                         'filmstrip_bundle': str(bundle)}}

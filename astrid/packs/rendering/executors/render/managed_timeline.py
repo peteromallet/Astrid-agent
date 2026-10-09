@@ -942,7 +942,11 @@ def _project_exact_parent_head(
         shot_rows.append({
             "shot_id": shot["shot_id"],
             "revision_id": shot["revision_id"],
-            "name": str(metadata.get("name") or metadata.get("title") or shot["shot_id"]),
+            # Authoring shots store their human name on the payload itself
+            # (``add_authoring_shot(name=...)``); metadata is the legacy spot.
+            "name": str(
+                metadata.get("name") or metadata.get("title") or shot_payload.get("name") or shot["shot_id"]
+            ),
             "text_bindings": list(shot_payload.get("text_bindings") or [])
             if isinstance(shot_payload.get("text_bindings"), list)
             else [],

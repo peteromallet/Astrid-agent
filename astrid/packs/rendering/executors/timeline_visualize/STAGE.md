@@ -53,6 +53,14 @@ The JSON `static_surface.rows` metadata lists each row's card ids, exact time
 range, and active input tracks. This is the default combined layout, while output-only and input-only
 views retain their existing layouts.
 
+`view=contact` produces ONE overview page (`contact-sheet.png`) instead of the
+paired pages: one tile per cut (`sample` defaults to `cuts`; explicit
+`every`/`every_frames` keeps a strict grid), capped at 120 tiles and thinned
+evenly above the cap (`index.contact.thinned_from`). Each tile carries its
+timecode, shot name and the first VO words (word-aligned from `app.words` when
+present, else the shot script once per shot). Input lanes are not drawn in
+this view, and `columns` defaults to 10 (max 12).
+
 Combined results may produce several numbered pages intentionally; by default
 each paired page is one row of cards. Pass `--columns 6` for six across, or
 pass `--page-size N` explicitly when a denser two-row page is useful. Open
@@ -75,10 +83,6 @@ exact match exists. Ordering is the frozen authored `pinnedShotGroups` /
 admission occurrence order. An out-of-range ordinal fails with the available
 shot count rather than producing an empty view. The same selector is applied
 to rendered, input-only, and synchronized filmstrip surfaces.
-
-An explicit `--every` or `--every-frames` request is a strict periodic grid.
-Use `--include-cuts` with interval sampling when cut-neighbor evidence is also
-wanted; those extra frames are never inserted implicitly.
 
 ```bash
 python3 -m astrid timelines visualize main --project demo --mode auto
