@@ -2865,6 +2865,9 @@ def invoke(
                 # Only preflight may turn a successful project-owned render
                 # into a file input. Public paths were rejected above.
                 inputs = dict(inputs or {})
+                # A working copy was projected into the host-owned snapshot above; the
+                # frozen candidate itself does not travel to the executor.
+                inputs.pop("authoring_preview", None)
                 authority_snapshot = (
                     invocation_authority_context.get("filmstrip_snapshot")
                     or invocation_authority_context.get("input_snapshot")

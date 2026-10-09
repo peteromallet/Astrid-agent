@@ -617,6 +617,23 @@ class Checkout:
         document = self.document()
         return diff_bundles(base_bundle(document), document)
 
+    def changed_cut_ids(self) -> list[str]:
+        """The cut ids whose clips this working copy changes (added, removed, moved or edited)."""
+        from astrid.sdk.timeline_cuts import base_bundle
+
+        before = Checkout(base_bundle(self.document()))
+        old = {c.id: c for c in before.clips()}
+        new = {c.id: c for c in self.clips()}
+        cut_ids: set[str] = set()
+        for cid in set(old) | set(new):
+            a, b = old.get(cid), new.get(cid)
+            if a is None or b is None or a.data != b.data or round(a.start * self.fps) != round(b.start * self.fps):
+                for clip in (a, b):
+                    if clip is not None and intent.cut_of(clip.data):
+                        cut_ids.add(intent.cut_of(clip.data))
+        order = [g["id"] for g in self._cut_groups()]
+        return sorted(cut_ids, key=lambda c: order.index(c) if c in order else len(order))
+
     def changes(self, against: Mapping[str, Any] | None = None) -> list[str]:
         """What this working copy changes, in plain words (against its base, or another bundle).
 

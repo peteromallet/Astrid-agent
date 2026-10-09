@@ -347,6 +347,33 @@ def _open_current_input_closure(
     return deepcopy(dict(projected_config)), deepcopy(dict(projected_registry)), authority
 
 
+def _open_candidate_input_closure(
+    client: Any, *, project_id: str, preview: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Like ``_open_current_input_closure``, but for an unpublished working copy (a frozen candidate)."""
+    from astrid.sdk.authoring_render_preview import candidate_projection
+
+    try:
+        built = candidate_projection(preview, client=client, project_id=project_id)
+    except Exception as exc:  # noqa: BLE001 - one actionable line
+        _fail(f"The working copy cannot be projected for inspection: {exc}")
+    projected = built["projected"]
+    publication = built["publication"]
+    authority = {
+        "parent_revision_id": publication["parent_revision_id"],
+        "children": [
+            {"timeline_id": row["timeline_id"], "revision_id": row["revision_id"],
+             "config_version": 1, "config_hash": row["content_digest"]}
+            for row in built["internals"]
+        ],
+        "shots": [{"shot_id": row["shot_id"], "revision_id": row["revision_id"]} for row in built["shots"]],
+        "occurrences": [dict(row) for row in projected.occurrences],
+        "canonical": True,
+        "working_copy": built["marker"],
+    }
+    return deepcopy(dict(projected.config)), deepcopy(dict(projected.registry)), authority
+
+
 def _occurrence_timing(occurrence: Mapping[str, Any]) -> Mapping[str, Any]:
     """Return the placement window of one occurrence as seconds (at/hold).
 
@@ -618,10 +645,14 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
     if 'output' not in components['resolved'] and timeline_row is not None and not exact:
         if not (timeline_row.get('head_revision_id') or timeline_row.get('parent_revision_id')):
             _fail('Timeline has no canonical current parent head.')
-        config, registry, closure = _open_current_input_closure(
-            client, project_id=project_id, timeline_row=timeline_row,
-            config={}, registry={'assets': {}},
-        )
+        if isinstance(inputs.get('authoring_preview'), Mapping):
+            config, registry, closure = _open_candidate_input_closure(
+                client, project_id=project_id, preview=inputs['authoring_preview'])
+        else:
+            config, registry, closure = _open_current_input_closure(
+                client, project_id=project_id, timeline_row=timeline_row,
+                config={}, registry={'assets': {}},
+            )
         from astrid.core.timeline.duration import timeline_duration_frames
         canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
         fps = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
@@ -673,10 +704,15 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
             capture_row['parent_revision_id'] = str(requested_revision)
         if not (capture_row.get('head_revision_id') or capture_row.get('parent_revision_id')):
             _fail('Composed frame capture requires an immutable parent revision.')
-        config, registry, closure = _open_current_input_closure(
-            client, project_id=project_id, timeline_row=capture_row,
-            config={}, registry={'assets': {}},
-        )
+        if isinstance(inputs.get('authoring_preview'), Mapping):
+            config, registry, closure = _open_candidate_input_closure(
+                client, project_id=project_id, preview=inputs['authoring_preview'])
+            requested_revision = None
+        else:
+            config, registry, closure = _open_current_input_closure(
+                client, project_id=project_id, timeline_row=capture_row,
+                config={}, registry={'assets': {}},
+            )
         # The parent projection carries canonical media identities, but the
         # generic host only accepts a runtime-admitted registry snapshot. Keep
         # this composed-capture path aligned with managed render admission so

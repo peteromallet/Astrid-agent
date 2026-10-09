@@ -1818,9 +1818,23 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         mode = getattr(parsed, "mode", "auto")
     working = _visualize_working_copy(parsed)
     if working is not None:
-        # The working copy is the default subject. Its banner and the cut selection come first.
+        from astrid.core.timeline.authoring_bundle import AuthoringBundleError, preview_authoring_candidate
+        from astrid.sdk.timeline_checkout import Checkout
+
+        draft = Checkout.load(working["draft"])
+        if getattr(parsed, "compare_with", None) == "published":
+            # Before, then after: the published version and the working copy, same frames.
+            parsed.compare_with = None
+            parsed.published = True
+            print("── PUBLISHED " + "─" * 60)
+            code = _cmd_visualize(parsed)
+            parsed.published = False
+            print("── WORKING COPY " + "─" * 57)
+            if code not in (0, None):
+                return code
+        changed_ids = draft.changed_cut_ids()
         banner = (
-            f"WORKING COPY · {working['edits']} unpublished edits vs published {working['base_revision']} · "
+            f"WORKING COPY · {len(draft.changes())} unpublished change(s) vs published {_short_rev(working['base_revision'])} · "
             "--published for the live version"
         )
         selected = any(
@@ -1831,28 +1845,37 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         if not selected and not getattr(parsed, "all_cuts", False):
             if working["changed_cuts"]:
                 inputs["cuts"] = ",".join(map(str, working["changed_cuts"][:12]))
+                inputs["view"] = "contact"
+                inputs.setdefault("resolution", "480x270")
             cut_line = _changed_cuts_line(working["changed_cuts"])
+            if changed_ids:
+                cut_line += f"  [✎ {', '.join(changed_ids)}]"
         elif getattr(parsed, "all_cuts", False):
             cut_line = "showing every cut of the working copy"
+        else:
+            window = inputs.get("at") or inputs.get("frame") or (str(inputs.get("range") or "").split("..")[0] or None)
+            here = None
+            try:
+                if window not in (None, ""):
+                    t = float(window) if not isinstance(window, (int, float)) else float(window)
+                    here = next((g["id"] for g in draft._cut_groups()
+                                 if g["start"] - 1e-6 <= t < (draft._cut_spans()[g["id"]][1] or draft.duration)), None)
+            except (TypeError, ValueError):
+                here = None
+            if here and here in changed_ids:
+                cut_line = f"✎ {here} is changed in the working copy (before/after: --compare published)"
+            elif here:
+                cut_line = f"{here} is unchanged in the working copy"
         if not parsed.json:
             print(banner)
             if cut_line:
                 print(cut_line)
-        # Composed frames are captured from the admitted published head; the executor has no
-        # candidate authority yet (timeline_filmstrip.prepare_filmstrip / invocation). Refuse
-        # rather than show published frames under a WORKING COPY banner.
-        message = (
-            "the working copy cannot be visualized yet: composed frames still come from the published head "
-            "(no authoring_preview authority in the visualize executor). "
-            "Use --published for the live version, or `timelines render --draft` for the working copy render."
-        )
-        if parsed.json:
-            return print_result(
-                DomainResult.failure(ErrorObject("unavailable", message, {"working_copy": working})),
-                as_json=True,
-            )
-        print(f"error unavailable: {message}", file=sys.stderr)
-        return 1
+        try:
+            inputs["authoring_preview"] = preview_authoring_candidate(draft.document())
+        except AuthoringBundleError as exc:
+            print(f"error validation_error: the working copy does not compile ({exc}); run timelines check", file=sys.stderr)
+            return 2
+        mode = "composed" if mode == "auto" else mode
     if getattr(parsed, "compare_with", None) and not parsed.json:
         print("no working copy: nothing to compare (showing the published head)")
     if getattr(parsed, "plan", False):

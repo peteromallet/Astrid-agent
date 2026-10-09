@@ -28,6 +28,57 @@ from astrid.packs.rendering.executors.render.managed_timeline import (
 )
 
 
+def candidate_projection(preview: Mapping[str, Any], *, client: Any, project_id: str) -> dict[str, Any]:
+    """Project a frozen candidate (``preview_authoring_candidate``) without publishing it.
+
+    Unchanged children are read by immutable identity from Runtime; changed children come
+    from the deterministic candidate compilation. Returns ``{projected, shots, internals,
+    publication, marker}``. Used by visualize to look at a working copy."""
+    if preview.get("kind") != "authoring-candidate-preview":
+        raise AuthoringBundleError("authoring_preview.kind is invalid")
+    frozen = preview.get("candidate")
+    if not isinstance(frozen, Mapping):
+        raise AuthoringBundleError("authoring_preview.candidate is missing")
+    compilation = compile_authoring_candidate(frozen)
+    publication = compilation.publication
+    if (
+        preview.get("candidate_digest") != compilation.candidate_digest
+        or preview.get("publication_digest") != authoring_digest(publication)
+    ):
+        raise AuthoringBundleError("authoring_preview does not match its frozen candidate")
+    reader = _exact_revision_reader(client)
+    changed_shots = {(row["shot_id"], row["revision_id"]): row for row in publication["shot_revisions"]}
+    changed_internals = {(row["timeline_id"], row["revision_id"]): row for row in publication["internal_timeline_revisions"]}
+    shots = []
+    for pin in publication["dependency_manifest"]["shots"]:
+        key = (pin["shot_id"], pin["revision_id"])
+        row = changed_shots.get(key) or _exact_mapping(
+            reader.get_project_shot_revision(project_id, *key), label=f"shot revision {key[0]}/{key[1]}")
+        shots.append(copy.deepcopy(dict(row)))
+    internals = []
+    for pin in publication["dependency_manifest"]["internal_timelines"]:
+        key = (pin["timeline_id"], pin["revision_id"])
+        row = changed_internals.get(key) or _exact_mapping(
+            reader.get_project_timeline_revision(project_id, *key), label=f"internal timeline revision {key[0]}/{key[1]}")
+        internals.append(copy.deepcopy(dict(row)))
+    parent = {
+        "project_id": project_id,
+        "timeline_id": publication["timeline_id"],
+        "revision_id": publication["parent_revision_id"],
+        "content_digest": publication["content_digest"],
+        "payload": copy.deepcopy(publication["parent_composition"]),
+    }
+    projected = project_runtime_parent_composition(parent, shot_revisions=shots, internal_timeline_revisions=internals)
+    marker = {
+        "label": "Unpublished working copy",
+        "base_parent": copy.deepcopy(dict(frozen.get("base_parent") or {})),
+        "candidate_digest": compilation.candidate_digest,
+        "publication_digest": preview["publication_digest"],
+        "candidate_parent_revision_id": publication["parent_revision_id"],
+    }
+    return {"projected": projected, "shots": shots, "internals": internals, "publication": publication, "marker": marker}
+
+
 def candidate_preview_snapshot(
     preview: Mapping[str, Any], *, snapshot: ManagedRenderSnapshot, client: Any
 ) -> ManagedRenderSnapshot:
@@ -182,4 +233,4 @@ def render_authoring_candidate_preview(
     )
 
 
-__all__ = ["candidate_preview_snapshot", "render_authoring_candidate_preview"]
+__all__ = ["candidate_preview_snapshot", "candidate_projection", "render_authoring_candidate_preview"]

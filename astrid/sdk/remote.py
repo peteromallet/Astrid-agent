@@ -818,7 +818,12 @@ class RemoteTimelines(_RemoteFamily):
         view_options = dict(options or {})
         requested_run = view_options.get("render_run")
         explicit_run = requested_run not in (None, "", "latest")
-        if selected_mode != "inputs" and explicit_run:
+        working_copy = isinstance(view_options.get("authoring_preview"), Mapping)
+        if selected_mode != "inputs" and working_copy:
+            # A working copy has no render yet: capture its frames from the candidate.
+            exact_render = None
+            project_id = str(project_ref)
+        elif selected_mode != "inputs" and explicit_run:
             # An explicit run is already an immutable output authority.  It may
             # intentionally describe an unpublished candidate or a historical
             # revision, so current-head discovery must not filter it out.  The

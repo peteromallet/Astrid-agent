@@ -36,6 +36,12 @@ class FakeCheckout:
     def document(self):
         return {"kind": "candidate", "base_parent": {"revision_id": self.base_revision}}
 
+    def changed_cut_ids(self):
+        return ["c12", "c13", "c22"]
+
+    def changes(self):
+        return ["✎ c12.a  x 1 → 2", "✎ c13.b  x 1 → 2", "✎ c22.c  x 1 → 2"]
+
 
 def _render_result(run="run-1"):
     return SimpleNamespace(ok=True, capability_id="rendering.render", kernel_run_id=run, run_id=run,
@@ -92,32 +98,28 @@ def _render(argv, client):
     return cli._cmd_render(parsed)
 
 
-def test_visualize_banner_and_changed_cut_default(draft, capsys):
+def test_visualize_reads_the_working_copy_with_banner_and_changed_cuts(draft, capsys, monkeypatch):
+    import astrid.core.timeline.authoring_bundle as ab
+
+    monkeypatch.setattr(ab, "preview_authoring_candidate", lambda doc: {"kind": "authoring-candidate-preview", "candidate": doc})
     client = FakeClient()
     code = _visualize([], client)
     out = capsys.readouterr().out
-    assert code == 1  # the working copy is refused rather than silently showing the published head
+    assert code == 0
     assert out.splitlines()[0] == (
-        "WORKING COPY · 3 unpublished edits vs published rev-published-1 · --published for the live version"
+        "WORKING COPY · 3 unpublished change(s) vs published rev-publ · --published for the live version"
     )
-    assert out.splitlines()[1] == "showing the 3 cuts you changed (12, 13, 22) · --every-cut for all cuts"
-    assert client.timelines.visualize_calls == []
+    assert out.splitlines()[1].startswith("showing the 3 cuts you changed (12, 13, 22) · --every-cut for all cuts")
+    assert "[✎ c12, c13, c22]" in out.splitlines()[1]
+    options = client.timelines.visualize_calls[0]["options"]
+    assert options["authoring_preview"]["kind"] == "authoring-candidate-preview"  # frames come from the working copy
+    assert options["cuts"] == "12,13,22" and options["view"] == "contact"
 
 
-def test_visualize_refuses_to_show_published_frames_under_working_copy_banner(draft, capsys):
-    client = FakeClient()
-    code = _visualize(["--json"], client)
-    envelope = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert envelope["ok"] is False
-    assert envelope["error"]["code"] == "unavailable"
-    assert envelope["error"]["details"]["working_copy"] == {
-        "draft": str(draft), "base_revision": "rev-published-1", "edits": 3, "changed_cuts": [12, 13, 22],
-    }
-    assert client.timelines.visualize_calls == []
+def test_visualize_every_cut_drops_the_changed_cut_selection(draft, capsys, monkeypatch):
+    import astrid.core.timeline.authoring_bundle as ab
 
-
-def test_visualize_every_cut_drops_the_changed_cut_selection(draft, capsys):
+    monkeypatch.setattr(ab, "preview_authoring_candidate", lambda doc: {"kind": "authoring-candidate-preview"})
     client = FakeClient()
     _visualize(["--every-cut"], client)
     out = capsys.readouterr().out
