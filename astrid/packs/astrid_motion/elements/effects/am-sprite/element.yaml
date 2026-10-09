@@ -5,18 +5,18 @@ pack_id: astrid_motion
 short_description: Transparent pixel cutout with stepped keyframes, stamp or slide entrance and run-cycle strips.
 description: Places a transparent pixel cutout (a managed PNG attached as clip.asset, or a static URL in params.src) on the 320x180 logical grid. Position and flip change only on keyframe steps. Entrances are a 2-frame flicker with a 1 px drop (stamp) or a stepped slide from one side. An optional horizontal sprite strip cycles on steps for run animations. Blink frames hide the sprite for two frames.
 keywords:
-  - sprite
-  - cutout
-  - pixel
-  - stepped
-  - keyframe
-  - run-cycle
-  - blink
+- sprite
+- cutout
+- pixel
+- stepped
+- keyframe
+- run-cycle
+- blink
 outputs:
-  - name: clip
-    type: clip
-    artifact_type: clip/visual
-    description: Pixel cutout overlay.
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Pixel cutout overlay.
 metadata:
   label: AM Sprite
   description: Transparent pixel cutout with stepped keyframes, stamp or slide entrance, and run-cycle strips.
@@ -45,29 +45,51 @@ schema:
       minimum: 1
       maximum: 24
       description: Screen px per art (logical) px.
-    x: {type: number, description: Logical px from the left of the 320x180 grid.}
-    y: {type: number, description: Logical px from the top of the 320x180 grid.}
-    flipX: {type: boolean}
+    x:
+      type: number
+      description: Logical px from the left of the 320x180 grid.
+    y:
+      type: number
+      description: Logical px from the top of the 320x180 grid.
+    flipX:
+      type: boolean
     stepFrames:
       type: integer
-      enum: [2, 3]
+      enum:
+      - 2
+      - 3
     keyframes:
       type: array
       description: Held poses. The last keyframe at or before each step is active.
       items:
         type: object
-        required: [frame, x, y]
+        required:
+        - frame
+        - x
+        - y
         properties:
-          frame: {type: integer, minimum: 0}
-          x: {type: number}
-          y: {type: number}
-          flipX: {type: boolean}
+          frame:
+            type: integer
+            minimum: 0
+          x:
+            type: number
+          y:
+            type: number
+          flipX:
+            type: boolean
     enter:
       type: string
-      enum: [stamp, slideIn, cut]
+      enum:
+      - stamp
+      - slideIn
+      - cut
     slideFrom:
       type: string
-      enum: [left, right, top, bottom]
+      enum:
+      - left
+      - right
+      - top
+      - bottom
     slideDistance:
       type: number
       minimum: 0
@@ -75,20 +97,39 @@ schema:
     frames:
       type: object
       description: Horizontal sprite strip. Frames advance at fps, quantised to clip frames.
-      required: [frameWidth, frameHeight, count, fps]
+      required:
+      - frameWidth
+      - frameHeight
+      - count
+      - fps
       properties:
-        frameWidth: {type: integer, minimum: 1}
-        frameHeight: {type: integer, minimum: 1}
-        count: {type: integer, minimum: 1}
-        fps: {type: number, exclusiveMinimum: 0}
+        frameWidth:
+          type: integer
+          minimum: 1
+        frameHeight:
+          type: integer
+          minimum: 1
+        count:
+          type: integer
+          minimum: 1
+        fps:
+          type: number
+          exclusiveMinimum: 0
     blinkAt:
       description: Clip frame(s) where the sprite hides (or shows blinkIndex) for two frames.
       oneOf:
-        - type: integer
+      - type: integer
+        minimum: 0
+      - type: array
+        items:
+          type: integer
           minimum: 0
-        - type: array
-          items: {type: integer, minimum: 0}
     blinkIndex:
       type: integer
       minimum: 0
       description: Strip frame shown during a blink when frames is set. Without it the sprite hides.
+    silhouette:
+      description: 'true, or {until: frame}: draw the art as a flat ink silhouette (until that frame).'
+    outline:
+      type: object
+      description: '{color, px (art px), pulse (frames)}: hard pixel outline, blinking one px wider every `pulse` frames.'

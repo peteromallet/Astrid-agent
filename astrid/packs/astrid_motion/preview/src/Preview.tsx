@@ -17,6 +17,7 @@ import AmTerminal from '../../elements/effects/am-terminal/component';
 import AmDroste from '../../elements/effects/am-droste/component';
 import AmSeasons from '../../elements/effects/am-seasons/component';
 import AmOrbit from '../../elements/effects/am-orbit/component';
+import AmOrgchart from '../../elements/effects/am-orgchart/component';
 import {elementSource, type ElementComponentProps} from '../../elements/_shared/am';
 
 // Control: the same plate through a plain <Img> with no pixelated style. It shows
@@ -50,6 +51,7 @@ const REGISTRY: Record<string, Comp> = {
   'am-droste': AmDroste,
   'am-seasons': AmSeasons,
   'am-orbit': AmOrbit,
+  'am-orgchart': AmOrgchart,
   'control-plain': ControlPlain,
 };
 

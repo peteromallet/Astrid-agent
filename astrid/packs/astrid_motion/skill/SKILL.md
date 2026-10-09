@@ -461,3 +461,9 @@ shadow on the ground line that narrows as the sprite rises; `frames.start` and
 Preview: `SCENES=<file.json>` renders a scene list kept outside the pack, and
 `EXTRA_PUBLIC=name=/abs/dir,...` links read-only art into the harness's public
 dir. Every element above is registered in the harness.
+
+## v6 additions: pushes instead of jumps, silhouettes, org charts
+
+- **Slow push.** `am-snap-plate` and `am-presenter` take `push` `{to, frames, at}`: zoom moves linearly from `zoom` to `to`. Give both layers the same value (the builder copies it from the presenter to the plate). Use a push where a beat needs emphasis instead of a hard 2× or 3× jump or a `punchAt`; hard crop changes look cheap on real phone footage. On a real-footage swap it becomes `am-footage` `push.to`.
+- **am-sprite `silhouette` / `outline`.** `silhouette: {until}` draws the art as a flat ink shape until that frame (a covered or unrevealed object). `outline: {color, px, pulse}` adds a hard pixel ring that blinks one px wider every `pulse` frames (a pixel glow). Both are filters inside the sprite's scale, so they land on the art grid.
+- **am-orgchart.** A recursive org chart: `levels` rows of pixel bots, each managing `branching` more. Rows stamp in at `revealAt[k]` and fill left to right over `spread` frames, with optional row `labels` and a rubber `stamp` `{text, at, x, y, rotate, size}`.

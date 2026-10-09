@@ -59,6 +59,8 @@ type Params = {
   chip?: ChipSpec | null;
   /** full: crop marks, REC and label (default). label: the label chip only. none: no chrome. */
   chrome?: 'full' | 'label' | 'none';
+  /** Slow continuous push {to, frames, at?}; give the plate the same value. */
+  push?: {to: number; frames: number; at?: number} | null;
   /** Same ramps as the plate's: the face overlay hides while the plate is a mosaic. */
   mosaicIn?: MosaicRamp | null;
   mosaicOut?: MosaicRamp | null;
@@ -279,7 +281,12 @@ export default function AmPresenter(props: ElementComponentProps): ReactElement 
     noBlink: p.noBlink,
     bob: p.bob,
   };
-  const view = presenterView({zoom: p.zoom, focus: p.focus, punchAt: p.punchAt}, timing, frame);
+  const rawPush = narrowParams<Params>(props.params).push;
+  const view = presenterView(
+    {zoom: p.zoom, focus: p.focus, punchAt: p.punchAt, push: rawPush && typeof rawPush === 'object' ? rawPush : null},
+    timing,
+    frame,
+  );
 
   // While the plate under this overlay is a mosaic, the crisp face pixels would
   // float over blocks, so they hide for those frames.

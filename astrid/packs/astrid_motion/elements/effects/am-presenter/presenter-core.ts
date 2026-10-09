@@ -30,6 +30,19 @@ export type PresenterFrame = {
   zoom: number; // 1 | 2 | 3
   focus: Point; // logical px at the centre of the view (320x180 space)
   punchAt: number[]; // clip frames where zoom+1 snaps on for PUNCH_FRAMES
+  // Slow continuous push: zoom moves linearly from `zoom` to `to` over `frames`,
+  // starting at clip frame `at` (default 0). This is the camera push that a real
+  // take gets; it replaces hard crop jumps. Scale is fractional while it runs.
+  push?: {to: number; frames: number; at?: number} | null;
+};
+
+// Zoom on a clip frame, before any punch: the base zoom, or the push in progress.
+export const pushedZoom = (params: PresenterFrame, clipFrame: number): number => {
+  const base = clamp(params.zoom, 1, 3);
+  const push = params.push;
+  if (!push || !(push.frames > 0) || !Number.isFinite(push.to)) return Math.round(base);
+  const t = clamp((clipFrame - (push.at ?? 0)) / push.frames, 0, 1);
+  return Math.round(base) + (clamp(push.to, 1, 4) - Math.round(base)) * t;
 };
 
 export type PresenterTiming = {
@@ -137,22 +150,27 @@ export const presenterView = (
   timing: PresenterTiming,
   clipFrame: number,
 ): PresenterView => {
-  const base = Math.round(clamp(params.zoom, 1, 3));
+  const base = pushedZoom(params, clipFrame);
   const punched = punchedAt(params.punchAt, clipFrame);
   const zoom = punched ? Math.min(base + 1, PUNCH_MAX_ZOOM) : base;
   const scale = BASE_SCALE * zoom;
   const viewW = SCREEN_W / scale;
   const viewH = SCREEN_H / scale;
-  const focusX = Math.round(clamp(params.focus.x, viewW / 2, LOGICAL_W - viewW / 2));
-  const focusY = Math.round(clamp(params.focus.y, viewH / 2, LOGICAL_H - viewH / 2));
+  // A push keeps the focus exact (no rounding), so the frame glides instead of
+  // snapping a logical px at a time; a held zoom stays on whole logical px.
+  const pushing = base !== Math.round(base);
+  const fx = clamp(params.focus.x, viewW / 2, LOGICAL_W - viewW / 2);
+  const fy = clamp(params.focus.y, viewH / 2, LOGICAL_H - viewH / 2);
+  const focusX = pushing ? fx : Math.round(fx);
+  const focusY = pushing ? fy : Math.round(fy);
   const bob = bobPxAt(timing, clipFrame);
   return {
     zoom,
     scale,
     focusX,
     focusY,
-    originX: SCREEN_W / 2 - focusX * scale,
-    originY: SCREEN_H / 2 - focusY * scale + bob * scale,
+    originX: Math.round(SCREEN_W / 2 - focusX * scale),
+    originY: Math.round(SCREEN_H / 2 - focusY * scale + bob * scale),
     punched,
   };
 };

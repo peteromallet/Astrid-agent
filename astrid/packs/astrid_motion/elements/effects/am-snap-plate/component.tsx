@@ -49,6 +49,8 @@ type Params = {
   stepFrames?: 2 | 3;
   /** Clip frames where zoom lifts one step for 6 frames (presenter punch). */
   punchAt?: number[];
+  /** Slow continuous push {to, frames, at?} (same as am-presenter). */
+  push?: {to: number; frames: number; at?: number} | null;
   /** 0 | 1: nudge the view down one logical px on stressed words (presenter bob). */
   bob?: number;
   /** [start_s, end_s] word spans: the bob and the phase of stressed words follow them. */
@@ -103,6 +105,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
       zoom: integerIn(params.zoom, 1, 3, 1),
       focus: {x: focusX0 + dx * steps, y: focusY0 + dy * steps},
       punchAt: frameList(params.punchAt),
+      push: params.push && typeof params.push === 'object' ? params.push : null,
     },
     timing,
     frame,

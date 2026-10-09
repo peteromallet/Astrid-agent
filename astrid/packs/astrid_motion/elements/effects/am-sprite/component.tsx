@@ -39,6 +39,10 @@ type Params = {
   blinkIndex?: number;
   /** Contact shadow on the ground line (logical px). It narrows as the sprite rises. */
   shadow?: Shadow | null;
+  /** Draw the sprite as a flat ink silhouette until clip frame `until` (omit for the whole clip). */
+  silhouette?: {until?: number} | boolean | null;
+  /** Hard pixel outline in `color`, `px` art px wide; with `pulse` frames it blinks wide/narrow on steps. */
+  outline?: {color?: string; px?: number; pulse?: number} | null;
 };
 
 const ENTERS = ['stamp', 'slideIn', 'cut'] as const;
@@ -117,6 +121,23 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     }
   }
 
+  // Silhouette and outline are CSS filters on the art (inside the scale), so
+  // offsets are art px and land on the pixel grid. drop-shadow with 0 blur is a
+  // hard 1-art-px ring; four of them make an outline.
+  const sil = params.silhouette;
+  const silOn = sil === true || (typeof sil === 'object' && sil !== null && (sil.until === undefined || frame < sil.until));
+  const ol = params.outline && typeof params.outline === 'object' ? params.outline : null;
+  const filters: string[] = [];
+  if (silOn) filters.push('brightness(0)');
+  if (ol) {
+    const pulse = Math.max(0, Math.round(finiteNumber(ol.pulse, 0)));
+    const wide = pulse > 0 && Math.floor(frame / pulse) % 2 === 1;
+    const w = Math.max(1, Math.round(finiteNumber(ol.px, 1))) + (wide ? 1 : 0);
+    const c = typeof ol.color === 'string' ? ol.color : '#ED6B23';
+    filters.push(`drop-shadow(${w}px 0 0 ${c})`, `drop-shadow(-${w}px 0 0 ${c})`, `drop-shadow(0 ${w}px 0 ${c})`, `drop-shadow(0 -${w}px 0 ${c})`);
+  }
+  const artFilter: CSSProperties = filters.length > 0 ? {filter: filters.join(' ')} : {};
+
   const outer: CSSProperties = {
     position: 'absolute',
     left: (x + dx) * LOGICAL_PX,
@@ -179,7 +200,7 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
             <Img
               src={url}
               crossOrigin="anonymous"
-              style={{position: 'absolute', left: -index * fw, top: 0, display: 'block', maxWidth: 'none', ...pixelImage}}
+              style={{position: 'absolute', left: -index * fw, top: 0, display: 'block', maxWidth: 'none', ...pixelImage, ...artFilter}}
             />
           </div>
         </div>
@@ -193,7 +214,7 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
       {shadowNode}
       <div style={outer}>
         <div style={flip}>
-          <Img src={url} crossOrigin="anonymous" style={{display: 'block', maxWidth: 'none', ...pixelImage}} />
+          <Img src={url} crossOrigin="anonymous" style={{display: 'block', maxWidth: 'none', ...pixelImage, ...artFilter}} />
         </div>
       </div>
     </>
