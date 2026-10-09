@@ -183,15 +183,16 @@ def attest_runtime_managed_publication(
 
     project_id = _nonempty(task.get("project_id"))
     expected_effect = task.get("expected_effect")
-    if project_id is None or not isinstance(expected_effect, Mapping):
-        return fail("Runtime task is missing project or expected publication effect")
+    if project_id is None:
+        return fail("Runtime task is missing its project identity")
+    if task.get("generation_intent") != dict(generation_intent):
+        return fail("Runtime task generation intent disagrees with the sealed H3 compilation")
+    if not isinstance(expected_effect, Mapping):
+        return fail("Runtime task publication effect is missing or malformed")
     if expected_effect.get("effect_type") != "generation.publish_v1":
         return fail("Runtime task did not admit generation.publish_v1")
     if expected_effect.get("target_id") != project_id:
         return fail("publication effect target disagrees with the task project")
-    if task.get("generation_intent") != dict(generation_intent):
-        return fail("Runtime task generation intent disagrees with the sealed H3 compilation")
-
     payload = expected_effect.get("payload")
     if not isinstance(payload, Mapping) or payload.get("generation_type") != "vibecomfy.run":
         return fail("publication effect is not the canonical vibecomfy.run generation effect")
@@ -201,7 +202,7 @@ def attest_runtime_managed_publication(
         return fail("publication effect is not bound to the H3 request digest")
     groups = payload.get("groups")
     if not isinstance(groups, list) or len(groups) != 1:
-        return fail("H3 publication effect must declare exactly one output group")
+        return fail("H3 publication must contain exactly one output group")
     group = groups[0]
     selectors = group.get("selectors") if isinstance(group, Mapping) else None
     if (
@@ -211,8 +212,15 @@ def attest_runtime_managed_publication(
         or len(selectors) != 1
         or not isinstance(selectors[0], Mapping)
     ):
-        return fail("H3 publication effect must declare the sealed main selector")
-    selector = selectors[0]
+        return fail("H3 publication must contain the sealed main selector")
+    selector = dict(selectors[0])
+    if selector.get("output_port") != "vibecomfy_run":
+        return fail("Runtime publication effect is missing the canonical H3 output port")
+    if any(
+        selector.get(field) != generation_intent["groups"][0]["selectors"][0].get(field)
+        for field in ("selector", "ordinal", "variant_key")
+    ):
+        return fail("publication effect selector disagrees with the H3 generation intent")
 
     applied = settled.get("generation_publish_v1")
     publications = applied.get("publications") if isinstance(applied, Mapping) else None

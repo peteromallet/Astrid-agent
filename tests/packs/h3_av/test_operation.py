@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.packs.h3_av.orchestrators.transform.run import (
+    _operation_directory_writer_lock,
     _invoke_canonical_run,
     _invoke_stage,
 )
@@ -316,7 +318,6 @@ def test_settled_stage_result_reuse_is_bound_to_inputs(tmp_path) -> None:
     )
     assert initial.capability_id == reused.capability_id == "h3_av.prepare"
     assert calls == ["h3_av.prepare"]
-
     with pytest.raises(RuntimeError, match="different stage inputs"):
         _invoke_stage(
             Client(), "h3_av.prepare", inputs={"request": {"digest": "changed"}},
@@ -325,3 +326,273 @@ def test_settled_stage_result_reuse_is_bound_to_inputs(tmp_path) -> None:
             phase="prepare",
         )
     assert calls == ["h3_av.prepare"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "capability_id"),
+    [
+        ("prepare", "h3_av.prepare"),
+        ("compile", "h3_av.compile"),
+        ("validate", "vibecomfy.validate"),
+        ("run", "vibecomfy.run"),
+        ("compose", "h3_av.compose"),
+        ("verify", "h3_av.verify"),
+        ("finalizer", "h3_av.publication_finalizer"),
+    ],
+)
+def test_each_h3_stage_resumes_from_submission_scoped_sdk_receipt_after_lost_reply(
+    tmp_path, phase: str, capability_id: str,
+) -> None:
+    journal_path = tmp_path / "operation-state.json"
+    result_path = tmp_path / phase / "invocation-result.json"
+    calls = []
+    identity = (f"{phase}-task", f"{phase}-run", f"{phase}-attempt")
+
+    class Client:
+        def invoke_result(self, called_capability: str, **kwargs):
+            receipt_path = Path(kwargs["recovery_path"])
+            calls.append({
+                "capability_id": called_capability,
+                "recovery_path": receipt_path,
+                "resume": kwargs["resume"],
+                "read_managed_outputs": kwargs["read_managed_outputs"],
+                "idempotency_context": kwargs["idempotency_context"],
+            })
+            if not kwargs["resume"]:
+                receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                receipt_path.write_text("fake SDK receipt committed before reply loss")
+                raise TimeoutError("admission committed; reply was lost")
+            assert receipt_path.is_file()
+            return InvocationResult(
+                capability_id=called_capability,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id=identity[0],
+                kernel_run_id=identity[1],
+                kernel_attempt_id=identity[2],
+            )
+
+    client = Client()
+
+    def invoke(journal, *, resume: bool):
+        context = {"h3_submission_id": journal.submission_id}
+        if phase == "run":
+            return _invoke_canonical_run(
+                client,
+                inputs={"workflow": {"digest": "sha256:workflow"}},
+                execution_request=None,
+                out=tmp_path / "run",
+                project="project-1",
+                saved_result=result_path,
+                journal=journal,
+                resume=resume,
+                idempotency_context=context,
+            )
+        return _invoke_stage(
+            client,
+            capability_id,
+            inputs={"payload": {"digest": "sha256:payload"}},
+            out=tmp_path / phase,
+            project="project-1",
+            saved_result=result_path,
+            resume=resume,
+            journal=journal,
+            phase=phase,
+            idempotency_context=context,
+        )
+
+    first_journal = OperationJournal(journal_path, request_digest="request-a")
+    submission_id = first_journal.submission_id
+    with pytest.raises(TimeoutError, match="reply was lost"):
+        invoke(first_journal, resume=False)
+    assert not result_path.exists()
+
+    resumed_journal = OperationJournal(journal_path, request_digest="request-a")
+    assert resumed_journal.submission_id == submission_id
+    result = invoke(resumed_journal, resume=True)
+
+    assert (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id) == identity
+    assert len(calls) == 2
+    assert calls[0]["recovery_path"] == calls[1]["recovery_path"]
+    assert submission_id in calls[0]["recovery_path"].name
+    assert calls[0]["resume"] is False and calls[1]["resume"] is True
+    assert calls[0]["read_managed_outputs"] is True
+    assert calls[1]["read_managed_outputs"] is True
+    assert calls[0]["idempotency_context"] == calls[1]["idempotency_context"]
+    assert calls[0]["idempotency_context"]["h3_submission_id"] == submission_id
+
+
+def test_schema_one_legacy_stage_locator_observes_shared_result_and_managed_rows(tmp_path) -> None:
+    journal_path = tmp_path / "operation-state.json"
+    result_path = tmp_path / "prepare-result.json"
+    calls = []
+    observed_task = {
+        "task_id": "legacy-task",
+        "run_id": "legacy-run",
+        "attempt_id": "runtime-attempt",
+        "state": "succeeded",
+        "result": {"outputs": [{"name": "preparation"}]},
+    }
+    managed_outputs = [{"name": "preparation", "digest": "sha256:1", "size": 3}]
+
+    class FirstClient:
+        def invoke_result(self, capability_id, **_kwargs):
+            calls.append(capability_id)
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id="legacy-task",
+                kernel_run_id="legacy-run",
+            )
+
+    class ResumeClient:
+        class tasks:
+            @staticmethod
+            def show(task_id):
+                assert task_id == "legacy-task"
+                return SimpleNamespace(ok=True, data=observed_task)
+
+            @staticmethod
+            def list_managed_outputs(task_id):
+                assert task_id == "legacy-task"
+                return SimpleNamespace(ok=True, data=managed_outputs)
+
+        def invoke_result(self, *_args, **_kwargs):
+            raise AssertionError("legacy locator must observe, not admit")
+
+    kwargs = {
+        "capability_id": "h3_av.prepare",
+        "inputs": {"request": {"digest": "legacy"}},
+        "out": tmp_path / "prepare",
+        "project": "project-1",
+        "saved_result": result_path,
+        "phase": "prepare",
+    }
+    initial_journal = OperationJournal(journal_path, request_digest="request-a")
+    _invoke_stage(FirstClient(), journal=initial_journal, resume=False, **kwargs)
+    result = _invoke_stage(
+        ResumeClient(),
+        journal=OperationJournal(journal_path, request_digest="request-a"),
+        resume=True,
+        **kwargs,
+    )
+
+    assert calls == ["h3_av.prepare"]
+    assert result.raw_result["task"] == observed_task
+    assert result.raw_result["managed_outputs"] == managed_outputs
+    assert result.raw_result["state"] == "completed"
+    assert result.raw_result["result"] == observed_task["result"]
+    assert result.raw_result["outputs"]["artifacts"] == observed_task["result"]["outputs"]
+    assert result.kernel_attempt_id == "runtime-attempt"
+
+
+def test_schema_one_legacy_stage_locator_rejects_runtime_identity_mismatch(tmp_path) -> None:
+    journal_path = tmp_path / "operation-state.json"
+    result_path = tmp_path / "prepare-result.json"
+
+    class FirstClient:
+        def invoke_result(self, capability_id, **_kwargs):
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id="legacy-task",
+                kernel_run_id="legacy-run",
+                kernel_attempt_id="legacy-attempt",
+            )
+
+    kwargs = {
+        "capability_id": "h3_av.prepare",
+        "inputs": {"request": {"digest": "legacy"}},
+        "out": tmp_path / "prepare",
+        "project": "project-1",
+        "saved_result": result_path,
+        "phase": "prepare",
+    }
+    _invoke_stage(
+        FirstClient(),
+        journal=OperationJournal(journal_path, request_digest="request-a"),
+        resume=False,
+        **kwargs,
+    )
+
+    class ResumeClient:
+        class tasks:
+            @staticmethod
+            def show(task_id):
+                return SimpleNamespace(
+                    ok=True,
+                    data={
+                        "task_id": task_id,
+                        "run_id": "other-run",
+                        "attempt_id": "legacy-attempt",
+                        "state": "succeeded",
+                        "result": {"outputs": []},
+                    },
+                )
+
+            @staticmethod
+            def list_managed_outputs(_task_id):
+                raise AssertionError("mismatched identity must stop before output readback")
+
+        def invoke_result(self, *_args, **_kwargs):
+            raise AssertionError("mismatched legacy identity must not submit")
+
+    with pytest.raises(RuntimeError, match="unknown or unsuccessful"):
+        _invoke_stage(
+            ResumeClient(),
+            journal=OperationJournal(journal_path, request_digest="request-a"),
+            resume=True,
+            **kwargs,
+        )
+
+
+def test_legacy_stage_dto_without_journal_identity_cannot_resume(tmp_path) -> None:
+    result_path = tmp_path / "prepare-result.json"
+
+    class Client:
+        def invoke_result(self, capability_id, **_kwargs):
+            return InvocationResult(
+                capability_id=capability_id,
+                capability_type="executor",
+                native_kind="executor",
+                ok=True,
+                kernel_task_id="legacy-task",
+                kernel_run_id="legacy-run",
+                kernel_attempt_id="legacy-attempt",
+            )
+
+    kwargs = {
+        "capability_id": "h3_av.prepare",
+        "inputs": {"request": {"digest": "legacy"}},
+        "out": tmp_path / "prepare",
+        "project": "project-1",
+        "saved_result": result_path,
+        "phase": "prepare",
+    }
+    _invoke_stage(
+        Client(),
+        journal=OperationJournal(tmp_path / "source-state.json", request_digest="request-a"),
+        resume=False,
+        **kwargs,
+    )
+
+    with pytest.raises(RuntimeError, match="no matching journal admission"):
+        _invoke_stage(
+            Client(),
+            journal=OperationJournal(tmp_path / "empty-state.json", request_digest="request-a"),
+            resume=True,
+            **kwargs,
+        )
+
+
+def test_operation_directory_writer_lock_is_nonblocking_and_scoped(tmp_path) -> None:
+    with _operation_directory_writer_lock(tmp_path):
+        with pytest.raises(RuntimeError, match="already in use"):
+            with _operation_directory_writer_lock(tmp_path):
+                pass
+    assert (tmp_path / ".operation.lock").is_file()

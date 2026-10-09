@@ -334,6 +334,9 @@ class _RemoteFamily:
             # on the generated client.
             if operation == "add_shot_item": value = self._client.add_shot_item(*args, **kwargs)
             elif operation == "admit_task": value = self._client.admit_task(*args, **kwargs)
+            elif operation == "dispatch_task_admission":
+                dispatch = getattr(self._client, "dispatch_task_admission", None)
+                value = dispatch(args[0]) if callable(dispatch) else self._client.admit_task(**args[0])
             elif operation == "attach_variant_thumbnail": value = self._client.attach_variant_thumbnail(*args, **kwargs)
             elif operation == "archive_project_reference": value = self._client.archive_project_reference(*args, **kwargs)
             elif operation == "archive_project_shot": value = self._client.archive_project_shot(*args, **kwargs)
@@ -988,6 +991,19 @@ class RemoteTimelines(_RemoteFamily):
             receipt=inspected.receipt,
             idempotency_key=inspected.idempotency_key,
         )
+    def script(self, project, ref, *, revision_id=None, occurrence=None, kind="voiceover_script"):
+        """Read selected placed narration from one immutable composition closure.
+
+        Text is resolved from each pinned shot revision, never the mutable
+        binding head. Missing bindings and deliberately empty text differ.
+        """
+        from astrid.sdk.timeline_script import read_composition_script
+
+        return read_composition_script(
+            self, self._client, project, ref, revision_id=revision_id,
+            occurrence=occurrence, kind=kind,
+        )
+
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
         return self._retired_document_route("save", idempotency_key=idempotency_key)
     def replace_clip(
@@ -1532,10 +1548,38 @@ class RemoteTasks(_RemoteFamily):
         child_delegation: Mapping[str, Any] | None = None,
         deterministic_idempotency: bool = False,
     ):
-        """Admit a task, optionally deriving its key from the final payload.
+        """Admit once, retaining explicit-key precedence and default fresh keys."""
+        prepared = self.prepare_admission(
+            project_id=project_id, capability=capability, spec=spec,
+            input_manifest=input_manifest, idempotency_key=idempotency_key,
+            settlement_effect=settlement_effect, storage_estimate=storage_estimate,
+            capability_digest=capability_digest, generation_intent=generation_intent,
+            execution_request=execution_request, child_delegation=child_delegation,
+            deterministic_idempotency=deterministic_idempotency,
+        )
+        return self.dispatch_admission(prepared.data) if prepared.ok else prepared
 
-        Explicit caller keys take precedence and retain Runtime's conflict
-        semantics. Without either option, each call still gets a fresh key.
+    def prepare_admission(
+        self,
+        *,
+        project_id: str | None,
+        capability: str,
+        spec: Mapping[str, Any],
+        input_manifest=None,
+        idempotency_key=None,
+        settlement_effect=None,
+        storage_estimate: Mapping[str, int] | None = None,
+        capability_digest: str | None = None,
+        generation_intent: Mapping[str, Any] | None = None,
+        execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
+        child_delegation: Mapping[str, Any] | None = None,
+        deterministic_idempotency: bool = False,
+    ):
+        """Complete admission and key without dispatching a task.
+
+        Explicit caller keys take precedence. Preserve the existing key
+        calculation and complete the transport's generated arguments before
+        a caller may freeze them in a recovery receipt.
         """
         key = idempotency_key or (None if deterministic_idempotency else uuid.uuid4().hex)
         try:
@@ -1640,7 +1684,26 @@ class RemoteTasks(_RemoteFamily):
                     ensure_ascii=False,
                 ).encode("utf-8")
             ).hexdigest()
-        return self._typed("admit_task", key=key, idempotency_key=key, **admission)
+        prepare = getattr(self._client, "prepare_task_admission", None)
+        if callable(prepare):
+            try:
+                admission = prepare(idempotency_key=key, **admission)
+            except WorkspaceClientError as exc:
+                return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
+            admission.pop("idempotency_key")
+        # Round-trip with the shared SDK serializer so the receipt owns a
+        # detached JSON payload, including list order and generated defaults.
+        from astrid.core.receipts.canonical import canonical_json, parse_json
+        from .results import _json_safe
+
+        arguments = parse_json(canonical_json(_json_safe({**admission, "idempotency_key": key})), max_bytes=4 * 1024 * 1024)
+        return DomainResult.success(arguments, idempotency_key=key)
+
+    def dispatch_admission(self, arguments: Mapping[str, Any]):
+        """Replay frozen generated arguments under current transport authority."""
+        key = arguments["idempotency_key"]
+        return self._typed("dispatch_task_admission", dict(arguments), key=key)
+
     def claim(
         self,
         *,

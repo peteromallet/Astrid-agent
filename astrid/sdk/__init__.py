@@ -83,6 +83,7 @@ _EXPORTS = {
     "get_capability": ("invocation", "get_capability"),
     "invoke": ("invocation", "invoke"),
     "invoke_result": ("invocation", "invoke_result"),
+    "observe_task_invocation": ("invocation", "observe_task_invocation"),
     "ExecutionLifecycle": ("execution_request", "ExecutionLifecycle"),
     "ExecutionLimits": ("execution_request", "ExecutionLimits"),
     "ExecutionChecks": ("execution_request", "ExecutionChecks"),
