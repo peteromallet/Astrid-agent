@@ -40,6 +40,7 @@ region first, for example a character pose out of a reference sheet.
 |---|---|
 | `pixel.snap` | Mode-downsamples onto an explicit grid (`grid_width`/`grid_height`, `fit`) or a detected lattice (`auto_grid`). Optional `palette` (`astrid` preset or hex list) or `max_colors`. Outputs `native` (grid size), `preview` (scaled), `report`. |
 | `pixel.cutout` | Removes a background (`chroma`, `flat`, or `luma`) into hard alpha. Optional `grid` snaps first so alpha is per logical pixel. Trims, drops specks. Outputs `cutout` (RGBA) and `report`. |
+| `pixel.strip` | Joins an ordered list of same-grid frame handles (`frame`, repeatable) into one horizontal strip on a shared grid (`grid_width`/`grid_height`, `fit`, `palette`/`max_colors`). Outputs `strip` (PNG) and `metadata` (JSON, with `am_sprite_frames` for `am-sprite`'s `frames` param). Keep the loop by handle; regenerate nothing. |
 
 ## Choosing a grid
 
