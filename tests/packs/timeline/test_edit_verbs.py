@@ -240,7 +240,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     assert "a-rocket" in status
 
     assert _run("discard", "t", "--project", "P") == 0
-    assert "1 unpublished edit(s) dropped" in capsys.readouterr().out
+    assert "1 unpublished change dropped" in capsys.readouterr().out
     assert _run("status", "t", "--project", "P") == 0
     assert "no working copy" in capsys.readouterr().out
 

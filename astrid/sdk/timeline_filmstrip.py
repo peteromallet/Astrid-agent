@@ -347,6 +347,18 @@ def _open_current_input_closure(
     return deepcopy(dict(projected_config)), deepcopy(dict(projected_registry)), authority
 
 
+def _candidate_shot_row(shot: Mapping[str, Any]) -> dict[str, Any]:
+    """The shot row a snapshot expansion carries (same shape as a managed render's)."""
+    payload = shot.get("payload") if isinstance(shot.get("payload"), Mapping) else {}
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    return {
+        "shot_id": shot["shot_id"],
+        "revision_id": shot["revision_id"],
+        "name": str(metadata.get("name") or metadata.get("title") or payload.get("name") or shot["shot_id"]),
+        "text_bindings": list(payload.get("text_bindings") or []) if isinstance(payload.get("text_bindings"), list) else [],
+    }
+
+
 def _open_candidate_input_closure(
     client: Any, *, project_id: str, preview: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -366,7 +378,7 @@ def _open_candidate_input_closure(
              "config_version": 1, "config_hash": row["content_digest"]}
             for row in built["internals"]
         ],
-        "shots": [{"shot_id": row["shot_id"], "revision_id": row["revision_id"]} for row in built["shots"]],
+        "shots": [_candidate_shot_row(row) for row in built["shots"]],
         "occurrences": [dict(row) for row in projected.occurrences],
         "canonical": True,
         "working_copy": built["marker"],

@@ -26,6 +26,7 @@ asset keys (``ROCKET``), element ids (``am-tweet``), on-screen text, and words
 from __future__ import annotations
 
 import copy
+import dataclasses
 import difflib
 import json
 import math
@@ -1534,8 +1535,12 @@ class Checkout:
         changed = {c["clip_id"] for c in diff["changes"]}
         cut_numbers = sorted({cut.n for cut in self.cuts for clip in cut.clips if clip.id in changed})
         lint = self.lint(cuts=cut_numbers) if cut_numbers else []
+        names = []
+        for n in cut_numbers:
+            pic = self.cuts[n - 1].picture
+            names.append(intent.cut_of(pic.data) if pic is not None and intent.cut_of(pic.data) else f"cut {n}")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
-                           problems=problems + self.notes, changed_cuts=cut_numbers, diff=diff)
+                           problems=problems + self.notes, changed_cuts=cut_numbers, diff=diff, cut_names=names)
 
     def publish(self, message: str = "", *, idempotency_key: str | None = None, client: Any = None,
                 force: bool = False) -> dict[str, Any]:
@@ -1550,19 +1555,30 @@ class Checkout:
         if not report.valid:
             raise TimelineEditError("not publishing: " + "; ".join(report.problems or ["the candidate is invalid"]))
         key = idempotency_key or f"edit-{re.sub(r'[^a-z0-9]+', '-', message.lower())[:40].strip('-') or 'timeline'}-{uuid.uuid4().hex[:8]}"
-        pinned: list[str] = []
-        if self.narration_changes():  # a line's text changed: re-bind that shot's narration, then publish the pin
-            if client is not None:
-                pinned = self.pin_narration(client, idempotency_key=key)
-            else:
-                from astrid.sdk import AstridClient
-
-                with AstridClient.open_from_launcher(start_pack_host=False) as c:
-                    pinned = self.pin_narration(c, idempotency_key=key)
         receipt = publish_bundle(self.document(), key, client=client, force=force)
-        receipt["narration_pinned"] = pinned
+        receipt["narration_pinned"] = []
+        if self.narration_changes():
+            # A line's text changed (or the shots are new): bind each such shot's narration now that
+            # the shots exist, then publish the pins as a second, small revision.
+            receipt.update(self._publish_narration(key, client=client))
         receipt["message"] = message
         return receipt
+
+    def _publish_narration(self, key: str, *, client: Any = None) -> dict[str, Any]:
+        def run(c: Any) -> dict[str, Any]:
+            head = Checkout(fetch_bundle(str(self.bundle["project_id"]), str(self.bundle["timeline_id"]), client=c))
+            pinned = head.pin_narration(c, idempotency_key=key)
+            if not pinned:
+                return {"narration_pinned": []}
+            second = publish_bundle(head.document(), f"{key}-narration", client=c)
+            return {"narration_pinned": pinned, "new_head": second.get("new_head"), "narration_head": second.get("new_head")}
+
+        if client is not None:
+            return run(client)
+        from astrid.sdk import AstridClient
+
+        with AstridClient.open_from_launcher(start_pack_host=False) as c:
+            return run(c)
 
     # ---- narration: the script text each shot is bound to ---------------------------
     def narration(self) -> dict[str, str]:
@@ -1950,6 +1966,15 @@ class CheckReport:
     problems: list[str]
     changed_cuts: list[int]
     diff: Mapping[str, Any]
+    cut_names: list[str] = dataclasses.field(default_factory=list)
+
+    def brief(self) -> list[str]:
+        """Two calm lines for after an edit: valid or not, and lint on the cuts it touched."""
+        where = ", ".join(self.cut_names or [f"cut {n}" for n in self.changed_cuts])
+        head = "check   " + ("valid" if self.valid else "NOT VALID")
+        if where:
+            head += f" · lint on {where}: " + ("clean" if not self.lint else f"{len(self.lint)} finding(s)")
+        return [head] + [f"  ! {p}" for p in self.problems] + [f"  {line}" for line in self.lint]
 
     def __str__(self) -> str:
         lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
@@ -2353,9 +2378,16 @@ def publish_bundle(candidate: Mapping[str, Any], idempotency_key: str, *, client
         head_bundle = fetch_bundle(str(candidate["project_id"]), str(candidate["timeline_id"]), client=client)
         merged, conflicts = three_way(base_bundle(candidate), head_bundle, candidate, force=force)
         if conflicts and not force:
-            raise TimelineEditError("the timeline moved since this checkout and both sides changed the same clips "
-                                    f"(head {current}, your base {base}):\n  " + "\n  ".join(conflicts)
-                                    + "\nCheck out again and re-apply (a script re-applies in one step), or publish with force to overwrite them.")
+            names = {c.id: c.address for c in Checkout(copy.deepcopy(dict(candidate))).clips()}
+
+            def plain(line: str) -> str:
+                m = re.match(r"^\S+/(\S+) \(clip\) (.*)$", line)
+                return f"{names.get(m.group(1), m.group(1))}  {m.group(2)}" if m else line
+
+            short = lambda rev: str(rev).removeprefix("authoring-parent-revision-")[:8]  # noqa: E731
+            raise TimelineEditError(f"not published: someone published {short(current)} after your checkout ({short(base)}), "
+                                    "and you both changed:\n  " + "\n  ".join(plain(c) for c in conflicts)
+                                    + "\nnext: timelines discard, checkout and re-apply your edit (or publish --force to overwrite theirs)")
         candidate = merged
         merged_note = f"merged onto head {current} (your checkout was {base})" + (" with force" if conflicts else "")
         base = current

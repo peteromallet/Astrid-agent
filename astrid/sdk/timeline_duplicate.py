@@ -118,8 +118,14 @@ def copy_content(source: Mapping[str, Any], target: Mapping[str, Any], *, new_sl
         out["source_mapping"]["placements"][new_row["occurrence_id"]] = copy.deepcopy(new_row)
 
     if text_bindings:
-        notes.append(f"{text_bindings} narration text binding(s) not copied: they are runtime records of the source shot; "
-                     "the words themselves are copied in each VO clip's app.words")
+        from astrid.sdk.timeline_checkout import Checkout
+
+        bound = Checkout(copy.deepcopy(out)).narration()
+        if len(bound) == len(out.get("shots") or {}):
+            notes.append(f"narration: bound again from each line's script text ({len(bound)} shots)")
+        else:
+            notes.append(f"{text_bindings} narration text binding(s) not copied (these lines declare no script text); "
+                         "the words themselves are copied in each VO clip's app.words")
     return out, notes
 
 

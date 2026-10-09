@@ -3440,7 +3440,10 @@ def _cap(lines: list[str], limit: int = 30) -> list[str]:
 
 
 def _check_lines(report: Any) -> list[str]:
-    """The first line of the report, then the problems and lint lines (the full report is `check`)."""
+    """After an edit: valid or not, and lint on the cuts it touched (the full report is `timelines check`)."""
+    brief = getattr(report, "brief", None)
+    if callable(brief):
+        return brief()
     lines = str(report).splitlines()
     return [lines[0]] + [ln for ln in lines[1:] if ln.startswith(("!", "  ", "lint"))]
 
@@ -3705,9 +3708,14 @@ def _cmd_publish(parsed: argparse.Namespace) -> int:
 
 
 def _print_published(receipt: Mapping[str, Any], next_line: str) -> int:
-    print(f"published {receipt.get('new_head')} (was {receipt.get('old_head')})")
     if receipt.get("merged"):
-        print(f"merged: {receipt['merged']}")
+        print(f"guard   the head moved since your checkout: {receipt['merged']}")
+    else:
+        print("guard   the head had not moved since your checkout: nothing to merge, nothing overwritten")
+    pinned = receipt.get("narration_pinned") or []
+    if pinned:
+        print(f"narration re-bound for {len(pinned)} shot(s) whose line text changed")
+    print(f"published {_short_rev(receipt.get('new_head'))} (was {_short_rev(receipt.get('old_head'))}) · {receipt.get('message') or ''}".rstrip(" ·"))
     print(f"next: {next_line}")
     return 0
 
@@ -3719,9 +3727,9 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     if tl is None:
         print(f"no working copy \"{name}\" to discard · next: timelines checkout {parsed.timeline} --project {parsed.project}")
         return 0
-    dropped = len(tl.edits()["changes"])
+    dropped = len(tl.changes())
     tl.discard()
-    print(f'discarded working copy "{name}" of {parsed.timeline} ({dropped} unpublished edit(s) dropped)')
+    print(f'discarded working copy "{name}" of {parsed.timeline} ({dropped} unpublished change{"s" if dropped != 1 else ""} dropped)')
     print(f"next: timelines checkout {parsed.timeline} --project {parsed.project}")
     return 0
 
@@ -3880,8 +3888,8 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
         print(line)
     tl.save()
     where = f"{parsed.timeline} --project {parsed.project}"
-    print(f"next: timelines visualize {where} (your change, before/after: --compare published)   ·   "
-          f"timelines status {where}   ·   timelines publish {where} -m \"…\"")
+    print(f"next: timelines visualize {where} --compare published   (before/after of what you changed)")
+    print(f'      timelines status {where}   ·   timelines publish {where} -m "what changed"')
     return 0 if report.valid else 1
 
 
@@ -3916,7 +3924,7 @@ def _configure_discard(subparser: argparse.ArgumentParser) -> None:
 def _configure_duplicate(subparser: argparse.ArgumentParser) -> None:
     subparser.description = (
         "Create a new timeline holding a copy of this timeline's published head, with new shot ids "
-        "(shot ids are global per project). Narration text bindings are not copied (reported)."
+        "(shot ids are global per project). Narration is bound again from the lines' script text when they declare it."
     )
     subparser.add_argument("timeline", help="Source timeline (UUID, ULID or slug); read only.")
     _add_project_arg(subparser)
