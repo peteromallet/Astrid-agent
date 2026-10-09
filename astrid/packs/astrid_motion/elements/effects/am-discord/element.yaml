@@ -1,0 +1,150 @@
+schema_version: 1
+id: am-discord
+kind: effect
+pack_id: astrid_motion
+short_description: Pixel-styled Discord channel reconstruction for announcement and reaction beats.
+description: A 1280x720 Discord-style channel window drawn in crisp UI, not a screenshot and with no Discord logo. Messages stack from the bottom in time order with joins and date dividers. Dividers flip like split-flap through the days between dates. Reactions tick up with a stamp entrance. Underline and strike decorations draw on whole frames. Joins and reactions are illustrative.
+keywords:
+  - discord
+  - chat
+  - reconstruction
+  - announcement
+  - reactions
+  - joins
+  - split-flap
+  - pixel
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Transparent Discord window overlay, centred on the frame.
+metadata:
+  label: AM Discord
+  description: Pixel-styled Discord channel reconstruction with dated messages, joins, reactions and split-flap date jumps.
+  whenToUse: Use for the announcement and the follow-up reaction beats. Pass the post verbatim as messages[].lines, with real timestamps. Mark echo words with {u:word} and draw them with underline. Put the reconstruction badge on, and keep joins and reactions labelled illustrative.
+defaults:
+  server: OSAI
+  channel: "# announcements"
+  channels:
+    - "# announcements"
+    - "# general"
+    - "# testing"
+  messages: []
+  dateDividers: []
+  reactions: []
+  joins: []
+  underline: []
+  strike: []
+  badge: "RECONSTRUCTION · REACTIONS & JOINS ILLUSTRATIVE"
+  frame:
+    width: 1280
+    height: 720
+    radius: 12
+    outline: "#25241F"
+    shadow: 12
+  jumpFrames: 12
+  typeStepFrames: 2
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    server:
+      type: string
+    channel:
+      type: string
+      description: Channel name shown in the header, verbatim, for example "# announcements".
+    channels:
+      type: array
+      items: {type: string}
+      description: Sidebar channel names. The one equal to channel is highlighted.
+    messages:
+      type: array
+      description: Messages in posting order. lines are paragraphs. @everyone renders as a mention; {u:word} marks a word.
+      items:
+        type: object
+        required: [author, lines, appearAt]
+        properties:
+          author: {type: string}
+          tag: {type: string, description: "Server tag shown beside the name, for example OSAI."}
+          avatarColor: {type: string, description: "Hex fill for the avatar."}
+          time: {type: string, description: "Timestamp shown verbatim, for example 26/10/2025 19:29."}
+          lines: {type: array, items: {type: string}}
+          appearAt: {type: integer, minimum: 0, description: "Clip frame the message lands on."}
+          typeOn: {type: boolean, description: "Reveal characters in typeStepFrames steps."}
+    dateDividers:
+      type: array
+      description: Date dividers. A divider after the first flips through the days between the two dates over jumpFrames, then lands.
+      items:
+        type: object
+        required: [label, at]
+        properties:
+          label: {type: string, description: "A date such as 23 December 2025."}
+          at: {type: integer, minimum: 0}
+          jump: {type: boolean, description: "Flip through the intermediate dates. Defaults to true after the first divider."}
+    reactions:
+      type: array
+      items:
+        type: object
+        required: [emoji, startAt]
+        properties:
+          emoji: {type: string, description: "Unicode emoji, or a pixel icon URL or path."}
+          countFrom: {type: integer}
+          countTo: {type: integer}
+          startAt: {type: integer, minimum: 0}
+          stepFrames: {type: integer, minimum: 1, description: "Frames per count step."}
+          onMessage: {type: integer, minimum: 0, description: "Message index to attach to. Defaults to the latest message posted by startAt."}
+          mine: {type: boolean, description: "Draw the blurple reacted state."}
+    joins:
+      type: array
+      description: System join lines, in time order. Stacking accelerates when the at gaps shrink.
+      items:
+        type: object
+        required: [name, at]
+        properties:
+          name: {type: string}
+          at: {type: integer, minimum: 0}
+          time: {type: string}
+    underline:
+      type: array
+      description: Orange underline that draws in over 6 frames under the first matching word.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          color: {type: string}
+          onMessage: {type: integer, minimum: 0}
+    strike:
+      type: array
+      description: Two-step strike-through. Rust on the frame at, orange offset by one frame after.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          onMessage: {type: integer, minimum: 0}
+    badge:
+      type: string
+      description: Mono label at the window's bottom-right. Empty string hides it.
+    frame:
+      type: object
+      description: Window size, corner radius, outline colour and hard offset shadow in px.
+      properties:
+        width: {type: integer}
+        height: {type: integer}
+        radius: {type: integer}
+        outline: {type: string}
+        shadow: {type: integer}
+    jumpFrames:
+      type: integer
+      minimum: 1
+      description: Frames a divider flip lasts.
+    typeStepFrames:
+      type: integer
+      minimum: 1
+      description: Frames per typed character.
