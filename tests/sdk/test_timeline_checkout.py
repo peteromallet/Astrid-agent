@@ -239,3 +239,51 @@ def test_insert_and_remove_a_line():
     assert [v.segment for v in tl.lines()] == ["s1", "s2"]
     assert tl.word("Live").start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
+
+
+def test_formula_post_steps_cover_the_generator_maths():
+    data = bundle()
+    data["shots"]["A"]["internal_timeline"]["clips"][1]["app"] = {"formulas": {
+        # the LIFETIME flip: 50 frames before "viral", never below 0
+        "params.flip": {"word": "s1:2", "as": "clip_frame", "offset_frames": -50, "min": 0},
+        # a hop keyframe on an even frame (stepFrames 2), at least frame 4, then +4
+        "params.keyframes[0].frame": {"word": "s1:2", "as": "clip_frame", "min": 4, "step": 2},
+        "params.keyframes[1].frame": {"word": "s1:2", "as": "clip_frame", "offset_frames": 4, "min": 8, "step": 2},
+        # held until "Live", floored to a whole frame
+        "hold": {"word": "s2:0", "as": "clip_seconds", "snap": "floor"},
+    }}
+    tl = Checkout(data)
+    tl.resolve()
+    rocket = tl.clip("R")  # starts at 1.0; "viral" at 1.3 (frame 9); "Live" at 6.0
+    assert rocket.params["flip"] == 0
+    assert rocket.params["keyframes"][0]["frame"] == 8 and rocket.params["keyframes"][1]["frame"] == 12
+    assert rocket.duration == pytest.approx(5.0)
+
+
+def test_an_anchored_cut_rolls_so_the_picture_track_has_no_hole():
+    data = bundle()
+    clips = data["shots"]["A"]["internal_timeline"]["clips"]
+    clips[0]["hold"] = 2.0
+    clips.insert(1, {"id": "a-plate2", "clipType": "am-snap-plate", "track": "plate", "asset": "Q", "at": 2.0, "hold": 2.0, "params": {}})
+    tl = Checkout(data)
+    tl.clip("a-plate2").data["app"] = {"anchor": {"word": "s1:2", "text": "viral", "offset_s": 0.0, "edge": "start"}}
+    tl.retime()  # "viral" is at 1.3: the cut rolls back from 2.0 to 1.3
+    assert tl.clip("a-plate2").start == pytest.approx(1.3) and tl.clip("a-plate2").end == pytest.approx(4.0)
+    assert tl.clip("a-plate").end == pytest.approx(1.3)
+
+
+def test_a_tightened_line_keeps_its_inner_silence():
+    data = bundle()
+    vo = data["shots"]["A"]["internal_timeline"]["clips"][2]
+    first = copy.deepcopy(vo)
+    first.update({"id": "a-vo-0", "to": 0.7})
+    first["app"] = {"segment": "s1", "words": [[0.1, 0.3, "it"], [0.4, 0.6, "went"]], "gap_after_s": 0.5}
+    vo.update({"id": "a-vo-1", "at": 1.3, "from": 0.7, "to": 2.0})
+    vo["app"] = {"segment": "s1", "words": [[0.1, 0.5, "viral"]]}
+    data["shots"]["A"]["internal_timeline"]["clips"].insert(2, first)
+    tl = Checkout(data)
+    assert [w.text for w in tl.voice("s1").words] == ["it", "went", "viral"]
+    report = tl.reflow()  # "went" ends at 1.1; "viral" starts at 1.4: the declared 0.5 s moves it (and all after) to 1.6
+    assert tl.word("viral").start == pytest.approx(1.6, abs=1 / FPS)
+    assert tl.word("Live").start == pytest.approx(6.2, abs=1 / FPS)
+    assert report and report[0].startswith("s1 ('viral')")

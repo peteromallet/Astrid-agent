@@ -356,7 +356,9 @@ class Voice:
         """
         pieces = self.clips
         first = pieces[0]
-        before = self._tl.gaps()
+        before = self._tl._piece_gaps()
+        if pieces[-1].id in before:  # one take now: the line's last silence follows it
+            before[first.id] = before[pieces[-1].id]
         old_end = self.speech_end
         anchored = [(c, c.start) for c in self._tl.clips() if c.anchor]
         new_words = _read_words(words)
@@ -372,7 +374,7 @@ class Voice:
         data["from"], data["to"] = 0.0, _r(length)
         data.pop("hold", None)
         intent.set_line(data, self.segment, [[_r(s), _r(e), t] for s, e, t in new_words])
-        self._tl.report = self._tl.reflow(gaps=before, points={self.segment: old_end}) if ripple else []
+        self._tl.report = self._tl.reflow(gaps=before, points={first.id: old_end}) if ripple else []
         self._tl.retime()
         return [(c.id, old, c.start) for c, old in anchored if abs(c.start - old) > 1e-6]
 
@@ -698,36 +700,50 @@ class Checkout:
     def lines(self) -> list[Voice]:
         """The VO lines in order."""
         seen: dict[str, float] = {}
-        for clip in self.clips(audio=True):
-            segment = intent.line(clip.data)
-            if segment and intent.words(clip.data):
-                seen.setdefault(str(segment), clip.start)
+        for clip, words in self._pieces():
+            seen.setdefault(intent.line(clip.data) or clip.id, words[0].start)
         return [Voice(self, seg) for seg, _t in sorted(seen.items(), key=lambda item: item[1])]
 
+    def _pieces(self) -> list[tuple[Clip, list[Word]]]:
+        """The voice track: every VO clip with words, in speaking order. A line is one or more
+        pieces (a tightened line is split into pieces with their own silences)."""
+        by_clip: dict[str, list[Word]] = {}
+        for w in self.words():
+            by_clip.setdefault(w.clip_id, []).append(w)
+        out = []
+        for clip in self.clips(audio=True):
+            if intent.line(clip.data) and by_clip.get(clip.id):
+                out.append((clip, by_clip[clip.id]))
+        return sorted(out, key=lambda item: item[1][0].start)
+
+    def _piece_gaps(self) -> dict[str, float]:
+        pieces = self._pieces()
+        return {a.id: _r(wb[0].start - wa[-1].end) for (a, wa), (_b, wb) in zip(pieces, pieces[1:])}
+
     def gaps(self) -> dict[str, float]:
-        """The silence after each line as it is now (speech end to the next line's first word)."""
+        """The silence after each line as it is now (its speech end to the next line's first word)."""
         lines = self.lines()
         return {line.segment: _r(nxt.words[0].start - line.speech_end) for line, nxt in zip(lines, lines[1:]) if nxt.words}
 
     def declare_gaps(self) -> int:
-        """Record every line's current silence as its declared gap (once, when a timeline is migrated)."""
+        """Record every piece's current silence as its declared gap (once, when a timeline is migrated)."""
         n = 0
-        for line in self.lines():
-            measured = self.gaps().get(line.segment)
-            if line.gap_after is None and measured is not None:
-                intent.set_gap_after(line.clips[-1].data, measured)
+        measured = self._piece_gaps()
+        for clip, _words in self._pieces():
+            if intent.gap_after(clip.data) is None and clip.id in measured:
+                intent.set_gap_after(clip.data, measured[clip.id])
                 n += 1
         return n
 
     def reflow(self, *, gaps: Mapping[str, float] | None = None, points: Mapping[str, float] | None = None) -> list[str]:
-        """Lay the VO lines back to back again (speech end + gap) and ripple everything downstream.
+        """Lay the voice track out again (each piece's speech end + its gap) and ripple everything downstream.
 
         This re-times the whole film after a script change: a longer or shorter take, an
-        inserted or removed line, a new gap. Each line's gap is the one declared on it, else
-        the one in ``gaps`` (what it was before the change). Time opens or closes in the
-        silence after a line (at ``points[line]``, where its speech used to end, else where it
-        ends now), so picture, overlays, SFX and music after it move as one and keep their
-        sync; anchored clips are re-resolved. Music is cut on a beat, and every
+        inserted or removed line, a new gap. Each piece's gap is the one declared on it, else
+        the one in ``gaps`` (clip id → seconds, what it was before the change). Time opens or
+        closes in the silence after a piece (at ``points[clip id]``, where its speech used to
+        end, else where it ends now), so picture, overlays, SFX and music after it move as one
+        and keep their sync; anchored clips are re-resolved. Music is cut on a beat, and every
         seam is reported (a seam that skips or repeats a fraction of a beat says so).
         """
         report: list[str] = []
@@ -735,26 +751,26 @@ class Checkout:
         notes_before = len(self.notes)
         i = 0
         while True:
-            lines = self.lines()
-            if i + 1 >= len(lines):
+            pieces = self._pieces()
+            if i + 1 >= len(pieces):
                 break
-            line, nxt = lines[i], lines[i + 1]
+            (clip, words), (_nclip, nwords) = pieces[i], pieces[i + 1]
             i += 1
-            gap = line.gap_after if line.gap_after is not None else gaps.get(line.segment)
-            if gap is None or not nxt.words:
+            declared = intent.gap_after(clip.data)
+            gap = declared if declared is not None else gaps.get(clip.id)
+            if gap is None:
                 continue
-            have = nxt.words[0].start
-            delta = self.quantize(line.speech_end + gap - have)
+            end, have = words[-1].end, nwords[0].start
+            delta = self.quantize(end + gap - have)
             if abs(delta) < 0.5 / self.fps:
                 continue
-            point = points.get(line.segment, line.speech_end)
-            own = [c.data for c in line.clips]
+            point = points.get(clip.id, end)
             if delta > 0:
-                self.insert_time(self.quantize(max(point, line.speech_end - delta)), delta, skip=own)
+                self.insert_time(self.quantize(max(point, end - delta)), delta, skip=[clip.data])
             else:
-                start = max(line.speech_end, min(point, nxt.clips[0].start + delta))
-                self.ripple_delete(self.quantize(start), self.quantize(start) - delta, skip=own)
-            report.append(f"line {nxt.segment} ({nxt.words[0].text!r}) {have:.3f} → {have + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
+                start = max(end, min(point, _nclip.start + delta))
+                self.ripple_delete(self.quantize(start), self.quantize(start) - delta, skip=[clip.data])
+            report.append(f"{nwords[0].segment} ({nwords[0].text!r}) {have:.3f} → {have + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
         report += [f"{cid}: {a:.3f} → {b:.3f} s (anchored)" for cid, a, b in self.retime()]
         report += self.notes[notes_before:]
         del self.notes[notes_before:]
@@ -769,22 +785,26 @@ class Checkout:
         new_words = _read_words(words)
         if not new_words:
             raise TimelineEditError("the new line has no words; pass its words.json")
-        before = self.gaps()
-        gap_prev = prev.gap_after if prev.gap_after is not None else before.get(after, 0.3)
+        before = self._piece_gaps()
+        last = prev.clips[-1]
+        gap_prev = prev.gap_after if prev.gap_after is not None else before.get(last.id, 0.3)
         gap_new = gap_after if gap_after is not None else gap_prev
         first = self.quantize(prev.speech_end + gap_prev)  # the new line's first word
         # open the room in the silence after the previous line: what was keyed to the next line moves with it
         self.insert_time(prev.speech_end, new_words[-1][1] - new_words[0][0] + gap_new, skip=[c.data for c in prev.clips])
         sid = self._shot_at(first)
         start = first - new_words[0][0]
-        new = {"id": f"vo-{segment}-0", "clipType": "media", "track": prev.clips[-1].track,
+        new = {"id": f"vo-{segment}-0", "clipType": "media", "track": last.track,
                "at": _r(start - self._shot_start(sid)), "from": 0.0, "to": _r(new_words[-1][1] + 0.06)}
+        for key in ("volume", "gain_db"):
+            if key in last.data:
+                new[key] = copy.deepcopy(last.data[key])
         intent.set_line(new, segment, [[_r(a), _r(b), t] for a, b, t in new_words])
         if gap_after is not None:
             intent.set_gap_after(new, _r(gap_after))
         new["asset"] = self._register_asset(sid, media)
         self._internal(sid)["clips"].append(new)
-        before[segment] = gap_new
+        before[new["id"]] = gap_new
         return [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"] + self.reflow(gaps=before)
 
     def remove_line(self, segment: str) -> list[str]:
@@ -792,7 +812,7 @@ class Checkout:
         line = Voice(self, segment)
         lines = self.lines()
         index = next(i for i, v in enumerate(lines) if v.segment == segment)
-        before = self.gaps()
+        before = self._piece_gaps()
         start = line.clips[0].start
         if index + 1 < len(lines):
             end = lines[index + 1].clips[0].start
@@ -804,7 +824,11 @@ class Checkout:
         return [f"removed line {segment} ({removed:.3f} s)"] + self.reflow(gaps=before)
 
     def retime(self) -> list[tuple[str, float, float]]:
-        """Move every anchored clip back onto its word (after a VO change). Returns what moved."""
+        """Move every anchored clip back onto its word (after a VO change). Returns what moved.
+
+        An anchored cut (a picture clip) rolls: the picture before it ends where it now starts,
+        and it keeps its own end, so the picture track never gets a hole or an overlap."""
+        pictures = {id(step.data) for cut in self.cuts for step in cut.steps}
         words = self.words()
         by_id = {w.id: w for w in words}
         moved = []
@@ -824,11 +848,32 @@ class Checkout:
             target = self.quantize((word.end if anchor.get("edge") == "end" else word.start) + _num(anchor.get("offset_s")))
             if abs(target - clip.start) > 1e-6:
                 old = clip.start
-                clip._set_start(target)
+                if id(clip.data) in pictures:
+                    self._roll(clip, target)  # a cut is a boundary: the picture before it ends where this one starts
+                else:
+                    clip._set_start(target)
                 moved.append((clip.id, old, clip.start))
             anchor["word"], anchor["text"] = word.id, word.text
             intent.set_anchor(clip.data, anchor)
         return moved
+
+    def _roll(self, clip: Clip, target: float) -> None:
+        """Move a picture clip's start to ``target`` and keep its end; the abutting picture before it follows."""
+        old_start, old_end = clip.start, clip.end
+        if target >= old_end - 0.5 / self.fps:
+            self.notes.append(f"{clip.id}: its anchor is after its own end; left in place")
+            return
+        before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.id != clip.id
+                  and abs(c.end - old_start) < 1e-3]
+        if before and target <= before[0].start + 0.5 / self.fps:
+            self.notes.append(f"{clip.id}: its anchor is before the previous picture starts; left in place")
+            return
+        clip._set_start(target)
+        _set_length(clip.data, self.quantize(old_end - target))
+        for prev in before:
+            _set_length(prev.data, self.quantize(target - prev.start))
+        if not before and abs(old_start - self._shot_start(clip.shot_id)) < 1e-3:
+            self.notes.append(f"{clip.id}: rolled its start but it opens a shot; the previous shot is unchanged")
 
     def resolve(self) -> list[str]:
         """Re-resolve every formula in the document (like a spreadsheet recalculating).
@@ -837,6 +882,8 @@ class Checkout:
         field path to an expression, and the resolved value is written to that field:
 
         - ``{"word": "n20b:20", "text": "viral", "offset_s": 0, "as": "clip_seconds"|"clip_frame"|"timeline_seconds"}``
+          (``edge: "end"`` for the word's end; then, in order: ``offset_frames``, ``min``/``max``, ``step``
+          (down to a multiple, e.g. 2 for stepFrames 2); ``snap: "floor"`` floors seconds to a frame)
         - ``{"words_of": "n20b"}``: ``[[start, end], …]`` of that line's words, clip-relative (presenter lip-sync)
         - ``{"mark": "B2-HAND", "axis": "x"|"y", "offset": -16, "unit": "logical"|"px"}``: a slot's hand mark
 
@@ -872,11 +919,12 @@ class Checkout:
                 word = min(same, key=lambda w: abs(w.start - clip.start))
             t = (word.end if expr.get("edge") == "end" else word.start) + _num(expr.get("offset_s"))
             unit = expr.get("as", "clip_seconds")
-            if unit == "timeline_seconds":
-                return _r(t)
             if unit == "clip_frame":
-                return int(round((t - clip.start) * self.fps))
-            return _r(t - clip.start)
+                return _post(int(round((t - clip.start) * self.fps)), expr)
+            value = t if unit == "timeline_seconds" else t - clip.start
+            if expr.get("snap") == "floor":  # down to a whole frame (a hold that must end before the word)
+                value = math.floor(value * self.fps + 1e-9) / self.fps
+            return _r(_post(value, expr))
         if "words_of" in expr:
             segment = str(expr["words_of"])
             return [[_r(w.start - clip.start), _r(w.end - clip.start)] for w in words
@@ -1363,6 +1411,19 @@ class CheckReport:
 
 
 # ----------------------------------------------------------------- document helpers
+
+def _post(value: float, expr: Mapping[str, Any]) -> Any:
+    """A formula's post-steps, in order: offset_frames, min/max, step (down to a multiple)."""
+    value = value + int(expr.get("offset_frames") or 0)
+    if expr.get("min") is not None:
+        value = max(value, expr["min"])
+    if expr.get("max") is not None:
+        value = min(value, expr["max"])
+    step = expr.get("step")
+    if step:
+        value = value - (value % step)
+    return value
+
 
 def _first_word_lead(line: "Voice") -> float:
     """Seconds from a line's first clip start to its first word (the take's lead-in)."""
