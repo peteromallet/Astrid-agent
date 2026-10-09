@@ -506,7 +506,7 @@ def _emit(buf: np.ndarray, sig: np.ndarray, t_s: float, end_s: float, gain: floa
     _place(buf, sig, t_s, gain, pan)
 
 
-HIT_KINDS = ("stab", "thud")
+HIT_KINDS = ("stab", "thud", "blip")
 
 
 def parse_hits(value: Any) -> list[Any]:
@@ -521,6 +521,36 @@ def parse_hits(value: Any) -> list[Any]:
     if not isinstance(parsed, list):
         raise AstridError("hits must be a list of times or {t, kind} objects", recovery_command='pass hits as [4.5, {"t": 7.4, "kind": "thud"}]')
     return parsed
+
+
+def _two_note_blip() -> np.ndarray:
+    """A tiny two-note pulse blip (A5 then E6), for filling a joke slot."""
+    first = int(0.10 * SAMPLE_RATE)
+    second = int(0.12 * SAMPLE_RATE)
+    a = _oscillate("pulse", 0.25, np.full(first, hz(81))) * _ramped(first)
+    b = _oscillate("pulse", 0.25, np.full(second, hz(88))) * _ramped(second)
+    return 0.6 * np.concatenate([a, b])
+
+
+def _mute_gain(n: int, windows: Sequence[tuple[float, float]]) -> np.ndarray | None:
+    """Hard mutes: exact silence from start to end, with a 10 ms ramp just outside each edge."""
+    if not windows:
+        return None
+    gain = np.ones(n)
+    ramp = int(round(EDGE_S * SAMPLE_RATE))
+    for start_s, end_s in windows:
+        lo = max(0, int(round(start_s * SAMPLE_RATE)))
+        hi = min(n, int(round(end_s * SAMPLE_RATE)))
+        if hi <= lo:
+            continue
+        gain[lo:hi] = 0.0
+        before = max(0, lo - ramp)
+        if lo > before:
+            gain[before:lo] = np.minimum(gain[before:lo], np.linspace(1.0, 0.0, lo - before, endpoint=False))
+        after = min(n, hi + ramp)
+        if after > hi:
+            gain[hi:after] = np.minimum(gain[hi:after], np.linspace(0.0, 1.0, after - hi, endpoint=False))
+    return gain
 
 
 def normalize_hits(raw: Sequence[Any], duration_s: float) -> list[tuple[float, str]]:
@@ -553,6 +583,7 @@ def compose_music(
     duck_db: float = -10.0,
     master_db: float = -16.0,
     style: str = "nes",
+    mutes: Sequence[tuple[float, float]] = (),
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Render a stereo chiptune cue. Returns (float32 array (2, n), beats/section metadata)."""
     if style not in STYLES:
@@ -674,11 +705,23 @@ def compose_music(
     gain_curve = _duck_gain(n, duck_items)
     if gain_curve is not None:
         buf *= gain_curve.astype(np.float32)[None, :]
+    # Mutes are not ducks: the bed is gone for the window, so a joke or a dead-air beat lands in silence.
+    mute_windows = []
+    for start_s, end_s in mutes:
+        if not 0.0 <= float(start_s) < float(end_s) <= duration_s:
+            raise AstridError(f"mute [{start_s}, {end_s}] must satisfy 0 <= start < end <= duration_s")
+        mute_windows.append((float(start_s), float(end_s)))
+    mute_curve = _mute_gain(n, mute_windows)
+    if mute_curve is not None:
+        buf *= mute_curve.astype(np.float32)[None, :]
 
     # Accents on exact times. Stabs are voiced on the chord sounding then; thuds are low and dry.
     for hit_s, kind in hit_list:
         if kind == "thud":
             _place(buf, render_sfx("thud", variant=1, duration_s=0.42), hit_s, 0.6)
+            continue
+        if kind == "blip":
+            _place(buf, _two_note_blip(), hit_s, 0.5)
             continue
         chord = next((c for start, end, c in chord_for_time if start <= hit_s < end), (0, "M"))
         base, third, fifth = _chord_pcs(root_pc, chord)
@@ -745,6 +788,7 @@ def compose_music(
         "bars": sorted(phrase_starts),
         "sections": section_meta,
         "hits": [{"t": round(t, 6), "kind": kind} for t, kind in hit_list],
+        "mutes": [[round(a, 6), round(b, 6)] for a, b in mute_windows],
         "key": f"{_NOTE_NAMES[root_pc]} {mode}",
     }
     return buf, meta

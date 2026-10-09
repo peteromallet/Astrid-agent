@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hits", default=None, help="Optional JSON array of accent times or {t, kind} objects (kind: stab or thud).")
     parser.add_argument("--duck", default=None, help="Optional JSON array of {start_s, end_s, gain_db}.")
     parser.add_argument("--vo-mask", default=None, help="Optional JSON array of [start_s, end_s] speech spans.")
+    parser.add_argument("--mutes", default=None, help="Optional JSON array of [start_s, end_s] hard-mute windows (exact silence).")
     parser.add_argument("--duck-db", type=float, default=-10.0)
     parser.add_argument("--master-db", type=float, default=-16.0)
     parser.add_argument("--style", default="nes")
@@ -63,6 +64,18 @@ def _parse_vo_mask(raw: Any) -> list[tuple[float, float]]:
     return out
 
 
+def _parse_mutes(raw: Any) -> list[tuple[float, float]]:
+    items = syn.parse_structured(raw, "mutes") or []
+    if not isinstance(items, list):
+        raise AstridError("mutes must be a JSON array of [start_s, end_s] pairs")
+    out: list[tuple[float, float]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise AstridError(f"mutes[{index}] must be [start_s, end_s]")
+        out.append((float(item[0]), float(item[1])))
+    return out
+
+
 def _write_wav(path: Path, pcm: Any, sample_rate: int) -> None:
     with wave.open(str(path), "wb") as handle:
         handle.setnchannels(2)
@@ -90,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             duck_db=float(args.duck_db),
             master_db=float(args.master_db),
             style=args.style,
+            mutes=_parse_mutes(args.mutes),
         )
         out = args.out.expanduser().resolve()
         out.mkdir(parents=True, exist_ok=True)
@@ -125,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             "bars": meta["bars"],
             "sections": sections_out,
             "hits": [{"t": round(t, 6), "kind": kind} for t, kind in hit_events],
+            "mutes": [[round(a, 6), round(b, 6)] for a, b in _parse_mutes(args.mutes)],
         }
         write_json_atomic(beats_path, beats_doc)
 
@@ -141,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
                 "duck_db": float(args.duck_db),
                 "master_db": float(args.master_db),
                 "style": args.style,
+                "mutes": _parse_mutes(args.mutes),
             },
             outputs=[
                 {

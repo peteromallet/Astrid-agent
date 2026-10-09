@@ -227,6 +227,22 @@ def test_compose_typed_hits_and_bed_return_on_long_gap(tmp_path: Path) -> None:
         syn.normalize_hits([13.0], 12.0)
 
 
+def test_mute_is_exact_silence_and_accents_still_sound(tmp_path: Path) -> None:
+    """A hard mute silences the bed exactly; an accent placed inside it still sounds."""
+    out = tmp_path / "mute"
+    sections = [{"start_s": 0, "end_s": 12, "energy": 0.8, "mood": "tense"}]
+    argv = ["--duration-s", "12.0", "--bpm", "132", "--key", "A minor", "--seed", "7",
+            "--sections", json.dumps(sections), "--hits", json.dumps([{"t": 5.0, "kind": "blip"}]),
+            "--mutes", json.dumps([[4.0, 6.0]]), "--out", str(out)]
+    assert compose_run.main(argv) == 0
+    data, _, _ = _read_wav(out / "music.wav")
+    assert syn.measure_db(data[:, int(4.03 * SR): int(4.97 * SR)])[0] < -100.0
+    assert syn.measure_db(data[:, int(5.0 * SR): int(5.2 * SR)])[0] > -40.0
+    beats = json.loads((out / "beats.json").read_text())
+    assert beats["mutes"] == [[4.0, 6.0]]
+    assert syn.normalize_hits([{"t": 1.0, "kind": "blip"}], 2.0) == [(1.0, "blip")]
+
+
 def test_duck_returns_to_full_in_gaps_of_point_six_seconds() -> None:
     gain = syn._duck_gain(int(20 * SR), [(2.0, 4.0, -10.0), (4.6, 6.0, -10.0), (9.0, 10.0, -10.0)])
     assert gain is not None
