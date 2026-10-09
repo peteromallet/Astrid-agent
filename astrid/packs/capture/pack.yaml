@@ -1,0 +1,28 @@
+schema_version: 2
+id: capture
+name: Capture
+version: 1.0.0
+status: active
+visibility: visible
+domain: media
+stability: experimental
+support: core
+description: Captures real web pages as PNG screenshots with a JSON receipt (URL, final URL, title, UTC time, viewport, HTTP status, user agent) through headless Chromium.
+keywords: [capture, screenshot, web, page, receipt, provenance, browser, chromium, url]
+permissions:
+  - id: subprocess
+    reason: Starts the headless Chromium binary that Remotion installs (or ASTRID_CAPTURE_CHROME) and drives it over its debugging pipe.
+  - id: network
+    reason: Loads the page the caller names over https only. The host admits exactly that https origin for the task (dynamic_url_inputs); no other destination is admitted.
+    services: []
+  - id: project_files
+    reason: Writes the screenshot, receipt and manifest into the executor's managed output directory.
+content:
+  executors: executors
+agent:
+  purpose: "Use to capture a real web page (a repo page, a docs page, a site home) as a managed PNG with a receipt that records where it came from and when, so a film or doc can show the real thing instead of a hand-made mock."
+  do_not_use_for: "Mocking up a UI (use a design or pixel pack), capturing pages behind a login or bot wall (the capture reports the block; it does not work around it), or downloading files."
+  normal_entrypoints: [capture.web_page]
+documentation:
+  kind: skill
+  path: skill/SKILL.md

@@ -1,0 +1,114 @@
+schema_version: 1
+id: capture.web_page
+name: Capture Web Page
+kind: built_in
+version: 1.0.0
+short_description: Capture a real https web page to a PNG plus a JSON provenance receipt via headless Chromium.
+description: >-
+  Opens the https URL in headless Chromium at a set viewport and device scale, waits for load
+  and an optional settle time, then screenshots the viewport, the full page, or a clip.
+  Writes screenshot.png and receipt.json {url, final_url, title, captured_at (UTC), viewport,
+  http_status, user_agent}. Network: https to the requested host only.
+keywords: [capture, screenshot, web-page, receipt, provenance, chromium, browser]
+inputs:
+  - name: url
+    type: string
+    required: true
+    description: https URL to capture. Other schemes and credentials in the URL are refused.
+  - name: viewport
+    type: string
+    required: false
+    default: "1600x1000"
+    description: WIDTHxHEIGHT in CSS pixels.
+  - name: device_scale
+    type: integer
+    required: false
+    default: 2
+    description: Device pixel ratio (1 to 3). The PNG is viewport times this scale.
+  - name: full_page
+    type: boolean
+    required: false
+    default: false
+    description: Capture the whole scrollable page instead of the viewport.
+  - name: wait_ms
+    type: integer
+    required: false
+    default: 1500
+    description: Settle time after the load event, in milliseconds (0 to 30000).
+  - name: clip
+    type: json
+    required: false
+    description: Optional {x, y, w, h} in CSS pixels of the viewport. Takes precedence over full_page.
+  - name: dark_mode
+    type: boolean
+    required: false
+    default: false
+    description: Emulate prefers-color-scheme dark.
+outputs:
+  - name: screenshot
+    type: file
+    path_template: "{out}/screenshot.png"
+    artifact_type: image
+    description: PNG of the captured region.
+  - name: receipt
+    type: file
+    path_template: "{out}/receipt.json"
+    artifact_type: null
+    description: Provenance receipt JSON.
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.capture.executors.web_page.run
+    - "--url"
+    - "{url}"
+    - "--out"
+    - "{out}"
+    - "--viewport"
+    - "{viewport}"
+    - "--device-scale"
+    - "{device_scale}"
+    - "--full-page"
+    - "{full_page}"
+    - "--wait-ms"
+    - "{wait_ms}"
+    - "--dark-mode"
+    - "{dark_mode}"
+  input_args:
+    - input: clip
+      flag: "--clip"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: true
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.capture.executors.web_page.run
+  output_result_manifest: true
+  api_provider: none
+  env: []
+  secrets_required: []
+  storage_estimate_required: false
+  estimated_scratch_bytes: 268435456
+  estimated_output_bytes: 8388608
+  network_policy:
+    allowed_protocols: [dns, tcp]
+    allowed_destinations: []
+    dynamic_url_inputs: [url]
+    allow_redirects: false
+    broker:
+      host_managed: true
+      kind: broker
+      enforced: true
+      observable: true
+      route: declared-http-routes
+      wrapper: astrid-generic-host
+    descendant_enforcement:
+      kind: broker
+      validated: true
+      observable: true
+      route: declared-http-routes
+      wrapper: astrid-generic-host
