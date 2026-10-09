@@ -112,3 +112,34 @@ called when the inspector opens, and missing audio, stems, or transcript spans
 are explicit states. Frame, clip, phrase, and gap selections share render-scoped
 targets; the paired filmstrip is the sole timeline visualization surface and
 its range/shot/clip/track targets are the canonical navigation controls.
+
+## Animate one media clip without per-frame cuts
+
+Use the registered `animated-media-transform` effect from the local pack for a
+managed image or video. Set `asset` to its existing registry key, `hold` to the
+clip duration, and `params.keyframes` to increasing clip-local seconds with
+`x`, `y`, `width`, `height` (authored canvas pixels) and `opacity` (0–1). Values
+interpolate linearly and clamp before/after the key range; retain equal-valued
+keys at the ends of a hold. This same component runs in Reigh and Remotion.
+
+```json
+{"id":"moving-video","clipType":"animated-media-transform","asset":"video",
+ "track":"picture","at":0,"hold":10,"volume":0,
+ "params":{"fit":"contain","keyframes":[
+   {"at":0,"x":96,"y":164,"width":1200,"height":675,"opacity":1},
+   {"at":3,"x":96,"y":164,"width":1200,"height":675,"opacity":1},
+   {"at":4,"x":0,"y":0,"width":1920,"height":1080,"opacity":0.35},
+   {"at":9,"x":0,"y":0,"width":1920,"height":1080,"opacity":0.35},
+   {"at":10,"x":0,"y":0,"width":1920,"height":1080,"opacity":0}],
+   "sourceSegments":[{"at":0,"sourceStart":0,"speed":1}]}}
+```
+
+For video speed changes or intentional source resets, add `sourceSegments`
+with `at`, `sourceStart` (seconds) and positive `speed`. First `at` must round
+to frame zero; later starts must round to distinct increasing frames. Each
+section ends at the next start or clip end, so no two source sections are visible
+at once. Sections premount two seconds ahead and remain mounted for half a second
+afterward in the player, preparing their decoder before a boundary without
+changing source timing or substituting the outgoing frame.
+Without this array, playback uses the clip's `from` and `speed`. These arrays
+are editable in the canonical document; this does not add a keyframe-editor UI.

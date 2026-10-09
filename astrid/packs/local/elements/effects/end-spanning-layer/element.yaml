@@ -19,6 +19,14 @@ schema:
   type: object
   additionalProperties: true
   properties:
+    revealDelaySeconds:
+      type: number
+      minimum: 0
+      description: Clip-relative delay before the complete overlay is revealed.
+    revealDurationSeconds:
+      type: number
+      minimum: 0
+      description: Fade duration after the reveal delay; zero reveals immediately.
     phaseDurations:
       type: object
       description: Positive clip-local seconds for prep, iteration, anchors, and workflow.
@@ -60,9 +68,9 @@ schema:
         anchors: {type: string}
         workflow: {type: string}
 assets:
-  card0: assets/card-0.png
+  card0: assets/card-0-canonical-mink.png
   card1: assets/card-1.png
   card2: assets/card-2.png
   card3: assets/card-3.png
-  card4: assets/card-4.png
-  card5: assets/card-5.png
+  card4: assets/card-4-canonical-mink.png
+  card5: assets/card-5-canonical-mink.png

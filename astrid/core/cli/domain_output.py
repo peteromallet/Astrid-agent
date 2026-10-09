@@ -24,7 +24,7 @@ under ``--json`` always emits one exact envelope object.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, TextIO
 
 from astrid.core.receipts.canonical import canonical_json
@@ -144,6 +144,7 @@ def print_result(
     *,
     as_json: bool = False,
     stream: TextIO | None = None,
+    human_renderer: Callable[[Any], str] | None = None,
 ) -> int:
     """Print *result* and return its stable exit code.
 
@@ -151,7 +152,8 @@ def print_result(
     outcome (scripts parse the envelope; the exit code carries the
     failure). In human mode success prints to stdout and failures print
     the ``error <code>: <message>`` line to stderr, matching the
-    conventional operator experience.
+    conventional operator experience. An optional success-only human renderer
+    receives data; JSON output and typed failure rendering remain unchanged.
     """
     out = stream if stream is not None else sys.stdout
     err = sys.stderr if stream is None else stream
@@ -160,7 +162,7 @@ def print_result(
         return exit_code(result)
     envelope = envelope_dict(result)
     if envelope["ok"]:
-        print(render_human(result), file=out)
+        print(human_renderer(envelope["data"]) if human_renderer else render_human(result), file=out)
         return EXIT_OK
     print(render_human(result), file=err)
     return EXIT_FAILURE

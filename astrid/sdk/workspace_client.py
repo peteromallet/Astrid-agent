@@ -252,6 +252,7 @@ class WorkspaceClient:
                 "recover_project_reference", "associate_reference", "set_primary_reference",
                 "link_references", "create_document", "list_documents", "get_document",
                 "update_document", "ingest_object", "ingest_project_object",
+                "import_project_media", "get_project_media_import",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
                 "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
@@ -702,6 +703,23 @@ class WorkspaceClient:
             idempotency_key=idempotency_key,
             filename=filename,
         )
+
+    def import_project_media(
+        self, project_id: str, data: bytes, *, media_type: str,
+        idempotency_key: str, filename: str | None = None,
+        expected_digest: str | None = None, width: int | None = None,
+        height: int | None = None, duration_seconds: float | None = None,
+    ) -> Any:
+        """Import managed bytes and their truthful project catalog entry together."""
+        return self._call_generated(
+            "import_project_media", project_id, data, media_type=media_type,
+            idempotency_key=idempotency_key, filename=filename,
+            expected_digest=expected_digest, width=width, height=height,
+            duration_seconds=duration_seconds,
+        )
+
+    def get_project_media_import(self, project_id: str, import_operation_id: str) -> Any:
+        return self._call_generated("get_project_media_import", project_id, import_operation_id)
 
     def list_project_objects(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_project_objects", project_id, cursor=cursor, limit=limit)

@@ -54,6 +54,11 @@ contributions is in
 **[Pack-hosted tools and interface contributions](architecture/pack-hosted-interfaces.md)**.
 It does not change the current pack or trust contract.
 
+The later **[Pack authoring direction](architecture/pack-authoring-direction.md)**
+records the proposed actions/UI/rendering folder convention, illustrative
+`pack.yaml`, and examples ranging from a theme to an editor and inference pack.
+Its manifest examples are design sketches, not the current schema.
+
 ## Reference
 
 - **[Contracts Index](contracts/README.md)** — Every normative contract: platform, CLI,

@@ -58,24 +58,21 @@ No fal SDK required (SD-009).
 Requires `FAL_KEY` to be resolvable via the candidate-env-file walk
 (see `astrid/core/util/secrets.py`).
 
-### Codex (`--execution codex`)
+### Codex (`execution="codex"`)
 
-Dispatches through `CodexBackend`.  This path needs **no `OPENAI_API_KEY`** and
-does not read OpenAI API key files. It uses the Codex CLI's own ChatGPT auth at
-`~/.codex/auth.json`, so the cheap readiness check is:
+The public `generation.generate_image` SDK entrypoint selects the managed
+Codex profile. Use an explicit connected client and managed reference
+descriptors, as shown in the
+[complete Codex edit recipe](../../skill/references/managed-codex-images.md).
+The profile's [contract](../generate_image_codex/STAGE.md) owns current
+limits and admission behavior. It uses Codex ChatGPT authentication and needs
+no `OPENAI_API_KEY`; missing authentication fails rather than silently
+selecting a different provider.
 
-1. `codex` binary is on `PATH`
-2. `~/.codex/auth.json` exists
-
-If `--execution codex` is requested and either check fails, the executor falls
-back to `--execution cloud` when the selected model/mode has a cloud backend,
-and prints a warning naming the reason. This is a preflight fallback only; a
-real Codex generation failure does not silently switch backends.
-
-`--size`, `--quality`, and `--background` are hints for Codex, not structured
-API parameters. The adapter folds them into natural language (for example,
-wide 3:2, high fidelity, transparent background). Aspect ratio is often
-honored, but exact pixels and true alpha are not guaranteed.
+Source, style, and brand references must have distinct digests and safe
+filenames. Import local files before admission or reuse verified managed
+object receipts. Exact pixels and true alpha are not guaranteed: `size`,
+`quality`, and `background` are prompt hints.
 
 ## Escape hatch
 
@@ -150,10 +147,8 @@ ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.executors.generat
   --model flux-schnell --mode t2i --execution cloud \
   --prompt "cyberpunk city" --count 3 --seed 42 --out ./out
 
-# Codex text-to-image (no OpenAI API key)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.executors.generate_image.run \
-  --model flux-dev --mode t2i --execution codex \
-  --prompt "a tiny blue teapot" --size 1024x1024 --quality low --out ./out
+# For managed Codex generation, use the public SDK recipe linked above.
+# These internal executor-development examples are not the managed task route.
 ```
 
 ## Prompts file (JSONL)

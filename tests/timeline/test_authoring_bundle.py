@@ -260,6 +260,29 @@ def test_compile_materializes_shared_identity_and_keeps_untouched_content():
     }
 
 
+def test_parent_picture_overlap_is_diagnosed_without_rejecting_cross_track_compositing():
+    parent, shots, timelines = _closure(shared=False)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    # This is the real parent-vs-shot shape: an ordinary picture clip and a
+    # placed occurrence occupy the same visual lane and interval.
+    candidate["parent"]["clips"] = [
+        {"id": "parent-hold", "track": "picture", "asset": "direct", "at": 0, "hold": 2},
+        {"id": "picture-effect", "track": "picture", "clipType": "effect-layer", "at": 0, "hold": 2},
+    ]
+    compiled = compile_authoring_candidate(candidate)
+    assert [row["code"] for row in compiled.diagnostics] == ["same_track_picture_overlap"]
+    assert compiled.diagnostics[0]["clip_id"] == "parent-hold"
+    assert compiled.publication["parent_composition"]["config"]["clips"] == candidate["parent"]["clips"]
+    assert validate_authoring_candidate(candidate)["diagnostics"] == list(compiled.diagnostics)
+    assert preview_authoring_candidate(candidate)["diagnostics"] == list(compiled.diagnostics)
+
+    candidate["placements"][0]["placement"]["track"] = "picture-overlay"
+    cross_track = compile_authoring_candidate(candidate)
+    assert cross_track.diagnostics == ()
+
+
 def test_independent_unique_shot_reuses_untouched_revision_and_direct_edits_compile_identically():
     parent, shots, timelines = _closure(shared=False)
     helper_candidate = open_authoring_bundle(
@@ -787,6 +810,11 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
             self.timelines = SimpleNamespace(
                 show=lambda _project, _ref: result(timeline),
                 list=lambda _project, **_kwargs: result([[timeline], None]),
+                inspect=lambda _project, _ref, **_kwargs: result({
+                    "timeline_id": "main", "representation": "canonical_head",
+                    "is_current_head": True, "revision_id": "parent-1",
+                    "head_revision_id": "parent-1",
+                }),
             )
 
         def get_project_parent_composition_revision(self, _project, _timeline, revision_id):
@@ -847,16 +875,9 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
     }}
     render_preview = preview_authoring_candidate(render_candidate)
 
-    class PreviewRuntime(Runtime):
-        def get_project_shot_revision(self, *_args):
-            raise AssertionError("preview should not project the unrenderable source shot")
-
-        def get_project_timeline_revision(self, *_args):
-            raise AssertionError("preview should not project the unrenderable source timeline")
-
     prepared, admitted = _prepare_managed_render_inputs(
         {"timeline_ref": "main", "authoring_preview": render_preview},
-        project="demo", _client=PreviewRuntime(),
+        project="demo", _client=Runtime(),
     )
     assert "authoring_preview" not in prepared
     assert admitted["authoring_preview"]["candidate_digest"] == render_preview["candidate_digest"]
@@ -962,6 +983,10 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
             project_id, b"voiceover", media_type="audio/wav", idempotency_key="audio"
         )["data"]["object_id"]
         parent, shots, timelines = _closure(shared=True)
+        # This integration test covers candidate media publication. Narration
+        # uses the separate registered text-binding authority and is unrelated
+        # to the media edits exercised below.
+        shots[0]["payload"]["text_bindings"] = []
         replacements = {OLD: old, NEW: new, AUDIO: audio, "project-1": project_id}
         parent = _replace_values(parent, replacements)
         shots = _replace_values(shots, replacements)

@@ -75,6 +75,14 @@ def authoring_contract() -> dict[str, Any]:
             "occurrence shot_revision_id pins",
             "dependency manifest",
         ],
+        "shot_contract": {
+            "shot_id": "reusable registered project shot",
+            "occurrence_id": "placed occurrence identity for selection and navigation",
+            "placement": "declared occurrence track and half-open timing; overlaps do not imply child ownership",
+            "pins": "parent occurrence pins shot revision, which pins internal timeline and registered text binding revisions",
+            "narration": "registered shot text binding authority; new revision pins require current-head concurrency validation",
+            "script_reader": "timelines.script reads verified pinned text in placed timeline order; missing differs from empty",
+        },
         "selected_media_authority": (
             "internal timeline clip asset/media selector resolved through that timeline's registry; "
             "when a mirrored shot item changes, its media_id must resolve to the same immutable object"
@@ -139,6 +147,7 @@ class CandidateCompilation:
     identity_mapping: Mapping[str, Any]
     changed_identities: tuple[Mapping[str, Any], ...]
     reused_identities: tuple[Mapping[str, Any], ...]
+    diagnostics: tuple[Mapping[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -147,6 +156,7 @@ class CandidateCompilation:
             "identity_mapping": copy.deepcopy(dict(self.identity_mapping)),
             "changed_identities": copy.deepcopy(list(self.changed_identities)),
             "reused_identities": copy.deepcopy(list(self.reused_identities)),
+            "diagnostics": copy.deepcopy(list(self.diagnostics)),
         }
 
 
@@ -755,6 +765,81 @@ def _collect_media(value: Any) -> set[str]:
     return result
 
 
+def _clip_interval_seconds(clip: Mapping[str, Any]) -> tuple[float, float] | None:
+    """Return a best-effort half-open interval for an ordinary parent clip."""
+    at = clip.get("at", 0)
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    if isinstance(clip.get("hold"), (int, float)) and not isinstance(clip.get("hold"), bool):
+        duration = float(clip["hold"])
+    elif isinstance(clip.get("to"), (int, float)) and not isinstance(clip.get("to"), bool):
+        duration = float(clip["to"]) - float(clip.get("from", 0))
+    else:
+        return None
+    start = float(at)
+    end = start + duration
+    return (start, end) if duration > 0 and end > start else None
+
+
+def _same_track_visual_overlap_diagnostics(
+    parent_payload: Mapping[str, Any], placements: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Warn when parent picture clips occupy a placed shot's visual lane.
+
+    Track overlap across lanes is ordinary compositing, and audio/effect tracks
+    have their own semantics. Keep this diagnostic narrowly scoped to the
+    parent media versus placed-shot collision that commonly hides picture.
+    """
+    config = parent_payload.get("config")
+    tracks = config.get("tracks", []) if isinstance(config, Mapping) else []
+    visual_tracks = {
+        row.get("id") for row in tracks
+        if isinstance(row, Mapping) and row.get("kind") in {"visual", "video", "image"}
+    }
+    clips = parent_payload.get("clips", [])
+    if not visual_tracks or not isinstance(clips, list):
+        return ()
+    diagnostics: list[dict[str, Any]] = []
+    for clip_index, raw_clip in enumerate(clips):
+        if not isinstance(raw_clip, Mapping) or raw_clip.get("track") not in visual_tracks:
+            continue
+        clip_type = raw_clip.get("clipType", raw_clip.get("clip_type", "media"))
+        if clip_type not in {"media", "video", "image"}:
+            continue
+        interval = _clip_interval_seconds(raw_clip)
+        if interval is None:
+            continue
+        for placement in placements:
+            placement_track = placement.get("placement", {}).get("track") if isinstance(placement.get("placement"), Mapping) else None
+            if placement_track != raw_clip.get("track"):
+                continue
+            start_ms = placement.get("placement", {}).get("start_ms", 0)
+            duration_ms = placement.get("duration_ms")
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (start_ms, duration_ms)):
+                continue
+            shot_start = float(start_ms) / 1000.0
+            shot_end = shot_start + float(duration_ms) / 1000.0
+            overlap_start = max(interval[0], shot_start)
+            overlap_end = min(interval[1], shot_end)
+            if overlap_start >= overlap_end:
+                continue
+            diagnostics.append({
+                "code": "same_track_picture_overlap",
+                "severity": "warning",
+                "message": (
+                    f"Parent clip {raw_clip.get('id', clip_index)!r} overlaps placed shot "
+                    f"{placement.get('occurrence_id', '?')!r} on visual track "
+                    f"{raw_clip.get('track')!r} from {overlap_start:.3f}s to {overlap_end:.3f}s; "
+                    "one picture may obscure the other."
+                ),
+                "clip_id": raw_clip.get("id"),
+                "occurrence_id": placement.get("occurrence_id"),
+                "track": raw_clip.get("track"),
+                "overlap": {"start": overlap_start, "end": overlap_end},
+            })
+    return tuple(diagnostics)
+
+
 def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompilation:
     """Compile a complete working copy into one deterministic CAS publication.
 
@@ -1028,6 +1113,15 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
     referenced_shot_ids = {row["shot_id"] for row in compiled_occurrences}
     final_parent = _copy(dict(parent_payload))
     final_parent["occurrences"] = compiled_occurrences
+    # `clips` is the canonical parent-authored field. Runtime stores a mirror
+    # in config for legacy renderers, so compile both views from one authority.
+    final_config = final_parent.get("config")
+    if isinstance(final_config, dict):
+        if isinstance(final_parent.get("clips"), list):
+            final_config["clips"] = _copy(final_parent["clips"])
+        elif isinstance(final_config.get("clips"), list):
+            final_parent["clips"] = _copy(final_config["clips"])
+    diagnostics = _same_track_visual_overlap_diagnostics(final_parent, compiled_occurrences)
     parent_digest = _digest(final_parent)
     parent_revision_id = _identity(
         "authoring-parent-revision", project_id, timeline_id, expected_head, final_parent
@@ -1117,6 +1211,7 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
         identity_mapping=identity_mapping,
         changed_identities=tuple(changed),
         reused_identities=tuple(reused),
+        diagnostics=diagnostics,
     )
 
 
@@ -1134,6 +1229,7 @@ def validate_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]
         "candidate_digest": compilation.candidate_digest,
         "changed_identities": _copy(list(compilation.changed_identities)),
         "reused_identities": _copy(list(compilation.reused_identities)),
+        "diagnostics": _copy(list(compilation.diagnostics)),
         "publication_digest": _digest(compilation.publication),
     }
 
@@ -1169,9 +1265,11 @@ def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     root = _mapping(candidate, "candidate")
     base = {
         "parent": root.get("base_parent_payload"),
-        "placements": _mapping(root.get("source_mapping"), "candidate.source_mapping").get(
-            "placements", {}
-        ),
+        "placements": list(_mapping(
+            _mapping(root.get("source_mapping"), "candidate.source_mapping").get(
+                "placements", {}
+            ), "candidate.source_mapping.placements"
+        ).values()),
         "shots": {
             key: {
                 "payload": value.get("base_payload"),
@@ -1467,6 +1565,7 @@ def preview_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "candidate": _copy(dict(candidate)),
         "publication": _copy(dict(compilation.publication)),
         "identity_mapping": _copy(dict(compilation.identity_mapping)),
+        "diagnostics": _copy(list(compilation.diagnostics)),
     }
 
 
@@ -1558,12 +1657,20 @@ def publish_authoring_candidate(
     writer: AuthoringCandidateWriter,
     *,
     idempotency_key: str,
+    media_imports: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Compile and publish through the existing atomic Runtime boundary."""
+    """Compile and publish through the existing atomic Runtime boundary.
+
+    Optional ``media_imports`` are receipts from the existing catalog import
+    helper, used only for feedback. Without them, catalog counts stay unknown.
+    """
 
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise AuthoringBundleError("idempotency_key must be a non-empty string")
     compilation = compile_authoring_candidate(candidate)
+    from .authoring_feedback import authoring_change_summary, publication_feedback
+
+    summary = authoring_change_summary(candidate, media_imports=media_imports)
     publication = compilation.publication
     result = writer.publish_parent_composition(
         publication["project_id"],
@@ -1576,6 +1683,10 @@ def publish_authoring_candidate(
         "identity_mapping": _copy(dict(compilation.identity_mapping)),
         "changed_identities": _copy(list(compilation.changed_identities)),
         "publication": result,
+        **publication_feedback(
+            summary, result,
+            project_id=publication["project_id"], timeline_id=publication["timeline_id"],
+        ),
     }
 
 

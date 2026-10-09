@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "cache": {"mode": "none"},
+  "command": {"argv": [
+    "{python_exec}", "-m", "astrid.packs.generation.executors.generate_speech.run",
+    "--provider", "{provider}", "--voice", "{voice}", "--rate={rate}",
+    "--volume={volume}", "--pitch={pitch}", "--text", "{text}",
+    "--out", "{out}"
+  ]},
+  "conditions": [
+    {"input": "text", "kind": "requires_input"},
+    {"input": "provider", "kind": "requires_input"}
+  ],
+  "description": "Generate exact spoken text as a WAV artifact with Edge TTS and record voice settings and content hashes.",
+  "graph": {"consumes": ["text"], "provides": ["speech", "speech_manifest"]},
+  "id": "generation.generate_speech",
+  "inputs": [
+    {"name": "text", "type": "string", "required": true, "description": "Exact text to speak."},
+    {"name": "provider", "type": "string", "required": false, "default": "edge-tts", "description": "Speech provider. Currently edge-tts."},
+    {"name": "voice", "type": "string", "required": false, "default": "en-US-ChristopherNeural", "description": "Edge TTS voice id."},
+    {"name": "rate", "type": "string", "required": false, "default": "+0%", "description": "Edge TTS rate setting."},
+    {"name": "volume", "type": "string", "required": false, "default": "+0%", "description": "Edge TTS volume setting."},
+    {"name": "pitch", "type": "string", "required": false, "default": "+0Hz", "description": "Edge TTS pitch setting."}
+  ],
+  "isolation": {"mode": "subprocess", "network": true},
+  "keywords": ["audio", "speech", "tts", "edge-tts", "voiceover"],
+  "kind": "built_in",
+  "metadata": {
+    "output_result_manifest": true,
+    "requires_timeline": false,
+    "api_provider": "edge-tts",
+    "network_policy": {
+      "allowed_protocols": ["dns", "tcp"],
+      "allowed_destinations": ["speech.platform.bing.com:443"],
+      "allow_redirects": false,
+      "broker": {"host_managed": true, "kind": "broker", "enforced": true, "observable": true, "route": "declared-tcp-routes", "wrapper": "astrid-generic-host"},
+      "descendant_enforcement": {"kind": "broker", "validated": true, "observable": true, "route": "declared-tcp-routes", "wrapper": "astrid-generic-host"}
+    },
+    "runtime_entrypoint": "run_sdk",
+    "runtime_entrypoint_note": "run_sdk is the in-process entrypoint returning a JSON-safe payload dict; subprocess / CLI compatibility remains via main() and the __main__ guard at the bottom of run.py.",
+    "runtime_file": "run.py",
+    "runtime_module": "astrid.packs.generation.executors.generate_speech.run"
+  },
+  "name": "Generate Speech",
+  "outputs": [
+    {"name": "speech", "type": "file", "mode": "create_or_replace", "path_template": "{out}/audio/speech.wav", "artifact_type": "audio", "description": "Generated speech WAV."},
+    {"name": "speech_manifest", "type": "file", "mode": "create_or_replace", "path_template": "{out}/speech-provenance.json", "artifact_type": null, "description": "Exact text, voice settings, content hashes, and probed duration."}
+  ],
+  "version": "1.0",
+  "short_description": "Generate WAV speech from exact text with configurable Edge TTS voice settings."
+}
