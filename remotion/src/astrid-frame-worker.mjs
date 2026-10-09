@@ -4,11 +4,57 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import readline from 'node:readline';
-import { openBrowser, renderFrames, selectComposition } from '@remotion/renderer';
+import { ensureBrowser, openBrowser, renderFrames, selectComposition } from '@remotion/renderer';
 
 let browser = null;
 let bundleDir = null;
 let projectDir = null;
+// Lines for the caller's findings (a cold-browser retry); sent with the next reply.
+let notes = [];
+
+// Remotion's openBrowser gives Chrome a fixed 25 s to connect. The first launch
+// after a host restart or reboot can miss it while macOS verifies and pages in
+// the binary. Retry once: warm the binary first (`--version`, bounded), then
+// connect again, so a cold start costs one wait instead of a failed capture.
+const CONNECT_TIMEOUT = /Timed out after \d+ ms while trying to connect to the browser/;
+export const WARM_TIMEOUT_MS = 90_000;
+
+async function connectBrowser(request, open = openBrowser, warm = warmBrowser) {
+  const options = {
+    browserExecutable: request.browserExecutable ?? null,
+    chromiumOptions: { headless: true },
+    logLevel: 'error',
+  };
+  const started = Date.now();
+  try {
+    return await open('chrome', options);
+  } catch (error) {
+    if (!CONNECT_TIMEOUT.test(error instanceof Error ? error.message : String(error))) throw error;
+    const first = Math.round((Date.now() - started) / 1000);
+    await warm(options.browserExecutable);
+    const retried = Date.now();
+    let connected;
+    try {
+      connected = await open('chrome', options);
+    } catch (retryError) {
+      const reason = retryError instanceof Error ? retryError.message : String(retryError);
+      throw new Error(`Chrome did not connect (cold browser): ${first} s, then warmed and retried once: ${reason.split('\n')[0]}`);
+    }
+    notes.push(`CAPTURE  cold browser: Chrome missed the ${first} s connect limit; warmed it and retried once, connected in ${Math.round((Date.now() - retried) / 1000)} s`);
+    return connected;
+  }
+}
+
+async function warmBrowser(browserExecutable) {
+  try {
+    const status = await ensureBrowser({ browserExecutable, logLevel: 'error' });
+    if (status && status.path) spawnSync(status.path, ['--version'], { stdio: 'ignore', timeout: WARM_TIMEOUT_MS });
+  } catch {
+    // Warming is best effort; the retry still runs.
+  }
+}
+
+export const _test = { connectBrowser, takeNotes: () => notes.splice(0) };
 
 function reply(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -41,11 +87,7 @@ async function startSession(request) {
   projectDir = resolve(request.projectDir);
   if (!existsSync(projectDir)) throw new Error(`Remotion project does not exist: ${projectDir}`);
   await bundleProject(request);
-  browser = await openBrowser('chrome', {
-    browserExecutable: request.browserExecutable ?? null,
-    chromiumOptions: { headless: true },
-    logLevel: 'error',
-  });
+  browser = await connectBrowser(request);
 }
 
 async function bundleProject(request) {
@@ -122,7 +164,7 @@ async function handleRequest(request) {
   }
   if (request.type !== 'render') throw new Error(`unknown request type: ${String(request.type)}`);
   await renderRequest(request);
-  return { ok: true };
+  return { ok: true, notes: notes.splice(0) };
 }
 
 function idleSeconds() {

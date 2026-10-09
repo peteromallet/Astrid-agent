@@ -260,3 +260,85 @@ def test_filmstrip_pack_accepts_capture_provider_without_video(tmp_path):
     assert result["frame_index"]["frame_capture"]["evidence_source"] == "fresh_capture"
     assert result["cards"][0]["image"].endswith(".png")
     assert Path(result["paths"]["png"][0]).is_file()
+
+
+# --- cold browser: one retry, and the findings say so --------------------------------------
+import json  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+WORKER = Path(__file__).resolve().parents[3] / "remotion" / "src" / "astrid-frame-worker.mjs"
+STUB_RENDERER = """
+export const ensureBrowser = async () => ({ path: null });
+export const openBrowser = async () => { throw new Error('stub'); };
+export const renderFrames = async () => {};
+export const selectComposition = async () => ({});
+"""
+DRIVER = """
+import { _test } from './worker.mjs';
+const timeout = new Error('Timed out after 25000 ms while trying to connect to the browser! Chrome logged the following:');
+const run = async (failures, error = timeout) => {
+  let calls = 0, warmed = 0;
+  const open = async () => { calls += 1; if (calls <= failures) throw error; return { browser: true }; };
+  try {
+    await _test.connectBrowser({}, open, async () => { warmed += 1; });
+    return { ok: true, calls, warmed, notes: _test.takeNotes() };
+  } catch (e) {
+    return { ok: false, calls, warmed, error: e.message, notes: _test.takeNotes() };
+  }
+};
+console.log(JSON.stringify([await run(0), await run(1), await run(2), await run(1, new Error('no chrome'))]));
+"""
+
+
+def test_frame_worker_retries_a_cold_chrome_connect_once(tmp_path):
+    node = os.environ.get("ASTRID_NODE_EXECUTABLE") or shutil.which("node")
+    if not node:
+        pytest.skip("no Node")
+    source = WORKER.read_text(encoding="utf-8")
+    assert "from '@remotion/renderer';" in source
+    (tmp_path / "worker.mjs").write_text(source.replace("from '@remotion/renderer';", "from './renderer.mjs';"))
+    (tmp_path / "renderer.mjs").write_text(STUB_RENDERER)
+    (tmp_path / "driver.mjs").write_text(DRIVER)
+    done = subprocess.run([node, str(tmp_path / "driver.mjs")], stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True, timeout=60, check=True)
+    warm, cold, dead, other = json.loads(done.stdout.strip().splitlines()[-1])
+    assert warm == {"ok": True, "calls": 1, "warmed": 0, "notes": []}
+    assert cold["ok"] and cold["calls"] == 2 and cold["warmed"] == 1
+    assert cold["notes"][0].startswith("CAPTURE  cold browser: Chrome missed the ") and "retried once" in cold["notes"][0]
+    assert not dead["ok"] and dead["calls"] == 2 and "retried once" in dead["error"]
+    assert not other["ok"] and other["calls"] == 1 and other["error"] == "no chrome"
+
+
+def test_owner_notes_reach_the_findings(tmp_path, monkeypatch):
+    from astrid.packs.rendering.backends.remotion import run as remotion_run
+    from astrid.packs.rendering.executors.timeline_visualize import composed_frame
+
+    session = remotion_run.PersistentRemotionFrameSession()
+    monkeypatch.setattr(session, "_ensure_owner", lambda **_kwargs: None)
+    monkeypatch.setattr(session, "_request", lambda _request: {"ok": True, "notes": ["CAPTURE  cold browser: retried"]})
+    session.render(project_dir=tmp_path, composition_id="c", node_executable=tmp_path / "node", remotion_cli=tmp_path / "cli",
+                   props_path=tmp_path / "p.json", output_dir=tmp_path, frames=[1], resolution=None, port=1,
+                   environment={}, identity="i")
+    renderer = type("Renderer", (), {"session": session})()
+    assert composed_frame._renderer_notes(renderer) == ["CAPTURE  cold browser: retried"]
+    assert session.notes == []
+
+    snapshot = _snapshot()
+    snapshot["duration_frames"] = 3
+    options = filmstrip_options({"frame": 1, "resolution": "32x18"})
+    options["frame_extension"] = "png"
+
+    class Provider:
+        def capture(self, cards, out_root, resolution):
+            for card in cards:
+                path = Path(out_root) / card["image"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (32, 18), "#204050").save(path)
+            return {"evidence_source": "fresh_capture", "notes": ["CAPTURE  cold browser: retried"]}
+
+    result = build_filmstrip_pack(out_root=tmp_path / "view", snapshot=snapshot, options=options, frame_provider=Provider())
+    assert result["findings"] == ["CAPTURE  cold browser: retried"]

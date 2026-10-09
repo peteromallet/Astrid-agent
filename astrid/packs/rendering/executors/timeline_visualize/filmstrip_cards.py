@@ -1863,5 +1863,5 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         md += [f"## {card['id']}", '', f"![{card['time_label']}]({card['image']})", ''] + [html.escape(line) + '  ' for line in _lines(card)] + ['', '```sh', card['actions']['focus_command'], '```', '']
     Path(paths['markdown']).write_text('\n'.join(md), encoding='utf-8')
     return {'frame_index': index, 'cards': cards, 'paths': paths,
-            'findings': index.get('motion_findings') or [],
+            'findings': (index.get('motion_findings') or []) + list((capture_info or {}).get('notes') or []),
             'capture_window': (capture_started_at, capture_ended_at)}

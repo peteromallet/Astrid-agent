@@ -449,6 +449,17 @@ def _acquire_shared_remotion_handle(*, context: Mapping[str, Any]) -> _SharedRem
         return _SHARED_REMOTION_OWNER.acquire(context)
 
 
+def _renderer_notes(renderer: Any) -> list[str]:
+    """Take the frame owner's notes for findings (e.g. a cold-browser retry)."""
+    session = getattr(getattr(renderer, "owner", None), "session", None) or getattr(renderer, "session", None)
+    notes = getattr(session, "notes", None)
+    if not isinstance(notes, list) or not notes:
+        return []
+    taken = [str(note) for note in notes]
+    notes.clear()
+    return taken
+
+
 class RemotionFrameProvider:
     """Provide PNG frames from an admitted, immutable capture snapshot."""
 
@@ -513,12 +524,14 @@ class RemotionFrameProvider:
         fresh = 0
         temporary = None
         succeeded = False
+        notes: list[str] = []
         try:
             if misses:
                 temporary = Path(tempfile.mkdtemp(prefix="astrid-frame-capture-", dir=out_root.parent))
                 produced = self.worker.capture(
                     [frame for frame, _key, _destination in misses], temporary, resolution
                 )
+                notes = _renderer_notes(self.worker.renderer)
                 for frame, key, destination in misses:
                     source = Path(produced[frame])
                     data = source.read_bytes()
@@ -544,6 +557,7 @@ class RemotionFrameProvider:
             "requested_frames": [int(card["frame"]) for card in cards],
             "resolution": list(resolution) if resolution is not None else None,
             "cache_root": str(self.cache.root),
+            "notes": notes,
             "worker": {
                 "batches": self.worker.capture_batches,
                 "idle_seconds": self.worker.idle_seconds,

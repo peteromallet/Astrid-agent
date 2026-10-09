@@ -156,6 +156,8 @@ class PersistentRemotionFrameSession:
     def __init__(self) -> None:
         self._socket_path: Path | None = None
         self._identity: str | None = None
+        # Lines the owner asks to surface in findings (e.g. a cold-browser retry).
+        self.notes: list[str] = []
 
     @staticmethod
     def _owner_paths(identity: str) -> tuple[Path, Path]:
@@ -397,10 +399,11 @@ class PersistentRemotionFrameSession:
             "environment": dict(environment),
         }
         try:
-            self._request(request)
+            response = self._request(request)
         except BaseException:
             self.close(force=True)
             raise
+        self.notes.extend(str(note) for note in response.get("notes") or () if isinstance(note, str))
 
     def retain_staged_public_root(self, root: Path) -> None:
         # The owner consumes each invocation's staged files before replying;
