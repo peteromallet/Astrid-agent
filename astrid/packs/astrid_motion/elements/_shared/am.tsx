@@ -57,6 +57,26 @@ export const clipFrames = (clip: ClipTiming, fps: number): number => {
   return Math.max(1, Math.round((span / speed) * fps));
 };
 
+// Spans as [start_s, end_s] pairs in seconds, sorted by start. Malformed or
+// empty spans are dropped. Shared by the presenter overlay and its plate.
+export const spanList = (value: unknown): [number, number][] => {
+  if (!Array.isArray(value)) return [];
+  const spans: [number, number][] = [];
+  for (const item of value) {
+    if (!Array.isArray(item) || item.length < 2) continue;
+    const start = finiteNumber(item[0], Number.NaN);
+    const end = finiteNumber(item[1], Number.NaN);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) spans.push([start, end]);
+  }
+  return spans.sort((a, b) => a[0] - b[0]);
+};
+
+// Clip frames: non-negative finite numbers only.
+export const frameList = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? value.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+    : [];
+
 // Start frame of the step that contains `frame`. Stepped motion reads this.
 export const stepStart = (frame: number, stepFrames: number): number =>
   Math.floor(frame / stepFrames) * stepFrames;

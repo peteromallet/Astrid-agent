@@ -5,6 +5,7 @@ import AmSprite from '../../elements/effects/am-sprite/component';
 import AmType from '../../elements/effects/am-type/component';
 import AmCallout from '../../elements/effects/am-callout/component';
 import AmPixelWipe from '../../elements/effects/am-pixel-wipe/component';
+import AmPresenter from '../../elements/effects/am-presenter/component';
 import {elementSource, type ElementComponentProps} from '../../elements/_shared/am';
 
 // Control: the same plate through a plain <Img> with no pixelated style. It shows
@@ -26,6 +27,7 @@ const REGISTRY: Record<string, Comp> = {
   'am-type': AmType,
   'am-callout': AmCallout,
   'am-pixel-wipe': AmPixelWipe,
+  'am-presenter': AmPresenter,
   'control-plain': ControlPlain,
 };
 

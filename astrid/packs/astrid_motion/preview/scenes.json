@@ -40,4 +40,25 @@
      {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate"},
      {"element": "am-pixel-wipe", "at": 0, "hold": 0.6, "params": {"mode": "cover", "frames": 12, "color": "#1F1F1F", "pattern": "diagonal"}},
      {"element": "am-pixel-wipe", "at": 1.5, "hold": 1, "params": {"mode": "reveal", "frames": 12, "color": "#1F1F1F", "pattern": "random", "seed": 7}}]}
+
+  ,{"name": "snap-presenter-sync", "frames": [10, 30, 31, 34, 36, 38], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "stepFrames": 2, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]]}},
+     {"element": "am-presenter", "at": 0, "hold": 3,
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]],
+                 "mouth": {"x": 151, "y": 104, "w": 19}, "lip": "#00FF00", "inner": "#00FF00",
+                 "label": "REGISTRATION CHECK", "chip": null}}
+   ]}
+
+  ,{"name": "snap-plate-sync", "frames": [10, 30, 31, 34, 36, 38], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "stepFrames": 2, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]]}}
+   ]}
 ]
