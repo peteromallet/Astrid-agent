@@ -86,8 +86,9 @@ after a fix re-run with `python3 -m astrid tasks retry <task-id> --project almos
 | `master_db` | -16 | RMS target. The peak ceiling of -1.05 dBFS wins if they conflict. |
 
 Musical model: 4-bar phrases (A, B, A, C) share one seeded motif that is
-varied each time it returns. Chord progressions per mood: bright (III VII i VI),
-wistful (i VI III VII), tense (i iv VI V), triumphant (I IV V I). Energy controls
+varied each time it returns. Chord progressions per mood, in minor keys: bright (III VII i VI),
+wistful (i VI III VII), tense (i iv VI V), triumphant (I IV V I). In major keys:
+bright (I V vi IV), wistful (vi IV I V), tense (vi IV ii V), triumphant (I IV V I). Energy controls
 density: bass (under 0.25 is half notes, to 0.6 quarter notes, above that eighths),
 arpeggios (8ths, then 16ths from 0.45, then octave-up from 0.75), kicks, snares
 and hats (16ths from 0.8), and a lead octave from 0.7. Each section ends with a
