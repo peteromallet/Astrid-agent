@@ -315,3 +315,42 @@ def test_canvas_pixels_convert_to_the_elements_unit():
     tl = Checkout(bundle())
     assert tl.clip("R").set(x="1290px", y="-12px").params["x"] == 215  # am-sprite: logical px
     assert tl.clip("b-type").set(x="144px").params["x"] == 144
+
+
+def test_narration_comes_from_the_lines_and_is_re_pinned_only_when_it_changes():
+    import hashlib
+
+    data = bundle()
+    data["shots"]["A"]["internal_timeline"]["clips"][2]["app"]["text"] = "It went viral."
+    data["shots"]["A"]["payload"]["text_bindings"] = [{"kind": "voiceover_script", "head": 3,
+                                                       "content_hash": "sha256:" + hashlib.sha256(b"It went viral.\n").hexdigest()}]
+    tl = Checkout(data)
+    assert tl.narration() == {"A": "It went viral.\n"}  # shot B's line declares no text: not managed
+    assert tl.narration_changes() == {}
+    tl.voice("s1").replace("Q", words=[[0.1, 0.5, "it"], [0.6, 1.0, "really"], [1.1, 1.4, "went"], [1.5, 2.0, "viral"]],
+                           text="It really went viral.")
+
+    class Shots:
+        calls = []
+
+        def set_text_binding(self, project, **kw):
+            self.calls.append(kw)
+            return {"kind": "voiceover_script", "head": kw["expected_head"] + 1, "content_hash": "new"}
+
+    class Client:
+        shots = Shots()
+
+    assert tl.pin_narration(Client(), idempotency_key="k") == ["A"]
+    call = Shots.calls[0]
+    assert call["text"] == "It really went viral.\n" and call["expected_head"] == 3
+    assert tl.bundle["shots"]["A"]["payload"]["text_bindings"][0]["head"] == 4
+
+
+def test_a_stand_in_is_remembered_and_swapped_when_the_real_asset_exists():
+    tl = Checkout(bundle())
+    clip = tl.add("am-sprite", at="Live", asset="TOWER", standin="R", params={"x": 10})
+    assert clip.asset == "R" and "TOWER" in json.dumps(clip.data)
+    assert tl.fill_standins() == []  # still missing
+    tl.bundle["shots"]["B"]["internal_timeline"]["registry"]["assets"]["TOWER"] = {"media_id": "m-t"}
+    assert tl.fill_standins() == [f"{clip.id}: stand-in → TOWER"]
+    assert tl.clip(clip.id).asset == "TOWER"

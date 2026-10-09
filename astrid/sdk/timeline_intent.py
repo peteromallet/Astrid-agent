@@ -88,6 +88,20 @@ def set_line(clip: dict[str, Any], segment: str, rows: Iterable[Iterable[Any]]) 
     app["words"] = [list(row) for row in rows]
 
 
+def line_text(clip: Mapping[str, Any]) -> str | None:
+    """The line's script text as written (punctuation and all), on its first clip; None if not declared."""
+    value = _app(clip).get("text")
+    return str(value) if isinstance(value, str) else None
+
+
+def set_line_text(clip: dict[str, Any], text: str | None) -> None:
+    if text is None:
+        _app_w(clip).pop("text", None)
+        _tidy(clip)
+    else:
+        _app_w(clip)["text"] = str(text)
+
+
 def gap_after(clip: Mapping[str, Any]) -> float | None:
     """Declared silence (seconds) after the line whose last clip this is, or None if undeclared."""
     value = _app(clip).get("gap_after_s")
@@ -168,6 +182,14 @@ def standin(clip: Mapping[str, Any]) -> tuple[Any, dict[str, Any]] | None:
         return None
     intended = app.get("intended")
     return wanted, dict(intended) if isinstance(intended, Mapping) else {}
+
+
+def set_standin(clip: dict[str, Any], wanted: Any, intended: Mapping[str, Any] | None = None) -> None:
+    """Mark a clip as standing in for ``wanted`` (a file path or registry key not available yet)."""
+    app = _app_w(clip)
+    app["standin_for"] = wanted
+    if intended:
+        app["intended"] = dict(intended)
 
 
 def clear_standin(clip: dict[str, Any]) -> None:

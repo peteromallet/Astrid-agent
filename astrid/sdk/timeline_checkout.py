@@ -356,7 +356,13 @@ class Voice:
     def words(self) -> list[Word]:
         return [w for w in self._tl.words() if w.segment == self.segment]
 
-    def replace(self, media: Any, *, words: Any, ripple: bool = True) -> list[tuple[str, float, float]]:
+    @property
+    def text(self) -> str:
+        """The line's script text (as declared; else its words joined)."""
+        declared = intent.line_text(self.clips[0].data)
+        return declared if declared is not None else " ".join(w.text for w in self.words)
+
+    def replace(self, media: Any, *, words: Any, ripple: bool = True, text: str | None = None) -> list[tuple[str, float, float]]:
         """Swap this line for another take; anchored clips follow their words.
 
         ``media`` is a registry key, a ``{media_id, …}`` entry or a local WAV (imported).
@@ -385,6 +391,10 @@ class Voice:
         data["from"], data["to"] = 0.0, _r(length)
         data.pop("hold", None)
         intent.set_line(data, self.segment, [[_r(s), _r(e), t] for s, e, t in new_words])
+        if text is not None:
+            intent.set_line_text(data, text)
+        elif intent.line_text(data) is not None and _norm(intent.line_text(data)) != _norm(" ".join(t for _s, _e, t in new_words)):
+            self._tl.notes.append(f"line {self.segment}: the new take's words differ from its script text; pass text= to update the narration")
         self._tl.report = self._tl.reflow(gaps=before, points={first.id: old_end}) if ripple else []
         self._tl.retime()
         return [(c.id, old, c.start) for c, old in anchored if abs(c.start - old) > 1e-6]
@@ -659,8 +669,12 @@ class Checkout:
 
     # ---- structural edits ---------------------------------------------------
     def add(self, element: str, *, at: Any, hold: float = 1.0, asset: Any = None, params: Mapping[str, Any] | None = None,
-            track: str | None = None, corner: str | None = None, anchor: bool = True, clip_id: str | None = None) -> Clip:
-        """Add an overlay at a word or time. ``corner`` (top-right …) places it inside title-safe, off a centred face."""
+            track: str | None = None, corner: str | None = None, anchor: bool = True, clip_id: str | None = None,
+            standin: Any = None) -> Clip:
+        """Add an overlay at a word or time. ``corner`` (top-right …) places it inside title-safe, off a centred face.
+
+        ``standin``: if ``asset`` is not available yet (a file still to be made), use this asset
+        meanwhile and remember the real one; ``fill_standins()`` swaps it in once it exists."""
         word = self._as_word(at)
         start = self.quantize(word.start if word else self.time(at))
         sid = self._shot_at(start)
@@ -670,7 +684,13 @@ class Checkout:
         if not any(str(t.get("id")) == new["track"] for t in internal.get("tracks") or []):
             raise TimelineEditError(f"shot {sid} has no track {new['track']!r}; tracks: {', '.join(str(t.get('id')) for t in internal.get('tracks') or [])}")
         if asset is not None:
-            new["asset"] = self._register_asset(sid, asset)
+            try:
+                new["asset"] = self._register_asset(sid, asset)
+            except TimelineEditError:
+                if standin is None:
+                    raise
+                new["asset"] = self._register_asset(sid, standin)
+                intent.set_standin(new, str(asset), {"element": element, "params": copy.deepcopy(dict(params or {}))})
         if corner:
             new["params"].update(self._corner(element, new["params"], new.get("asset"), sid, corner))
         internal["clips"].append(new)
@@ -788,7 +808,8 @@ class Checkout:
         self.report = report
         return report
 
-    def insert_line(self, segment: str, media: Any, *, words: Any, after: str, gap_after: float | None = None) -> list[str]:
+    def insert_line(self, segment: str, media: Any, *, words: Any, after: str, gap_after: float | None = None,
+                    text: str | None = None) -> list[str]:
         """Insert a new VO line after line ``after``; everything downstream moves later to make room."""
         prev = Voice(self, after)
         if segment in {v.segment for v in self.lines()}:
@@ -811,6 +832,8 @@ class Checkout:
             if key in last.data:
                 new[key] = copy.deepcopy(last.data[key])
         intent.set_line(new, segment, [[_r(a), _r(b), t] for a, b, t in new_words])
+        if text is not None:
+            intent.set_line_text(new, text)
         if gap_after is not None:
             intent.set_gap_after(new, _r(gap_after))
         new["asset"] = self._register_asset(sid, media)
@@ -1126,9 +1149,62 @@ class Checkout:
         if not report.valid:
             raise TimelineEditError("not publishing: " + "; ".join(report.problems or ["the candidate is invalid"]))
         key = idempotency_key or f"edit-{re.sub(r'[^a-z0-9]+', '-', message.lower())[:40].strip('-') or 'timeline'}-{uuid.uuid4().hex[:8]}"
+        pinned: list[str] = []
+        if self.narration_changes():  # a line's text changed: re-bind that shot's narration, then publish the pin
+            if client is not None:
+                pinned = self.pin_narration(client, idempotency_key=key)
+            else:
+                from astrid.sdk import AstridClient
+
+                with AstridClient.open_from_launcher(start_pack_host=False) as c:
+                    pinned = self.pin_narration(c, idempotency_key=key)
         receipt = publish_bundle(self.document(), key, client=client, force=force)
+        receipt["narration_pinned"] = pinned
         receipt["message"] = message
         return receipt
+
+    # ---- narration: the script text each shot is bound to ---------------------------
+    def narration(self) -> dict[str, str]:
+        """``{shot_id: text}``: each shot's lines' script text, in order (what the shot's
+        voiceover_script binding should hold). Only shots whose lines all declare their text."""
+        by_shot: dict[str, list[Voice]] = {}
+        for line in self.lines():
+            by_shot.setdefault(line.clips[0].shot_id, []).append(line)
+        out = {}
+        for sid, lines in by_shot.items():
+            if all(intent.line_text(v.clips[0].data) is not None for v in lines):
+                out[sid] = " ".join(v.text for v in lines) + "\n"
+        return out
+
+    def narration_changes(self) -> dict[str, str]:
+        """Shots whose narration differs from their bound voiceover_script (by content hash)."""
+        import hashlib
+
+        changed = {}
+        for sid, text in self.narration().items():
+            payload = self.bundle["shots"][sid].setdefault("payload", {})
+            bound = next((b for b in payload.get("text_bindings") or [] if b.get("kind") == "voiceover_script"), None)
+            digest = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if not bound or bound.get("content_hash") != digest:
+                changed[sid] = text
+        return changed
+
+    def pin_narration(self, client: Any, *, idempotency_key: str) -> list[str]:
+        """Register the changed narration per shot and pin it in the document (publish does this)."""
+        pinned = []
+        for sid, text in self.narration_changes().items():
+            payload = self.bundle["shots"][sid]["payload"]
+            bound = next((b for b in payload.get("text_bindings") or [] if b.get("kind") == "voiceover_script"), None)
+            result = client.shots.set_text_binding(self.bundle["project_id"], shot_id=sid, kind="voiceover_script", text=text,
+                                                    expected_head=int((bound or {}).get("head") or 0),
+                                                    idempotency_key=f"{idempotency_key}-narration-{sid}"[:120])
+            pin = getattr(result, "data", result)
+            if getattr(result, "ok", True) is False or not isinstance(pin, Mapping):
+                raise TimelineEditError(f"could not register the narration for shot {sid}: {getattr(result, 'error', result)}")
+            payload["text_bindings"] = [b for b in payload.get("text_bindings") or [] if b.get("kind") != "voiceover_script"] + [dict(pin)]
+            (payload.get("metadata") or {}).pop("voiceover_script", None)
+            pinned.append(sid)
+        return pinned
 
     def document(self) -> dict[str, Any]:
         """The publishable candidate (derived `_` fields removed)."""
