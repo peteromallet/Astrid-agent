@@ -1068,6 +1068,12 @@ def _network_sandbox_argv(argv: list[str], attempt: Path, endpoint: str | None) 
     profile = (
         '(version 1) (deny default) '
         '(allow process*) (allow file-read*) (allow sysctl-read) '
+        # Read-only CFPreferences access. Codex (and other macOS CLIs) load
+        # managed preferences through cfprefsd at startup; without these two
+        # mach services and read-only cfprefs shared memory they exit with
+        # "Failed to synchronize managed preferences" before any model call.
+        '(allow mach-lookup (global-name "com.apple.cfprefsd.daemon") (global-name "com.apple.cfprefsd.agent")) '
+        '(allow ipc-posix-shm-read-data (ipc-posix-name-prefix "apple.cfprefs")) '
         f'(allow file-write* (subpath "{quote(str(attempt))}")) '
         '(allow file-write* (subpath "/tmp")) '
         f'(allow file-write* (subpath "{quote(str(Path("/tmp").resolve()))}")) '
