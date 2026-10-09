@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 import json
 
 import pytest
@@ -354,3 +355,30 @@ def test_a_stand_in_is_remembered_and_swapped_when_the_real_asset_exists():
     tl.bundle["shots"]["B"]["internal_timeline"]["registry"]["assets"]["TOWER"] = {"media_id": "m-t"}
     assert tl.fill_standins() == [f"{clip.id}: stand-in → TOWER"]
     assert tl.clip(clip.id).asset == "TOWER"
+
+
+def test_apply_script_swaps_changed_takes_and_adds_new_lines(tmp_path, monkeypatch):
+    import astrid.sdk.timeline_checkout as tc
+
+    monkeypatch.setattr(tc, "import_media", lambda path, project: {"media_id": f"m-{Path(path).stem}"})
+    vo = tmp_path / "vo"
+    vo.mkdir()
+    (vo / "s1.wav").write_bytes(b"RIFF")
+    (vo / "s1.words.json").write_text(json.dumps({"words": [{"start_s": 0.1, "end_s": 0.5, "word": "it"},
+                                                             {"start_s": 0.6, "end_s": 1.0, "word": "went"},
+                                                             {"start_s": 1.4, "end_s": 2.4, "word": "viral"}]}))
+    (vo / "s1b.wav").write_bytes(b"RIFF")
+    (vo / "s1b.words.json").write_text(json.dumps({"words": [[0.0, 0.5, "really"]]}))
+    (vo / "s2.wav").write_bytes(b"RIFF")
+    (vo / "s2.words.json").write_text(json.dumps({"words": [[0.1, 0.4, "Live"], [0.5, 0.8, "now"]]}))  # unchanged
+    script = {"segments": [{"id": "s1", "text": "It went viral."}, {"id": "s1b", "text": "Really.", "gap_after_s": 0.4},
+                           {"id": "s2", "text": "Live now."}]}
+    tl = Checkout(bundle())
+    tl.clip("b-type").enter_at("now")
+    report = tl.apply_script(script, takes=vo)
+    assert [v.segment for v in tl.lines()] == ["s1", "s1b", "s2"]
+    assert "line s1: new take" in report and any(r.startswith("inserted line s1b") for r in report)
+    assert tl.word("viral").end == pytest.approx(2.9)
+    assert tl.word("Live").start == pytest.approx(tl.word("really").end + 0.4, abs=1 / FPS)
+    assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
+    assert tl.voice("s2").text == "Live now."

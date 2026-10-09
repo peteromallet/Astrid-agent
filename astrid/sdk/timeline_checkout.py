@@ -857,6 +857,54 @@ class Checkout:
         removed = self.ripple_delete(start, end)
         return [f"removed line {segment} ({removed:.3f} s)"] + self.reflow(gaps=before)
 
+    def apply_script(self, spec: Any, *, takes: Any = None, gaps: bool = False) -> list[str]:
+        """Bring the voice track in line with a VO script: ``{"segments": [{id, text, gap_after_s}, …]}``
+        (a path or a dict), with each take at ``<takes>/<id>.wav`` and its words at ``<takes>/<id>.words.json``
+        (default: a ``vo`` folder next to the script, else the script's folder).
+
+        A line whose words changed gets its new take; a new line is inserted after the one
+        before it; a line no longer in the script is removed; then the film re-flows once.
+        Declared gaps are kept unless ``gaps=True`` (then the script's ``gap_after_s`` wins).
+        """
+        path = Path(spec).expanduser() if isinstance(spec, (str, Path)) else None
+        data = json.loads(path.read_text(encoding="utf-8")) if path else dict(spec)
+        folder = Path(takes).expanduser() if takes else (path.parent.parent / "vo" if path and (path.parent.parent / "vo").is_dir() else (path.parent if path else Path.cwd()))
+        segments = [s for s in data.get("segments") or [] if s.get("id")]
+        wanted = [str(s["id"]) for s in segments]
+        report: list[str] = []
+        have = {v.segment for v in self.lines()}
+        for seg in sorted(have - set(wanted)):
+            report += self.remove_line(seg)
+        previous = None
+        for item in segments:
+            seg = str(item["id"])
+            words_path = folder / f"{seg}.words.json"
+            take = folder / f"{seg}.wav"
+            new_words = _read_words(words_path) if words_path.is_file() else []
+            if seg not in have:
+                if not new_words or not take.is_file() or previous is None:
+                    report.append(f"line {seg}: not added (needs {take.name}, {words_path.name} and a line before it)")
+                else:
+                    report += self.insert_line(seg, take, words=new_words, after=previous, text=item.get("text"),
+                                               gap_after=item.get("gap_after_s"))
+            else:
+                line = Voice(self, seg)
+                current = [(round(w.end - w.start, 3), _norm(w.text)) for w in line.words]
+                fresh = [(round(e - s, 3), _norm(t)) for s, e, t in new_words]
+                if new_words and take.is_file() and current != fresh:
+                    line.replace(take, words=new_words, text=item.get("text"))
+                    report += [f"line {seg}: new take"] + self.report
+                elif item.get("text") and intent.line_text(line.clips[0].data) != item["text"]:
+                    intent.set_line_text(line.clips[0].data, item["text"])
+                    report.append(f"line {seg}: script text updated (narration re-pins on publish)")
+                if gaps and item.get("gap_after_s") is not None and line.gap_after != item["gap_after_s"]:
+                    line.set_gap_after(float(item["gap_after_s"]), reflow=False)
+                    report.append(f"line {seg}: gap after {item['gap_after_s']} s")
+            previous = seg
+        report += self.reflow()
+        self.report = report
+        return report
+
     def retime(self) -> list[tuple[str, float, float]]:
         """Move every anchored clip back onto its word (after a VO change). Returns what moved.
 
@@ -1309,6 +1357,8 @@ class Checkout:
     def _register_asset(self, shot_id: str, asset: Any) -> str:
         """Make ``asset`` resolvable in this shot; return its registry key."""
         assets = self._registry(shot_id)
+        if isinstance(asset, Path):
+            asset = str(asset)
         if isinstance(asset, str) and asset in assets:
             return asset
         if isinstance(asset, str):
