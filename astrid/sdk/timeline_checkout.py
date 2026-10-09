@@ -666,7 +666,7 @@ class Checkout:
                     self.notes.append(f"{clip.id}: its word {anchor.get('text')!r} is no longer spoken; left in place")
                     continue
                 word = min(pool, key=lambda w: abs(w.start - (clip.start - _num(anchor.get("offset_s")))))
-            target = self.quantize(word.start + _num(anchor.get("offset_s")))
+            target = self.quantize((word.end if anchor.get("edge") == "end" else word.start) + _num(anchor.get("offset_s")))
             if abs(target - clip.start) > 1e-6:
                 old = clip.start
                 clip._set_start(target)
@@ -715,7 +715,7 @@ class Checkout:
                 if not same:
                     raise TimelineEditError(f"word {expr.get('text')!r} is no longer spoken")
                 word = min(same, key=lambda w: abs(w.start - clip.start))
-            t = word.start + _num(expr.get("offset_s"))
+            t = (word.end if expr.get("edge") == "end" else word.start) + _num(expr.get("offset_s"))
             unit = expr.get("as", "clip_seconds")
             if unit == "timeline_seconds":
                 return _r(t)
