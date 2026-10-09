@@ -783,3 +783,112 @@ def test_preview_uses_proposed_disabled_state_without_writing(monkeypatch, tmp_p
     assert result["setup_selection"]["integrations"] == ["media"]
     assert state_path.read_bytes() == before
     assert not (state_path.parent / "skills").exists()
+
+
+def _real_up_payload(request: setup.SetupRequest, **overrides) -> dict:
+    """Shape of `banodoco-local up --json` today: realm UUID, no realm_root."""
+    support = str(request.support_root)
+    value = {
+        "actor_id": "astrid-actor-1",
+        "credential_file": f"{support}/credentials/astrid.json",
+        "discovery_path": f"{support}/runtime/discovery.json",
+        "display_name": "Astrid Workspace",
+        "endpoint": "http://127.0.0.1:50228",
+        "realm_id": request.workspace_id,
+        "source_checkout": "/checkout/Astrid",
+        "source_profile": "astrid",
+        "status": "reconnected",
+        "worker_actor": "astrid-pack-host",
+    }
+    value.update(overrides)
+    return value
+
+
+def _real_shaped_runner(request: setup.SetupRequest, *, up_payload: dict):
+    """A fake `banodoco-local` answering each command with its real JSON shape."""
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(list(argv))
+        verb = list(argv[1:3])
+        if verb == ["workspace", "inspect"]:
+            data = {"ok": True, "state": "configured", "realm_id": request.workspace_id, "realm_root": str(request.realm_root)}
+        elif verb[:1] == ["workspace"]:
+            data = {**_selected(request, status="configured_unchanged")}
+        elif argv[1:4] == ["up", "--profile", "astrid"]:
+            data = up_payload
+        else:
+            raise AssertionError(f"unexpected runtime command: {argv}")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(data), "")
+
+    return runner, seen
+
+
+def test_runtime_up_accepts_real_up_shape_that_omits_realm_root(tmp_path):
+    request = _request(tmp_path, operation="attach")
+    runner, seen = _real_shaped_runner(request, up_payload=_real_up_payload(request))
+    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+
+    result = runtime.up(
+        support_root=request.support_root,
+        expected_realm_id=request.workspace_id,
+        realm_root=request.realm_root,
+    )
+
+    assert result.ok
+    assert result.data["status"] == "reconnected"
+    assert [argv[1:3] for argv in seen] == [["workspace", "inspect"], ["up", "--profile"]]
+
+
+def test_runtime_up_rejects_a_different_realm_uuid_even_without_realm_root(tmp_path):
+    from astrid.runtime_cli import RuntimeCLIError
+
+    request = _request(tmp_path, operation="attach")
+    other = "99999999-9999-4999-8999-999999999999"
+    runner, _seen = _real_shaped_runner(request, up_payload=_real_up_payload(request, realm_id=other))
+    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+
+    with pytest.raises(RuntimeCLIError) as caught:
+        runtime.up(support_root=request.support_root, expected_realm_id=request.workspace_id, realm_root=request.realm_root)
+    assert caught.value.code == "workspace_identity_mismatch"
+    assert other in str(caught.value)
+
+
+def test_runtime_up_rejects_discovery_outside_the_selected_support_root(tmp_path):
+    from astrid.runtime_cli import RuntimeCLIError
+
+    request = _request(tmp_path, operation="attach")
+    stray = str(tmp_path / "elsewhere" / "discovery.json")
+    runner, _seen = _real_shaped_runner(request, up_payload=_real_up_payload(request, discovery_path=stray))
+    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+
+    with pytest.raises(RuntimeCLIError, match="outside the selected support root") as caught:
+        runtime.up(support_root=request.support_root, expected_realm_id=request.workspace_id, realm_root=request.realm_root)
+    assert caught.value.code == "workspace_identity_mismatch"
+
+
+def test_runtime_up_still_rejects_a_reported_wrong_realm_root(tmp_path):
+    from astrid.runtime_cli import RuntimeCLIError
+
+    request = _request(tmp_path, operation="attach")
+    wrong = str(tmp_path / "other-realm")
+    runner, _seen = _real_shaped_runner(request, up_payload=_real_up_payload(request, realm_root=wrong))
+    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+
+    with pytest.raises(RuntimeCLIError, match="different realm root"):
+        runtime.up(support_root=request.support_root, expected_realm_id=request.workspace_id, realm_root=request.realm_root)
+
+
+def test_apply_completes_every_stage_when_runtime_up_omits_realm_root(tmp_path):
+    request = _request(tmp_path, operation="attach")
+    runner, seen = _real_shaped_runner(request, up_payload=_real_up_payload(request))
+    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+
+    code, result = setup.execute_setup(request, apply=True, runtime=runtime, compose=_composition)
+
+    assert code == 0, result.get("error")
+    assert result["runtime_ready"] is True
+    stages = {stage["name"]: stage["status"] for stage in result["stages"]}
+    assert stages["Starting Astrid Runtime"] == "complete"
+    assert stages["Runtime ready"] == "complete"
+    assert [argv[1:3] for argv in seen].count(["up", "--profile"]) == 1

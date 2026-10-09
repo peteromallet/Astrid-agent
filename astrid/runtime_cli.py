@@ -199,7 +199,7 @@ class RuntimeCLI:
         )
         result = self.invoke(("up", "--profile", PROFILE, "--data-root", str(support), "--json"))
         if result.ok:
-            validate_selected_workspace(
+            validate_started_workspace(
                 result.data,
                 expected_realm_id=expected_realm_id,
                 expected_realm_root=realm,
@@ -260,6 +260,57 @@ def validate_selected_workspace(
             code="workspace_identity_mismatch",
             result=data,
         )
+
+
+def validate_started_workspace(
+    data: Mapping[str, Any],
+    *,
+    expected_realm_id: str,
+    expected_realm_root: str | Path,
+    expected_support_root: str | Path,
+) -> None:
+    """Validate an ``up`` result, which may omit the realm root.
+
+    ``banodoco-local up --json`` names the realm UUID but not its root. When a
+    root is reported it is checked exactly. When it is omitted, the UUID must
+    match and the Runtime's discovery/credential files must sit under the
+    support root that the pre-start inspection already verified; the realm
+    root itself was checked by that inspection.
+    """
+
+    if _field(data, "realm_root", "data_root") is not None:
+        validate_selected_workspace(
+            data,
+            expected_realm_id=expected_realm_id,
+            expected_realm_root=expected_realm_root,
+            expected_support_root=expected_support_root,
+        )
+        return
+    realm_id = _field(data, "realm_id", "workspace_id", "selected_realm_id")
+    if str(realm_id or "") != expected_realm_id:
+        raise RuntimeCLIError(
+            f"Runtime selected workspace {realm_id!r}, expected {expected_realm_id!r}",
+            code="workspace_identity_mismatch",
+            result=data,
+        )
+    support = _absolute_root(expected_support_root, label="support root")
+    reported_support = _field(data, "support_root")
+    if reported_support is not None and _absolute_root(str(reported_support), label="selected support root") != support:
+        raise RuntimeCLIError(
+            f"Runtime selected a different support root; expected {support}",
+            code="workspace_identity_mismatch",
+            result=data,
+        )
+    for key in ("discovery_path", "credential_file"):
+        value = data.get(key)
+        if value in (None, ""):
+            continue
+        if not _absolute_root(str(value), label=f"Runtime {key}").is_relative_to(support):
+            raise RuntimeCLIError(
+                f"Runtime {key} is outside the selected support root {support}",
+                code="workspace_identity_mismatch",
+                result=data,
+            )
 
 
 def _wrapper_parser() -> argparse.ArgumentParser:
@@ -383,6 +434,7 @@ __all__ = [
     "RuntimeResult",
     "main",
     "validate_selected_workspace",
+    "validate_started_workspace",
 ]
 
 
