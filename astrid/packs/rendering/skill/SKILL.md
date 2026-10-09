@@ -131,32 +131,19 @@ python3 -m astrid --help
 python3 -m astrid timelines --help
 ```
 
-## Edit an existing timeline as a JSON document
+## Edit a timeline (start here)
 
-For “check it out, edit it in a text document, then check it back in”, use the
-[complete checkout/edit/check-in recipe](references/document-checkout.md) and
-its runnable [SDK example](scripts/timeline_document.py). Start with the
-connected runtime's project and timeline slugs: export the complete pinned
-composition, edit its JSON, validate and inspect the diff, then publish one
-revision against the original head. The example defines every variable; no
-pre-supplied `target`, `pinned_parent`, or `runtime_writer` is needed.
-Temporary local media paths in the edited document are rejected by the
-read-only check. Import new media first through the public media client, then
-use its managed digest in the checkout before validating and publishing.
-Image, video, and audio imports appear in the ordinary gallery; audio keeps its
-own type and native playback controls. An unchanged checkout has an empty diff.
+**Read [the editing front door](references/editing.md) first.** It is the whole loop:
+`timelines checkout` → `timelines show --as sheet` → edit a line → `timelines apply` (or
+`timelines edit … --clip c30.cover --until Astrid`, or three lines of Python on
+`Checkout.draft`) → `timelines visualize` (reads the working copy) → `timelines status` →
+`timelines publish`. When things happen is written as moments (`on "viral"`, `until
+"Astrid"`, `beat 2 after "Astrid"`), and a new narration take re-flows the film.
 
-This bundle includes parent layers, shot placements, and internal clips.
-Narration is registered per shot as the `voiceover_script` text binding (`timelines shots text set` / `list`). The per-occurrence pinned-narration reader that this skill once called `timelines script` is not on this checkout (no CLI verb, no SDK method), so verify placed narration through the binding list and the checkout's `payload.text_bindings`. Rendering is optional:
-a saved revision can be reviewed in Reigh. The recipe includes the authoritative
-field map, media/gallery distinction, and common recovery paths.
+The low-level document reference (bundle fields, provenance, recovery) is
+[document-checkout](references/document-checkout.md); you should rarely need it.
 
-For ordinary candidate edits, use the [timeline editing helper catalog](references/document-checkout.md#editing-helper-catalog).
-It groups media/track changes, timing and ripple operations, layout helpers,
-and occurrence moves. Helpers mutate only the detached JSON candidate; the
-same `check` → diff → `publish` boundary remains authoritative.
-
-Draft narration is a manual route on this checkout. `video_editing.sync_draft_voiceover` is not shipped: it depends on a `timelines script` reader that does not exist. The working route is: `generation.generate_speech` (exact text in, WAV plus `speech_words` word timing out), then `client.media` / checkout placement of that WAV on an audio track, then `bind-script` for the shot's `voiceover_script`. The [placeholder voiceover recipe](references/placeholder-voiceover.md) gives the steps. No video render is needed.
+Narration: make a take with `generation.generate_speech` (WAV plus word timing), then put it in with `timelines edit TL --line ID --take WAV --words WORDS.json --text "…"` (or `--insert-line`, `--remove-line`, `--from-script vo.json`). The film re-flows and the shot's `voiceover_script` binding is updated at publish. The [placeholder voiceover recipe](references/placeholder-voiceover.md) covers generating the take. No video render is needed.
 
 ## Agent operating contract
 

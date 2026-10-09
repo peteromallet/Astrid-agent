@@ -1268,6 +1268,10 @@ class Checkout:
         old = clip.start
         before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.data is not clip.data
                   and abs(c.end - old) < 1e-3 and not c.is_audio]
+        if not before and abs(old - lo) < 1e-3:
+            # it opens its chapter: moving it would leave a hole at the chapter start (re-flow moves chapters)
+            self.notes.append(f"{clip.address}: opens its chapter at {lo:.3f} s; its moment ({t:.3f} s) is kept for re-flow, not applied")
+            return False
         end = clip.end
         clip._set_start(t)
         if keep_end:

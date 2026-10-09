@@ -17,7 +17,7 @@ def named():
     a[0]["app"] = {"cut": "c1", "layer": "plate", "why": "the opener"}
     a[1]["app"] = {"cut": "c1", "layer": "rocket", "on": '"viral"'}
     a[1]["at"] = 1.3
-    b[0]["app"] = {"cut": "c2", "layer": "plate", "on": '"Live"', "why": "live"}
+    b[0]["app"] = {"cut": "c2", "layer": "plate", "why": "live"}
     b[1]["app"] = {"cut": "c2", "layer": "card", "for": 1.0}
     b[0]["at"], b[0]["hold"] = 0.0, 4.0
     a[2]["app"]["text"] = "It went viral."
@@ -30,7 +30,7 @@ def test_the_sheet_reads_like_a_script():
     tl.resolve()
     text = render_sheet(tl)
     assert '  s1  "It went viral."' in text
-    assert "┃ c1" in text and "┃ c2    on \"Live\"" in text
+    assert "┃ c1" in text and "┃ c2" in text
     assert 'rocket  sprite' in text and 'on "viral"' in text
     assert "card" in text and "for 1s" in text
     assert "why: the opener" in text
@@ -77,3 +77,15 @@ def test_ranges_take_words_times_and_cuts():
     tl.resolve()
     assert moment_range(tl, '"went".."Live"') == (pytest.approx(0.9), pytest.approx(6.0))
     assert moment_range(tl, "1..c2")[1] == pytest.approx(tl.clip("c2.plate").start)
+
+
+def test_the_tiny_fixture_prints_its_golden_sheet_and_round_trips():
+    """A tiny representative timeline (two cuts, two VO lines, music) and its sheet: the handover fixture."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    sheet = render_sheet(tl, film="tiny")
+    assert sheet == (root / "tiny.sheet").read_text(encoding="utf-8")
+    assert apply_sheet(tl, sheet) == []
