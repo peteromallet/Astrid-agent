@@ -13,7 +13,7 @@ Units, once: every time this API takes or returns is TIMELINE SECONDS (the numbe
 called ``frames``. The document stores shot-relative seconds (clip ``at``) and
 milliseconds (placements); the API converts, so you never do.
 
-Intent: moving a clip *to a word* stores ``app.anchor = {word, text, offset_s}`` on
+Intent: moving a clip *to a word* stores an anchor ``{word, text, offset_s}`` on
 the clip. ``retime()`` (or a VO take swap) moves every anchored clip back onto its
 word, so a re-recorded line never strands its overlays. Moving a clip to a plain
 time drops its anchor; ``nudge`` keeps it and changes its offset.
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from astrid.sdk import timeline_intent as intent
 from astrid.core.timeline.cuts import (
     bundle_fps,
     clip_duration,
@@ -157,9 +158,7 @@ class Clip:
 
     @property
     def anchor(self) -> dict[str, Any] | None:
-        app = self.data.get("app")
-        value = app.get("anchor") if isinstance(app, Mapping) else None
-        return dict(value) if isinstance(value, Mapping) else None
+        return intent.anchor(self.data)
 
     # clocks --------------------------------------------------------------
     @property
@@ -199,13 +198,10 @@ class Clip:
         word = self._tl._as_word(when)
         target = self._tl.quantize((word.start if word else self._tl.time(when)) + offset)
         self._set_start(target)
-        app = self.data.setdefault("app", {})
         if word is not None and anchor:
-            app["anchor"] = {"word": word.id, "text": word.text, "offset_s": _r(offset), "edge": "start"}
+            intent.set_anchor(self.data, {"word": word.id, "text": word.text, "offset_s": _r(offset), "edge": "start"})
         else:
-            app.pop("anchor", None)
-            if not app:
-                self.data.pop("app", None)
+            intent.set_anchor(self.data, None)
         return self
 
     def nudge(self, seconds: float = 0.0, *, frames: int = 0) -> "Clip":
@@ -215,7 +211,7 @@ class Clip:
         anchor = self.anchor
         if anchor:
             anchor["offset_s"] = _r(_num(anchor.get("offset_s")) + delta)
-            self.data["app"]["anchor"] = anchor
+            intent.set_anchor(self.data, anchor)
         return self
 
     def set_duration(self, seconds: float) -> "Clip":
@@ -331,7 +327,7 @@ class Cut:
 
 
 class Voice:
-    """One VO line (all clips of an ``app.segment``)."""
+    """One VO line (all its audio clips), with its words and the silence declared after it."""
 
     def __init__(self, tl: "Checkout", segment: str):
         self._tl = tl
@@ -339,10 +335,9 @@ class Voice:
 
     @property
     def clips(self) -> list[Clip]:
-        found = [c for c in self._tl.clips() if c.is_audio and str((c.data.get("app") or {}).get("segment") or "") == self.segment]
+        found = [c for c in self._tl.clips() if c.is_audio and intent.line(c.data) == self.segment]
         if not found:
-            known = sorted({str((c.data.get("app") or {}).get("segment")) for c in self._tl.clips()
-                            if c.is_audio and (c.data.get("app") or {}).get("segment")})
+            known = sorted({intent.line(c.data) for c in self._tl.clips() if c.is_audio and intent.line(c.data)})
             raise TimelineEditError(f"no VO line {self.segment!r}; lines are: {', '.join(known)}")
         return sorted(found, key=lambda c: c.start)
 
@@ -360,11 +355,13 @@ class Voice:
         Returns the anchored clips that moved: ``[(clip_id, old_start, new_start)]``.
         """
         pieces = self.clips
-        first, last = pieces[0], pieces[-1]
+        first = pieces[0]
+        before = self._tl.gaps()
+        old_end = self.speech_end
+        anchored = [(c, c.start) for c in self._tl.clips() if c.anchor]
         new_words = _read_words(words)
         if not new_words:
             raise TimelineEditError("the new take has no words; pass its words.json")
-        start, old_end = first.start, last.end
         tail = 0.06
         length = new_words[-1][1] + tail
         for piece in pieces[1:]:
@@ -374,16 +371,27 @@ class Voice:
         data["asset"] = key
         data["from"], data["to"] = 0.0, _r(length)
         data.pop("hold", None)
-        app = data.setdefault("app", {})
-        app["words"] = [[_r(s), _r(e), t] for s, e, t in new_words]
-        app["segment"] = self.segment
-        if ripple:
-            delta = self._tl.quantize(start + length) - old_end
-            if delta > 0:
-                self._tl.insert_time(old_end, delta, skip=[data])
-            elif delta < 0:
-                self._tl.ripple_delete(old_end + delta, old_end, skip=[data])
-        return self._tl.retime()
+        intent.set_line(data, self.segment, [[_r(s), _r(e), t] for s, e, t in new_words])
+        self._tl.report = self._tl.reflow(gaps=before, points={self.segment: old_end}) if ripple else []
+        self._tl.retime()
+        return [(c.id, old, c.start) for c, old in anchored if abs(c.start - old) > 1e-6]
+
+    @property
+    def speech_end(self) -> float:
+        words = self.words
+        return words[-1].end if words else self.clips[-1].end
+
+    @property
+    def gap_after(self) -> float | None:
+        """The declared silence after this line, if any."""
+        return intent.gap_after(self.clips[-1].data)
+
+    def set_gap_after(self, seconds: float, *, reflow: bool = True) -> "Voice":
+        """Declare the silence after this line; with ``reflow`` everything after it moves to honour it."""
+        intent.set_gap_after(self.clips[-1].data, _r(seconds))
+        if reflow:
+            self._tl.reflow()
+        return self
 
 
 # ------------------------------------------------------------------ checkout
@@ -396,6 +404,7 @@ class Checkout:
         self.path = path
         self.fps = bundle_fps(bundle) or 30.0
         self.notes: list[str] = []
+        self.report: list[str] = []  # what the last re-flow did, in plain words
 
     # ---- open / save ------------------------------------------------------
     @classmethod
@@ -569,9 +578,8 @@ class Checkout:
             for clip in self._internal(sid)["clips"]:
                 if not self._is_audio(sid, clip):
                     continue
-                app = clip.get("app") if isinstance(clip.get("app"), Mapping) else {}
-                segment = str(app.get("segment") or clip.get("id") or "")
-                for i, entry in enumerate(_read_words({"words": app.get("words") or []}, relative=True)):
+                segment = intent.line(clip) or str(clip.get("id") or "")
+                for i, entry in enumerate(_read_words({"words": intent.words(clip)}, relative=True)):
                     s, e, t = entry
                     at = start + _num(clip.get("at"))
                     found.append((at + s, at + e, t, segment, str(clip.get("id")), i, sid))
@@ -686,6 +694,115 @@ class Checkout:
         t = self.quantize(self.time(at))
         return self._shift_after(t, self.quantize(seconds), cut_window=None, skip=skip)
 
+    # ---- the voice track: lines back to back with declared gaps (re-flow) -------
+    def lines(self) -> list[Voice]:
+        """The VO lines in order."""
+        seen: dict[str, float] = {}
+        for clip in self.clips(audio=True):
+            segment = intent.line(clip.data)
+            if segment and intent.words(clip.data):
+                seen.setdefault(str(segment), clip.start)
+        return [Voice(self, seg) for seg, _t in sorted(seen.items(), key=lambda item: item[1])]
+
+    def gaps(self) -> dict[str, float]:
+        """The silence after each line as it is now (speech end to the next line's first word)."""
+        lines = self.lines()
+        return {line.segment: _r(nxt.words[0].start - line.speech_end) for line, nxt in zip(lines, lines[1:]) if nxt.words}
+
+    def declare_gaps(self) -> int:
+        """Record every line's current silence as its declared gap (once, when a timeline is migrated)."""
+        n = 0
+        for line in self.lines():
+            measured = self.gaps().get(line.segment)
+            if line.gap_after is None and measured is not None:
+                intent.set_gap_after(line.clips[-1].data, measured)
+                n += 1
+        return n
+
+    def reflow(self, *, gaps: Mapping[str, float] | None = None, points: Mapping[str, float] | None = None) -> list[str]:
+        """Lay the VO lines back to back again (speech end + gap) and ripple everything downstream.
+
+        This re-times the whole film after a script change: a longer or shorter take, an
+        inserted or removed line, a new gap. Each line's gap is the one declared on it, else
+        the one in ``gaps`` (what it was before the change). Time opens or closes in the
+        silence after a line (at ``points[line]``, where its speech used to end, else where it
+        ends now), so picture, overlays, SFX and music after it move as one and keep their
+        sync; anchored clips are re-resolved. Music is cut on a beat, and every
+        seam is reported (a seam that skips or repeats a fraction of a beat says so).
+        """
+        report: list[str] = []
+        gaps, points = dict(gaps or {}), dict(points or {})
+        notes_before = len(self.notes)
+        i = 0
+        while True:
+            lines = self.lines()
+            if i + 1 >= len(lines):
+                break
+            line, nxt = lines[i], lines[i + 1]
+            i += 1
+            gap = line.gap_after if line.gap_after is not None else gaps.get(line.segment)
+            if gap is None or not nxt.words:
+                continue
+            have = nxt.words[0].start
+            delta = self.quantize(line.speech_end + gap - have)
+            if abs(delta) < 0.5 / self.fps:
+                continue
+            point = points.get(line.segment, line.speech_end)
+            own = [c.data for c in line.clips]
+            if delta > 0:
+                self.insert_time(self.quantize(max(point, line.speech_end - delta)), delta, skip=own)
+            else:
+                start = max(line.speech_end, min(point, nxt.clips[0].start + delta))
+                self.ripple_delete(self.quantize(start), self.quantize(start) - delta, skip=own)
+            report.append(f"line {nxt.segment} ({nxt.words[0].text!r}) {have:.3f} → {have + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
+        report += [f"{cid}: {a:.3f} → {b:.3f} s (anchored)" for cid, a, b in self.retime()]
+        report += self.notes[notes_before:]
+        del self.notes[notes_before:]
+        self.report = report
+        return report
+
+    def insert_line(self, segment: str, media: Any, *, words: Any, after: str, gap_after: float | None = None) -> list[str]:
+        """Insert a new VO line after line ``after``; everything downstream moves later to make room."""
+        prev = Voice(self, after)
+        if segment in {v.segment for v in self.lines()}:
+            raise TimelineEditError(f"there is already a line {segment!r}; pick a new id")
+        new_words = _read_words(words)
+        if not new_words:
+            raise TimelineEditError("the new line has no words; pass its words.json")
+        before = self.gaps()
+        gap_prev = prev.gap_after if prev.gap_after is not None else before.get(after, 0.3)
+        gap_new = gap_after if gap_after is not None else gap_prev
+        first = self.quantize(prev.speech_end + gap_prev)  # the new line's first word
+        # open the room in the silence after the previous line: what was keyed to the next line moves with it
+        self.insert_time(prev.speech_end, new_words[-1][1] - new_words[0][0] + gap_new, skip=[c.data for c in prev.clips])
+        sid = self._shot_at(first)
+        start = first - new_words[0][0]
+        new = {"id": f"vo-{segment}-0", "clipType": "media", "track": prev.clips[-1].track,
+               "at": _r(start - self._shot_start(sid)), "from": 0.0, "to": _r(new_words[-1][1] + 0.06)}
+        intent.set_line(new, segment, [[_r(a), _r(b), t] for a, b, t in new_words])
+        if gap_after is not None:
+            intent.set_gap_after(new, _r(gap_after))
+        new["asset"] = self._register_asset(sid, media)
+        self._internal(sid)["clips"].append(new)
+        before[segment] = gap_new
+        return [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"] + self.reflow(gaps=before)
+
+    def remove_line(self, segment: str) -> list[str]:
+        """Remove a VO line, what is on screen only for it, and its silence; everything after moves up."""
+        line = Voice(self, segment)
+        lines = self.lines()
+        index = next(i for i, v in enumerate(lines) if v.segment == segment)
+        before = self.gaps()
+        start = line.clips[0].start
+        if index + 1 < len(lines):
+            end = lines[index + 1].clips[0].start
+        else:
+            end = line.speech_end + (line.gap_after or 0.0)
+        for clip in line.clips:
+            clip.remove()
+        removed = self.ripple_delete(start, end)
+        return [f"removed line {segment} ({removed:.3f} s)"] + self.reflow(gaps=before)
+
     def retime(self) -> list[tuple[str, float, float]]:
         """Move every anchored clip back onto its word (after a VO change). Returns what moved."""
         words = self.words()
@@ -710,13 +827,13 @@ class Checkout:
                 clip._set_start(target)
                 moved.append((clip.id, old, clip.start))
             anchor["word"], anchor["text"] = word.id, word.text
-            clip.data["app"]["anchor"] = anchor
+            intent.set_anchor(clip.data, anchor)
         return moved
 
     def resolve(self) -> list[str]:
         """Re-resolve every formula in the document (like a spreadsheet recalculating).
 
-        ``app.anchor`` puts a clip's start on a word (see ``retime``). ``app.formulas`` maps a
+        An anchor puts a clip's start on a word (see ``retime``). A clip's formulas map a
         field path to an expression, and the resolved value is written to that field:
 
         - ``{"word": "n20b:20", "text": "viral", "offset_s": 0, "as": "clip_seconds"|"clip_frame"|"timeline_seconds"}``
@@ -730,8 +847,8 @@ class Checkout:
         by_id = {w.id: w for w in words}
         slots = self.slots
         for clip in self.clips():
-            formulas = (clip.data.get("app") or {}).get("formulas")
-            if not isinstance(formulas, Mapping):
+            formulas = intent.formulas(clip.data)
+            if not formulas:
                 continue
             for path, expr in formulas.items():
                 try:
@@ -778,11 +895,10 @@ class Checkout:
     @property
     def slots(self) -> dict[str, Any]:
         """The timeline's real-footage slots: ``{id: {kind, spec, face_zone, hand_mark, media}}``."""
-        config = self.bundle.setdefault("parent", {}).setdefault("config", {})
-        return config.setdefault("slots", {})
+        return intent.slots(self.bundle)
 
     def slot_clips(self, slot_id: str) -> list[Clip]:
-        return [c for c in self.clips() if (c.data.get("app") or {}).get("slot") == slot_id]
+        return [c for c in self.clips() if intent.slot(c.data) == slot_id]
 
     def fill_slot(self, slot_id: str, media: Any, *, start_in_take: float = 0.0) -> list[str]:
         """Put the filmed take into a slot: every placeholder tagged with it becomes one ``am-footage`` clip
@@ -810,8 +926,8 @@ class Checkout:
             if isinstance(plate.params.get("push"), Mapping):
                 params["push"] = {"to": _num(plate.params["push"].get("to"), zoom)}
             new = {"id": f"{plate.id}-real", "clipType": "am-footage", "track": plate.track, "asset": key,
-                   "at": plate.data.get("at"), "hold": _r(plate.duration), "params": params,
-                   "app": {"slot": slot_id, "replaces": [c.id for c in placeholders]}}
+                   "at": plate.data.get("at"), "hold": _r(plate.duration), "params": params}
+            intent.set_slot(new, slot_id, replaces=[c.id for c in placeholders])
             for c in placeholders:
                 c.remove()
             self._internal(plate.shot_id)["clips"].append(new)
@@ -820,24 +936,22 @@ class Checkout:
         return changed
 
     def fill_standins(self) -> list[str]:
-        """Swap every stand-in whose real asset now exists (``app.standin_for``) for the intended clip."""
+        """Swap every stand-in whose real asset now exists for the clip it stands in for."""
         changed = []
         for clip in self.clips():
-            app = clip.data.get("app") or {}
-            wanted = app.get("standin_for")
-            if not wanted:
+            pending = intent.standin(clip.data)
+            if not pending:
                 continue
+            wanted, intended = pending
             try:
                 key = self._register_asset(clip.shot_id, wanted)
             except TimelineEditError:
                 continue
-            intended = app.get("intended") or {}
             clip.data["clipType"] = intended.get("element", clip.element)
             clip.data["asset"] = key
             if isinstance(intended.get("params"), Mapping):
                 clip.data["params"] = copy.deepcopy(dict(intended["params"]))
-            for k in ("standin_for", "intended"):
-                app.pop(k, None)
+            intent.clear_standin(clip.data)
             changed.append(f"{clip.id}: stand-in → {key}")
         return changed
 
@@ -1108,7 +1222,9 @@ class Checkout:
             elif cs >= ra - 1e-6 and ce <= rb + 1e-6:
                 continue  # wholly inside the removed window
             elif cs < ra and ce > rb:
-                if audio:
+                if audio and self._is_music(sid, clip):
+                    out.extend(self._music_seam(sid, clip, ra, cut_s=d))
+                elif audio:
                     out.extend(_split_audio(clip, ra - cs, cut=d))
                 else:
                     _set_length(clip, (ce - cs) - d)
@@ -1134,12 +1250,49 @@ class Checkout:
             if cs >= ra - 1e-6:
                 clip["at"] = _r(cs + d)
             elif ce > ra + 1e-6:
+                if self._is_music(sid, clip):
+                    out.extend(self._music_seam(sid, clip, ra, open_s=d))
+                    continue
                 if self._is_audio(sid, clip):
-                    out.extend(_split_audio(clip, ra - cs, gap=d))
+                    if intent.line(clip):
+                        out.extend(_split_audio(clip, ra - cs, gap=d))
+                        continue
+                    out.append(clip)  # a sound effect already playing finishes where it is
                     continue
                 _set_length(clip, (ce - cs) + d)  # picture spanning the point holds longer
             out.append(clip)
         clips[:] = out
+
+    def _is_music(self, sid: str, clip: Mapping[str, Any]) -> bool:
+        return self._is_audio(sid, clip) and (str(clip.get("track") or "") == "music" or bool(intent.beat_sources(clip)))
+
+    def _music_seam(self, sid: str, clip: dict[str, Any], ra: float, *, open_s: float = 0.0, cut_s: float = 0.0) -> list[dict[str, Any]]:
+        """Split music at the last beat at or before ``ra`` (shot seconds) so the seam is on a beat.
+
+        Opening time repeats ``open_s`` seconds of music (no silent hole); closing it skips
+        ``cut_s`` seconds. Either way the music after the seam stays in sync with the picture
+        after it. The seam is noted, with how many beats it repeats or skips."""
+        speed = _num(clip.get("speed"), 1.0) or 1.0
+        cs = _num(clip.get("at"))
+        src0 = _num(clip.get("from"))
+        beats = [cs + (b - src0) / speed for b in intent.beat_sources(clip)]
+        on_beat = [b for b in beats if cs + 1e-3 < b <= ra + 1e-6]
+        seam = max(on_beat) if on_beat else ra
+        at = self._shot_start(sid) + seam
+        span = open_s or cut_s
+        period = intent.beat_period(clip)
+        beats_txt = ""
+        if period:
+            n = span / period
+            whole = abs(n - round(n)) < 0.08
+            beats_txt = f" = {n:.2f} beats" + ("" if whole else ", not a whole beat: listen to the seam")
+        verb = "repeats" if open_s else "skips"
+        where = "on a beat" if on_beat else "not on a beat (no beat before it)"
+        if open_s and src0 + (seam - cs) * speed - open_s * speed < -1e-6:
+            self.notes.append(f"music {clip.get('id')}: {open_s:.3f} s of silence at {at:.3f} s (not enough music before the seam to repeat)")
+            return _split_audio(clip, seam - cs, gap=open_s)
+        self.notes.append(f"music {clip.get('id')}: seam at {at:.3f} s {where}; {verb} {span:.3f} s{beats_txt}")
+        return _split_audio(clip, seam - cs, cut=cut_s, repeat=open_s)
 
     def _shift_parent(self, after: float, delta: float) -> None:
         for clip in (self.bundle.get("parent") or {}).get("clips") or []:
@@ -1211,6 +1364,12 @@ class CheckReport:
 
 # ----------------------------------------------------------------- document helpers
 
+def _first_word_lead(line: "Voice") -> float:
+    """Seconds from a line's first clip start to its first word (the take's lead-in)."""
+    words = line.words
+    return (words[0].start - line.clips[0].start) if words else 0.0
+
+
 def _row_start(row: Mapping[str, Any]) -> float:
     if row.get("at_ms") is not None:
         return _num(row.get("at_ms"))
@@ -1249,25 +1408,20 @@ def _trim_front(clip: dict[str, Any], cut: float) -> None:
 
 
 def _filter_words(clip: dict[str, Any], lo: float, hi: float, *, shift: float = 0.0) -> None:
-    app = clip.get("app")
-    if not isinstance(app, dict):
-        return
-    for key in ("words", "beats"):
-        items = app.get(key)
-        if isinstance(items, list) and items and isinstance(items[0], (list, tuple)):
-            app[key] = [[_r(i[0] + shift), _r(i[1] + shift), *i[2:]] for i in items if lo - 1e-6 <= i[0] < hi]
+    intent.map_timed(clip, lambda rows: [[_r(i[0] + shift), _r(i[1] + shift), *i[2:]] for i in rows if lo - 1e-6 <= i[0] < hi])
 
 
-def _split_audio(clip: dict[str, Any], at: float, *, cut: float = 0.0, gap: float = 0.0) -> list[dict[str, Any]]:
+def _split_audio(clip: dict[str, Any], at: float, *, cut: float = 0.0, gap: float = 0.0, repeat: float = 0.0) -> list[dict[str, Any]]:
     """Split an audio clip ``at`` seconds in; the second part skips ``cut`` seconds of source
-    (ripple delete) or starts ``gap`` seconds later (ripple insert)."""
+    (ripple delete), starts ``gap`` seconds later (ripple insert), or replays the last
+    ``repeat`` seconds (ripple insert under music, so there is no hole)."""
     speed = _num(clip.get("speed"), 1.0) or 1.0
     cs = _num(clip.get("at"))
     total = clip_duration(clip)
     second = copy.deepcopy(clip)
     second["id"] = f"{clip.get('id')}~{int(round((cs + at) * 1000))}"
     _trim_end(clip, at)
-    skip_source = at + cut
+    skip_source = at + cut - repeat
     if "from" in second or "to" in second:
         second["from"] = _r(_num(second.get("from")) + skip_source * speed)
     else:

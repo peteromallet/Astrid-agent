@@ -191,3 +191,51 @@ def test_add_overlay_on_a_word_in_a_corner():
     assert sparkle.start == pytest.approx(tl.word("Live").start)
     assert sparkle.shot_id == "B" and sparkle.params["x"] == 1920 - 96 - 200 and sparkle.params["y"] == 54
     assert sparkle.anchor["text"] == "Live"
+
+
+# ---- re-flow: the voice track lays out the film ------------------------------------------
+
+def _with_beats(data):
+    music = data["shots"]["A"]["internal_timeline"]["clips"][3]
+    music["app"] = {"beats": {"beats": [i * 0.5 for i in range(8)], "bpm": 120, "time": "cue_seconds"}}
+    return data
+
+
+def test_a_longer_take_reflows_the_film_and_keeps_the_gap_overlays_and_music():
+    tl = Checkout(_with_beats(bundle()))
+    tl.clip("b-type").enter_at("now")
+    gap = tl.gaps()["s1"]  # 1.7 → 6.0
+    moved = tl.voice("s1").replace("Q", words=[[0.1, 0.5, "it"], [0.6, 1.0, "went"], [1.4, 2.4, "viral"]])
+    assert tl.word("viral").end == pytest.approx(2.9)
+    assert tl.word("Live").start - tl.word("viral").end == pytest.approx(gap, abs=1 / FPS)  # the silence is kept
+    assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)  # the overlay is still on its word
+    assert [m[0] for m in moved] == ["b-type"]
+    music = sorted((c for c in tl.clips() if c.track == "music"), key=lambda c: c.start)
+    assert [round(m.start, 3) for m in music] == [0.0, 1.5]  # the seam is on the beat before the change
+    assert music[1].data["from"] == pytest.approx(1.5 - 1.2)  # it repeats 1.2 s: no hole, and in sync after it
+    assert any("repeats 1.200 s = 2.40 beats" in line for line in tl.report)
+
+
+def test_a_declared_gap_is_honoured():
+    tl = Checkout(bundle())
+    tl.voice("s1").set_gap_after(0.5)
+    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5, abs=1 / FPS)
+    assert tl.voice("s1").gap_after == 0.5
+    tl.voice("s1").replace("Q", words=[[0.1, 0.3, "it"], [0.4, 0.6, "went"], [0.8, 1.0, "viral"]])  # shorter
+    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + 0.5, abs=1 / FPS)
+
+
+def test_insert_and_remove_a_line():
+    tl = Checkout(bundle())
+    tl.clip("b-type").enter_at("now")
+    gap = tl.gaps()["s1"]
+    report = tl.insert_line("s1b", "Q", words=[[0.0, 0.4, "and"], [0.5, 1.0, "then"]], after="s1", gap_after=0.3)
+    assert report[0].startswith("inserted line s1b")
+    assert [v.segment for v in tl.lines()] == ["s1", "s1b", "s2"]
+    assert tl.word("and").start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
+    assert tl.word("Live").start == pytest.approx(tl.word("then").end + 0.3, abs=1 / FPS)
+    assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
+    tl.remove_line("s1b")
+    assert [v.segment for v in tl.lines()] == ["s1", "s2"]
+    assert tl.word("Live").start == pytest.approx(tl.word("viral").end + gap, abs=1 / FPS)
+    assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
