@@ -31,6 +31,9 @@
       "react": ["node_modules/@types/react/index.d.ts"],
       "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime.d.ts"],
       "remotion": ["node_modules/remotion"],
+      // Pack elements live outside this project, so their npm imports would
+      // otherwise walk up past remotion/node_modules and fail to resolve.
+      "@remotion/*": ["node_modules/@remotion/*"],
       "@banodoco/timeline-composition/theme-api": ["node_modules/@banodoco/timeline-composition/typescript/src/theme-api.ts"]
     },
     "typeRoots": ["../node_modules/@types"],
@@ -41,16 +44,23 @@
     "skipLibCheck": true,
     "noEmit": true
   },
+  // vibe-comfy-asset-overlay reads node.h (lines 104, 181) where the local
+  // height `h` is meant; ComfyNodeDef has no h. Owner: local pack. Remove this
+  // exclude when that one-token fix lands.
+  "exclude": [
+    "../astrid/packs/local/elements/effects/vibe-comfy-asset-overlay/**"
+  ],
   "include": [
     "src",
+    "pack-element-imports.d.ts",
     "_active_theme/effects/**/*.{ts,tsx}",
     "_active_theme/elements/effects/**/*.{ts,tsx}",
     "_active_theme/animations/**/*.{ts,tsx}",
     "_active_theme/elements/animations/**/*.{ts,tsx}",
     "_active_theme/transitions/**/*.{ts,tsx}",
     "_active_theme/elements/transitions/**/*.{ts,tsx}",
-    "../astrid/packs/rendering/elements/**/*.{ts,tsx}",
-    "../astrid/packs/local/elements/**/*.{ts,tsx}",
+    "../astrid/packs/*/elements/**/*.ts",
+    "../astrid/packs/*/elements/**/*.tsx",
     "../../themes/*/effects/**/*.{ts,tsx}",
     "../../themes/*/elements/effects/**/*.{ts,tsx}",
     "../../themes/*/animations/**/*.{ts,tsx}",
