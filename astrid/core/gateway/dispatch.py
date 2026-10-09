@@ -246,6 +246,21 @@ def _dispatch_doctor(args: list[str]) -> int:
     report.setdefault("effects", ["observe"])
     report.setdefault("authorization_required", False)
     report["diagnostic"] = diagnostic
+    from pathlib import Path
+
+    from astrid.core.execution.process_group import (
+        CLEANUP_LATCH_NAME,
+        describe_cleanup_latch,
+        read_cleanup_latch,
+    )
+
+    pack_host_cleanup = read_cleanup_latch(Path(support_root) / CLEANUP_LATCH_NAME)
+    report["pack_host_cleanup"] = pack_host_cleanup
+    if pack_host_cleanup is not None:
+        # A host blocked by cleanup uncertainty admits no work: not healthy.
+        report["healthy"] = False
+        report["issues"] = [*report.get("issues", []), describe_cleanup_latch(pack_host_cleanup)]
+        result_code = 1
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
@@ -268,6 +283,8 @@ def _dispatch_doctor(args: list[str]) -> int:
             print(f"compatibility detail: {compatibility['reason']}")
         if compatibility["fix"]:
             print(f"fix: {compatibility['fix']}")
+        if isinstance(report, dict) and report.get("pack_host_cleanup"):
+            print(describe_cleanup_latch(report["pack_host_cleanup"]))
         if isinstance(report, dict) and report.get("recovery_action"):
             print(f"recovery action: {report['recovery_action']}")
     return result_code

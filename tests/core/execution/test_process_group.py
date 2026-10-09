@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import signal
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -168,3 +171,115 @@ def test_final_verification_uncertainty_cannot_be_cleared_by_a_later_census(monk
     monkeypatch.setattr(groups, "_process_snapshot", lambda: absent)
     with pytest.raises(groups.CleanupUncertainError):
         groups.verify_tree_absent(process)
+
+
+def test_snapshot_retries_transient_ps_timeouts_and_reads_census(monkeypatch):
+    real_run = subprocess.run
+    timeouts = []
+
+    def slow_then_ok(argv, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        if len(timeouts) <= 2:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", slow_then_ok)
+    monkeypatch.setattr(groups, "_CENSUS_RETRY_DELAY_SECONDS", 0)
+    census = groups._process_snapshot()
+    assert os.getpid() in census and census.failure is None
+    assert timeouts == [5.0, 5.0, 5.0]
+
+
+def test_transient_census_timeouts_do_not_latch_owned_tree_uncertainty(monkeypatch):
+    process = groups.popen_owned_group([sys.executable, "-c", "import time; time.sleep(30)"])
+    real_run = subprocess.run
+    calls = []
+
+    def slow_then_ok(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) <= 2:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return real_run(argv, **kwargs)
+
+    try:
+        monkeypatch.setattr(subprocess, "run", slow_then_ok)
+        monkeypatch.setattr(groups, "_CENSUS_RETRY_DELAY_SECONDS", 0)
+        assert process.pid in groups.observe_tree(process)
+        assert not hasattr(process, "_astrid_tree_uncertain")
+    finally:
+        monkeypatch.undo()
+        groups.terminate_tree(process, grace_seconds=0.5)
+
+
+def test_permanent_census_failure_names_its_reason(monkeypatch):
+    calls = []
+
+    def always_timeout(argv, **kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", always_timeout)
+    monkeypatch.setattr(groups, "_CENSUS_RETRY_DELAY_SECONDS", 0)
+    census = groups._process_snapshot()
+    assert not census and census.failure == "ps timed out after 5s x3"
+    assert len(calls) == 3
+    process = SimpleNamespace(pid=100)
+    with pytest.raises(groups.CleanupUncertainError) as raised:
+        groups.observe_tree(process)
+    assert str(raised.value) == "owned process census unavailable: ps timed out after 5s x3"
+    assert process._astrid_tree_uncertain == str(raised.value)
+    with pytest.raises(groups.CleanupUncertainError, match="ps timed out after 5s x3"):
+        groups.observe_tree(process)
+
+
+def test_nonzero_ps_exit_is_retried_and_reports_stderr(monkeypatch):
+    calls = []
+
+    def failing(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="ps: sysctl failed\n")
+
+    monkeypatch.setattr(subprocess, "run", failing)
+    monkeypatch.setattr(groups, "_CENSUS_RETRY_DELAY_SECONDS", 0)
+    census = groups._process_snapshot()
+    assert not census and census.failure == "ps rc=1: ps: sysctl failed x3"
+    assert len(calls) == 3
+
+
+def test_missing_ps_is_reported_without_retry(monkeypatch):
+    calls = []
+
+    def missing(argv, **kwargs):
+        calls.append(argv)
+        raise FileNotFoundError("no ps")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    census = groups._process_snapshot()
+    assert not census and census.failure.startswith("ps could not run")
+    assert len(calls) == 1
+
+
+def test_cleanup_latch_record_is_visible_only_while_its_host_lives(tmp_path, monkeypatch):
+    latch = tmp_path / groups.CLEANUP_LATCH_NAME
+    groups.write_cleanup_latch(
+        latch,
+        reason="ps timed out after 5s x3",
+        since="2026-10-09T12:00:00+00:00",
+        recover_with="kill 1",
+    )
+    record = groups.read_cleanup_latch(latch)
+    assert record["pid"] == os.getpid() and record["liveness"] == "verified"
+    assert groups.describe_cleanup_latch(record) == (
+        "pack host blocked by cleanup uncertainty since 2026-10-09T12:00:00+00:00; "
+        "cause ps timed out after 5s x3; recover with kill 1"
+    )
+    latch.write_text(json.dumps(dict(record, pid=2147483646)))
+    assert groups.read_cleanup_latch(latch) is None
+    latch.write_text(json.dumps(dict(record, process_birth_id="reused-pid")))
+    assert groups.read_cleanup_latch(latch) is None
+    latch.write_text("not json")
+    assert groups.read_cleanup_latch(latch) is None
+    monkeypatch.setattr(groups, "_process_snapshot", lambda: groups._failed_census("ps timed out after 5s x3"))
+    latch.write_text(json.dumps(record))
+    assert groups.read_cleanup_latch(latch)["liveness"] == "unverified: ps timed out after 5s x3"
+

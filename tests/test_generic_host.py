@@ -893,6 +893,24 @@ def test_tree_uncertainty_retains_attempt_and_blocks_claim_after_group_cleanup(
             time.sleep(0.02)
 
 
+def test_latched_cleanup_reason_reaches_admission_errors_and_doctor_record(tmp_path):
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, attempt_base=tmp_path / "attempts")
+    host.cleanup_latch_path = tmp_path / process_group.CLEANUP_LATCH_NAME
+    host._latch_cleanup_uncertainty("ps timed out after 5s x3")
+    host._latch_cleanup_uncertainty("a later failure must not replace the first cause")
+    with pytest.raises(HostError, match=r"blocked by cleanup uncertainty: ps timed out after 5s x3; since .+; recover with: kill \d+"):
+        host.claim_once()
+    task = {"task": {"id": "latched-task", "capability": "test.echo", "attempt_id": "a", "fence": 1}}
+    with pytest.raises(HostError, match="ps timed out after 5s x3"):
+        host.run_task(task, lease_token="lease-latched")
+    assert runtime.settlements == [] and runtime.failures == []
+    record = process_group.read_cleanup_latch(host.cleanup_latch_path)
+    assert record["reason"] == "ps timed out after 5s x3"
+    assert record["pid"] == os.getpid() and record["liveness"] == "verified"
+    assert record["recover_with"].startswith(f"kill {os.getpid()} ")
+
+
 def test_cancellation_verifies_detached_writer_tree_before_cleanup_and_reuses_host(
     tmp_path, monkeypatch,
 ):

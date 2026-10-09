@@ -60,12 +60,14 @@ from astrid.core.execution.managed_tool_session import (
     SessionBinding,
 )
 from astrid.core.execution.process_group import (
+    CLEANUP_LATCH_NAME,
     CleanupUncertainError,
     _process_snapshot,
     observe_tree,
     popen_owned_group,
     terminate_tree,
     verify_tree_absent,
+    write_cleanup_latch,
 )
 from astrid.core.execution.process_group import (
     group_exists as _owned_group_exists,
@@ -2562,6 +2564,11 @@ class GenericPackHost:
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
         self._cleanup_uncertain = False
+        self._cleanup_uncertain_reason: str | None = None
+        self._cleanup_uncertain_since: str | None = None
+        # Set by the host entrypoint.  The latch record is written here so that
+        # `astrid doctor` can report a blocked host from another process.
+        self.cleanup_latch_path: Path | None = None
         self._last_cleanup_receipt: dict[str, Any] | None = None
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
@@ -2590,6 +2597,40 @@ class GenericPackHost:
     def last_cleanup_receipt(self) -> dict[str, Any] | None:
         return dict(self._last_cleanup_receipt) if self._last_cleanup_receipt is not None else None
 
+    def _latch_cleanup_uncertainty(self, reason: str) -> None:
+        """Block admissions until this host is stopped, keeping the first cause.
+
+        A later failure must not overwrite the reason that started the block.
+        The record is also written for ``astrid doctor``; failing to write it
+        never changes the in-process block.
+        """
+        if self._cleanup_uncertain:
+            return
+        self._cleanup_uncertain = True
+        self._cleanup_uncertain_reason = reason or "cleanup outcome unknown"
+        self._cleanup_uncertain_since = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if self.cleanup_latch_path is not None:
+            write_cleanup_latch(
+                self.cleanup_latch_path,
+                reason=self._cleanup_uncertain_reason,
+                since=self._cleanup_uncertain_since,
+                recover_with=self._cleanup_recovery_action(),
+            )
+
+    def _cleanup_recovery_action(self) -> str:
+        return (
+            f"kill {os.getpid()} after confirming no owned writer survives, then reopen "
+            "the Astrid client to start a fresh pack host: python -c "
+            "'from astrid.sdk import AstridClient; AstridClient.open_from_launcher().__enter__()'"
+        )
+
+    def _cleanup_block_error(self) -> HostError:
+        return HostError(
+            "generic host admissions are blocked by cleanup uncertainty: "
+            f"{self._cleanup_uncertain_reason}; since {self._cleanup_uncertain_since}; "
+            f"recover with: {self._cleanup_recovery_action()}"
+        )
+
     def _cleanup_ephemeral_attempt_or_latch(self, root: Path) -> None:
         """Delete one owned root, latching uncertainty if observation fails."""
         try:
@@ -2597,7 +2638,7 @@ class GenericPackHost:
                 raise HostError("process cleanup uncertainty; attempt retained")
             _cleanup_ephemeral_attempt(root)
         except Exception as exc:
-            self._cleanup_uncertain = True
+            self._latch_cleanup_uncertainty(str(exc))
             self._last_cleanup_receipt = {
                 "path": str(root),
                 "intended_disposition": "deleted",
@@ -4589,13 +4630,13 @@ class GenericPackHost:
             # The first census may fail before tree_members exists. Latch
             # before the finalizer can select a successful group-only fallback.
             if isinstance(exc, CleanupUncertainError) or hasattr(process, "_astrid_tree_uncertain"):
-                self._cleanup_uncertain = True
+                self._latch_cleanup_uncertainty(getattr(process, "_astrid_tree_uncertain", None) or str(exc))
             raise
         finally:
             try:
                 _terminate_process_group(process)
             except BaseException as exc:
-                self._cleanup_uncertain = True
+                self._latch_cleanup_uncertainty(str(exc))
                 raise HostError(f"owned command cleanup uncertain: {exc}") from exc
             finally:
                 self._untrack_process(process)
@@ -4864,7 +4905,7 @@ class GenericPackHost:
         provider_route_grant: str | None = None,
     ) -> Mapping[str, Any]:
         if self._cleanup_uncertain:
-            raise HostError("generic host admissions are blocked by cleanup uncertainty")
+            raise self._cleanup_block_error()
         if self.client is None:
             raise HostError("runtime client is required to execute a task")
         if self._shutdown.is_set():
@@ -5999,7 +6040,7 @@ class GenericPackHost:
                     cleanup_errors.append(f"caller-owned attempt disappeared: {root}")
             if cleanup_errors:
                 cleanup_receipt.update({"status": "uncertain", "errors": list(cleanup_errors)})
-                self._cleanup_uncertain = True
+                self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             if cleanup_errors:
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
@@ -6032,7 +6073,7 @@ class GenericPackHost:
     def claim_once(self) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._cleanup_uncertain:
-            raise HostError("generic host admissions are blocked by cleanup uncertainty")
+            raise self._cleanup_block_error()
         if self._shutdown.is_set():
             return None
         claim_next = self._client_operation("claim_next")
@@ -6745,6 +6786,8 @@ def _cli() -> int:
         boot_manifest_path=boot_manifest,
         boot_manifest_hash=boot_manifest_hash,
     )
+    if support_root is not None:
+        host.cleanup_latch_path = support_root / CLEANUP_LATCH_NAME
     host.discover()
     host.preflight()
 

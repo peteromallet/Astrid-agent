@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -22,26 +25,76 @@ class _ProcessInfo:
     birth: str
 
 
+# ``ps`` reads the whole process table, which can take longer than a short
+# deadline on a loaded machine.  Bounded retries tolerate that transient
+# slowness; they do not change what a census proves (see _process_snapshot).
+_CENSUS_TIMEOUT_SECONDS = 5.0
+_CENSUS_ATTEMPTS = 3
+_CENSUS_RETRY_DELAY_SECONDS = 0.1
+
+
+class _Census(dict):
+    """A process census.  When it is empty, ``failure`` says why ps gave none."""
+
+    failure: str | None = None
+
+
+def _failed_census(reason: str) -> _Census:
+    census = _Census()
+    census.failure = reason
+    return census
+
+
+def _census_message(message: str, census: Mapping[int, _ProcessInfo]) -> str:
+    reason = getattr(census, "failure", None)
+    return f"{message}: {reason}" if reason else message
+
+
 def _process_snapshot() -> dict[int, _ProcessInfo]:
-    """Read a process census without invoking a shell."""
+    """Read a process census without invoking a shell.
+
+    A timeout or nonzero exit is retried up to ``_CENSUS_ATTEMPTS`` times
+    before the census is reported unavailable.  Retrying does not widen the
+    ancestry gap that the fail-closed latch guards.  Each successful call is
+    one consistent ``ps`` table, and a failed attempt contributes nothing, so
+    no partial or stale table is merged.  The gap is the interval between
+    successful censuses, and a retry only makes a failed census less likely.
+    """
     ps = next(
         (candidate for candidate in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(candidate)),
         "ps",
     )
-    try:
-        result = subprocess.run(
-            [ps, "-axo", "pid=,ppid=,pgid=,lstart="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.0,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if result.returncode != 0:
-        return {}
-    entries: dict[int, _ProcessInfo] = {}
-    for line in result.stdout.splitlines():
+    outcomes: list[str] = []
+    for attempt in range(_CENSUS_ATTEMPTS):
+        if attempt:
+            time.sleep(_CENSUS_RETRY_DELAY_SECONDS)
+        try:
+            result = subprocess.run(
+                [ps, "-axo", "pid=,ppid=,pgid=,lstart="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_CENSUS_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            outcomes.append(f"timed out after {_CENSUS_TIMEOUT_SECONDS:g}s")
+            continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            # A missing or unrunnable ps is not transient; do not retry.
+            return _failed_census(f"ps could not run: {exc}")
+        if result.returncode != 0:
+            stderr = " ".join((result.stderr or "").split())[:200]
+            outcomes.append(f"rc={result.returncode}" + (f": {stderr}" if stderr else ""))
+            continue
+        return _parse_census(result.stdout)
+    if len(set(outcomes)) == 1:
+        return _failed_census(f"ps {outcomes[0]} x{len(outcomes)}")
+    return _failed_census("ps " + "; ".join(outcomes))
+
+
+def _parse_census(stdout: str) -> _Census:
+    entries = _Census()
+    for line in stdout.splitlines():
         fields = line.strip().split(None, 3)
         if len(fields) != 4:
             continue
@@ -51,6 +104,66 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
             continue
         entries[pid] = _ProcessInfo(pid, ppid, pgid, fields[3])
     return entries
+
+
+CLEANUP_LATCH_NAME = "generic-host.cleanup-uncertain.json"
+
+
+def write_cleanup_latch(path: Path, *, reason: str, since: str, recover_with: str) -> None:
+    """Record a host's cleanup latch for ``astrid doctor``.  Never raises.
+
+    The in-process latch is what blocks admissions.  This file only makes the
+    block observable to another process, so a failure to write it is logged by
+    the caller and does not change the block.
+    """
+    try:
+        pid = os.getpid()
+        info = _process_snapshot().get(pid)
+        record = {
+            "pid": pid,
+            "process_birth_id": info.birth if info is not None else None,
+            "since": since,
+            "reason": reason,
+            "recover_with": recover_with,
+        }
+        temporary = path.with_name(f"{path.name}.{pid}.tmp")
+        temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    except Exception:
+        return
+
+
+def read_cleanup_latch(path: Path) -> dict[str, Any] | None:
+    """Return the latch record while its host is alive, else ``None``.
+
+    A record whose host pid is gone or was reused is stale and is ignored.  If
+    the census itself is unavailable, the record is returned with
+    ``liveness`` set to ``unverified`` instead of being dropped.
+    """
+    try:
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("pid"), int):
+        return None
+    census = _process_snapshot()
+    if not census:
+        reason = getattr(census, "failure", None) or "census empty"
+        return {**record, "liveness": f"unverified: {reason}"}
+    info = census.get(record["pid"])
+    if info is None:
+        return None
+    if record.get("process_birth_id") not in (None, info.birth):
+        return None
+    return {**record, "liveness": "verified" if record.get("process_birth_id") else "unverified: birth unknown"}
+
+
+def describe_cleanup_latch(record: Mapping[str, Any]) -> str:
+    """One doctor line for a blocked host; the recovery command is part of it."""
+    return (
+        f"pack host blocked by cleanup uncertainty since {record.get('since')}; "
+        f"cause {record.get('reason')}; recover with {record.get('recover_with')}"
+    )
 
 
 def popen_owned_group(argv: list[str], **kwargs: Any) -> subprocess.Popen:
@@ -319,7 +432,7 @@ def observe_tree(process: subprocess.Popen) -> dict[int, str]:
 def _observe_tree(process: subprocess.Popen) -> dict[int, str]:
     snapshot = _process_snapshot()
     if not snapshot:
-        raise CleanupUncertainError("owned process census unavailable")
+        raise CleanupUncertainError(_census_message("owned process census unavailable", snapshot))
     known = getattr(process, "_astrid_tree_members", None)
     if known is None:
         known = {}
@@ -355,7 +468,7 @@ def _verify_tree_absent(process: subprocess.Popen) -> None:
     if hasattr(process, "_astrid_process_group_id"):
         snapshot = _process_snapshot()
         if not snapshot:
-            raise CleanupUncertainError("owned group absence census unavailable")
+            raise CleanupUncertainError(_census_message("owned group absence census unavailable", snapshot))
         if any(info.pgid == _group_id(process) for info in snapshot.values()):
             raise CleanupUncertainError("owned group members remain")
 
@@ -418,7 +531,7 @@ def _signal_valid_tree_members(
 ) -> None:
     snapshot = _process_snapshot() if snapshot is None else snapshot
     if strict and not snapshot:
-        raise CleanupUncertainError("owned signal census unavailable")
+        raise CleanupUncertainError(_census_message("owned signal census unavailable", snapshot))
     for pid, birth in reversed(tuple(members.items())):
         info = snapshot.get(pid)
         if info is None:
