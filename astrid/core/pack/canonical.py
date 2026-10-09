@@ -317,6 +317,28 @@ class ResourceProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolEntryProjection:
+    """One whole-Tool declaration projected over canonical source handles."""
+
+    pack_id: str
+    declaration_key: str
+    canonical_id: str
+    pack_version: str
+    target: str
+    compatibility: Mapping[str, Any]
+    manifest: ResourceHandle
+    entry: ResourceHandle
+    resources: tuple[ResourceHandle, ...]
+    resource_kinds: tuple[str, ...]
+    dependencies: Mapping[str, tuple[str, ...]]
+
+    @property
+    def resource_closure(self) -> tuple[ResourceHandle, ...]:
+        by_path = {handle.path: handle for handle in (self.entry, *self.resources)}
+        return tuple(by_path[path] for path in sorted(by_path))
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentationProjection:
     pack_id: str
     documentation: Documentation | None
@@ -364,6 +386,28 @@ class CanonicalPackEntry:
         return DocumentationProjection(
             self.id, self.documentation, tuple(r for r in self.resources if r.path in required)
         )
+
+    def tool_entry_projections(self) -> tuple[ToolEntryProjection, ...]:
+        """Project only whole-Tool UI declarations; editor extensions keep their own host projection."""
+        handles = {handle.path: handle for handle in self.resources}
+        projected: list[ToolEntryProjection] = []
+        for key, declaration in self.definition.ui.items():
+            if declaration["type"] != "tool":
+                continue
+            projected.append(ToolEntryProjection(
+                pack_id=self.id,
+                declaration_key=key,
+                canonical_id=self.definition.declaration_id("ui", key),
+                pack_version=self.definition.version,
+                target=declaration["target"],
+                compatibility=declaration["compatibility"],
+                manifest=self.manifest,
+                entry=handles[declaration["entry"]],
+                resources=tuple(handles[resource["path"]] for resource in declaration.get("resources", ())),
+                resource_kinds=tuple(resource["kind"] for resource in declaration.get("resources", ())),
+                dependencies=self.definition.dependencies,
+            ))
+        return tuple(projected)
 
 
 class ExternalPackSource(str, Enum):

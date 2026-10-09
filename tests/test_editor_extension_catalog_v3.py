@@ -17,6 +17,7 @@ from scripts.reshape.package_closure import (
 ENTRY = 'ui/live-scenes/extension.tsx'
 SUPPORT = 'ui/live-scenes/identity.ts'
 ASSET = 'ui/live-scenes/assets/icon.svg'
+TOOL_ENTRY = 'ui/video-editor/entry.json'
 
 
 def fixture_repo(tmp_path: Path) -> Path:
@@ -27,6 +28,7 @@ def fixture_repo(tmp_path: Path) -> Path:
         "export default { manifest: { id, version: '1.0.0', label: 'Live scenes', icon }, activate() {} };\n",
         SUPPORT: "export const id = 'com.reigh.astrid.live-scenes';\n",
         ASSET: '<svg xmlns="http://www.w3.org/2000/svg"/>\n',
+        TOOL_ENTRY: '{"schema_version":1,"tool_id":"video-editor","host_entry":"video-editor"}\n',
         'docs/SKILL.md': '---\nname: rendering\ndescription: Render scenes.\n---\n',
     }
     for name, text in files.items():
@@ -35,9 +37,15 @@ def fixture_repo(tmp_path: Path) -> Path:
         path.write_text(text)
     (root / 'pack.yaml').write_text(yaml.safe_dump({
         'schema_version': 3, 'id': 'rendering', 'name': 'Rendering', 'version': '1.0.0',
-        'ui': {'live-scenes': {'type': 'editor', 'entry': ENTRY, 'resources': [
-            {'path': SUPPORT, 'kind': 'support'}, {'path': ASSET, 'kind': 'asset'},
-        ]}},
+        'ui': {
+            'live-scenes': {'type': 'editor', 'entry': ENTRY, 'resources': [
+                {'path': SUPPORT, 'kind': 'support'}, {'path': ASSET, 'kind': 'asset'},
+            ]},
+            'video-editor': {
+                'type': 'tool', 'entry': TOOL_ENTRY, 'target': 'reigh',
+                'compatibility': {'host': '1'},
+            },
+        },
         'documentation': {'kind': 'skill', 'path': 'docs/SKILL.md'},
     }))
     core = repo / 'astrid/packs/_core/docs/SKILL.md'
@@ -60,6 +68,7 @@ def test_v3_projection_uses_one_entry_and_f07_resources_in_source_and_staged_ins
     assert "import editorExtension0 from '../ui/live-scenes/extension'" in source
     assert f"entryPath: '{ENTRY}'" in source
     assert source.count('import editorExtension') == 1
+    assert 'video-editor' not in source and TOOL_ENTRY not in source
     assert 'identity.ts' not in source and 'icon.svg' not in source
     closure = check_source_resource_closure(repo)
     assert closure.ok, closure.errors
@@ -81,14 +90,14 @@ def test_v3_projection_uses_one_entry_and_f07_resources_in_source_and_staged_ins
     ('missing_entry', 'extension.tsx.*missing'),
     ('missing_support', 'identity.ts.*missing'),
     ('missing_asset', 'icon.svg.*missing'),
-    ('escaping', 'ui.live-scenes.entry'),
-    ('escaping_support', 'ui.live-scenes.resources.0.path'),
-    ('escaping_asset', 'ui.live-scenes.resources.1.path'),
+    ('escaping', 'ui.live-scenes'),
+    ('escaping_support', 'ui.live-scenes'),
+    ('escaping_asset', 'ui.live-scenes'),
     ('symlink_entry', 'symlink'),
     ('symlink_support', 'symlink'),
     ('symlink_asset', 'symlink'),
     ('malformed_declaration', 'ui.live-scenes'),
-    ('incompatible_host', 'ui.live-scenes.type'),
+    ('incompatible_host', 'ui.live-scenes'),
     ('non_module', 'browser JavaScript/TypeScript module'),
     ('resource_directory', 'individual support/asset files'),
 ])

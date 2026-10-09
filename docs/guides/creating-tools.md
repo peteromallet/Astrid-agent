@@ -103,7 +103,10 @@ use typed selectors when a documented route requires them.
 Create an **editor UI contribution** when the missing behavior is an
 interactive host surface. A working UI example is the
 [live-scene editor entry](../../astrid/packs/rendering/ui/live-scenes/extension.tsx);
-the prepared scene itself is project state, not installed pack code.
+the prepared scene itself is project state, not installed pack code. The
+currently admitted whole Tool is a different declaration: see
+[Host-mounted editor Tools](./host-mounted-editor-tools.md) for the real V3
+Tool entry, catalog binding, and Reigh launch boundary.
 
 Create an **element** when the missing capability is a reusable render building
 block consumed by a timeline. Effects, animations, and transitions are

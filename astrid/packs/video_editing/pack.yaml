@@ -441,3 +441,9 @@ actions:
       - {kind: implementation, path: actions/iteration_video/admission.py}
       - {kind: documentation, path: actions/iteration_video/STAGE.md}
     metadata: {runtime_entrypoint: main, runtime_file: actions/iteration_video/run.py, runtime_module: astrid.packs.video_editing.actions.iteration_video.run, output_result_manifest: true, authority: runtime}
+ui:
+  video-editor:
+    type: tool
+    entry: ui/video-editor/entry.json
+    target: reigh
+    compatibility: {host: '1'}

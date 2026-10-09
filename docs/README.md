@@ -67,6 +67,8 @@ It does not change the current pack or trust contract.
 - **[Environment Variables](reference/env-vars.md)** — Canonical `ASTRID_*` reference.
 - **[Credential Setup](reference/credentials.md)** — Store local provider keys once for this computer login.
 - **[Creating Tools](guides/creating-tools.md)** — Adding new capabilities.
+- **[Host-mounted editor Tools](guides/host-mounted-editor-tools.md)** — The current V3 Video Editor Tool declaration and source-bound Reigh
+  entry.
 - **[Debugging Renderers](guides/debugging.md)** — Validating, smoking, and
   debugging pluggable timeline renderers; the failure replay bundle.
 - **[Render Backend v1](contracts/render-backend-v1.md)** — The protocol-v1

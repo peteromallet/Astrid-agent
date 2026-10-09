@@ -483,34 +483,42 @@
     "ui": {
       "type": "object",
       "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "editor"
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "editor"},
+              "entry": {"$ref": "#/$defs/relative_path"},
+              "target": {"$ref": "#/$defs/non_blank"},
+              "compatibility": {"type": ["string", "object"]},
+              "resources": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/resource"}
+              }
+            },
+            "required": ["type", "entry"]
           },
-          "entry": {
-            "$ref": "#/$defs/relative_path"
-          },
-          "target": {
-            "$ref": "#/$defs/non_blank"
-          },
-          "compatibility": {
-            "type": [
-              "string",
-              "object"
-            ]
-          },
-          "resources": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/resource"
-            }
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "tool"},
+              "entry": {"$ref": "#/$defs/relative_path"},
+              "target": {"const": "reigh"},
+              "compatibility": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"host": {"const": "1"}},
+                "required": ["host"]
+              },
+              "resources": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/resource"}
+              }
+            },
+            "required": ["type", "entry", "target", "compatibility"]
           }
-        },
-        "required": [
-          "type",
-          "entry"
         ]
       }
     },

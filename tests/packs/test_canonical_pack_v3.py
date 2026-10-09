@@ -95,6 +95,36 @@ def test_ui_only_uses_the_existing_editor_host(tmp_path: Path) -> None:
     assert not (root / "actions").exists()
 
 
+def test_tool_ui_projection_keeps_whole_tool_distinct_from_editor_extensions(tmp_path: Path) -> None:
+    entry_path = "ui/video-editor/entry.json"
+    resource_path = "ui/video-editor/service-contract.json"
+    root = _pack(tmp_path, files={
+        entry_path: '{"schema_version":1,"tool_id":"video-editor","host_entry":"video-editor"}\n',
+        resource_path: '{"services":["timeline","shots","agent"]}\n',
+        "ui/extension.tsx": "export default extension;\n",
+    }, ui={
+        "video-editor": {
+            "type": "tool", "entry": entry_path, "target": "reigh",
+            "compatibility": {"host": "1"},
+            "resources": [{"kind": "support", "path": resource_path}],
+        },
+        "live-scenes": {"type": "editor", "entry": "ui/extension.tsx"},
+    })
+
+    canonical = validate_canonical_pack(root)
+    projection, = canonical.tool_entry_projections()
+    handles = {handle.path: handle for handle in canonical.resource_handles}
+
+    assert canonical.definition.declaration_id("ui", "video-editor") == "demo.video-editor"
+    assert canonical.definition.ui["live-scenes"]["type"] == "editor"
+    assert projection.canonical_id == "demo.video-editor"
+    assert projection.declaration_key == "video-editor"
+    assert projection.entry is handles[entry_path]
+    assert projection.resources == (handles[resource_path],)
+    assert projection.resource_closure == (handles[entry_path], handles[resource_path])
+    assert projection.target == "reigh" and dict(projection.compatibility) == {"host": "1"}
+
+
 def test_mixed_maps_and_authored_skill_have_one_manifest_authority(tmp_path: Path) -> None:
     skill = "---\nname: authored-name\ndescription: Authored instructions.\n---\n# Use both surfaces\n"
     root = _pack(tmp_path, files={"actions/echo.py": "def echo(): pass\n",
@@ -220,6 +250,8 @@ def test_v2_admission_and_manifestless_core_shell_remain_compatible(tmp_path: Pa
     ({"actions": {"echo": {**_action(), "invocation": {"kind": "python", "path": "../run.py", "function": "main"}}}}, "actions"),
     ({"actions": {"echo": {**_action(), "invocation": {"kind": "python", "path": "shared/run.py", "function": "main"}}}}, "beneath actions"),
     ({"ui": {"tool": {"type": "editor", "entry": "actions/tool.tsx"}}}, "beneath ui"),
+    ({"ui": {"tool": {"type": "tool", "entry": "ui/tool.json", "target": "app", "compatibility": {"host": "1"}}}}, "ui"),
+    ({"ui": {"tool": {"type": "tool", "entry": "ui/tool.json", "target": "reigh", "compatibility": {"sdk": "1"}}}}, "ui"),
     ({"documents": {"note": {"format_version": 1, "schema": "../schema.json"}}}, "documents"),
     ({"content": {}, "actions": {}}, "Additional properties"),
     ({"extensions": {}, "ui": {}}, "Additional properties"),

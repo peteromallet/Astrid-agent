@@ -48,6 +48,10 @@ def _editor_entries(pack: PackDefinition) -> tuple[Path, ...]:
     resources = {handle.path: handle for handle in canonical.resource_handles}
     entries: list[Path] = []
     for key, contribution in canonical.definition.ui.items():
+        # Whole-Tool declarations have a distinct launch projection. They do
+        # not implement the ReighExtension contract consumed by this catalog.
+        if contribution["type"] != "editor":
+            continue
         location = f"{pack.manifest_path}: ui.{key}"
         if contribution.get("target", "video-editor") != "video-editor":
             raise PackValidationError(
