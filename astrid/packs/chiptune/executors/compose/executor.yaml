@@ -35,19 +35,19 @@ inputs:
     required: true
     description: 'JSON array of {start_s, end_s, energy 0..1, mood: bright|tense|wistful|triumphant|silent, cadence_bars 0..8}. Edges are exact; each section starts its own bar grid. Pass a JSON string.'
   - name: hits
-    type: json
+    type: string
     required: false
     description: JSON array of accent times in seconds (stabs on the chord sounding at that moment), or {t, kind} objects where kind is stab, thud or blip (a two-note blip).
   - name: duck
-    type: json
+    type: string
     required: false
     description: JSON array of {start_s, end_s, gain_db} dips for explicit ducking.
   - name: vo_mask
-    type: json
+    type: string
     required: false
     description: JSON array of [start_s, end_s] speech spans. The bed dips by duck_db (120 ms in, 300 ms out); a gap of 0.6 s or more brings it back to full.
   - name: mutes
-    type: json
+    type: string
     required: false
     description: 'JSON array of [start_s, end_s] hard-mute windows. The bed is gone for the window (exact silence, not a duck); use it for dead air and joke holds.'
   - name: duck_db
