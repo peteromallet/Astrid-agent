@@ -3461,12 +3461,19 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
     tl, existed = _working_copy(parsed, create=True)
     name = _draft_name(parsed)
     head = tl.base_revision
-    print(f'working copy "{name}" of {parsed.timeline} · base {head} · {_cuts_summary(tl)}'
-          + ("" if existed and not parsed.fresh else " (new, from the published head)"))
-    print("show, visualize, lint and diff now show this working copy (--published for the live version)")
-    print(f"next: timelines edit {parsed.timeline} --project {parsed.project} --clip ROCKET --at-word viral   ·   "
-          f'or Python: tl = Checkout.draft("{parsed.project}", "{parsed.timeline}")   ·   '
-          f"timelines status {parsed.timeline} --project {parsed.project}")
+    named = len(tl._cut_groups())
+    summary = f"{named} cuts · {len(tl.clips())} clips · {len(tl.words())} words" if named else _cuts_summary(tl)
+    print(f'working copy "{name}" of {parsed.timeline} · from published {_short_rev(head)} · {summary}'
+          + ("" if existed and not parsed.fresh else " (new)"))
+    print("show, visualize, lint and diff now read this working copy (--published for the live version)")
+    where = f"{parsed.timeline} --project {parsed.project}"
+    print("next:")
+    print(f"  read     timelines show {where} --as sheet --range c30..c31     (cut ids, \"words\" or seconds)")
+    print(f"  edit     change a line of that sheet, then  timelines apply {where} FILE")
+    print(f"           or  timelines edit {where} --clip c30.cover --until Astrid")
+    print(f'           or  Python: tl = Checkout.draft("{parsed.project}", "{parsed.timeline}"); tl.clip("c30.cover").until("Astrid"); tl.save()')
+    print(f"  look     timelines visualize {where} --preset motion --at Astrid   (--compare published: before/after)")
+    print(f'  publish  timelines status {where}   ·   timelines publish {where} -m "what changed"')
     return 0
 
 
@@ -3647,7 +3654,7 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     if head != tl.base_revision:
         print(f"the published head moved to {head}; publish will merge (three-way) or report conflicts")
     print(f'next: timelines publish {parsed.timeline} --project {parsed.project} -m "…"' if edits["changes"]
-          else f"next: timelines edit {parsed.timeline} --project {parsed.project} --clip ROCKET --at-word viral")
+          else f"next: timelines show {parsed.timeline} --project {parsed.project} --as sheet   ·   timelines edit {parsed.timeline} --project {parsed.project} --clip c22.rocket --on viral")
     return 0 if report.valid else 1
 
 

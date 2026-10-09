@@ -224,8 +224,8 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
 
     assert _run("checkout", "t", "--project", "P") == 0
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith('working copy "main" of t · base rev-0 · ')
-    assert out[-1].startswith("next: timelines edit t --project P")
+    assert out[0].startswith('working copy "main" of t · from published rev-0 · ')
+    assert "next:" in out and any(line.strip().startswith("publish  timelines status t --project P") for line in out)
 
     assert _run("status", "t", "--project", "P") == 0
     assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 unpublished changes')
