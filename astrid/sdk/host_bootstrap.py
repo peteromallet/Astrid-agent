@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import secrets
 import shlex
 import signal
@@ -183,6 +184,31 @@ def _host_identity_matches(state: Mapping[str, Any]) -> bool:
         str(state.get("boot_manifest_hash") or ""),
     )
     return all(value and value in command for value in required)
+
+
+_EXCEPTION_LINE = re.compile(r"^(?:[A-Za-z_][\w.]*\.)?[A-Za-z_]\w*(?:Error|Exception|Failure)\b.*?:\s*\S")
+
+
+def _host_failure_cause(log_path: Path, *, max_chars: int = 400) -> str:
+    """Return the last exception line the child wrote to its log, if any.
+
+    The bootstrap used to report only "inspect <log>", which hid the actual
+    HostError (for example a capability matrix mismatch). Reads at most the last
+    64 KiB and never raises: a missing or unreadable log yields an empty string.
+    """
+    try:
+        with Path(log_path).open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 65536))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in reversed(tail.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith(("HostError:", "PackHostBootstrapError:")) or _EXCEPTION_LINE.match(stripped):
+            return stripped[:max_chars]
+    return ""
 
 
 def _read_object(path: Path) -> Mapping[str, Any] | None:
@@ -892,7 +918,11 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
                 or not all(ready.get(key) == expected_value for key, expected_value in expected.items())
                 or process.poll() is not None):
             _terminate_old_host(process_state)
-            raise PackHostBootstrapError(f"generic Astrid pack host did not become ready; inspect {log_path}")
+            cause = _host_failure_cause(log_path)
+            detail = f": {cause}" if cause else ""
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host did not become ready{detail}; inspect {log_path}"
+            )
         _write_object(state_path, process_state)
         return {
             "host_status": "ready",

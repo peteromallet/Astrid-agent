@@ -150,12 +150,15 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
                     return discover_packs(packs_root)
                 return ()
 
-            with self.assertRaisesRegex(PackValidationError, "must match folder name"):
-                discover_pack_metadata(
-                    project_root=repo_root,
-                    discover_packs_fn=scan,
-                )
+            # An invalid local manifest is quarantined: it is not discovered, the
+            # error is recorded, and the authored manifest is left untouched.
+            found = discover_pack_metadata(project_root=repo_root, discover_packs_fn=scan)
+            self.assertNotIn("local", {item.pack.id for item in found})
+            from astrid.core.pack.loader import scan_packs
 
+            [record] = scan_packs(packs_root).quarantined
+            self.assertEqual(record.pack_id, "local")
+            self.assertIn("must match folder name", record.error)
             self.assertIn("id: not_local", local_manifest.read_text(encoding="utf-8"))
 
     def test_source_layer_excludes_local_and_indexes_in_order(self) -> None:

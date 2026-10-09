@@ -458,6 +458,38 @@ pack.yaml: missing required field id
 executors/my_exec/run.py: runtime entrypoint file not found
 ```
 
+### A broken pack does not stop the host
+
+A pack that fails validation while you author it is **quarantined**, not fatal.
+Discovery skips it, and every other pack keeps working. Its capabilities report
+`unavailable` with the manifest error and the fix. They do not report "not found".
+`python3 -m astrid doctor --json` lists quarantined packs under `pack_quarantine`.
+Run the validator on the pack directory to see the same error:
+
+```bash
+python3 -m astrid.core.pack.cli validate astrid/packs/<your_pack>
+```
+
+Two pack ids are never quarantined: `_core` and any pack the runtime declares
+required. For those, an invalid manifest still fails loudly. See
+[contract.md, "Quarantine and fail-closed packs"](contract.md#quarantine-and-fail-closed-packs).
+
+### Making a capability executable
+
+A discovered capability is executable only after it has an approved row in
+`config/astrid-beta-capabilities.json` (`disposition`, `evidence_reason`,
+`adapter_family`, `resource_keys`). Until then it is `unavailable`, with the
+reason "has no approved capability-matrix row". Only that capability is affected.
+
+After you add the row, record the census approval and review the diff:
+
+```bash
+python -m astrid.core.execution.capability_ledger approve
+```
+
+This regenerates `config/astrid-capability-census.lock.json`, the list of approved
+source labels and executor ids. Commit it with the matrix row.
+
 ## Reference Examples
 
 The `examples/packs/` directory contains teaching packs that demonstrate

@@ -239,6 +239,25 @@ class PackValidator:
         self._layout_exceptions: list[PackLayoutException] = []
         self._schema_cache: dict[tuple, tuple[dict[str, Any], Registry]] = {}
 
+    def _add_canonical_admission_error(self) -> None:
+        """Lead the error list with the canonical admission error, if any.
+
+        The schema-level messages stay after it, so existing diagnostics keep
+        their wording. The first line is the same text discovery records when
+        it quarantines the pack.
+        """
+        from astrid.core.pack.canonical import (
+            CanonicalPackValidationError,
+            validate_canonical_pack,
+        )
+
+        try:
+            validate_canonical_pack(self.pack_root)
+        except CanonicalPackValidationError as exc:
+            message = str(exc)
+            if message not in self.errors:
+                self.errors.insert(0, message)
+
     def validate(self) -> list[str]:
         """Run all validations. Returns list of error strings (empty = valid)."""
         self.errors = []
@@ -275,6 +294,11 @@ class PackValidator:
         # Check schema_version and validate against JSON Schema
         version = self._validate_manifest(pack_data, "pack", self._rel(pack_yaml))
         if version is None:
+            # For a v2 manifest the canonical admission error is the authority.
+            # It is the same text discovery records when it quarantines the
+            # pack, so the validator and `packs doctor` cannot disagree.
+            if pack_data.get("schema_version") == 2 and type(pack_data.get("schema_version")) is int:
+                self._add_canonical_admission_error()
             return self.errors  # schema_version error already recorded
         if version == 2:
             from astrid.core.pack.canonical import (

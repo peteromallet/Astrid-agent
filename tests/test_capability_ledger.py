@@ -9,8 +9,8 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
 
-    assert sources["counts"]["pack_labels"] == 93
-    assert sources["counts"]["historical_pack_labels"] == 98
+    assert sources["counts"]["pack_labels"] == 94
+    assert sources["counts"]["historical_pack_labels"] == 99
     assert sources["counts"]["executor_inventory"] == 86
     assert sources["counts"]["legacy_ids"] == 19
     assert all(section["complete"] for section in sources["coverage"].values())
@@ -161,21 +161,23 @@ def test_hivemind_matrix_rows_expose_provider_readiness_metadata():
     assert "HIVEMIND_CONTRIBUTOR_KEY" in rows["hivemind.contribute"]["required_env"]
 
 
-def test_source_census_still_rejects_unreviewed_pack_labels(monkeypatch):
-    import pytest
-
+def test_source_census_reports_unreviewed_pack_labels_without_failing_host(monkeypatch):
+    """Census drift is named and reported; it does not stop the host from starting."""
     from astrid.core.execution import capability_ledger
 
-    original = capability_ledger._source_labels
+    original = capability_ledger._census_sets
 
     def with_unreviewed_label(repo_root):
-        return original(repo_root) + [{
-            "pack": "hivemind", "label": "unreviewed", "source": "test",
-        }]
+        census = original(repo_root)
+        census["current"]["source_labels"].add("hivemind.unreviewed")
+        return census
 
-    monkeypatch.setattr(capability_ledger, "_source_labels", with_unreviewed_label)
-    with pytest.raises(capability_ledger.CapabilityLedgerError, match="source census drifted"):
-        load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
+    monkeypatch.setattr(capability_ledger, "_census_sets", with_unreviewed_label)
+    ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
+    row = ledger["sources"]["coverage"]["source_labels"]
+    assert row["status"] == "drift"
+    assert row["added"] == ["hivemind.unreviewed"]
+    assert row["complete"] is False
 
 
 def test_hivemind_matrix_contract_is_not_mistaken_for_bundled_source():

@@ -29,6 +29,17 @@ EXTRA_ROOT = FIXTURES / "extra"
 CYCLE_ROOT = FIXTURES / "cycle"
 
 
+def _assert_ownership_quarantine(tmp_path: Path) -> None:
+    """Cross-pack alias ownership is enforced per pack: each offending pack is
+    quarantined with the ownership error, and the registry still loads."""
+    from astrid.core.pack.loader import pack_quarantine_report
+
+    roots = tuple(path for path in tmp_path.iterdir() if path.is_dir() and path.name != "project")
+    errors = [record["error"] for record in pack_quarantine_report(roots=roots)]
+    assert errors, "expected quarantined packs for the cross-pack alias violation"
+    assert all("owned by" in error for error in errors), errors
+
+
 def _scanner(source_root: Path):
     def scan(root: str | Path | None = None):
         return discover_packs(source_root if root is None else root)
@@ -277,9 +288,9 @@ def test_cross_pack_shared_alias_is_rejected_by_v2_ownership(
             encoding="utf-8",
         )
 
-    with pytest.raises(PackValidationError, match="owned by"):
-        with _load_with_source(tmp_path / "project", source_root):
-            pass
+    with _load_with_source(tmp_path / "project", source_root):
+        pass
+    _assert_ownership_quarantine(tmp_path)
 
 
 def test_cross_pack_two_hop_alias_to_env_is_rejected_by_v2_ownership(
@@ -305,14 +316,14 @@ def test_cross_pack_two_hop_alias_to_env_is_rejected_by_v2_ownership(
         ("shared.transitive", "trustedfallback.renderer"),
     )
 
-    with pytest.raises(PackValidationError, match="owned by"):
-        with _load_with_source(
-            tmp_path / "project",
-            source_root,
-            extra_pack_roots=(str(extra_root),),
-            env_pack_roots=(str(env_root),),
-        ):
-            pass
+    with _load_with_source(
+        tmp_path / "project",
+        source_root,
+        extra_pack_roots=(str(extra_root),),
+        env_pack_roots=(str(env_root),),
+    ):
+        pass
+    _assert_ownership_quarantine(tmp_path)
 
 
 def test_cross_pack_two_hop_alias_to_missing_is_rejected_by_v2_ownership(tmp_path: Path) -> None:
@@ -334,13 +345,13 @@ def test_cross_pack_two_hop_alias_to_missing_is_rejected_by_v2_ownership(tmp_pat
         ("shared.transitive", "trustedfallback.renderer"),
     )
 
-    with pytest.raises(PackValidationError, match="owned by"):
-        with _load_with_source(
-            tmp_path / "project",
-            source_root,
-            extra_pack_roots=(str(extra_root),),
-        ):
-            pass
+    with _load_with_source(
+        tmp_path / "project",
+        source_root,
+        extra_pack_roots=(str(extra_root),),
+    ):
+        pass
+    _assert_ownership_quarantine(tmp_path)
 
 
 def test_cross_pack_alias_fallback_is_rejected_by_v2_ownership(
@@ -366,14 +377,14 @@ def test_cross_pack_alias_fallback_is_rejected_by_v2_ownership(
         ("shared.middle", "trustedfallback.renderer"),
     )
 
-    with pytest.raises(PackValidationError, match="owned by"):
-        with _load_with_source(
-            tmp_path / "project",
-            source_root,
-            extra_pack_roots=(str(extra_root),),
-            env_pack_roots=(str(env_root),),
-        ):
-            pass
+    with _load_with_source(
+        tmp_path / "project",
+        source_root,
+        extra_pack_roots=(str(extra_root),),
+        env_pack_roots=(str(env_root),),
+    ):
+        pass
+    _assert_ownership_quarantine(tmp_path)
 
 
 @pytest.mark.skip(reason="programmatic renderer aliases are retired")

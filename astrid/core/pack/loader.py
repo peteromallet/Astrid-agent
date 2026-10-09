@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,57 @@ from astrid.core.pack.permissions import (
     _optional_pack_extensions,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
+PACK_VALIDATOR_COMMAND = "python3 -m astrid.core.pack.cli validate"
+
+# Fail-closed trust rule (see docs/packs/contract.md, "Quarantine and fail-closed
+# packs"). A pack whose manifest fails admission is quarantined: it is excluded
+# from every discovered set and reported, while valid neighbours still load.
+# The rule never applies to these packs; an invalid manifest there still raises.
+#
+# * FAIL_CLOSED_PACK_FOLDERS: runtime-owned source folders. ``_core`` is the
+#   agent-facing core skill shell; its manifest, if one exists, is part of the
+#   runtime contract, not an authoring workspace.
+# * REQUIRED_PACK_IDS: packs the runtime marks as required (the taxonomy's
+#   ``install_tier: core``). Empty today: no shipped pack is declared required.
+#   Decided here by the runtime, never by the manifest itself, so a broken
+#   manifest cannot opt itself into or out of fail-closed behaviour.
+FAIL_CLOSED_PACK_FOLDERS: frozenset[str] = frozenset({"_core"})
+REQUIRED_PACK_IDS: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class QuarantinedPack:
+    """A source pack excluded from discovery because its manifest failed admission."""
+
+    pack_id: str
+    pack_dir: Path
+    manifest_path: Path | None
+    error: str
+
+    @property
+    def fix(self) -> str:
+        return f"run the pack validator: {PACK_VALIDATOR_COMMAND} {self.pack_dir}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pack_id": self.pack_id,
+            "state": "quarantined",
+            "pack_dir": str(self.pack_dir),
+            "manifest_path": str(self.manifest_path) if self.manifest_path is not None else None,
+            "error": self.error,
+            "fix": self.fix,
+        }
+
+
+@dataclass(frozen=True)
+class PackScan:
+    """Result of one pack-root scan: admitted packs plus quarantine records."""
+
+    packs: tuple[PackDefinition, ...]
+    quarantined: tuple[QuarantinedPack, ...]
+
 
 def packs_root() -> Path:
     return Path(__file__).resolve().parents[2] / "packs"
@@ -30,31 +84,158 @@ def packs_root() -> Path:
 
 DEFAULT_PACKS_ROOT = packs_root()
 
+_LOGGED_QUARANTINES: set[tuple[str, str]] = set()
 
-def discover_packs(
+
+def _fail_closed(folder_name: str) -> bool:
+    return folder_name in FAIL_CLOSED_PACK_FOLDERS or folder_name in REQUIRED_PACK_IDS
+
+
+def _quarantine_warning(record: QuarantinedPack) -> None:
+    key = (str(record.pack_dir), record.error)
+    if key in _LOGGED_QUARANTINES:
+        return
+    _LOGGED_QUARANTINES.add(key)
+    _LOGGER.warning(
+        "quarantined pack %r: %s; capabilities of this pack are unavailable until it is fixed (%s)",
+        record.pack_id,
+        record.error,
+        record.fix,
+    )
+
+
+def scan_packs(
     root: str | Path | None = None,
     *,
     include_hidden: bool = False,
-) -> tuple[PackDefinition, ...]:
+) -> PackScan:
+    """Scan one pack root, quarantining invalid packs instead of aborting.
+
+    Each child directory is admitted independently. A child that fails
+    canonical admission is recorded as a :class:`QuarantinedPack` and logged,
+    and its valid neighbours still load. The exception is a fail-closed folder
+    or required pack: its failure raises :class:`PackValidationError`.
+    """
     source_root = Path(root) if root is not None else packs_root()
     if not source_root.is_dir():
-        return ()
+        return PackScan((), ())
     packs: list[PackDefinition] = []
+    quarantined: list[QuarantinedPack] = []
     seen: dict[str, Path] = {}
     for child in sorted(source_root.iterdir(), key=lambda path: path.name):
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
-        manifest_path = pack_manifest_path(child)
-        if manifest_path is None:
+        try:
+            manifest_path = pack_manifest_path(child)
+            if manifest_path is None:
+                continue
+            pack = load_pack_manifest(manifest_path)
+        except Exception as exc:  # noqa: BLE001 - per-pack isolation boundary
+            if _fail_closed(child.name):
+                if isinstance(exc, PackValidationError):
+                    raise
+                raise PackValidationError(f"{child}: {exc}") from exc
+            manifest = child / "pack.yaml"
+            record = QuarantinedPack(
+                pack_id=child.name,
+                pack_dir=child,
+                manifest_path=manifest if manifest.is_file() else None,
+                error=str(exc),
+            )
+            quarantined.append(record)
+            _quarantine_warning(record)
             continue
-        pack = load_pack_manifest(manifest_path)
         if pack.visibility == "hidden" and not include_hidden:
             continue
         if pack.id in seen:
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
         seen[pack.id] = manifest_path
         packs.append(pack)
-    return tuple(packs)
+    return PackScan(tuple(packs), tuple(quarantined))
+
+
+def discover_packs(
+    root: str | Path | None = None,
+    *,
+    include_hidden: bool = False,
+) -> tuple[PackDefinition, ...]:
+    """Return the admitted packs under ``root``; invalid packs are quarantined.
+
+    Quarantine records are available from :func:`scan_packs` and are logged
+    once per process. Fail-closed packs (see ``FAIL_CLOSED_PACK_FOLDERS``)
+    still raise.
+    """
+    return scan_packs(root, include_hidden=include_hidden).packs
+
+
+def _raw_declared_capabilities(manifest_path: Path | None) -> tuple[str, ...]:
+    """Read the declared capability labels of a manifest that failed admission.
+
+    Used only to attribute a capability id to a quarantined pack. It never
+    admits anything, so it does not need to validate the rest of the manifest.
+    """
+    if manifest_path is None:
+        return ()
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return ()
+    labels = raw.get("capabilities") if isinstance(raw, dict) else None
+    if not isinstance(labels, list):
+        return ()
+    return tuple(str(label) for label in labels if isinstance(label, str))
+
+
+def quarantined_pack_for_capability(
+    capability_id: str,
+    roots: tuple[str | Path, ...] | None = None,
+) -> QuarantinedPack | None:
+    """Return the quarantined pack that declares ``capability_id``, if any.
+
+    Matches a qualified id (``<pack>.<name>``) by its pack prefix, and a bare or
+    qualified id against the labels the broken manifest declares. Called only on
+    the not-found path, so the extra scan costs nothing on success.
+    """
+    scan_roots = roots if roots is not None else _default_pack_roots()
+    for root in scan_roots:
+        for record in scan_packs(root).quarantined:
+            if capability_id.startswith(f"{record.pack_id}."):
+                return record
+            labels = _raw_declared_capabilities(record.manifest_path)
+            if capability_id in labels or any(capability_id == f"{record.pack_id}.{label}" for label in labels):
+                return record
+    return None
+
+
+def _default_pack_roots() -> tuple[Path, ...]:
+    raw_env = os.environ.get("ASTRID_PACKS_PATH", "")
+    env_roots = tuple(Path(item).expanduser() for item in raw_env.split(os.pathsep) if item)
+    return (packs_root(), *env_roots)
+
+
+def pack_quarantine_section() -> dict[str, Any]:
+    """Doctor section: quarantined packs with errors and fixes. Never raises.
+
+    A fail-closed pack (``_core`` or a required pack) is reported as
+    ``fail_closed_error`` instead, because discovery raises for it.
+    """
+    try:
+        records = pack_quarantine_report()
+    except PackValidationError as exc:
+        return {"count": 0, "quarantined": [], "fail_closed_error": str(exc)}
+    return {"count": len(records), "quarantined": records, "fail_closed_error": None}
+
+
+def pack_quarantine_report(roots: tuple[str | Path, ...] | None = None) -> list[dict[str, Any]]:
+    """Return JSON-shaped quarantine records for the source tree and env roots.
+
+    Read-only. Raises only for a fail-closed pack, exactly as discovery does.
+    """
+    scan_roots = roots if roots is not None else _default_pack_roots()
+    records: list[dict[str, Any]] = []
+    for root in scan_roots:
+        records.extend(record.to_dict() for record in scan_packs(root).quarantined)
+    return records
 
 
 def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:

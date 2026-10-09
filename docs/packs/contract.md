@@ -170,6 +170,52 @@ M0 does not implement unified capability discovery, `--all`, status filters,
 visibility filters, enable/disable mechanics, or hidden/example/deprecated
 enforcement.
 
+## Quarantine and fail-closed packs
+
+Admission is per pack, not per checkout. A source pack whose `pack.yaml` fails
+canonical admission (for example a keyword that does not match the identifier
+pattern) is **quarantined**: it is excluded from discovery for every registry,
+the SDK, the element catalog, and the capability host. Its executors never
+register or run. Valid neighbours still load. The quarantine record carries the
+pack id, the manifest path, the exact admission error, and the fix, and is
+reported by `python3 -m astrid doctor --json` (`pack_quarantine`) and by the
+validator. The validator prints the same error text discovery records.
+
+Invoking a capability that a quarantined pack declares returns a typed
+`unavailable` (`CapabilityUnavailableError`: `state: "unavailable"`,
+`reason: "pack_quarantined"`, the manifest error, and the fix). It is not
+reported as "not found".
+
+Fail-closed packs are the exception. An invalid manifest there still raises and
+blocks discovery:
+
+- `_core`, the runtime-owned core skill folder (`FAIL_CLOSED_PACK_FOLDERS`).
+- Any pack the runtime declares required (`REQUIRED_PACK_IDS`). The runtime
+  decides this, not the manifest, so a broken manifest cannot opt itself in or
+  out.
+
+The trust basis is DEC-001: only first-party, author-written packs are trusted,
+and loading a pack runs its Python. Quarantine never admits anything new. A
+quarantined pack's code is not imported or executed. Quarantine only lowers the
+availability of a broken pack, and it is loud: a warning is logged, `doctor`
+lists the record, and the invocation names the fix.
+
+Capability approval is a separate gate. A discovered capability with no
+approved row in `config/astrid-beta-capabilities.json` is registered as
+`unavailable` with the reason "has no approved capability-matrix row". Only that
+capability is affected, and the host keeps running. A matrix row with no
+discovered executor is reported as stale and is not fatal. The census lock
+`config/astrid-capability-census.lock.json` lists the approved source labels and
+executor ids. It is regenerated with
+`python -m astrid.core.execution.capability_ledger approve` and reviewed as a
+diff. Census drift is reported by name and does not stop the host.
+
+Quarantine is a runtime tolerance, not a merge gate. A broken shipped pack no
+longer stops the running host, so CI must catch it. `python3 -m astrid.core.pack.cli
+validate astrid/packs` validates only the ids listed in
+`_FIRST_PARTY_PACK_IDS` (`validate_first_party.py`). A new shipped pack must be
+added to that list, or CI must assert `scan_packs(packs_root()).quarantined == ()`.
+
 ## Manifest And Runtime Convergence
 
 The current system has two related but different pack paths:

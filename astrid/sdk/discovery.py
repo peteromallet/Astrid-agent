@@ -14,6 +14,7 @@ from ._module import _sdk_module
 from .exceptions import (
     CapabilityAmbiguousError,
     CapabilityNotFoundError,
+    CapabilityUnavailableError,
     CapabilityValidationError,
 )
 from .results import Capability, CapabilityType, _json_safe_mapping
@@ -719,6 +720,51 @@ def _resolve_capability_kindless(
 
 
 def _resolve_capability(
+    capability_id: str,
+    *,
+    kind: CapabilityType | None,
+    element_kind: str | None,
+    executor_registry: Any,
+    orchestrator_registry: Any,
+    element_registry: Any | None,
+) -> Capability:
+    """Resolve an admitted capability, or name the quarantine that hides it.
+
+    A capability that is absent from the admitted registries but declared by a
+    quarantined pack raises :class:`CapabilityUnavailableError` with the manifest
+    error and the fix. Only an id with no quarantined owner stays "not found".
+    """
+    try:
+        return _resolve_admitted_capability(
+            capability_id,
+            kind=kind,
+            element_kind=element_kind,
+            executor_registry=executor_registry,
+            orchestrator_registry=orchestrator_registry,
+            element_registry=element_registry,
+        )
+    except CapabilityNotFoundError as exc:
+        from astrid.core.pack.loader import quarantined_pack_for_capability
+
+        quarantined = quarantined_pack_for_capability(capability_id)
+        if quarantined is None:
+            raise
+        raise CapabilityUnavailableError(
+            f"capability {capability_id!r} is unavailable: pack {quarantined.pack_id!r} is quarantined"
+            f" because its manifest failed admission: {quarantined.error}; fix: {quarantined.fix}",
+            details={
+                "state": CapabilityUnavailableError.state,
+                "reason": CapabilityUnavailableError.reason,
+                "capability_id": capability_id,
+                "pack_id": quarantined.pack_id,
+                "manifest_path": str(quarantined.manifest_path) if quarantined.manifest_path else None,
+                "error": quarantined.error,
+                "fix": quarantined.fix,
+            },
+        ) from exc
+
+
+def _resolve_admitted_capability(
     capability_id: str,
     *,
     kind: CapabilityType | None,

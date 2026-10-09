@@ -261,6 +261,9 @@ def _dispatch_doctor(args: list[str]) -> int:
         report["healthy"] = False
         report["issues"] = [*report.get("issues", []), describe_cleanup_latch(pack_host_cleanup)]
         result_code = 1
+    from astrid.core.pack.loader import pack_quarantine_section
+
+    report["pack_quarantine"] = pack_quarantine_section()
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
@@ -278,6 +281,8 @@ def _dispatch_doctor(args: list[str]) -> int:
     else:
         state = report.get("state", "ready") if isinstance(report, dict) else "ready"
         print(f"Astrid doctor\nstate: {state}")
+        for record in report.get("pack_quarantine", {}).get("quarantined", []):
+            print(f"quarantined pack {record['pack_id']}: {record['error']}; fix: {record['fix']}")
         print(f"runtime compatibility: {compatibility['status']}")
         if compatibility["status"] != "ok":
             print(f"compatibility detail: {compatibility['reason']}")

@@ -15,6 +15,7 @@ import heapq
 import hmac
 import importlib.util
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -1921,6 +1922,10 @@ class CapabilityRecord:
     preflight: Mapping[str, Any] = field(default_factory=dict)
     ready: bool = False
     matrix: Mapping[str, Any] = field(default_factory=dict)
+    # Set when a discovered capability has no approved capability-matrix row.
+    # Such a capability is registered as unavailable with this reason; it is
+    # never admitted for execution. Other capabilities are unaffected.
+    approval_reason: str | None = None
 
     @property
     def id(self) -> str:
@@ -2374,7 +2379,41 @@ class RuntimeProtocolClient:
         )
 
 
+_LOGGER = logging.getLogger(__name__)
 _OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "hivemind.", "seedance_local.")
+
+
+def _unapproved_reason(capability_id: str, matrix_path: Path | None) -> str:
+    where = str(matrix_path) if matrix_path is not None else "config/astrid-beta-capabilities.json"
+    return (
+        f"capability {capability_id!r} has no approved capability-matrix row; "
+        f"add a row to {where} (disposition, evidence_reason, adapter_family, resource_keys), "
+        "then restart the host and run: python -m astrid.core.execution.capability_ledger approve"
+    )
+
+
+def _quarantine_scope(pack_roots: Any) -> tuple[tuple[Path, ...], frozenset[str]]:
+    """Return the quarantined pack folders and ids under the host's pack roots.
+
+    Uses the same per-pack admission as discovery (``astrid.core.pack.loader``):
+    fail-closed packs still raise here, every other invalid pack is excluded.
+    """
+    from astrid.core.pack.loader import scan_packs
+
+    dirs: list[Path] = []
+    ids: set[str] = set()
+    for root in pack_roots:
+        for record in scan_packs(root).quarantined:
+            dirs.append(record.pack_dir.resolve())
+            ids.add(record.pack_id)
+    return tuple(dirs), frozenset(ids)
+
+
+def _inside_quarantined(path: Path, quarantined_dirs: tuple[Path, ...]) -> bool:
+    if not quarantined_dirs:
+        return False
+    resolved = path.resolve()
+    return any(resolved == directory or directory in resolved.parents for directory in quarantined_dirs)
 
 
 def _configured_claim_target(raw_value: str | None = None) -> dict[str, Any] | None:
@@ -2512,6 +2551,7 @@ class GenericPackHost:
         self.attempt_root = Path(attempt_root).expanduser().resolve() if attempt_root else None
         self.attempt_base = Path(attempt_base).expanduser().resolve() if attempt_base else None
         self.capabilities: dict[str, CapabilityRecord] = {}
+        self.stale_matrix_entries: tuple[str, ...] = ()
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
         self._registered_runtime_state: dict[str, Any] = {}
@@ -2746,8 +2786,13 @@ class GenericPackHost:
         from astrid.core.execution.executor.schema import ExecutorValidationError
 
         records: dict[str, CapabilityRecord] = {}
+        quarantined_dirs, quarantined_ids = _quarantine_scope(self.pack_roots)
         for root in self.pack_roots:
             for executor_root in discover_folder_executor_roots(root):
+                if _inside_quarantined(executor_root, quarantined_dirs):
+                    # A pack whose manifest failed admission runs nothing; it is
+                    # reported by quarantine, not registered as a capability.
+                    continue
                 try:
                     definition = load_folder_executor(executor_root)
                 except (ExecutorValidationError, OSError, ValueError):
@@ -2763,19 +2808,28 @@ class GenericPackHost:
         if self.matrix:
             discovered = set(records)
             expected = set(self.matrix)
-            missing = sorted(discovered - expected)
-            stale = sorted(
+            # A capability with no approved matrix row is kept visible but not
+            # executable. The reason names the exact row to add; the rest of the
+            # host keeps running. This replaces a whole-host HostError, so one
+            # new pack cannot take down every capability.
+            for capability_id in sorted(discovered - expected):
+                records[capability_id] = CapabilityRecord(**{
+                    **records[capability_id].__dict__,
+                    "approval_reason": _unapproved_reason(capability_id, self.capability_matrix_path),
+                })
+            # A matrix row with no discovered executor can only remove
+            # capabilities, never add one, so it is reported, not fatal.
+            self.stale_matrix_entries = tuple(sorted(
                 capability_id
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
-            )
-            if missing or stale:
-                details = []
-                if missing:
-                    details.append("missing matrix entries: " + ", ".join(missing))
-                if stale:
-                    details.append("matrix entries not discovered: " + ", ".join(stale))
-                raise HostError("capability matrix does not exactly cover discovered corpus; " + "; ".join(details))
+                and capability_id.split(".", 1)[0] not in quarantined_ids
+            ))
+            if self.stale_matrix_entries:
+                _LOGGER.warning(
+                    "capability matrix rows not discovered (ignored): %s",
+                    ", ".join(self.stale_matrix_entries),
+                )
         # Dependencies are digested after the full corpus is known so a graph
         # or dependency source change invalidates the next registration.
         records = {
@@ -2808,6 +2862,8 @@ class GenericPackHost:
             record = self.capabilities.get(capability_id)
             if record is None:
                 raise HostError(f"capability not discovered: {capability_id}")
+            if record.approval_reason:
+                raise HostError(f"capability {capability_id!r} is unavailable: {record.approval_reason}")
             return record.definition.to_dict(), {
                 "capability_digest": record.capability_digest,
                 "source_digest": record.source_digest,
@@ -2825,8 +2881,11 @@ class GenericPackHost:
                 load_folder_orchestrator,
             )
 
+            quarantined_dirs, _quarantined_ids = _quarantine_scope(self.pack_roots)
             for root in self.pack_roots:
                 for orchestrator_root in discover_folder_orchestrator_roots(root):
+                    if _inside_quarantined(orchestrator_root, quarantined_dirs):
+                        continue
                     try:
                         definition = load_folder_orchestrator(orchestrator_root)
                     except (OSError, ValueError):
@@ -2941,6 +3000,8 @@ class GenericPackHost:
                     "ok": False,
                     "reason": _withdrawn_reason(record),
                 }
+            if record.approval_reason:
+                checks["approval"] = {"ok": False, "reason": record.approval_reason}
             ready = all(value is True or (isinstance(value, dict) and value.get("ok") is True) for value in checks.values())
             updated[record.id] = CapabilityRecord(**{**record.__dict__, "preflight": checks, "ready": ready})
         self.capabilities = updated

@@ -6,11 +6,12 @@ read-only: it can see source-tree packs, an already-materialized project
 ``ASTRID_PACKS_PATH``. It never creates a project pack and never consults an
     mutable user pack store.
 
-Fault tolerance: the ``managed`` / ``extra`` / ``env`` layers are
-external by definition. A pack whose manifest fails to load is skipped
-individually with a logged warning so one broken external pack cannot hide its
-valid neighbors. The source-tree scan stays strict: first-party packs must
-always load.
+Fault tolerance: every layer quarantines per pack. A pack whose manifest fails
+admission is skipped individually with a logged warning so one broken pack
+cannot hide its valid neighbors (see ``astrid.core.pack.loader.scan_packs``).
+The exceptions are the fail-closed packs (``_core`` and runtime-required packs),
+whose invalid manifest still raises. See docs/packs/contract.md, "Quarantine
+and fail-closed packs".
 """
 
 from __future__ import annotations

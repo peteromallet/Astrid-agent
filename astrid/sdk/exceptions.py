@@ -64,6 +64,18 @@ class CapabilityInvocationError(AstridSDKError):
         self.details = dict(details or {})
 
 
+class CapabilityUnavailableError(CapabilityInvocationError):
+    """Raised when a capability's pack is quarantined (its manifest is not admitted).
+
+    The capability exists in the source tree but is not runnable until the
+    manifest is fixed. ``details`` carries ``state == "unavailable"``,
+    ``reason == "pack_quarantined"``, the manifest error and the fix command.
+    """
+
+    state = "unavailable"
+    reason = "pack_quarantined"
+
+
 class CapabilityValidationError(AstridSDKError):
     """Raised when capability metadata or invocation arguments are invalid."""
 

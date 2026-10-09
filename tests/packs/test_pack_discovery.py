@@ -221,12 +221,19 @@ class PackDiscoveryTest(unittest.TestCase):
             self.assertIn("builtin.duplicate", registry.as_mapping())
 
     def test_pack_folder_must_match_pack_id(self) -> None:
+        # A folder/id mismatch quarantines that pack; it no longer aborts the root.
+        from astrid.core.pack.loader import scan_packs
+
         with tempfile.TemporaryDirectory() as tmp:
             packs_root = Path(tmp) / "packs"
             write_pack(packs_root, "builtin", folder="external")
+            write_pack(packs_root, "neighbour")
 
-            with self.assertRaisesRegex(PackValidationError, "must match folder name"):
-                discover_packs(packs_root)
+            scan = scan_packs(packs_root)
+            self.assertEqual([pack.id for pack in scan.packs], ["neighbour"])
+            self.assertEqual([record.pack_id for record in scan.quarantined], ["external"])
+            self.assertIn("must match folder name", scan.quarantined[0].error)
+            self.assertEqual([pack.id for pack in discover_packs(packs_root)], ["neighbour"])
 
     def test_misplaced_executor_id_fails_pack_alignment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
