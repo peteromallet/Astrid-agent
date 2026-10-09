@@ -731,6 +731,21 @@ class PackValidator:
             )
         except ValueError as exc:
             self.errors.append(f"{rel}: {exc}")
+        # Same loader discovery uses. Discovery skips an element this rejects
+        # (with a stderr warning only), so the validator must reject it too.
+        from astrid.core.element.schema import ElementValidationError, load_element_definition
+
+        try:
+            load_element_definition(
+                manifest_path.parent,
+                kind=kind,
+                source=f"pack:{pack.id}",
+                editable=False,
+                priority=0,
+                element_kind_registry=element_kind_registry_for_pack(pack),
+            )
+        except ElementValidationError as exc:
+            self.errors.append(f"{rel}: {exc}")
 
     def _validate_runtime_entrypoints(
         self,

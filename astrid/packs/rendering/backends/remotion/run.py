@@ -896,8 +896,18 @@ def _stage_effect_assets_for_timeline(
         }
     )
     if unknown_clip_types:
+        # A type that exists on disk but failed discovery is named with the
+        # reason, so the author sees the broken element, not a missing one.
+        skipped_by_folder = {item.path.parent.name: item for item in registry.diagnostics}
+        described = []
+        for clip_type in unknown_clip_types:
+            skipped = skipped_by_folder.get(clip_type)
+            if skipped is None:
+                described.append(clip_type)
+            else:
+                described.append(f"{clip_type} (skipped at discovery: {skipped})")
         raise ValueError(
-            "timeline uses unregistered effect clip type(s): " + ", ".join(unknown_clip_types)
+            "timeline uses unregistered effect clip type(s): " + ", ".join(described)
         )
 
     used_effect_ids: set[str] = set()

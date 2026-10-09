@@ -264,6 +264,9 @@ def _dispatch_doctor(args: list[str]) -> int:
     from astrid.core.pack.loader import pack_quarantine_section
 
     report["pack_quarantine"] = pack_quarantine_section()
+    from astrid.core.element.registry import element_skip_section
+
+    report["element_skips"] = element_skip_section()
     from astrid.core.execution.guards import EVIDENCE_STATUS_NAME, read_evidence_status
 
     report["evidence_budget"] = read_evidence_status(Path(support_root) / EVIDENCE_STATUS_NAME)

@@ -71,6 +71,26 @@ class SkippedElement:
     def __str__(self) -> str:
         return f"{self.path}: {self.error}"
 
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "pack_id": self.pack_id,
+            "kind": self.kind,
+            "element_id": self.path.parent.name,
+            "path": str(self.path),
+            "error": self.error,
+            "fix": "fix the element manifest, then run: python3 -m astrid.core.pack.cli validate <pack root>",
+        }
+
+
+def element_skip_section() -> dict[str, object]:
+    """Doctor section: elements skipped at discovery, with the reason. Never raises."""
+    try:
+        skipped = load_default_registry(project_root=REPO_ROOT).diagnostics
+    except Exception as exc:  # noqa: BLE001 - doctor reports the failure instead of crashing
+        return {"count": 0, "skipped": [], "error": str(exc)}
+    records = [item.to_dict() for item in skipped]
+    return {"count": len(records), "skipped": records, "error": None}
+
 
 class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
     """Resolved element registry keyed by kind and element id.
