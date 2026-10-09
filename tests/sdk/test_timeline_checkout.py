@@ -85,13 +85,13 @@ def test_clip_lookup_by_asset_id_prefix_text_and_near():
     assert tl.clip("P", near=0.1).id == "a-plate"
 
 
-def test_enter_at_a_word_moves_in_timeline_seconds_and_stores_the_anchor():
+def test_enter_at_a_word_moves_in_timeline_seconds_and_stores_the_moment():
     tl = Checkout(bundle())
     rocket = tl.clip("R").enter_at("viral")
     assert rocket.start == pytest.approx(1.3)
     assert rocket.data["at"] == pytest.approx(1.3)  # shot A starts at 0
     assert rocket.duration == pytest.approx(1.0)
-    assert rocket.anchor == {"word": "s1:2", "text": "viral", "offset_s": 0.0, "edge": "start"}
+    assert rocket.anchor == '"viral"'  # stored as a moment; the seconds are only the cache
     plate = tl.clip("b-type").enter_at(5.0)  # a plain time: shot-relative at = 1.0 in shot B
     assert plate.data["at"] == pytest.approx(1.0)
     assert plate.anchor is None
@@ -101,7 +101,7 @@ def test_nudge_frames_keeps_the_anchor_offset():
     tl = Checkout(bundle())
     rocket = tl.clip("R").enter_at("viral").nudge(frames=3)
     assert rocket.start == pytest.approx(1.4)
-    assert rocket.anchor["offset_s"] == pytest.approx(0.1)
+    assert rocket.anchor == '"viral" +3f'  # a nudge becomes an offset, never a fixed number
     rocket.extend(0.5)
     assert rocket.duration == pytest.approx(1.5)
 
@@ -191,7 +191,7 @@ def test_add_overlay_on_a_word_in_a_corner():
     sparkle = tl.add("am-type", at="Live", hold=0.5, params={"text": "*", "width": 200}, corner="top-right")
     assert sparkle.start == pytest.approx(tl.word("Live").start)
     assert sparkle.shot_id == "B" and sparkle.params["x"] == 1920 - 96 - 200 and sparkle.params["y"] == 54
-    assert sparkle.anchor["text"] == "Live"
+    assert sparkle.anchor == '"Live"'
 
 
 # ---- re-flow: the voice track lays out the film ------------------------------------------
@@ -266,8 +266,9 @@ def test_an_anchored_cut_rolls_so_the_picture_track_has_no_hole():
     clips = data["shots"]["A"]["internal_timeline"]["clips"]
     clips[0]["hold"] = 2.0
     clips.insert(1, {"id": "a-plate2", "clipType": "am-snap-plate", "track": "plate", "asset": "Q", "at": 2.0, "hold": 2.0, "params": {}})
+    clips[0]["app"] = {"cut": "c1"}
+    clips[1]["app"] = {"cut": "c2", "on": '"viral"'}
     tl = Checkout(data)
-    tl.clip("a-plate2").data["app"] = {"anchor": {"word": "s1:2", "text": "viral", "offset_s": 0.0, "edge": "start"}}
     tl.retime()  # "viral" is at 1.3: the cut rolls back from 2.0 to 1.3
     assert tl.clip("a-plate2").start == pytest.approx(1.3) and tl.clip("a-plate2").end == pytest.approx(4.0)
     assert tl.clip("a-plate").end == pytest.approx(1.3)

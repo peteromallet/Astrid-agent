@@ -128,12 +128,12 @@ def test_publish_requires_a_message():
 def test_edit_at_word_moves_the_clip_and_says_so(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
-    assert "a-rocket (R): 1.000 → 1.200 s" in out or "a-rocket (R):" in out
-    assert 'anchored to "viral"' in out
+    assert "✎ a-rocket" in out and "1.000 → 1.300 s (+0.30 s)" in out
+    assert 'now enters on "viral"' in out
     assert "next: timelines show" in out.splitlines()[-1] or "next:" in out
     reloaded = Checkout.load(local)
     rocket = reloaded.clip("a-rocket")
-    assert rocket.anchor["word"] == "s1:2"
+    assert rocket.anchor == '"viral"'
 
 
 def test_edit_nudge_frames_set_and_close_gap(local, capsys):
@@ -232,7 +232,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
 
     assert _run("edit", "t", "--project", "P", "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
-    assert 'anchored to "viral"' in out
+    assert 'now enters on "viral"' in out
 
     assert _run("status", "t", "--project", "P") == 0
     status = capsys.readouterr().out

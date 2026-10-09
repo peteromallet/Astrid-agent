@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from astrid.core.timeline import moments as mo
 from astrid.sdk import timeline_intent as intent
 from astrid.core.timeline.cuts import (
     bundle_fps,
@@ -117,6 +118,26 @@ class Word:
         return f"{self.text!r} {self.start:.3f}–{self.end:.3f} s [{self.id}]"
 
 
+class _LazyParams(dict):
+    """An empty params dict that attaches itself to the clip on the first write."""
+
+    def __init__(self, data: dict[str, Any]):
+        super().__init__()
+        self._data = data
+
+    def _attach(self) -> dict[str, Any]:
+        return self._data.setdefault("params", {})
+
+    def __setitem__(self, key, value):
+        self._attach()[key] = value
+
+    def update(self, *args, **kwargs):
+        self._attach().update(*args, **kwargs)
+
+    def setdefault(self, key, default=None):
+        return self._attach().setdefault(key, default)
+
+
 class Clip:
     """A live view of one clip. Reads and writes go straight to the checkout document."""
 
@@ -145,7 +166,12 @@ class Clip:
 
     @property
     def params(self) -> dict[str, Any]:
-        return self.data.setdefault("params", {})
+        """The element params (live: changes write through). A clip without params reads as ``{}``
+        and is not given an empty one just by looking (that would read as an edit)."""
+        value = self.data.get("params")
+        if isinstance(value, dict):
+            return value
+        return _LazyParams(self.data)
 
     @property
     def text(self) -> str | None:
@@ -161,8 +187,28 @@ class Clip:
         return self._tl._is_audio(self.shot_id, self.data)
 
     @property
-    def anchor(self) -> dict[str, Any] | None:
-        return intent.anchor(self.data)
+    def anchor(self) -> str | None:
+        """The moment this clip starts on (``"viral"``, ``+0.8s`` …), or None."""
+        return intent.on(self.data)
+
+    @property
+    def moments(self) -> dict[str, Any]:
+        """``{on, until, for}``: when this clip starts and ends, as stored (None where unset)."""
+        return {"on": intent.on(self.data), "until": intent.until(self.data), "for": intent.for_s(self.data)}
+
+    @property
+    def cut_id(self) -> str | None:
+        return intent.cut_of(self.data)
+
+    @property
+    def layer_name(self) -> str | None:
+        return intent.layer_of(self.data)
+
+    @property
+    def address(self) -> str:
+        """``c22.rocket`` when the clip has a cut and a layer name, else its clip id."""
+        cut, layer = self.cut_id, self.layer_name
+        return f"{cut}.{layer}" if cut and layer else self.id
 
     # clocks --------------------------------------------------------------
     @property
@@ -193,35 +239,61 @@ class Clip:
 
     def __repr__(self) -> str:
         what = self.asset or (f'"{self.text[:28]}"' if self.text else "")
-        anchor = f" ⚓{self.anchor['text']}" if self.anchor else ""
-        return f"<Clip {self.id} {self.element} {what} {self.start:.3f}–{self.end:.3f} s{anchor}>"
+        anchor = f" on {self.anchor}" if self.anchor else ""
+        return f"<Clip {self.address} {self.element} {what} {self.start:.3f}–{self.end:.3f} s{anchor}>"
 
     # edits ---------------------------------------------------------------
-    def enter_at(self, when: Any, *, offset: float = 0.0, anchor: bool = True) -> "Clip":
-        """Start this clip at a word or a time, keeping its length. A word becomes its anchor."""
-        word = self._tl._as_word(when)
-        target = self._tl.quantize((word.start if word else self._tl.time(when)) + offset)
-        self._set_start(target)
-        if word is not None and anchor:
-            intent.set_anchor(self.data, {"word": word.id, "text": word.text, "offset_s": _r(offset), "edge": "start"})
-        else:
-            intent.set_anchor(self.data, None)
+    def on(self, moment: Any) -> "Clip":
+        """Start on a moment: ``"viral"``, ``after "Astrid"``, ``beat 2 after "Astrid"``, ``c22``, ``+0.8s``.
+
+        Stored as written (seconds are only the cache), then resolved now. A plain number
+        is a time: it becomes an offset from the clip's cut (or a fixed time without a cut)."""
+        self._tl._place_on(self, moment)
         return self
 
+    def until(self, moment: Any) -> "Clip":
+        """End on a moment (``"Astrid"``, ``after "viral"``, ``c26``, ``end``); its start does not move."""
+        text = self._tl._moment_text(moment)
+        t = self._tl._moment_time(text, self)
+        if t <= self.start + 0.5 / self._tl.fps:
+            raise TimelineEditError(f"{self.address}: {text} is at {t:.3f} s, before the clip starts ({self.start:.3f} s)")
+        intent.set_until(self.data, text)
+        intent.set_for(self.data, None)
+        _set_length(self.data, self._tl._frame(t) - self.start)
+        return self
+
+    def enter_at(self, when: Any, *, offset: float = 0.0, anchor: bool = True) -> "Clip":
+        """Start at a word or a time, keeping the length. A word becomes the clip's ``on`` moment."""
+        word = self._tl._as_word(when)
+        if word is not None and anchor:
+            moment = mo.word_moment(word, self._tl.words())
+            if offset:
+                moment = mo.parse(f"{mo.format_moment(moment)} {mo.offset_text(offset, self._tl.fps)}")
+            return self.on(moment)
+        t = (word.start if word else self._tl.time(when)) + offset
+        return self.on(t)
+
     def nudge(self, seconds: float = 0.0, *, frames: int = 0) -> "Clip":
-        """Move by seconds and/or frames (keeps an anchor; its offset absorbs the move)."""
+        """Move by seconds and/or frames. A clip on a moment keeps it: the nudge becomes its offset (``"viral" +2f``)."""
+        current = intent.on(self.data)
+        if current:
+            moment = mo.parse(current).with_offset(seconds=float(seconds), frames=int(frames))
+            return self.on(moment)
         delta = float(seconds) + frames / self._tl.fps
         self._set_start(self._tl.quantize(self.start + delta))
-        anchor = self.anchor
-        if anchor:
-            anchor["offset_s"] = _r(_num(anchor.get("offset_s")) + delta)
-            intent.set_anchor(self.data, anchor)
         return self
+
+    def hold_for(self, seconds: float) -> "Clip":
+        """A literal length (no moment behind it). Prefer ``until`` when the end means something."""
+        return self.set_duration(seconds)
 
     def set_duration(self, seconds: float) -> "Clip":
         if seconds <= 0:
-            raise TimelineEditError(f"{self.id}: a duration must be positive (got {seconds})")
+            raise TimelineEditError(f"{self.address}: a duration must be positive (got {seconds})")
         _set_length(self.data, self._tl.quantize(seconds))
+        if intent.cut_of(self.data) or intent.until(self.data):
+            intent.set_until(self.data, None)
+            intent.set_for(self.data, self._tl.quantize(seconds))
         return self
 
     def extend(self, seconds: float = 0.0, *, frames: int = 0) -> "Clip":
@@ -229,6 +301,11 @@ class Clip:
         return self.set_duration(self.duration + float(seconds) + frames / self._tl.fps)
 
     def end_at(self, when: Any, *, offset: float = 0.0) -> "Clip":
+        if self._tl._as_word(when) is not None or (isinstance(when, str) and not TIME_RE.match(when.strip())):
+            moment = self._tl._moment_text(when)
+            if offset:
+                moment = f"{moment} {mo.offset_text(offset, self._tl.fps)}"
+            return self.until(moment)
         return self.set_duration(self._tl.quantize(self._tl.time(when) + offset) - self.start)
 
     def set(self, **params: Any) -> "Clip":
@@ -417,6 +494,53 @@ class Voice:
         return self
 
 
+class _MomentContext:
+    """What a moment resolves against: the words, the music's beats, the cuts, and the clip's own cut."""
+
+    def __init__(self, tl: "Checkout", clip: Clip | None):
+        self.tl, self.clip, self.fps = tl, clip, tl.fps
+
+    def words(self):
+        cache = tl_cache(self.tl)
+        if "words" not in cache:
+            cache["words"] = self.tl.words()
+        return cache["words"]
+
+    def beats(self, kind: str):
+        out = []
+        for clip in self.tl.clips(audio=True):
+            if clip.track != "music" and not intent.beat_sources(clip.data):
+                continue
+            speed = _num(clip.data.get("speed"), 1.0) or 1.0
+            src0 = _num(clip.data.get("from"))
+            for b in intent.beat_sources(clip.data, kind):
+                t = clip.start + (b - src0) / speed
+                if clip.start - 1e-6 <= t < clip.end - 1e-6:
+                    out.append(t)
+        return sorted(out)
+
+    def cut_start(self, cut_id: str) -> float:
+        for g in self.tl._cut_groups():
+            if g["id"] == cut_id and g["picture"] is not None:
+                return g["picture"].start
+        raise mo.MomentError(f"there is no cut {cut_id}")
+
+    def own_cut(self):
+        return self.tl._own_cut_span(self.clip) if self.clip is not None else None
+
+    def line_in_point(self, line: str):
+        try:
+            return Voice(self.tl, line).clips[0].start
+        except TimelineEditError:
+            return None
+
+
+def tl_cache(tl: "Checkout") -> dict[str, Any]:
+    if tl._mcache is None:
+        tl._mcache = {}
+    return tl._mcache
+
+
 # ------------------------------------------------------------------ checkout
 
 class Checkout:
@@ -428,6 +552,7 @@ class Checkout:
         self.fps = bundle_fps(bundle) or 30.0
         self.notes: list[str] = []
         self.report: list[str] = []  # what the last re-flow did, in plain words
+        self._mcache: dict[str, Any] | None = None
 
     # ---- open / save ------------------------------------------------------
     @classmethod
@@ -489,6 +614,16 @@ class Checkout:
         document = self.document()
         return diff_bundles(base_bundle(document), document)
 
+    def changes(self, against: Mapping[str, Any] | None = None) -> list[str]:
+        """What this working copy changes, in plain words (against its base, or another bundle).
+
+        ``c30.cover  now holds until "Astrid"  93.400 → 93.500 s (+0.10 s)``. Clips that only
+        moved because something before them moved are summed up in one line per shift."""
+        from astrid.sdk.timeline_cuts import base_bundle
+
+        before = Checkout(copy.deepcopy(dict(against)) if against is not None else base_bundle(self.document()))
+        return describe_changes(before, self)
+
     # ---- clocks -----------------------------------------------------------
     def quantize(self, seconds: float) -> float:
         return _r(round(float(seconds) * self.fps) / self.fps)
@@ -534,6 +669,15 @@ class Checkout:
                 raise TimelineEditError(f"cut {n} does not exist; this timeline has cuts 1–{len(cuts)}")
             return cuts[n - 1]
         text = str(selector).strip()
+        if mo.CUT_ID_RE.match(text.lower()):
+            group = next((g for g in self._cut_groups() if g["id"] == text.lower()), None)
+            if group is None:
+                ids = [g["id"] for g in self._cut_groups()]
+                raise TimelineEditError(f"no cut {text}; cuts are {', '.join(ids) or 'not named in this timeline'}")
+            if group["picture"] is not None:
+                for cut in cuts:
+                    if any(step.data is group["picture"].data for step in cut.steps):
+                        return cut
         if TIME_RE.match(text) or isinstance(selector, float):
             t = self.time(selector if not isinstance(selector, float) else selector)
             for cut in cuts:
@@ -590,7 +734,7 @@ class Checkout:
 
     def _matches(self, c: Clip, query: str) -> bool:
         text = str(query).strip()
-        return (c.id == text or c.id.startswith(text) or (c.asset or "").lower() == text.lower()
+        return (c.id == text or c.address == text or c.layer_name == text or c.id.startswith(text) or (c.asset or "").lower() == text.lower()
                 or c.element == text or bool(c.text and _norm(text) in _norm(c.text)))
 
     def words(self, *, between: tuple[float, float] | None = None) -> list[Word]:
@@ -906,38 +1050,190 @@ class Checkout:
         return report
 
     def retime(self) -> list[tuple[str, float, float]]:
-        """Move every anchored clip back onto its word (after a VO change). Returns what moved.
+        """Resolve every moment (after a VO change, a gap, an edit). Returns what moved.
 
-        An anchored cut (a picture clip) rolls: the picture before it ends where it now starts,
-        and it keeps its own end, so the picture track never gets a hole or an overlap."""
-        pictures = {id(step.data) for cut in self.cuts for step in cut.steps}
-        words = self.words()
-        by_id = {w.id: w for w in words}
-        moved = []
-        for clip in self.clips():
-            anchor = clip.anchor
-            if not anchor:
+        Cuts first: each cut's picture starts on its ``on`` moment and runs to the next cut,
+        so the picture track never gets a hole. Then every clip of a cut starts on its own
+        ``on`` (or with its cut) and ends on its ``until``, its literal ``for``, or its cut's
+        end. Clips without a cut only follow their ``on``/``until``. Moments floor to the frame."""
+        moved: dict[int, tuple[str, float, float]] = {}
+        self._mcache = None
+        groups = self._cut_groups()
+        for g in groups:  # 1. cut starts
+            pic = g["picture"]
+            on = intent.on(pic.data) if pic else None
+            if not on:
                 continue
-            word = by_id.get(str(anchor.get("word")))
-            if word is None or _norm(word.text) != _norm(anchor.get("text")):
-                segment = str(anchor.get("word", "")).split(":")[0]
-                same = [w for w in words if _norm(w.text) == _norm(anchor.get("text"))]
-                pool = [w for w in same if w.segment == segment] or same
-                if not pool:
-                    self.notes.append(f"{clip.id}: its word {anchor.get('text')!r} is no longer spoken; left in place")
+            t = self._resolve_note(on, pic, in_point=True)
+            if t is not None and self._move_within_shot(pic, t, keep_end=True, moved=moved):
+                self._mcache = None
+        groups = self._cut_groups()
+        cut_span = {}
+        for k, g in enumerate(groups):
+            if g["picture"] is None:
+                continue
+            nxt = next((h for h in groups[k + 1:] if h["picture"] is not None), None)
+            cut_span[g["id"]] = (g["picture"].start, nxt["picture"].start if nxt else None)
+        self._mcache = {"cuts": cut_span}
+        for clip in self.clips():  # 2. every clip on its moments
+            cut = intent.cut_of(clip.data)
+            seq = intent.sequence(clip.data)
+            later_step = seq is not None and seq[1] > 0
+            on, until, length = intent.on(clip.data), intent.until(clip.data), intent.for_s(clip.data)
+            is_picture = any(g["picture"] is not None and g["picture"].data is clip.data for g in groups)
+            start = clip.start
+            if on and not is_picture:
+                t = self._resolve_note(on, clip)
+                if t is not None:
+                    start = t
+            elif cut and not is_picture and not later_step and not clip.is_audio and cut in cut_span:
+                start = cut_span[cut][0]
+            end = None
+            if until:
+                end = self._resolve_note(until, clip, start=start)
+            elif length is not None:
+                end = start + length
+            elif cut and not clip.is_audio and not later_step and cut in cut_span and (seq is None or is_picture):
+                end = cut_span[cut][1]
+            if seq is not None and not is_picture:
+                end = None
+            self._place(clip, start, end, moved)
+        self._mcache = None
+        return list(moved.values())
+
+    # ---- moments: the plumbing ------------------------------------------------
+    def _frame(self, t: float) -> float:
+        return _r(mo.floor_frame(t, self.fps))
+
+    def _moment_text(self, moment: Any) -> str:
+        """Canonical text for a moment given as text, a Word, a Moment or a number of seconds."""
+        if isinstance(moment, Word):
+            return mo.format_moment(mo.word_moment(moment, self.words()))
+        if isinstance(moment, mo.Moment):
+            return mo.format_moment(moment)
+        if isinstance(moment, (int, float)):
+            raise TimelineEditError("a number is a time, not a moment; use clip.enter_at(seconds) or a moment like +0.8s")
+        text = str(moment).strip()
+        if text.lower().startswith(("until ", "on ")):
+            text = text.split(" ", 1)[1]
+        try:
+            return mo.format_moment(mo.parse(text))
+        except mo.MomentError as exc:
+            raise TimelineEditError(str(exc)) from None
+
+    def _moment_time(self, text: str, clip: "Clip | None" = None, *, in_point: bool = False) -> float:
+        try:
+            return self._frame(mo.resolve(mo.parse(text), _MomentContext(self, clip), in_point=in_point))
+        except mo.MomentError as exc:
+            raise TimelineEditError(f"{clip.address + ': ' if clip else ''}{exc}") from None
+
+    def _resolve_note(self, text: str, clip: "Clip", *, in_point: bool = False, start: float | None = None) -> float | None:
+        try:
+            return self._moment_time(text, clip, in_point=in_point)
+        except TimelineEditError as exc:
+            self.notes.append(str(exc))
+            return None
+
+    def _place_on(self, clip: "Clip", moment: Any) -> None:
+        if isinstance(moment, (int, float)) and not isinstance(moment, bool):
+            span = self._own_cut_span(clip)
+            if span is not None:
+                moment = mo.offset_text(self._frame(float(moment)) - span[0], self.fps) or None
+            else:
+                intent.set_on(clip.data, None)
+                clip._set_start(self._frame(float(moment)))
+                return
+        if moment is None:
+            intent.set_on(clip.data, None)
+            span = self._own_cut_span(clip)
+            if span is not None:
+                clip._set_start(span[0])
+            return
+        text = self._moment_text(moment)
+        is_picture = self._is_picture(clip)
+        t = self._moment_time(text, clip, in_point=is_picture)
+        intent.set_on(clip.data, text)
+        if is_picture:
+            self._move_within_shot(clip, t, keep_end=True, moved={})
+        else:
+            clip._set_start(t)
+
+    def _own_cut_span(self, clip: "Clip") -> tuple[float, float] | None:
+        cut = intent.cut_of(clip.data)
+        if not cut:
+            return None
+        spans = (self._mcache or {}).get("cuts")
+        if spans is None:
+            groups = self._cut_groups()
+            spans = {}
+            for k, g in enumerate(groups):
+                if g["picture"] is None:
                     continue
-                word = min(pool, key=lambda w: abs(w.start - (clip.start - _num(anchor.get("offset_s")))))
-            target = self.quantize((word.end if anchor.get("edge") == "end" else word.start) + _num(anchor.get("offset_s")))
-            if abs(target - clip.start) > 1e-6:
-                old = clip.start
-                if id(clip.data) in pictures:
-                    self._roll(clip, target)  # a cut is a boundary: the picture before it ends where this one starts
-                else:
-                    clip._set_start(target)
-                moved.append((clip.id, old, clip.start))
-            anchor["word"], anchor["text"] = word.id, word.text
-            intent.set_anchor(clip.data, anchor)
-        return moved
+                nxt = next((h for h in groups[k + 1:] if h["picture"] is not None), None)
+                spans[g["id"]] = (g["picture"].start, nxt["picture"].start if nxt else None)
+        span = spans.get(cut)
+        if span is None:
+            return None
+        return span[0], span[1] if span[1] is not None else self.duration
+
+    def _cut_groups(self) -> list[dict[str, Any]]:
+        """Clips grouped by cut id, in time order; each group's picture is its bed clip (first step)."""
+        groups: dict[str, list[Clip]] = {}
+        for clip in self.clips():
+            cid = intent.cut_of(clip.data)
+            if cid:
+                groups.setdefault(cid, []).append(clip)
+        out = []
+        for cid, clips in groups.items():
+            beds = sorted((c for c in clips if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
+            out.append({"id": cid, "clips": clips, "picture": beds[0] if beds else None,
+                        "start": beds[0].start if beds else min(c.start for c in clips)})
+        return sorted(out, key=lambda g: (g["start"], g["id"]))
+
+    def _is_picture(self, clip: "Clip") -> bool:
+        cut = intent.cut_of(clip.data)
+        if not cut or clip.track != "plate" or clip.is_audio:
+            return False
+        seq = intent.sequence(clip.data)
+        if seq is not None and seq[1] > 0:
+            return False
+        beds = [c for c in self.clips(shot=clip.shot_id) if intent.cut_of(c.data) == cut and c.track == "plate" and not c.is_audio]
+        return bool(beds) and min(beds, key=lambda c: (c.start, c.id)).data is clip.data
+
+    def _move_within_shot(self, clip: "Clip", t: float, *, keep_end: bool, moved: dict) -> bool:
+        """Move a cut's picture start to ``t`` (it must stay inside its shot); the picture before it follows."""
+        if round(t * self.fps) == round(clip.start * self.fps):
+            return False
+        lo = self._shot_start(clip.shot_id)
+        hi = lo + self._shot_length(clip.shot_id)
+        if not lo - 1e-6 <= t < hi - 0.5 / self.fps:
+            self.notes.append(f"{clip.address}: its moment is at {t:.3f} s, outside its chapter ({lo:.3f}–{hi:.3f} s); left in place")
+            return False
+        old = clip.start
+        before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.data is not clip.data
+                  and abs(c.end - old) < 1e-3 and not c.is_audio]
+        end = clip.end
+        clip._set_start(t)
+        if keep_end:
+            _set_length(clip.data, end - t)
+        for prev in before:
+            _set_length(prev.data, t - prev.start)
+        moved[id(clip.data)] = (clip.address, old, t)
+        return True
+
+    def _place(self, clip: "Clip", start: float, end: float | None, moved: dict) -> None:
+        old_start, old_end = clip.start, clip.end
+        changed = False
+        if round(start * self.fps) != round(old_start * self.fps):
+            clip._set_start(self._frame(start + 1e-6))
+            changed = True
+        if end is not None and not clip.is_audio and "from" not in clip.data:
+            length = self._frame(end + 1e-6) - clip.start
+            if length > 0.5 / self.fps and round(length * self.fps) != round(clip.duration * self.fps):
+                _set_length(clip.data, length)
+                changed = True
+        if changed and id(clip.data) not in moved:
+            moved[id(clip.data)] = (clip.address, old_start, clip.start)
 
     def _fit_sequences(self) -> list[str]:
         """Re-lay every sequence that has a fit (see ``timeline_intent.sequence_fit``) so it lands on its word."""
@@ -995,24 +1291,6 @@ class Checkout:
             changes.append(f"sequence {seq_id}: {len(steps)} → {len(plan)} steps, lands on {land.text!r} at frame {life}")
         return changes
 
-    def _roll(self, clip: Clip, target: float) -> None:
-        """Move a picture clip's start to ``target`` and keep its end; the abutting picture before it follows."""
-        old_start, old_end = clip.start, clip.end
-        if target >= old_end - 0.5 / self.fps:
-            self.notes.append(f"{clip.id}: its anchor is after its own end; left in place")
-            return
-        before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.id != clip.id
-                  and abs(c.end - old_start) < 1e-3]
-        if before and target <= before[0].start + 0.5 / self.fps:
-            self.notes.append(f"{clip.id}: its anchor is before the previous picture starts; left in place")
-            return
-        clip._set_start(target)
-        _set_length(clip.data, self.quantize(old_end - target))
-        for prev in before:
-            _set_length(prev.data, self.quantize(target - prev.start))
-        if not before and abs(old_start - self._shot_start(clip.shot_id)) < 1e-3:
-            self.notes.append(f"{clip.id}: rolled its start but it opens a shot; the previous shot is unchanged")
-
     def resolve(self) -> list[str]:
         """Re-resolve every formula in the document (like a spreadsheet recalculating).
 
@@ -1021,7 +1299,7 @@ class Checkout:
 
         - ``{"word": "n20b:20", "text": "viral", "offset_s": 0, "as": "clip_seconds"|"clip_frame"|"timeline_seconds"}``
           (``edge: "end"`` for the word's end; then, in order: ``offset_frames``, ``min``/``max``, ``step``
-          (down to a multiple, e.g. 2 for stepFrames 2); ``snap: "floor"`` floors seconds to a frame)
+          (down to a multiple, e.g. 2 for stepFrames 2); ``snap: "floor"|"round"`` puts seconds on a frame)
         - ``{"words_of": "n20b"}``: ``[[start, end], …]`` of that line's words, clip-relative (presenter lip-sync)
         - ``{"mark": "B2-HAND", "axis": "x"|"y", "offset": -16, "unit": "logical"|"px"}``: a slot's hand mark
 
@@ -1049,6 +1327,17 @@ class Checkout:
     def _evaluate(self, clip: Clip, expr: Any, by_id: Mapping[str, Word], words: Sequence[Word], slots: Mapping[str, Any]) -> Any:
         if not isinstance(expr, Mapping):
             raise TimelineEditError(f"a formula must be an object, got {expr!r}")
+        if "moment" in expr:  # a moment in the grammar: "lifetime" -50f, beat 2 after "Astrid", c26 …
+            t = mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))
+            unit = expr.get("as", "clip_seconds")
+            if unit == "clip_frame":
+                return _post(int(math.floor((t - clip.start) * self.fps + 1e-6)), expr)
+            value = t if unit == "timeline_seconds" else t - clip.start
+            if expr.get("snap") == "floor":
+                value = math.floor(value * self.fps + 1e-6) / self.fps
+            elif expr.get("snap") == "round":
+                value = round(value * self.fps) / self.fps
+            return _r(_post(value, expr))
         if "word" in expr:
             word = by_id.get(str(expr["word"]))
             if word is None or (expr.get("text") and _norm(word.text) != _norm(expr["text"])):
@@ -1063,6 +1352,8 @@ class Checkout:
             value = t if unit == "timeline_seconds" else t - clip.start
             if expr.get("snap") == "floor":  # down to a whole frame (a hold that must end before the word)
                 value = math.floor(value * self.fps + 1e-9) / self.fps
+            elif expr.get("snap") == "round":  # to the nearest frame
+                value = round(value * self.fps) / self.fps
             return _r(_post(value, expr))
         if "words_of" in expr:
             segment = str(expr["words_of"])
@@ -1272,6 +1563,9 @@ class Checkout:
     def _shot_start(self, shot_id: str) -> float:
         return _row_start(self._row(shot_id)) / 1000.0
 
+    def _shot_length(self, shot_id: str) -> float:
+        return _num(self._row(shot_id).get("duration_ms")) / 1000.0
+
     def _shot_id(self, shot: Any) -> str:
         ids = self._shot_ids()
         if isinstance(shot, int) or (isinstance(shot, str) and shot.isdigit()):
@@ -1326,7 +1620,8 @@ class Checkout:
     def _pick(self, pool: Sequence[Clip], query: str, *, where: str) -> Clip:
         text = str(query).strip()
         tiers = [
-            [c for c in pool if c.id == text],
+            [c for c in pool if c.id == text or c.address == text],
+            [c for c in pool if c.layer_name == text],
             [c for c in pool if c.id.startswith(text + "-") or c.id.startswith(text)],
             [c for c in pool if (c.asset or "").lower() == text.lower()],
             [c for c in pool if c.element == text],
@@ -1337,9 +1632,9 @@ class Checkout:
             if len(unique) == 1:
                 return unique[0]
             if len(unique) > 1:
-                listing = "\n  ".join(repr(c) for c in unique[:12])
+                listing = "\n  ".join(f"{c.address:<18} {c.element:<14} {c.start:7.3f}–{c.end:.3f} s" for c in unique[:12])
                 more = f"\n  … {len(unique) - 12} more" if len(unique) > 12 else ""
-                raise TimelineEditError(f"{text!r} matches {len(unique)} clips in {where}; pass an id (or cut=N):\n  {listing}{more}")
+                raise TimelineEditError(f"{text!r} matches {len(unique)} clips in {where}; name one:\n  {listing}{more}")
         raise TimelineEditError(f"no clip in {where} matches {text!r} (by id, asset, element or text); "
                                 f"list them with tl.clips() or `timelines show --as script`")
 
@@ -1605,6 +1900,85 @@ class CheckReport:
 
 
 # ----------------------------------------------------------------- document helpers
+
+def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
+    """Plain-words lines for what changed between two versions of a timeline (see ``Checkout.changes``)."""
+    old = {c.id: c for c in before.clips()}
+    new = {c.id: c for c in after.clips()}
+    fps = after.fps
+    lines: list[tuple[float, str]] = []
+    shifts: dict[int, list[Clip]] = {}
+
+    def secs(delta: float) -> str:
+        return f"{delta:+.2f} s"
+
+    width = max([len(c.address) for c in list(new.values()) + list(old.values())] + [8])
+    for cid, clip in new.items():
+        prev = old.get(cid)
+        if prev is None:
+            what = " ".join(x for x in (clip.element.removeprefix("am-"), clip.asset or (f'"{clip.text[:24]}"' if clip.text else "")) if x)
+            on = f" on {clip.anchor}" if clip.anchor else ""
+            lines.append((clip.start, f"+ {clip.address:<{width}}  added: {what}{on}  {clip.start:.3f}–{clip.end:.3f} s"))
+            continue
+        said: list[str] = []
+        moved_start = round(prev.start * fps) != round(clip.start * fps)
+        moved_end = round(prev.end * fps) != round(clip.end * fps)
+        a_on, b_on = intent.on(prev.data), intent.on(clip.data)
+        a_until, b_until = intent.until(prev.data), intent.until(clip.data)
+        a_for, b_for = intent.for_s(prev.data), intent.for_s(clip.data)
+        if a_on != b_on:
+            what = f"now enters on {b_on}" if b_on else "no longer tied to a moment"
+            said.append(f"{what}  {prev.start:.3f} → {clip.start:.3f} s ({secs(clip.start - prev.start)})" if moved_start else what)
+            moved_start = False
+        if a_until != b_until or a_for != b_for:
+            if b_until:
+                what = f"now holds until {b_until}"
+            elif b_for is not None:
+                what = f"now holds for {b_for:g} s"
+            else:
+                what = "now ends with its cut"
+            said.append(f"{what}  ends {prev.end:.3f} → {clip.end:.3f} s ({secs(clip.end - prev.end)})" if moved_end else what)
+            moved_end = False
+        if (clip.asset or None) != (prev.asset or None):
+            said.append(f"asset {prev.asset} → {clip.asset}")
+        if clip.element != prev.element:
+            said.append(f"element {prev.element} → {clip.element}")
+        for key in sorted(set(prev.params) | set(clip.params)):
+            a_val, b_val = prev.params.get(key), clip.params.get(key)
+            if a_val == b_val:
+                continue
+            if isinstance(a_val, (dict, list)) or isinstance(b_val, (dict, list)):
+                said.append(f"{key} changed")
+            else:
+                said.append(f"{key} {json.dumps(a_val, ensure_ascii=False)} → {json.dumps(b_val, ensure_ascii=False)}")
+        if intent.formulas(prev.data) != intent.formulas(clip.data):
+            said.append("formulas changed")
+        same_shift = abs((clip.end - prev.end) - (clip.start - prev.start)) < 0.5 / fps
+        if any(x.startswith(("now enters", "no longer")) for x in said) and same_shift:
+            moved_end = False  # it kept its length
+        if said:
+            if moved_start and not any(x.startswith(("now enters", "no longer")) for x in said):
+                said.append(f"starts {prev.start:.3f} → {clip.start:.3f} s")
+            if moved_end and not any(x.startswith("now holds") or x.startswith("now ends") for x in said):
+                said.append(f"ends {prev.end:.3f} → {clip.end:.3f} s")
+            lines.append((clip.start, f"✎ {clip.address:<{width}}  " + " · ".join(said)))
+        elif moved_start or moved_end:
+            if moved_start and abs((clip.end - prev.end) - (clip.start - prev.start)) < 0.5 / fps:
+                shifts.setdefault(round((clip.start - prev.start) * fps), []).append(clip)
+            else:
+                lines.append((clip.start, f"✎ {clip.address:<{width}}  {prev.start:.3f}–{prev.end:.3f} → {clip.start:.3f}–{clip.end:.3f} s"))
+    for cid, clip in old.items():
+        if cid not in new:
+            lines.append((clip.start, f"− {clip.address:<{width}}  removed ({clip.element.removeprefix('am-')} {clip.asset or ''})".rstrip() + ")" * 0))
+    for frames, clips in sorted(shifts.items(), key=lambda item: min(c.start for c in item[1])):
+        first = min(clips, key=lambda c: c.start)
+        if len(clips) <= 3:
+            for c in clips:
+                lines.append((c.start, f"✎ {c.address:<{width}}  {c.start - frames / fps:.3f} → {c.start:.3f} s ({secs(frames / fps)})"))
+        else:
+            lines.append((first.start, f"  {len(clips)} clips moved {secs(frames / fps)} from {first.start - frames / fps:.3f} s on (everything after the change)"))
+    return [text for _t, text in sorted(lines, key=lambda item: item[0])]
+
 
 def _post(value: float, expr: Mapping[str, Any]) -> Any:
     """A formula's post-steps, in order: offset_frames, min/max, step (down to a multiple)."""

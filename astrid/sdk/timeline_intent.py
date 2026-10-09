@@ -1,7 +1,8 @@
 """Where a timeline's *intent* lives on disk: the one module that reads and writes it.
 
 Intent is what an editor means, as opposed to where things happen to sit: a clip that
-enters on a word (an anchor), a field computed from the voice or a slot (a formula), the
+starts and ends on moments (``on "viral"``, ``until "Astrid"``), its cut and layer names
+and the cut's ``why``, a field computed from the voice or a slot (a formula), the
 VO lines and the silence declared after each (the voice track), music beats, real-footage
 slots, and stand-ins waiting for a real asset.
 
@@ -34,19 +35,74 @@ def _tidy(clip: dict[str, Any]) -> None:
         clip.pop("app")
 
 
-# ---- anchors: a clip's start (or end) sits on a word --------------------------------
-def anchor(clip: Mapping[str, Any]) -> dict[str, Any] | None:
-    """``{word: "<line>:<index>", text, offset_s, edge: "start"|"end"}`` or None."""
-    value = _app(clip).get("anchor")
-    return dict(value) if isinstance(value, Mapping) else None
+# ---- moments: when a clip starts and ends, in words (see astrid.core.timeline.moments) -
+def on(clip: Mapping[str, Any]) -> str | None:
+    """The moment the clip starts (``"viral"``, ``beat 2 after "Astrid"``, ``+0.8s``), or None."""
+    value = _app(clip).get("on")
+    return str(value) if isinstance(value, str) and value.strip() else None
 
 
-def set_anchor(clip: dict[str, Any], value: Mapping[str, Any] | None) -> None:
-    if value:
-        _app_w(clip)["anchor"] = dict(value)
-    else:
-        _app_w(clip).pop("anchor", None)
+def set_on(clip: dict[str, Any], moment: str | None) -> None:
+    _set_or_drop(clip, "on", moment)
+
+
+def until(clip: Mapping[str, Any]) -> str | None:
+    """The moment the clip ends (``"Astrid"``, ``c26``), or None (then ``for_s`` or its cut's end)."""
+    value = _app(clip).get("until")
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def set_until(clip: dict[str, Any], moment: str | None) -> None:
+    _set_or_drop(clip, "until", moment)
+
+
+def for_s(clip: Mapping[str, Any]) -> float | None:
+    """A literal length in seconds (a decision with no moment behind it), or None."""
+    value = _app(clip).get("for")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def set_for(clip: dict[str, Any], seconds: float | None) -> None:
+    _set_or_drop(clip, "for", None if seconds is None else round(float(seconds), 6))
+
+
+# ---- cuts and layers: stable names ---------------------------------------------------
+def cut_of(clip: Mapping[str, Any]) -> str | None:
+    """The cut id this clip belongs to (``c21``; ids, not positions), or None."""
+    value = _app(clip).get("cut")
+    return str(value) if value else None
+
+
+def set_cut(clip: dict[str, Any], cut_id: str | None) -> None:
+    _set_or_drop(clip, "cut", cut_id)
+
+
+def layer_of(clip: Mapping[str, Any]) -> str | None:
+    """The layer's short name inside its cut (``rocket``), or None. Address: ``c22.rocket``."""
+    value = _app(clip).get("layer")
+    return str(value) if value else None
+
+
+def set_layer(clip: dict[str, Any], name: str | None) -> None:
+    _set_or_drop(clip, "layer", name)
+
+
+def why(clip: Mapping[str, Any]) -> str | None:
+    """Why the cut is there (on the cut's picture clip)."""
+    value = _app(clip).get("why")
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def set_why(clip: dict[str, Any], text: str | None) -> None:
+    _set_or_drop(clip, "why", text)
+
+
+def _set_or_drop(clip: dict[str, Any], key: str, value: Any) -> None:
+    if value is None or value == "":
+        _app_w(clip).pop(key, None)
         _tidy(clip)
+    else:
+        _app_w(clip)[key] = value
 
 
 # ---- formulas: a field computed from words, lines or slot marks ---------------------
@@ -116,14 +172,18 @@ def set_gap_after(clip: dict[str, Any], seconds: float | None) -> None:
         _app_w(clip)["gap_after_s"] = round(float(seconds), 6)
 
 
-def beat_sources(clip: Mapping[str, Any]) -> list[float]:
+def beat_sources(clip: Mapping[str, Any], kind: str = "beat") -> list[float]:
     """Music beat times in SOURCE seconds (the music file's own clock, like ``from``/``to``).
 
     Stored either as ``{"beats": [...], "bpm": …, "time": "cue_seconds"}`` (source seconds,
     so trims and splits never need to touch them) or as a clip-relative list (older form)."""
     value = _app(clip).get("beats")
     if isinstance(value, Mapping):
-        return [float(b) for b in value.get("beats") or [] if isinstance(b, (int, float))]
+        key = "downbeats" if kind == "downbeat" else "hits" if kind == "hit" else "beats"
+        return [float(b[0] if isinstance(b, (list, tuple)) else b) for b in value.get(key) or []
+                if isinstance(b[0] if isinstance(b, (list, tuple)) else b, (int, float))]
+    if kind != "beat":
+        return []
     if isinstance(value, list):
         src0 = float(clip.get("from") or 0.0)
         speed = float(clip.get("speed") or 1.0) or 1.0
@@ -201,7 +261,7 @@ def clear_standin(clip: dict[str, Any]) -> None:
 
 def has_intent(clip: Mapping[str, Any]) -> bool:
     """True if a clip carries anything this module owns (used for display: the ⚓ / ƒ marks)."""
-    return bool(anchor(clip) or formulas(clip) or slot(clip) or standin(clip) or sequence_fit(clip))
+    return bool(on(clip) or until(clip) or formulas(clip) or slot(clip) or standin(clip) or sequence_fit(clip))
 
 
 # ---- sequences: one picture cut made of stepped clips (a time-lapse) -----------------

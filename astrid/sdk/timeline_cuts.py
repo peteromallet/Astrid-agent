@@ -610,6 +610,8 @@ def base_bundle(candidate: Mapping[str, Any]) -> dict[str, Any]:
     before = copy.deepcopy(dict(candidate))
     base_placements = _map(_map(candidate.get("source_mapping")).get("placements")) or _map(candidate.get("base_placements"))
     before["placements"] = [copy.deepcopy(dict(row)) for row in base_placements.values() if isinstance(row, Mapping)]
+    if not before["placements"]:  # no recorded base layout: the placements are unchanged
+        before["placements"] = copy.deepcopy(list(candidate.get("placements") or []))
     if isinstance(candidate.get("base_parent_payload"), Mapping):
         before["parent"] = copy.deepcopy(dict(candidate["base_parent_payload"]))
     shots: dict[str, Any] = {}

@@ -3219,27 +3219,12 @@ def _working_copy(parsed: argparse.Namespace, *, create: bool) -> tuple[Any, boo
 
 
 def _describe_edit(before: Mapping[str, Any], after: Mapping[str, Any], tl: Any) -> list[str]:
-    """Plain-words lines for the changes between two documents (timeline seconds)."""
-    from astrid.sdk.timeline_cuts import diff_bundles
+    """Plain-words lines for the changes between two documents (moments, timeline seconds)."""
+    import copy as _copy
 
-    clips = {c.id: c for c in tl.clips()}
-    lines = []
-    for ch in diff_bundles(before, after)["changes"]:
-        clip = clips.get(ch["clip_id"])
-        label = f"{ch['clip_id']} ({(clip.asset if clip and clip.asset else (clip.element if clip else ch.get('track')))})"
-        if ch["kind"] in ("added", "removed"):
-            lines.append(f"{label}: {ch['kind']}")
-            continue
-        if ch["before"] and ch["after"] and "start" in ch["fields"]:
-            text = f"{label}: {ch['before'][0]:.3f} → {ch['after'][0]:.3f} s"
-        else:
-            text = f"{label}: changed {', '.join(ch['fields'])}"
-        anchor = clip.anchor if clip else None
-        if anchor and "start" in ch["fields"]:
-            text += f', anchored to "{anchor.get("text")}" [{anchor.get("word")}]'
-        lines.append(text)
-    return lines
+    from astrid.sdk.timeline_checkout import Checkout, describe_changes
 
+    return describe_changes(Checkout(_copy.deepcopy(dict(before))), tl)
 
 def _cap(lines: list[str], limit: int = 30) -> list[str]:
     """A long re-flow prints its first lines and a count; the rest is one `timelines diff` away."""
@@ -3454,20 +3439,7 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
 
 def _edit_lines_from(edits: Mapping[str, Any], tl: Any) -> list[str]:
     """Plain-words lines for a working copy's full edit list (against its published base)."""
-    clips = {c.id: c for c in tl.clips()}
-    out = []
-    for ch in edits["changes"]:
-        clip = clips.get(ch["clip_id"])
-        label = f"{ch['clip_id']} ({clip.asset if clip and clip.asset else ch.get('track')})"
-        if ch["before"] and ch["after"] and "start" in ch["fields"]:
-            text = f"{label}: {ch['before'][0]:.3f} → {ch['after'][0]:.3f} s"
-        else:
-            text = f"{label}: {ch['kind']} {', '.join(ch['fields'])}".rstrip()
-        anchor = clip.anchor if clip else None
-        if anchor and "start" in ch["fields"]:
-            text += f', anchored to "{anchor.get("text")}" [{anchor.get("word")}]'
-        out.append(text)
-    return out
+    return tl.changes()
 
 
 @_guard(1)
