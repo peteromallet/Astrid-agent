@@ -22,7 +22,8 @@ const {bundle} = require('@remotion/bundler');
 const {renderMedia, renderStill, selectComposition} = require('@remotion/renderer');
 const OUT = process.env.OUT ?? path.join(os.tmpdir(), 'astrid-motion-preview');
 const only = process.env.ONLY ? process.env.ONLY.split(',') : null;
-const scenes = JSON.parse(fs.readFileSync(path.join(here, 'scenes.json'), 'utf8'));
+// SCENES=<file.json> renders a scene list kept outside the pack (production scenes).
+const scenes = JSON.parse(fs.readFileSync(process.env.SCENES ?? path.join(here, 'scenes.json'), 'utf8'));
 fs.mkdirSync(OUT, {recursive: true});
 
 // Public dir for staticFile(): test art under am/ plus the shipped fonts.
@@ -30,6 +31,12 @@ const publicDir = path.join(OUT, '.public');
 fs.mkdirSync(publicDir, {recursive: true});
 const fontsLink = path.join(publicDir, 'fonts');
 if (!fs.existsSync(fontsLink)) fs.symlinkSync(path.join(REM, 'public/fonts'), fontsLink);
+// EXTRA_PUBLIC=name=/abs/dir,... links more folders into the public dir (read-only art).
+for (const pair of (process.env.EXTRA_PUBLIC ?? '').split(',').filter(Boolean)) {
+  const [name, dir] = pair.split('=');
+  const link = path.join(publicDir, name);
+  if (!fs.existsSync(link)) fs.symlinkSync(dir, link);
+}
 if (!fs.existsSync(path.join(publicDir, 'am'))) {
   throw new Error(`missing ${publicDir}/am: run python3 preview/make_art.py ${publicDir}/am first`);
 }

@@ -10,9 +10,11 @@ import {
   LOGICAL_H,
   LOGICAL_W,
   clamp,
+  clipFrames,
   finiteNumber,
   integerIn,
 } from '../../_shared/am';
+import {mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 import {
   type Anchor,
   type MouthState,
@@ -55,6 +57,11 @@ type Params = {
   label?: string;
   timecodeStart?: string;
   chip?: ChipSpec | null;
+  /** full: crop marks, REC and label (default). label: the label chip only. none: no chrome. */
+  chrome?: 'full' | 'label' | 'none';
+  /** Same ramps as the plate's: the face overlay hides while the plate is a mosaic. */
+  mosaicIn?: MosaicRamp | null;
+  mosaicOut?: MosaicRamp | null;
 };
 
 type Resolved = {
@@ -75,6 +82,7 @@ type Resolved = {
   label: string;
   timecodeStart: string;
   chip: ChipSpec | null;
+  chrome: 'full' | 'label' | 'none';
 };
 
 // Defaults match the synthetic preview plate (320x180). Replace mouth/eyes with
@@ -135,6 +143,7 @@ const readParams = (raw: unknown): Resolved => {
       : [],
     label: typeof p.label === 'string' ? p.label : 'PLACEHOLDER · POM ON CAMERA · TAKE 03',
     timecodeStart: typeof p.timecodeStart === 'string' ? p.timecodeStart : '01:02:14:00',
+    chrome: p.chrome === 'label' || p.chrome === 'none' ? p.chrome : 'full',
     chip: chipRaw && typeof chipRaw.text === 'string'
       ? {
           text: chipRaw.text,
@@ -272,10 +281,16 @@ export default function AmPresenter(props: ElementComponentProps): ReactElement 
   };
   const view = presenterView({zoom: p.zoom, focus: p.focus, punchAt: p.punchAt}, timing, frame);
 
-  const pixels: Px[] = [
-    ...mouthPixels(mouthStateAt(timing, frame), p.mouth, p.skin, p.lip, p.inner),
-    ...(blinkClosedAt(timing, frame) ? blinkPixels(p.eyes, p.skin, p.lip) : []),
-  ];
+  // While the plate under this overlay is a mosaic, the crisp face pixels would
+  // float over blocks, so they hide for those frames.
+  const raw = narrowParams<Params>(props.params);
+  const mosaic = mosaicBlockAt(frame, clipFrames(props.clip, fps), raw.mosaicIn, raw.mosaicOut) > 6;
+  const pixels: Px[] = mosaic
+    ? []
+    : [
+        ...mouthPixels(mouthStateAt(timing, frame), p.mouth, p.skin, p.lip, p.inner),
+        ...(blinkClosedAt(timing, frame) ? blinkPixels(p.eyes, p.skin, p.lip) : []),
+      ];
 
   // A bob pushes the plate down one logical px, uncovering a strip at the top
   // edge (only when the view is already at the plate's top edge). Paint it.
@@ -296,17 +311,24 @@ export default function AmPresenter(props: ElementComponentProps): ReactElement 
         <div key={i} style={pxStyle(r, view)} />
       ))}
 
-      <CropMarks />
+      {p.chrome === 'full' ? <CropMarks /> : null}
 
-      <div style={{position: 'absolute', left: 104, top: 40, display: 'flex', alignItems: 'center', gap: 14,
-        fontFamily: `'${FAMILY.label}', monospace`, fontSize: 22, lineHeight: '22px', color: PANEL,
-        textShadow: `2px 2px 0 ${INK}`, whiteSpace: 'nowrap'}}>
-        <div style={{width: 12, height: 12, background: recOn ? REC_RED : 'transparent'}} />
-        <span>REC</span>
-        <span>{timecode}</span>
-      </div>
+      {p.chrome === 'full' ? (
+        <div style={{position: 'absolute', left: 104, top: 40, display: 'flex', alignItems: 'center', gap: 14,
+          fontFamily: `'${FAMILY.label}', monospace`, fontSize: 22, lineHeight: '22px', color: PANEL,
+          textShadow: `2px 2px 0 ${INK}`, whiteSpace: 'nowrap'}}>
+          <div style={{width: 12, height: 12, background: recOn ? REC_RED : 'transparent'}} />
+          <span>REC</span>
+          <span>{timecode}</span>
+        </div>
+      ) : null}
 
-      <div style={{...monoChip, left: 104, bottom: 44}}>{p.label}</div>
+      {p.chrome === 'none' || !p.label ? null : p.chrome === 'label' ? (
+        <div style={{...monoChip, left: 48, bottom: 36, fontSize: 16, lineHeight: '16px', padding: '6px 10px',
+          letterSpacing: '0.1em', opacity: 0.9}}>{p.label}</div>
+      ) : (
+        <div style={{...monoChip, left: 104, bottom: 44}}>{p.label}</div>
+      )}
 
       {chip && chipText !== undefined ? (
         <div

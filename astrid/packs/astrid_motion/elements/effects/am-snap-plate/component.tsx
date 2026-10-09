@@ -24,6 +24,7 @@ import {
   type Span,
   presenterView,
 } from '../am-presenter/presenter-core';
+import {MosaicImage, mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 
 // am-snap-plate: a pixel snapshot shown through an integer-zoom viewport.
 //
@@ -63,6 +64,10 @@ type Params = {
   pattern?: WipePattern;
   wipeColor?: string;
   background?: string;
+  /** Pixelate transition in: starts as coarse blocks and resolves (see _shared/mosaic). */
+  mosaicIn?: MosaicRamp | null;
+  /** Pixelate transition out: coarsens into blocks over the clip's last frames. */
+  mosaicOut?: MosaicRamp | null;
 };
 
 const ENTER_EXIT = ['cut', 'blockWipe'] as const;
@@ -136,8 +141,14 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
   const tint = params.tint;
   const tintOpacity = clamp(finiteNumber(tint?.opacity, 0.25), 0, 1);
 
+  const block = mosaicBlockAt(frame, total, params.mosaicIn, params.mosaicOut);
+  const rect = {x: view.originX, y: view.originY, w: LOGICAL_W * view.scale, h: LOGICAL_H * view.scale};
+
   return (
     <AbsoluteFill style={{overflow: 'hidden', backgroundColor: background}}>
+      {block > 0 ? (
+        <MosaicImage url={url} rect={rect} block={block} width={width} height={height} background={background} />
+      ) : (
       <Img
         src={url}
         crossOrigin="anonymous"
@@ -153,6 +164,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
           ...pixelImage,
         }}
       />
+      )}
       {tint?.color ? (
         <AbsoluteFill style={{backgroundColor: tint.color, opacity: tintOpacity, pointerEvents: 'none'}} />
       ) : null}

@@ -6,6 +6,17 @@ import AmType from '../../elements/effects/am-type/component';
 import AmCallout from '../../elements/effects/am-callout/component';
 import AmPixelWipe from '../../elements/effects/am-pixel-wipe/component';
 import AmPresenter from '../../elements/effects/am-presenter/component';
+import AmDiscord from '../../elements/effects/am-discord/component';
+import AmFlap from '../../elements/effects/am-flap/component';
+import AmUiSketch from '../../elements/effects/am-ui-sketch/component';
+import AmBurst from '../../elements/effects/am-burst/component';
+import AmFootage from '../../elements/effects/am-footage/component';
+import AmTweet from '../../elements/effects/am-tweet/component';
+import AmQuote from '../../elements/effects/am-quote/component';
+import AmTerminal from '../../elements/effects/am-terminal/component';
+import AmDroste from '../../elements/effects/am-droste/component';
+import AmSeasons from '../../elements/effects/am-seasons/component';
+import AmOrbit from '../../elements/effects/am-orbit/component';
 import {elementSource, type ElementComponentProps} from '../../elements/_shared/am';
 
 // Control: the same plate through a plain <Img> with no pixelated style. It shows
@@ -28,6 +39,17 @@ const REGISTRY: Record<string, Comp> = {
   'am-callout': AmCallout,
   'am-pixel-wipe': AmPixelWipe,
   'am-presenter': AmPresenter,
+  'am-discord': AmDiscord,
+  'am-flap': AmFlap,
+  'am-ui-sketch': AmUiSketch,
+  'am-burst': AmBurst,
+  'am-footage': AmFootage,
+  'am-tweet': AmTweet,
+  'am-quote': AmQuote,
+  'am-terminal': AmTerminal,
+  'am-droste': AmDroste,
+  'am-seasons': AmSeasons,
+  'am-orbit': AmOrbit,
   'control-plain': ControlPlain,
 };
 

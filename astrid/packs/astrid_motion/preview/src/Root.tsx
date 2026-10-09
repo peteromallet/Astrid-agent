@@ -7,6 +7,18 @@ import {Preview} from './Preview';
 export const Root = () => (
   <>
     <FontProvider />
-    <Composition id="Scene" component={Preview} durationInFrames={90} fps={30} width={1920} height={1080} defaultProps={{layers: [], assets: {}}} />
+    <Composition
+      id="Scene"
+      component={Preview}
+      durationInFrames={90}
+      fps={30}
+      width={1920}
+      height={1080}
+      defaultProps={{layers: [], assets: {}}}
+      calculateMetadata={({props}) => ({
+        // Long enough for the latest layer end (min 90 frames).
+        durationInFrames: Math.max(90, ...props.layers.map((l) => Math.ceil((l.at + l.hold) * 30))),
+      })}
+    />
   </>
 );

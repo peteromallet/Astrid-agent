@@ -130,6 +130,13 @@ type Params = {
   frame?: Partial<FrameSpec>;
   jumpFrames?: number;
   typeStepFrames?: number;
+  /**
+   * Composer: message `message` types into the message box from `startAt`
+   * (one char per `typeStepFrames`, default 1), Enter is pressed on the 3
+   * frames before the message's appearAt (box flashes, a keycap stamps in at
+   * `key` {x, y} canvas px), then the box clears as the post lands.
+   */
+  composer?: {message?: number; startAt?: number; typeStepFrames?: number; key?: {x?: number; y?: number} | null} | null;
 };
 
 const obj = (value: unknown): Record<string, unknown> =>
@@ -690,6 +697,23 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
       }
     : {};
 
+  // Composer state: the post types into the message box before it lands.
+  const comp = p.composer && typeof p.composer === 'object' ? p.composer : null;
+  const compIndex = comp ? Math.round(finiteNumber(comp.message, 0)) : -1;
+  const compMsg = comp && compIndex >= 0 && compIndex < messages.length ? messages[compIndex] : null;
+  const compStart = comp ? Math.round(finiteNumber(comp.startAt, 0)) : 0;
+  const compStep = comp ? integerIn(comp.typeStepFrames, 1, 12, 1) : 1;
+  const composing = compMsg !== null && frame >= compStart && frame < compMsg.appearAt;
+  const pressing = composing && compMsg !== null && frame >= compMsg.appearAt - 3;
+  const compFull = compMsg ? compMsg.lines.join(' ').replace(/\{u:([^}]*)\}/g, '$1') : '';
+  const composeText = composing ? compFull.slice(0, Math.min(compFull.length, Math.floor((frame - compStart) / compStep) + 1)) : '';
+  const caretOn = Math.floor(frame / 8) % 2 === 0;
+  const keyAt = compMsg ? compMsg.appearAt - 3 : -1;
+  const keyAge = frame - keyAt;
+  const keyShown = compMsg !== null && comp?.key !== null && keyAge >= 0 && keyAge < 14;
+  const keyX = finiteNumber(comp?.key?.x, 1400);
+  const keyY = finiteNumber(comp?.key?.y, 800);
+
   const renderDivider = (index: number): ReactElement | null => {
     const d = dividers[index];
     const from = index > 0 ? dividers[index - 1].label : d.label;
@@ -922,16 +946,43 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
               <div
                 style={{
                   height: 48, boxSizing: 'border-box', borderRadius: 8, background: PALETTE.input,
-                  padding: '0 16px', lineHeight: '48px', fontFamily: SANS, fontSize: 15, color: PALETTE.muted,
+                  padding: '0 16px', lineHeight: '48px', fontFamily: SANS, fontSize: 15,
+                  color: composing ? PALETTE.text : PALETTE.muted,
                   whiteSpace: 'nowrap', overflow: 'hidden',
+                  display: 'flex', justifyContent: composing ? 'flex-start' : undefined,
+                  outline: pressing ? `3px solid ${PALETTE.orange}` : 'none',
+                  outlineOffset: -3,
                 }}
               >
-                {`Message ${channel}`}
+                {composing ? (
+                  <>
+                    <span style={{fontSize: 17}}>{composeText}</span>
+                    {!pressing ? (
+                      <span style={{display: 'inline-block', width: 3, height: 22, marginTop: 13, marginLeft: 1, background: caretOn ? PALETTE.text : 'transparent'}} />
+                    ) : null}
+                  </>
+                ) : (
+                  `Message ${channel}`
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {keyShown ? (
+        <div
+          style={{
+            position: 'absolute', left: keyX, top: keyY + (keyAge >= 1 && keyAge < 4 ? 8 : 0),
+            transform: `scale(${keyAge === 0 ? 1.25 : 1})`, transformOrigin: 'center',
+            fontFamily: MONO, fontSize: 44, lineHeight: '44px', letterSpacing: '0.12em', color: INK,
+            background: PANEL, border: `4px solid ${INK}`, borderRadius: 10, padding: '22px 34px',
+            boxShadow: `0 ${keyAge >= 1 && keyAge < 4 ? 2 : 10}px 0 0 ${INK}`,
+          }}
+        >
+          ENTER <span style={{color: PALETTE.orange}}>⏎</span>
+        </div>
+      ) : null}
 
       {badge ? (
         <div

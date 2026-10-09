@@ -21,7 +21,8 @@ import {
 // Keyframes, flips and slide steps update only on step boundaries.
 
 type Keyframe = {frame: number; x: number; y: number; flipX?: boolean};
-type SpriteFrames = {frameWidth: number; frameHeight: number; count: number; fps: number};
+type SpriteFrames = {frameWidth: number; frameHeight: number; count: number; fps: number; start?: number; sequence?: number[]};
+type Shadow = {groundY?: number; w?: number; h?: number; color?: string; opacity?: number; dx?: number; fade?: number};
 type Params = {
   src?: string;
   scale?: number;
@@ -36,6 +37,8 @@ type Params = {
   frames?: SpriteFrames;
   blinkAt?: number | number[];
   blinkIndex?: number;
+  /** Contact shadow on the ground line (logical px). It narrows as the sprite rises. */
+  shadow?: Shadow | null;
 };
 
 const ENTERS = ['stamp', 'slideIn', 'cut'] as const;
@@ -100,7 +103,11 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
   const frames = params.frames;
   let index = 0;
   if (frames && frames.count >= 1 && frames.fps > 0) {
-    index = Math.floor((frame * frames.fps) / fps) % Math.max(1, Math.round(frames.count));
+    const tick = Math.floor((frame * frames.fps) / fps);
+    const seq = Array.isArray(frames.sequence) ? frames.sequence.filter((n) => Number.isFinite(n)) : [];
+    index = seq.length > 0
+      ? Math.round(seq[tick % seq.length])
+      : Math.round(finiteNumber(frames.start, 0)) + (tick % Math.max(1, Math.round(frames.count)));
   }
   if (blinking) {
     if (frames && typeof params.blinkIndex === 'number') {
@@ -124,10 +131,48 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     transformOrigin: 'center center',
   };
 
+  // Sprite size in art px: the strip frame, else the registry resolution.
+  const res = /^(\d+)x(\d+)$/.exec(String((props.assetEntry as {resolution?: string} | undefined)?.resolution ?? ''));
+  const artW = frames ? Math.max(1, Math.round(frames.frameWidth)) : res ? Number(res[1]) : 0;
+  const artH = frames ? Math.max(1, Math.round(frames.frameHeight)) : res ? Number(res[2]) : 0;
+  const shadow = params.shadow && typeof params.shadow === 'object' ? params.shadow : null;
+  let shadowNode: ReactElement | null = null;
+  if (shadow && visible && artW > 0) {
+    // Logical px: sprite width and its feet line.
+    const spriteW = (artW * scale) / LOGICAL_PX;
+    const feet = y + dy + (artH * scale) / LOGICAL_PX;
+    const ground = finiteNumber(shadow.groundY, feet);
+    const altitude = Math.max(0, ground - feet);
+    const k = Math.max(0.35, 1 - altitude / Math.max(1, finiteNumber(shadow.fade, 40)));
+    const w = Math.max(2, Math.round(finiteNumber(shadow.w, spriteW * 0.7) * k));
+    const h = Math.max(1, Math.round(finiteNumber(shadow.h, 3)));
+    const cx = x + dx + spriteW / 2 + finiteNumber(shadow.dx, 0);
+    const rows: CSSProperties[] = [];
+    for (let r = 0; r < h; r += 1) {
+      const t = (r + 0.5) / h - 0.5;
+      const rw = Math.max(1, Math.round(w * Math.sqrt(Math.max(0, 1 - 4 * t * t))));
+      rows.push({
+        position: 'absolute',
+        left: Math.round(cx - rw / 2) * LOGICAL_PX,
+        top: Math.round(ground - h / 2 + r) * LOGICAL_PX,
+        width: rw * LOGICAL_PX,
+        height: LOGICAL_PX,
+        background: shadow.color ?? '#1F1F1F',
+      });
+    }
+    shadowNode = (
+      <div style={{position: 'absolute', inset: 0, opacity: Math.min(1, Math.max(0, finiteNumber(shadow.opacity, 0.35)))}}>
+        {rows.map((st, i) => <div key={i} style={st} />)}
+      </div>
+    );
+  }
+
   if (frames) {
     const fw = Math.max(1, Math.round(frames.frameWidth));
     const fh = Math.max(1, Math.round(frames.frameHeight));
     return (
+      <>
+      {shadowNode}
       <div style={outer}>
         <div style={{...flip, width: fw, height: fh}}>
           <div style={{position: 'relative', width: fw, height: fh, overflow: 'hidden'}}>
@@ -139,14 +184,18 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div style={outer}>
-      <div style={flip}>
-        <Img src={url} crossOrigin="anonymous" style={{display: 'block', maxWidth: 'none', ...pixelImage}} />
+    <>
+      {shadowNode}
+      <div style={outer}>
+        <div style={flip}>
+          <Img src={url} crossOrigin="anonymous" style={{display: 'block', maxWidth: 'none', ...pixelImage}} />
+        </div>
       </div>
-    </div>
+    </>
   );
 }

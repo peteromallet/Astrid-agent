@@ -402,3 +402,62 @@ pitch). Positions snap to the 6 px grid.
 - `seed`, `x`, `y`, `width` (1920), `height` (1080).
 
 Use it for the Lindgren aside (book icons on an arc) and celebration beats.
+
+## v5 additions: real-footage slots and the pixelate move
+
+**Pixelate (mosaic) transition.** `am-snap-plate` and `am-footage` take
+`mosaicIn` / `mosaicOut` `{frames (8), from|to (48), steps?}`: the picture
+averages into 6, 12, 24 and 48 px blocks on hard steps (6 px is the 320x180
+grid). Put `mosaicOut` on the last frames before a cut and `mosaicIn` on the
+first frames after it: real footage dissolves into the pixel world and back.
+`am-presenter` takes the same ramps and hides its face pixels while the plate
+is a mosaic, and its `chrome` (`full`, `label`, `none`) slims the placeholder
+slate to one small label.
+
+**am-footage: a real-footage slot.** A filmed shot on `clip.asset` (video via
+OffthreadVideo, or a still), cover-fitted; `zoom` (>= 1) and `focus` (source
+fractions) crop it, `push.to` zooms slowly over the clip, `volume` defaults to 0
+(the VO track carries the voice). `faceZone` `{x, y, w, h}` and `handMark`
+`{x, y, size}` (canvas px) declare where the face and the palm sit, so overlays
+avoid the face and composites land on the palm. With no asset it draws the slot
+card (slot id, framing note, dashed face zone, dashed hand outline and palm
+mark), so the edit reads before anything is filmed.
+
+**am-tweet.** A reconstructed post card: generic silhouette avatar (never a
+likeness), `name`, `handle`, `date`, a dashed slot body (default
+`[REAL TWEET TEXT + LINK NEEDED]`), `link`, an always-on `RECONSTRUCTION` chip.
+Only ever fill `body` with the verbatim post.
+
+**am-quote.** A quotation that reveals on the VO's word onsets (`words`, the
+builder's `@words` helper), then `strikeAt` strikes through it word by word and
+`stamp` `{text, at, x, y, rotate, size}` slams a rubber stamp. `mark`
+`{word, at}` highlights one attribution word.
+
+**am-terminal.** Commands type in after an orange prompt (`kind: cmd`), output
+lands whole (`out`, `dim`, `ok`), a `progress` line counts `{n}` and `{eta}`.
+`badges` stamp in under the window. Real commands and real output only.
+
+**am-droste.** The plate recurses inside its own `screen` rect (logical px; P-02's
+monitor is `{x: 83, y: 38, w: 147, h: 75}`). `moves` `[{at, to, frames}]` step
+between levels; the camera zooms about the recursion's fixed point, so level n
+lands framed like level 0. `depthTint` darkens deeper levels.
+
+**am-seasons.** A procedural window onto a street through the year (autumn,
+winter, spring, summer, autumn2): sky, tree, weather, a growing plant and a pile
+of mugs. `sequence` `[{at, season}]`. The stand-in for the S-00..S-04 plates.
+
+**am-orbit.** A small orbit HUD: the Earth steps round the Sun past twelve
+month ticks (`fromMonth`, `months`, `frames`), with a month readout.
+
+**am-discord composer.** `composer` `{message, startAt, typeStepFrames, key}`:
+that message types into the message box, Enter is pressed on the three frames
+before its `appearAt` (the box flashes, an ENTER keycap stamps at `key`), then it
+posts. Use the `camera` to push in on the box so the typing is readable.
+
+**am-sprite.** `shadow` `{groundY, w, h, opacity, fade}` draws a stepped contact
+shadow on the ground line that narrows as the sprite rises; `frames.start` and
+`frames.sequence` pick poses out of a strip.
+
+Preview: `SCENES=<file.json>` renders a scene list kept outside the pack, and
+`EXTRA_PUBLIC=name=/abs/dir,...` links read-only art into the harness's public
+dir. Every element above is registered in the harness.
