@@ -54,6 +54,24 @@ class ElementConflict:
     shadowed: tuple[ElementDefinition, ...]
 
 
+@dataclass(frozen=True)
+class SkippedElement:
+    """One pack element that failed validation and was left out of the registry.
+
+    The rest of its pack still loads. ``path`` is the element's manifest file
+    (or its folder when no manifest could be read) and ``error`` is the
+    validation message, so a pack author can find and fix the broken element.
+    """
+
+    pack_id: str
+    kind: str
+    path: Path
+    error: str
+
+    def __str__(self) -> str:
+        return f"{self.path}: {self.error}"
+
+
 class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
     """Resolved element registry keyed by kind and element id.
 
@@ -67,9 +85,14 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         *,
         alias_resolver: AliasResolver | None = None,
         element_kind_registry: ElementKindRegistry | None = None,
+        diagnostics: Iterable[SkippedElement] = (),
     ) -> None:
         super().__init__(alias_resolver=alias_resolver)
         self.element_kind_registry = element_kind_registry or ELEMENT_KIND_REGISTRY
+        # Elements skipped during discovery (invalid manifests). Not registered,
+        # so they never resolve; ``python -m astrid.core.element.cli validate``
+        # reports them.
+        self.diagnostics: tuple[SkippedElement, ...] = tuple(diagnostics)
         for element in elements:
             self.register(element)
 
@@ -137,7 +160,7 @@ def _load_default_registry_data(
     project_root_key: str,
     include_missing_roots: bool,
     extra_pack_roots_key: tuple[str, ...],
-) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry]:
+) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry, tuple[SkippedElement, ...]]:
     """Parse the static element corpus once; return raw definitions.
 
     The corpus (packs + default element sources) is static repo content.  A
@@ -157,12 +180,11 @@ def _load_default_registry_data(
         )
     )
     element_kind_registry = _element_kind_registry_for_packs(pack_defs)
-    elements: list[ElementDefinition] = list(
-        _load_pack_elements_from_packs(
-            pack_defs,
-            element_kind_registry=element_kind_registry,
-        )
+    pack_elements, skipped = _load_pack_elements_from_packs(
+        pack_defs,
+        element_kind_registry=element_kind_registry,
     )
+    elements: list[ElementDefinition] = list(pack_elements)
     for source in default_sources(project_root=project_root):
         if not source.root.exists():
             if include_missing_roots:
@@ -175,7 +197,7 @@ def _load_default_registry_data(
                 element_kind_registry=element_kind_registry,
             )
         )
-    return (tuple(elements), element_kind_registry)
+    return (tuple(elements), element_kind_registry, skipped)
 
 
 def clear_default_registry_cache() -> None:
@@ -199,7 +221,7 @@ def load_default_registry(
     Registry assembly stays per-call so callers may register additional
     elements without polluting the shared corpus cache.
     """
-    elements, element_kind_registry = _load_default_registry_data(
+    elements, element_kind_registry, diagnostics = _load_default_registry_data(
         str(Path(project_root).resolve()),
         include_missing_roots,
         tuple(str(Path(root).resolve()) for root in extra_pack_roots),
@@ -209,6 +231,7 @@ def load_default_registry(
     registry = ElementRegistry(
         alias_resolver=resolver,
         element_kind_registry=element_kind_registry,
+        diagnostics=diagnostics,
     )
     for element in elements:
         registry.register(element)
@@ -242,10 +265,11 @@ def load_pack_elements(
         )
     )
     registry = element_kind_registry or _element_kind_registry_for_packs(packs)
-    return _load_pack_elements_from_packs(
+    elements, _skipped = _load_pack_elements_from_packs(
         packs,
         element_kind_registry=registry,
     )
+    return elements
 
 
 def load_source_elements(
@@ -299,26 +323,30 @@ def _load_pack_elements_from_packs(
     packs: Iterable[PackDefinition],
     *,
     element_kind_registry: ElementKindRegistry,
-) -> tuple[ElementDefinition, ...]:
+) -> tuple[tuple[ElementDefinition, ...], tuple[SkippedElement, ...]]:
+    """Load every valid element; skip and report each invalid one.
+
+    Fault tolerance is per element: one broken element manifest must not hide
+    its pack's other elements. The skipped element is returned with its file
+    and error so the registry and ``validate`` can report it. Pack-alignment
+    failures (``PackValidationError`` from ``validate_element_pack_id``) still
+    propagate: a misplaced pack_id is a packaging contract breach.
+    """
     from .schema import ELEMENT_MANIFEST_NAMES
 
     elements: list[ElementDefinition] = []
+    skipped: list[SkippedElement] = []
     for pack in packs:
         # All discovered packs share the same priority.  Discovery order is
         # canonical; the local editable pack cannot shadow a source pack.
         priority = 30
-        # Per-pack fault tolerance: one broken element manifest (e.g. from an
-        # installed external pack) must not abort the whole discovery/invoke.
-        # The pack is skipped with a warning; pack-alignment failures
-        # (``PackValidationError`` from ``validate_element_pack_id``) still
-        # propagate — a misplaced pack_id is a packaging contract breach.
-        try:
-            for kind, root in iter_element_roots(
-                pack,
-                element_kind_registry=element_kind_registry,
-            ):
-                if not any((root / name).is_file() for name in ELEMENT_MANIFEST_NAMES):
-                    continue
+        for kind, root in iter_element_roots(
+            pack,
+            element_kind_registry=element_kind_registry,
+        ):
+            if not any((root / name).is_file() for name in ELEMENT_MANIFEST_NAMES):
+                continue
+            try:
                 element = load_element_definition(
                     root,
                     kind=kind,
@@ -328,12 +356,14 @@ def _load_pack_elements_from_packs(
                     element_kind_registry=element_kind_registry,
                 )
                 validate_element_pack_id(element.metadata.get("pack_id"), pack, element_root=root)
-                elements.append(element)
-        except ElementValidationError as exc:
-            _LOGGER.warning(
-                "skipping pack %r: element definitions failed validation: %s",
-                pack.id,
-                exc,
-            )
-            continue
-    return tuple(elements)
+            except ElementValidationError as exc:
+                manifest = next(
+                    (root / name for name in ELEMENT_MANIFEST_NAMES if (root / name).is_file()),
+                    root,
+                )
+                record = SkippedElement(pack_id=pack.id, kind=kind, path=manifest, error=str(exc))
+                skipped.append(record)
+                _LOGGER.warning("skipping element %s from pack %r: %s", manifest, pack.id, exc)
+                continue
+            elements.append(element)
+    return tuple(elements), tuple(skipped)

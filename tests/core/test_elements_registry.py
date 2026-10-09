@@ -105,5 +105,75 @@ class ElementRegistryTest(unittest.TestCase):
             self.assertEqual(text_card.metadata["pack_id"], "rendering")
 
 
+class PerElementFaultToleranceTest(unittest.TestCase):
+    """One invalid element is skipped and reported; its pack's others still load."""
+
+    def _pack_with_good_and_bad_element(self, tmp: str) -> tuple[Path, Path]:
+        extra = Path(tmp) / "extra"
+        (extra / "demo").mkdir(parents=True)
+        (extra / "demo" / "pack.yaml").write_text(
+            "schema_version: 2\nid: demo\nname: Demo\nversion: 0.1.0\ncapabilities: [elements]\n",
+            encoding="utf-8",
+        )
+        write_pack_element(extra / "demo", "effects", "good-glow", pack_id="demo", label="Good")
+        bad_root = write_pack_element(extra / "demo", "effects", "bad-glow", pack_id="demo", label="Bad")
+        # Declares the wrong kind for its folder: a per-element ElementValidationError.
+        manifest = bad_root / "element.yaml"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["kind"] = "transition"
+        manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return extra, manifest
+
+    def test_invalid_element_is_skipped_and_its_pack_siblings_still_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            extra, manifest = self._pack_with_good_and_bad_element(tmp)
+            registry = load_default_registry(project_root=Path(tmp) / "project", extra_pack_roots=(str(extra),))
+
+            demo_ids = {item.id for item in registry.list("effects") if item.metadata.get("pack_id") == "demo"}
+            self.assertEqual(demo_ids, {"good-glow"})
+            self.assertEqual(registry.get("effects", "good-glow").metadata["label"], "Good")
+            with self.assertRaises(KeyError):
+                registry.get("effects", "bad-glow")
+
+            self.assertEqual(len(registry.diagnostics), 1)
+            skipped = registry.diagnostics[0]
+            self.assertEqual((skipped.pack_id, skipped.kind), ("demo", "effects"))
+            self.assertEqual(skipped.path.resolve(), manifest.resolve())
+            self.assertIn("does not match folder kind", skipped.error)
+
+    def test_validate_cli_reports_the_skipped_file_and_fails(self) -> None:
+        import contextlib
+        import io
+
+        from astrid.core.element import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            extra, manifest = self._pack_with_good_and_bad_element(tmp)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(
+                    ["--project-root", str(Path(tmp) / "project"), "--pack-root", str(extra), "validate"]
+                )
+            report = out.getvalue()
+            self.assertEqual(code, 1)
+            self.assertIn(str(manifest), report)
+            self.assertIn("does not match folder kind", report)
+            self.assertIn("1 skipped as invalid", report)
+
+            # A single-element check names the skip instead of "unknown element".
+            with self.assertRaisesRegex(Exception, "invalid, skipped at"):
+                cli.main(
+                    [
+                        "--project-root",
+                        str(Path(tmp) / "project"),
+                        "--pack-root",
+                        str(extra),
+                        "validate",
+                        "effects",
+                        "bad-glow",
+                    ]
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

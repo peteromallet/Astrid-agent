@@ -189,11 +189,24 @@ def _require_pack_match(element: ElementDefinition, pack_id: str | None) -> None
 
 
 def _cmd_validate(args: argparse.Namespace, registry: Any) -> int:
+    skipped = [
+        item
+        for item in registry.diagnostics
+        if not args.kind or item.kind == args.kind
+    ]
     if args.kind and args.element_id:
+        for item in skipped:
+            if item.path.parent.name == args.element_id:
+                raise ValueError(f"{args.kind}/{args.element_id}: invalid, skipped at {item}")
         registry.get(args.kind, args.element_id)
         print(f"{args.kind}/{args.element_id}: ok")
         return 0
     elements = registry.list(kind=args.kind)
+    for item in skipped:
+        print(f"skipped {item.kind} ({item.pack_id}): {item}")
+    if skipped:
+        print(f"{len(elements)} element(s) ok, {len(skipped)} skipped as invalid")
+        return 1
     print(f"{len(elements)} element(s): ok")
     return 0
 
