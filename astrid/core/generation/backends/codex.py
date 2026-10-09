@@ -240,10 +240,16 @@ def _build_codex_prompt(params: dict[str, Any]) -> str:
 
     references = _reference_paths(params)
     if references:
-        parts.extend(["", "Reference images are attached in this order: source image, "
-                      "style guide (if provided), brand guide (if provided). "
-                      "Use all attached references; preserve source composition "
-                      "except where the requested changes override it."])
+        # Name only the roles actually attached: a character-only t2i call
+        # must not tell the model its character sheet is the "source image".
+        roles = [
+            _REFERENCE_ROLE_TEXT[name]
+            for name in ("image_ref", "style_ref", "brand_ref")
+            if params.get(name)
+        ]
+        parts.extend(["", "Attached reference images, in order: " + "; ".join(
+            f"{index}) {text}" for index, text in enumerate(roles, start=1)
+        ) + "."])
         parts.append(
             f"The {len(references)} references are already attached to this conversation. "
             f"Use num_last_images_to_include={len(references)} when the tool exposes it; "
@@ -271,6 +277,15 @@ def _build_codex_prompt(params: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(parts)
+
+
+_REFERENCE_ROLE_TEXT = {
+    "image_ref": "the source image: edit this image, keeping its camera, composition "
+    "and framing except where the request changes them",
+    "style_ref": "the character/style reference: match its art style, and wherever "
+    "the request features its character, keep that character's face, hair and clothing",
+    "brand_ref": "the brand guide: follow its palette and marks",
+}
 
 
 def _reference_paths(params: dict[str, Any]) -> list[Path]:

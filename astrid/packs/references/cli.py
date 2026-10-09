@@ -169,12 +169,28 @@ def _cmd_recover(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_associate(parsed: argparse.Namespace) -> int:
+    if parsed.ordinal is not None:
+        from astrid.sdk.contracts import DomainResult, ErrorObject
+
+        return print_result(DomainResult.failure(ErrorObject(
+            "validation_error",
+            "the Runtime assigns association ordinals; drop --ordinal",
+            {"field": "ordinal"},
+        )), as_json=parsed.json)
+    # Optional lineage flags are forwarded only when given (they used to be
+    # parsed and silently dropped).
+    extra = {
+        key: value
+        for key, value in (("metadata", parsed.metadata), ("context_task", parsed.context_task))
+        if value is not None
+    }
     result = parsed.client.references.associate(
         parsed.project,
         parsed.ref,
         media_id=parsed.media,
         role=parsed.role,
         idempotency_key=parsed.idempotency_key,
+        **extra,
     )
     return print_result(result, as_json=parsed.json)
 
@@ -246,7 +262,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_update(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Reference id.")
+    subparser.add_argument("ref", help="Reference id or exact project-local name.")
     subparser.add_argument("--name", default=None, help="New name.")
     subparser.add_argument(
         "--description",
@@ -266,7 +282,7 @@ def _configure_update(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_archive(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Reference id.")
+    subparser.add_argument("ref", help="Reference id or exact project-local name.")
     _add_idempotency_key(subparser)
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_archive)
@@ -310,13 +326,13 @@ def _configure_associate(subparser: argparse.ArgumentParser) -> None:
         "--context-task",
         dest="context_task",
         default=None,
-        help="Context task id (required for role 'used_as_input').",
+        help="Task that used this media (required for role 'used_as_input'); stored in metadata.context_task.",
     )
     subparser.add_argument(
         "--ordinal",
         type=int,
         default=None,
-        help="Optional association ordinal.",
+        help="Not supported: the Runtime assigns the next ordinal.",
     )
     subparser.add_argument(
         "--metadata",
@@ -362,7 +378,7 @@ def _configure_link(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_set_primary(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Reference id.")
+    subparser.add_argument("ref", help="Reference id or exact project-local name.")
     subparser.add_argument(
         "--media-reference",
         required=True,
@@ -387,7 +403,7 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Reference id.")
+    subparser.add_argument("ref", help="Reference id or exact project-local name.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_show)
 

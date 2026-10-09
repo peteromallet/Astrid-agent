@@ -8,11 +8,8 @@ These catalog labels do not select the actual image model: Codex's current
 built-in image tool selects it. The receipt records `codex/gpt-image`; it
 does not claim a pinned Sunburst model.
 
-`image_ref`, `style_ref`, and `brand_ref` are optional, ordered managed CAS
-image descriptors, each with digest, safe filename, media_type and size_bytes.
-Each reference is limited to 16 MiB. `edit` requires `image_ref`. Attach the
-source frame first, the character style guide second, and the brand guide
-third. Missing optional references are omitted, never replaced with paths.
+`image_ref`, `style_ref`, `brand_ref` are the ordered source, character/style and brand slots (16 MiB each; `edit` needs a source).
+Fill them with `references=[{"ref", "role"}]` ([generate_image](../generate_image/STAGE.md)); raw `{digest, filename, media_type, size_bytes}` descriptors still work.
 
 Count is 1–4; default timeout is 600 seconds per image. `size`, `quality` and
 `background` are prompt hints, not guaranteed pixel or alpha controls.

@@ -144,6 +144,42 @@ class InvocationResult:
     kernel_task_id: str | None = None
     kernel_attempt_id: str | None = None
 
+    def output_rows(self, port: str | None = None) -> list[dict[str, Any]]:
+        """Managed output rows of *port* by ordinal; thumbnails only when asked for.
+
+        ``port=None`` selects the first port whose rows have role ``result``.
+        Each row is a media handle: pass it straight into the next invocation.
+        """
+        rows = [
+            dict(row) for row in (self.outputs.get("managed_outputs") or [])
+            if isinstance(row, Mapping)
+        ]
+        if port is None:
+            port = next((row.get("output_port") for row in rows if row.get("role") == "result"), None)
+        return sorted(
+            (
+                row for row in rows
+                if row.get("output_port") == port
+                and (port == "thumbnail" or row.get("role") != "thumbnail")
+            ),
+            key=lambda row: int(row.get("ordinal") or 0),
+        )
+
+    def output(self, port: str | None = None, n: int = 0) -> dict[str, Any]:
+        """The *n*-th output row of *port* (see :meth:`output_rows`)."""
+        rows = self.output_rows(port)
+        if not 0 <= n < len(rows):
+            available = sorted({
+                f"{row.get('output_port')}[{row.get('role')}]"
+                for row in (self.outputs.get("managed_outputs") or [])
+                if isinstance(row, Mapping)
+            })
+            raise LookupError(
+                f"no output {port or '(result)'}[{n}] on this result "
+                f"({len(rows)} matching row(s)); ports: {', '.join(available) or 'none; invoke with wait=True'}"
+            )
+        return rows[n]
+
     def to_dict(self) -> dict[str, Any]:
         return _json_safe_mapping(
             {

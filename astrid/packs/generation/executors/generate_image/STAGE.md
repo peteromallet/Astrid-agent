@@ -110,6 +110,17 @@ result = sdk.invoke(
 )
 ```
 
+**References and edits (Codex).** `references=[{"ref": …, "role": "source"|"character"|"style"|"brand"}]`, where `ref` is a
+reference name, a prior output row, `"run:<run_id>/<port>#n"` or `"sha256:<digest>"`. Don't import files or build descriptors:
+```python
+go = dict(kind="executor", project="demo", client=client, wait=True)  # client = AstridClient.open_from_launcher()
+scene = sdk.invoke("generation.generate_image", **go, inputs={"model": "flux-dev", "mode": "t2i", "execution": "codex",
+    "prompt": "my character at a desk", "references": [{"ref": "Astrid presenter", "role": "character", "depicts": True}]})
+night = sdk.invoke("generation.generate_image", **go, inputs={"model": "qwen-image-edit", "mode": "edit", "execution": "codex",
+    "prompt": "same shot, night window", "references": [{"ref": scene.output("generated_images"), "role": "source"}, {"ref": "Astrid presenter", "role": "character"}]})
+```
+Order: source, character/style (one slot), brand. `depicts: True` lists outputs in `media references show "Astrid presenter"`.
+
 ## Internal runner command (not a public entrypoint)
 
 The following module command is reserved for Astrid's internal runner and is

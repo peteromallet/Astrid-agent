@@ -1489,6 +1489,9 @@ def _invocation_outputs(
             _json_safe(item) for item in managed_outputs
             if isinstance(item, Mapping)
         ]
+    reference_links = raw_result.get("reference_links")
+    if isinstance(reference_links, list):
+        outputs["reference_links"] = [_json_safe(item) for item in reference_links]
     if manifest_path is not None:
         manifest = Path(manifest_path)
         try:
@@ -2801,6 +2804,19 @@ def invoke(
         )
         variant_context = resolved_variant
 
+    # Media handles (reference names, prior outputs, digests) and the
+    # generation ``references=[{ref, role}]`` sugar resolve here, inside the
+    # project, to the same managed descriptors callers used to hand-build.
+    from .media_handles import apply_media_handles
+
+    request_inputs, media_lineage, reference_links = apply_media_handles(
+        _client,
+        project,
+        capability,
+        request_inputs,
+        resolve=_client is not None and bool(project),
+    )
+
     # Validate the public selector/format contract before the runner can
     # create a ledger row or spawn a subprocess.  The runner repeats these
     # checks for direct CLI callers, but SDK callers should get the same
@@ -3047,6 +3063,9 @@ def invoke(
         kernel_capability_version = executor_definition_digest(executor_registry.get(capability.id))
         invocation_authority_context = dict(invocation_authority_context or {})
         invocation_authority_context["executor_version"] = kernel_capability_version
+        if media_lineage:
+            # Receipted with the task: which handle (and reference) fed each port.
+            invocation_authority_context["media_handles"] = media_lineage
     kr = kt = ka = ""
     try:
         # Keep the private seam backwards-compatible for callers that replace
@@ -3095,6 +3114,26 @@ def invoke(
             )
             if waited_attempt_id:
                 ka = waited_attempt_id
+            if ok and capability.capability_type == "executor" and "managed_outputs" not in raw_result:
+                # Every executor's outputs are Runtime rows; expose them so
+                # result.output(port) can feed the next invocation directly.
+                rows, read_error = _read_task_managed_outputs(_client, kt)
+                if read_error is None:
+                    raw_result["managed_outputs"] = rows or []
+            if ok and reference_links:
+                from .media_handles import link_outputs_to_references
+
+                raw_result["reference_links"] = link_outputs_to_references(
+                    _client,
+                    str(project),
+                    reference_links,
+                    task_id=kt,
+                    run_id=kr,
+                    output_rows=[
+                        row for row in raw_result.get("managed_outputs") or []
+                        if isinstance(row, Mapping)
+                    ],
+                )
         run_id_raw = raw_result.get("run_id") if isinstance(raw_result, dict) else None
         run_root_raw = raw_result.get("run_root") if isinstance(raw_result, dict) else None
         raw_result = dict(raw_result) if isinstance(raw_result, dict) else {}

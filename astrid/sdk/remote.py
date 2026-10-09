@@ -1539,6 +1539,11 @@ class RemoteMedia(_RemoteFamily):
         else:
             thumbnail_error = None
         payload = dict(result.data)
+        if payload.get("filename") not in (None, path.name):
+            # The object already existed (often as a generation output, whose
+            # stored name is its port); report the file the caller imported.
+            payload["stored_filename"] = payload["filename"]
+            payload["filename"] = path.name
         if thumbnail is not None:
             payload["thumbnail"] = dict(thumbnail)
         if thumbnail_error:
@@ -2004,12 +2009,37 @@ class RemoteReferences(_RemoteFamily):
         return self._typed("create_project_reference", project, body, key=key, idempotency_key=key)
     def list(self, project, *, cursor=None, limit=50, include_archived=False):
         return self._typed("list_project_references", project, cursor=cursor, limit=limit, include_archived=include_archived)
-    def show(self, project, ref): return self._typed("get_project_reference", project, ref)
+    def _resolve(self, project, ref):
+        """Return ``(reference_id, None)`` for an id or exact name, else ``(None, failure)``."""
+        if project is None or not isinstance(ref, str) or not ref.strip():
+            return ref, None
+        rows = paged_rows(self._client.list_project_references, project, limit=50, include_archived=True)
+        if rows is None:
+            return ref, None  # let the Runtime answer for the id
+        if any(isinstance(row, Mapping) and row.get("reference_id") == ref for row in rows):
+            return ref, None
+        named = [row for row in rows if isinstance(row, Mapping) and row.get("name") == ref]
+        if not named:
+            folded = ref.strip().casefold()
+            named = [row for row in rows if isinstance(row, Mapping) and str(row.get("name", "")).strip().casefold() == folded]
+        active = [row for row in named if not row.get("archived")]
+        chosen = active if len(active) == 1 else named
+        if len(chosen) == 1:
+            return str(chosen[0]["reference_id"]), None
+        if chosen:
+            return None, DomainResult.failure(ErrorObject("conflict", f"reference name {ref!r} is ambiguous; use an id", {"candidates": [str(row.get("reference_id")) for row in chosen]}))
+        names = sorted(str(row.get("name")) for row in rows if isinstance(row, Mapping) and not row.get("archived"))
+        return None, DomainResult.failure(ErrorObject("not_found", f"reference {ref!r} not found in project", {"project": project, "names": names}))
+    def show(self, project, ref):
+        ref, failure = self._resolve(project, ref)
+        return failure or self._typed("get_project_reference", project, ref)
     def _version(self, ref, expected_version, project=None):
         if expected_version is not None: return int(expected_version)
         current = self._client.get_project_reference(project, ref)
         return int(current.get("version", 1))
     def update(self, project, ref, *, expected_version=None, name=None, description=None, metadata=None, idempotency_key=None):
+        ref, failure = self._resolve(project, ref)
+        if failure is not None: return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "update_reference"}), idempotency_key=idempotency_key or "")
         try: version = self._version(ref, expected_version, project)
@@ -2017,6 +2047,8 @@ class RemoteReferences(_RemoteFamily):
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("update_project_reference", project, ref, key=key, expected_version=version, name=name, description=description, metadata=metadata, idempotency_key=key)
     def archive(self, project, ref, *, expected_version=None, idempotency_key=None):
+        ref, failure = self._resolve(project, ref)
+        if failure is not None: return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "archive_reference"}), idempotency_key=idempotency_key or "")
         try: version = self._version(ref, expected_version, project)
@@ -2024,17 +2056,27 @@ class RemoteReferences(_RemoteFamily):
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("archive_project_reference", project, ref, key=key, expected_version=version, idempotency_key=key)
     def recover(self, project, ref, *, expected_version=None, idempotency_key=None):
+        ref, failure = self._resolve(project, ref)
+        if failure is not None: return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "recover_reference"}), idempotency_key=idempotency_key or "")
         try: version = self._version(ref, expected_version, project)
         except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("recover_project_reference", project, ref, key=key, expected_version=version, idempotency_key=key)
-    def associate(self, project, ref, *, media_id: str, role="depicts", association_id=None, idempotency_key=None):
+    def associate(self, project, ref, *, media_id: str, role="depicts", association_id=None, metadata=None, context_task=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "associate_reference"}), idempotency_key=key)
-        return self._typed("associate_reference", project, ref, {"media_id": media_id, "role": role, **({"association_id": association_id} if association_id else {})}, key=key, idempotency_key=key)
+        ref, failure = self._resolve(project, ref)
+        if failure is not None: return failure
+        metadata = dict(metadata or {})
+        if context_task:
+            metadata.setdefault("context_task", str(context_task))
+        if role == "used_as_input" and not metadata.get("context_task"):
+            return DomainResult.failure(ErrorObject("validation_error", "role used_as_input requires a context task", {"field": "context_task"}), idempotency_key=key)
+        body = {"media_id": media_id, "role": role, **({"association_id": association_id} if association_id else {}), **({"metadata": metadata} if metadata else {})}
+        return self._typed("associate_reference", project, ref, body, key=key, idempotency_key=key)
     def link(self, project, from_reference_id, to_reference_id, kind, *, metadata=None, idempotency_key=None):
         key = idempotency_key or uuid.uuid4().hex
         if project is None:
@@ -2046,6 +2088,8 @@ class RemoteReferences(_RemoteFamily):
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "set_primary_reference"}), idempotency_key=key)
         if not association_id:
             return DomainResult.failure(ErrorObject("validation_error", "media reference association is required", {}), idempotency_key=key)
+        ref, failure = self._resolve(project, ref)
+        if failure is not None: return failure
         try: version = self._version(ref, expected_version, project)
         except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
         return self._typed("set_primary_reference", project, ref, association_id, key=key, expected_version=version, idempotency_key=key)

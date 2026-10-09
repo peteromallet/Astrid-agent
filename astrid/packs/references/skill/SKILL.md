@@ -40,30 +40,9 @@ and metadata for additional meaning. Resolve ambiguous names by the returned id.
 - `archive` and `recover` handle reversible retirement. Use
   `list --include-archived` when returning to paused work.
 
-Inspect the chosen verb's `--help` for its required arguments. References use
-runtime media identities; do not write a local reference database or substitute
-file paths for media ids. A reference association records lineage; actual model
-inputs must also be supplied through the chosen generation capability.
-
-The current public media surface has no user-facing export or download route:
-`media show` returns metadata, while runtime byte materialization is an
-attempt-host concern. The two image routes take different inputs:
-
-- `generation.generate_image` (local and cloud `i2i`/`edit`) takes `image_ref` as
-  an existing absolute or invocation-relative image path. Do not pass a
-  reference id or media id as that value.
-- `generation.generate_image_codex` takes `image_ref`, `style_ref`, and
-  `brand_ref` as managed image descriptors. Each carries a SHA-256 `digest`
-  (`sha256:` plus 64 hex characters) with its filename, media type, and size. A
-  local path is rejected, and so is a reference id or media id, which is not a
-  digest. To get a descriptor, import the file into the project first with
-  `python3 -m astrid media import <path> --project <slug> --json` (SDK:
-  `client.media.import_file`), then pass the imported object's digest.
-
-If the original local file is still available, pass that path to
-`generate_image` and keep the runtime reference association for lineage. If
-only a managed media id remains, report the typed limitation instead of
-inventing a download, filesystem path, or local cache fallback.
+Inspect the chosen verb's `--help`; verbs take the id or exact name. Use runtime media identities, never file paths.
+To generate with a reference, name it: `references=[{"ref": "Character Name", "role": "character", "depicts": True}]` with `execution="codex"` ([generate_image STAGE](../../generation/executors/generate_image/STAGE.md)).
+`create` makes its media canonical; each generation records `used_as_input` with its task, and `depicts: True` lists the outputs in `show`.
 
 For generating new variants, follow the [generation skill](../../generation/skill/SKILL.md).
 For placing media in an existing video timeline, follow the [video editing
