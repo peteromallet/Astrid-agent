@@ -12,39 +12,20 @@ Do not use it to generate images (use `generation`) or to smooth or upscale art
 
 ## Entrypoints
 
-Both executors take a managed image. Import the file first, then pass its
-descriptor (`digest`, `filename`, `media_type`, `size_bytes` from the import
-result). A bare digest string fails at runtime with `image not found`:
-
-```bash
-python3 -m astrid media import <file.png> --project almost-ready --json
-```
+Both executors take a media handle as `image`: a generation output row
+(`gen.output("generated_images")`), `"run:<run_id>/generated_images#n"`, or the
+`"sha256:<digest>"` of a file you imported with `python3 -m astrid media import`.
 
 ```python
 import astrid.sdk as sdk
 from astrid.sdk import AstridClient
 
-image = {
-    "digest": "sha256:<digest>",
-    "filename": "<file.png>",
-    "media_type": "image/png",
-    "size_bytes": 199012,
-}
 with AstridClient.open_from_launcher() as client:  # sdk.invoke needs an explicit client
-    snapped = sdk.invoke(
-        "pixel.snap",
-        kind="executor",
-        project="almost-ready",
-        inputs={"image": image, "grid_width": 48, "grid_height": 48, "fit": "none"},
-        client=client,
-    )
-    cutout = sdk.invoke(
-        "pixel.cutout",
-        kind="executor",
-        project="almost-ready",
-        inputs={"image": image, "mode": "flat", "grid": "48x48", "fit": "none"},
-        client=client,
-    )
+    snapped = sdk.invoke("pixel.snap", kind="executor", project="almost-ready", client=client, wait=True,
+                         inputs={"image": "run:<run_id>/generated_images#0", "grid_width": 48, "grid_height": 48, "fit": "none"})
+    cutout = sdk.invoke("pixel.cutout", kind="executor", project="almost-ready", client=client, wait=True,
+                        inputs={"image": "run:<run_id>/generated_images#0", "mode": "flat", "grid": "48x48", "fit": "none"})
+    native = snapped.output("native")  # a handle: pass it on, or client.media.read_bytes(native["digest"])
 ```
 
 Invocations are admitted as tasks. Identical inputs reuse the existing task,

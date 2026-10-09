@@ -297,16 +297,11 @@ def apply_media_handles(
     links: list[dict[str, Any]] = []
     if not resolve:
         return values, lineage, links
-    definition = getattr(capability, "definition", None)
-    metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
-    cas_ports = {str(name) for name in (metadata.get("hc04_cas_param_ports") or ())}
     seen: dict[str, str] = {}
     for port in file_ports:
         value = values.get(port)
         if value is None or not is_media_handle(value):
             continue
-        if isinstance(value, str) and _DIGEST.fullmatch(value) and port not in cas_ports and port not in planned:
-            continue  # a bare digest on a plain file port already works; keep it byte-identical
         descriptor, record = resolve_media_handle(client, str(project or ""), value)
         role = planned.get(port, {}).get("role")
         label = f"{role} ({record['handle']})" if role else f"{port} ({record['handle']})"
@@ -369,7 +364,22 @@ def link_outputs_to_references(
                         **({"error": error} if error else {})})
 
     for link in links:
-        associate(link, str(link["media_id"]), "used_as_input", {}, f"used-{task_id}-{link['reference_id']}")
+        # The Runtime keeps one row per (reference, media, role): the first
+        # use is recorded; later tasks are on their receipts and depicts rows.
+        try:
+            current = client.references.show(project, link["reference_id"])
+            rows = getattr(current, "data", None) or {}
+            recorded = any(
+                row.get("media_id") == link["media_id"] and row.get("role") == "used_as_input"
+                for row in rows.get("media_references") or [] if isinstance(row, Mapping)
+            )
+        except Exception:  # noqa: BLE001 - fall through to the write, which reports its own error
+            recorded = False
+        if recorded:
+            results.append({"reference": link.get("name"), "role": "used_as_input", "media_id": link["media_id"],
+                            "ok": True, "existing": True})
+        else:
+            associate(link, str(link["media_id"]), "used_as_input", {}, f"used-{task_id}-{link['reference_id']}")
         if link.get("depicts"):
             for row in images:
                 digest = str(row.get("digest") or row.get("object_id"))

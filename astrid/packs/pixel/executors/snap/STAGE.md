@@ -9,7 +9,7 @@ the modal colour of its source region, not a bilinear average.
 
 ## Inputs
 
-- `image` (file, required): managed image descriptor `{digest, filename, media_type, size_bytes}` from `python -m astrid media import`. A bare digest string fails with `image not found`.
+- `image` (file, required): a media handle: an output row (`result.output("generated_images")`), `"run:<run_id>/<port>#n"`, `"sha256:<digest>"` or a managed descriptor.
 - `crop` (json, optional): `{x, y, width, height}` in source pixels. Applied before everything else.
 - `auto_grid` (boolean, default `false`): detect the block lattice from edge periodicity.
   Use it for images that already sit on a pixel lattice. If detection fails, the

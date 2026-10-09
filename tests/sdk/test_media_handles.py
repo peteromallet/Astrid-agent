@@ -156,14 +156,16 @@ def test_roles_map_to_ports_and_conflicts_are_explained(runtime):
         apply_media_handles(runtime, "demo", cap, {"references": [{"ref": "ref:Astrid presenter", "role": "face"}]})
 
 
-def test_plain_descriptors_and_bare_digests_on_plain_file_ports_are_untouched(runtime):
+def test_plain_descriptors_pass_through_and_bare_digests_become_descriptors(runtime):
     codex = sdk.get_capability("generation.generate_image_codex", kind="executor")
     descriptor = {"digest": _digest(BASE), "filename": "T-00.png", "media_type": "image/png", "size_bytes": 3}
     values, lineage, _ = apply_media_handles(runtime, "demo", codex, {"image_ref": descriptor, "prompt": "x"})
     assert values == {"image_ref": descriptor, "prompt": "x"} and lineage == []
+    # pixel.snap used to fail on a bare digest ("image not found"); it now gets a named descriptor
     snap = sdk.get_capability("pixel.snap", kind="executor")
     values, lineage, _ = apply_media_handles(runtime, "demo", snap, {"image": _digest(BASE)})
-    assert values == {"image": _digest(BASE)} and lineage == []
+    assert values["image"] == {"digest": _digest(BASE), "filename": f"media-{_digest(BASE)[7:19]}.png",
+                               "media_type": "image/png", "size_bytes": len(BASE)}
 
 
 def test_invoke_admits_resolved_descriptors_links_outputs_and_host_materializes(runtime, tmp_path):
@@ -196,6 +198,15 @@ def test_invoke_admits_resolved_descriptors_links_outputs_and_host_materializes(
     assert roles == [("used_as_input", _digest(PRESENTER)), ("depicts", _digest(NEW[0])), ("depicts", _digest(NEW[1]))]
     assert runtime.associations[0]["metadata"]["context_task"] == "t-01"
     assert all(link["ok"] for link in result.outputs["reference_links"])
+    # a second generation with the same reference does not re-insert used_as_input
+    # (the Runtime keeps one row per reference/media/role); it reports it as existing
+    runtime.reference["media_references"].append(
+        {"association_id": "as-1", "media_id": _digest(PRESENTER), "role": "used_as_input", "ordinal": 1, "is_primary": False})
+    from astrid.sdk.media_handles import link_outputs_to_references
+    again = link_outputs_to_references(runtime, "demo", [{"reference_id": "ref-presenter", "name": "Astrid presenter",
+        "media_id": _digest(PRESENTER), "port": "style_ref", "role": "character", "depicts": False}],
+        task_id="t-02", run_id="r-02", output_rows=[])
+    assert again == [{"reference": "Astrid presenter", "role": "used_as_input", "media_id": _digest(PRESENTER), "ok": True, "existing": True}]
 
     # the admitted spec is byte-for-byte what the bounded host already accepts
     host = GenericPackHost(pack_roots=[Path("astrid/packs")], client=SimpleNamespace(get_object=lambda d: runtime.objects["sha256:" + d]))
