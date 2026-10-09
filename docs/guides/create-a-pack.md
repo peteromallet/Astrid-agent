@@ -12,6 +12,10 @@ The V3 schema is the authority for manifest shape:
 [pack.json](../../astrid/core/pack/schemas/v3/pack.json). A folder or filename
 does not publish anything by itself.
 
+For the intended longer-term user-facing distinction between **Tools**,
+**Widgets**, and **Actions**, see the [future product model](frontend-pack-vision.md).
+Those names do not add V3 manifest types or runtime behavior today.
+
 | What you want to add | V3 declaration | Typical use |
 |---|---|---|
 | Callable work, direct or composed | `actions` | An agent or host invokes an operation; a composed action may invoke other actions. Use `kind="action"` for V3 callable work. |

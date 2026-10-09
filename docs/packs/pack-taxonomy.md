@@ -26,6 +26,11 @@ Dependencies, permissions, secrets, documentation, and discovery metadata
 describe how a pack is built, trusted, discovered, or documented; they are
 not additional contribution types.
 
+The proposed future distinction between a complete **Tool**, reusable UI
+**Widget**, and callable **Action** is a product-design direction, not a new
+V3 taxonomy. See the [future model](../guides/frontend-pack-vision.md); use the
+current declarations in this page when authoring a pack.
+
 ## Rendering and visual elements
 
 The `rendering` family contains two different kinds of contribution:
