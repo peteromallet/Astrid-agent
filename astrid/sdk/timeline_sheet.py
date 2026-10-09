@@ -40,7 +40,8 @@ class SheetError(ValueError):
 
 # ---------------------------------------------------------------- render
 
-def render_sheet(tl: Any, *, start: float | None = None, end: float | None = None, banner: str | None = None) -> str:
+def render_sheet(tl: Any, *, start: float | None = None, end: float | None = None, banner: str | None = None,
+                 film: str | None = None) -> str:
     """The cut sheet for the cuts that overlap [start, end) (all cuts by default)."""
     groups = tl._cut_groups()
     if not groups:
@@ -50,7 +51,7 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
               if (end is None or g["start"] < end - 1e-6) and (start is None or (spans[g["id"]][1] or tl.duration) > start + 1e-6)]
     fps = tl.fps
     canvas = _canvas(tl)
-    out = [f"film {tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {canvas} · {fps:g} fps"]
+    out = [f"film {film or tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {canvas} · {fps:g} fps"]
     if banner:
         out.append(banner)
     lines_used = []
@@ -62,11 +63,11 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
     if lines_used:
         out += ["", "lines" + " " * 44 + "# the narration: everything hangs on it"]
         width = max(len(s) for s in lines_used)
+        texts = {seg: '"' + tl.voice(seg).text.replace('"', "'") + '"' for seg in lines_used}
+        tw = max(len(t) for t in texts.values())
         for seg in lines_used:
-            v = tl.voice(seg)
-            gap = v.gap_after
-            text = v.text.replace('"', "'")
-            out.append(f"  {seg:<{width}}  \"{text}\"" + (f"  gap {round(gap, 2):g}" if gap is not None else ""))
+            gap = tl.voice(seg).gap_after
+            out.append((f"  {seg:<{width}}  {texts[seg]:<{tw}}" + (f"  gap {round(gap, 2):g}" if gap is not None else "")).rstrip())
     orphans = tl.orphans()
     if orphans:
         out += ["", "orphans" + " " * 42 + "# moments whose words are gone: re-home or remove"]
@@ -174,15 +175,15 @@ def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool) ->
 
 
 def _align(rows: list[list[str]]) -> list[str]:
+    """Columns: time · track · layer · element · asset/text · when (on/until/for) · params."""
     if not rows:
         return []
-    widths = [max(len(r[i]) for r in rows) for i in range(1, 5)]
+    order = [1, 2, 3, 4, 6, 5]
+    widths = {i: max(len(r[i]) for r in rows) for i in order}
     out = []
     for r in rows:
-        cells = [r[1].ljust(widths[0]), r[2].ljust(widths[1]), r[3].ljust(widths[2]), r[4].ljust(widths[3])]
-        line = f"{r[0]:>6}   " + "  ".join(cells)
-        tail = "  ".join(x for x in (r[5], r[6]) if x)
-        out.append((line + "  " + tail).rstrip())
+        cells = [r[i].ljust(widths[i]) for i in order[:-1]] + [r[5]]
+        out.append((f"{r[0]:>6}   " + "  ".join(cells)).rstrip())
     return out
 
 
@@ -198,7 +199,7 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if not line.strip():
             continue
         body = line.strip()
-        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED")) or body.startswith(">") or raw.startswith("# "):
+        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:")) or body.startswith(">") or raw.startswith("# "):
             continue
         if body in ("lines", "orphans"):
             section, cut = body, None
@@ -296,12 +297,33 @@ def _parse_layer(body: str, number: int) -> dict[str, Any]:
     layer: dict[str, Any] = {"track": tokens[0], "name": tokens[1], "element": tokens[2], "asset": None, "text": None,
                              "params": {}, "on": None, "until": None, "for": None, "line": number}
     rest = tokens[3:]
-    clause_at = next((i for i, t in enumerate(rest) if t in CLAUSES), len(rest))
-    head, clauses = rest[:clause_at], rest[clause_at:]
-    for token in head:
+    current, buf = None, []
+
+    def close() -> None:
+        if current is None:
+            return
+        value = " ".join(buf).strip()
+        if not value:
+            raise SheetError(f"line {number}: {current} needs a value (e.g. {current} \"Astrid\")")
+        if current == "for":
+            layer["for"] = _read_seconds(value, number)
+        else:
+            layer[current] = _canon(value, number)
+
+    for token in rest:
+        if token in CLAUSES:
+            close()
+            current, buf = token, []
+            continue
+        is_param = "=" in token and not token.startswith('"')
+        if current is not None and not is_param and not token.startswith("~"):
+            buf.append(token)  # part of the moment: "Astrid", after, beat 2, in n21, #2, +2f …
+            continue
+        close()
+        current, buf = None, []
         if token.startswith("~"):
             continue  # read-only information (a sequence's steps, its fit)
-        if "=" in token and not token.startswith('"'):
+        if is_param:
             key, value = token.split("=", 1)
             layer["params"][key] = _read_value(value, number)
         elif token.startswith('"'):
@@ -310,18 +332,7 @@ def _parse_layer(body: str, number: int) -> dict[str, Any]:
             layer["asset"] = token
         else:
             raise SheetError(f"line {number}: did not understand {token!r} (params are k=v; text goes in quotes)")
-    current, buf = None, []
-    for token in clauses + ["<end>"]:
-        if token in CLAUSES or token == "<end>":
-            if current is not None:
-                value = " ".join(buf).strip()
-                if current == "for":
-                    layer["for"] = _read_seconds(value, number)
-                else:
-                    layer[current] = _canon(value, number)
-            current, buf = (token if token != "<end>" else None), []
-        else:
-            buf.append(token)
+    close()
     return layer
 
 

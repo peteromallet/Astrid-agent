@@ -1257,9 +1257,10 @@ def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
         except (SheetError, Exception) as exc:  # noqa: BLE001
             print(f"--range: {exc}", file=sys.stderr)
             return 2
-    print(render_sheet(tl, start=start, end=end, banner=banner), end="")
+    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project)), end="")
     where = f"{parsed.ref} --project {parsed.project}"
-    print(f"\nnext: save this to a file, edit it, then  timelines apply {where} FILE   ·   or  timelines edit {where} --clip c30.cover --until Astrid")
+    # the hint goes to stderr, so `> FILE` is a clean sheet to edit and apply
+    print(f"next: edit the sheet (> FILE), then  timelines apply {where} FILE", file=sys.stderr)
     return 0
 
 
