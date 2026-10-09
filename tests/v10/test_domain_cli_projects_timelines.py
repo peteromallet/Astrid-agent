@@ -626,6 +626,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     from astrid.packs.timeline.cli import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
+        "create",
         "list",
         "show",
         "replace-parent-media",
@@ -641,6 +642,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     # The parser registers the timeline verbs plus the
     # manifest-declared nested ``shots`` mount (task T29).
     assert _subparser_choices(build_parser(_FakeClient())) == {
+        "create",
         "list",
         "show",
         "replace-parent-media",

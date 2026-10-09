@@ -345,6 +345,7 @@ class _RemoteFamily:
             elif operation == "create_generation": value = self._client.create_generation(*args, **kwargs)
             elif operation == "create_media_relation": value = self._client.create_media_relation(*args, **kwargs)
             elif operation == "create_project": value = self._client.create_project(*args, **kwargs)
+            elif operation == "create_timeline": value = self._client.create_timeline(*args, **kwargs)
             elif operation == "create_project_reference": value = self._client.create_project_reference(*args, **kwargs)
             elif operation == "create_project_shot": value = self._client.create_project_shot(*args, **kwargs)
             elif operation == "create_variant": value = self._client.create_variant(*args, **kwargs)
@@ -460,6 +461,75 @@ class RemoteTimelines(_RemoteFamily):
 
     def create(self, *, project, config: Mapping[str, Any], registry: Mapping[str, Any], slug=None, name=None, timeline_id=None, idempotency_key=None):
         return self._retired_document_route("create", idempotency_key=idempotency_key)
+
+    def create_empty(
+        self,
+        *,
+        project,
+        timeline_id=None,
+        config: Mapping[str, Any] | None = None,
+        idempotency_key=None,
+    ):
+        """Create a timeline that already has an empty current head.
+
+        Runtime ``create_timeline`` makes the identity shell only; until a
+        parent composition is published the timeline has no head, so checkout,
+        show, visualize and render all refuse it.  The first publication (with
+        ``expected_head`` null, no shots, and the given parent config) gives it
+        that head.  Both writes derive from one caller key, so a retry replays
+        the committed shell and head instead of creating a second timeline.
+        """
+        from astrid.core.ids import generate_ulid
+
+        key = idempotency_key or uuid.uuid4().hex
+        resolved = self._resolve_project_ref(project)
+        if not resolved.ok:
+            return resolved
+        project_ref = str(resolved.data)
+        timeline_key = str(timeline_id).strip() if timeline_id not in (None, "") else generate_ulid()
+        shell = self._typed(
+            "create_timeline", project_ref, timeline_key,
+            key=f"{key}-shell", idempotency_key=f"{key}-shell",
+        )
+        if not shell.ok:
+            return shell
+        shell_row = shell.data if isinstance(shell.data, Mapping) else {}
+        project_id = shell_row.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            return DomainResult.failure(
+                ErrorObject("protocol_error", "runtime timeline create returned no project identity", {"timeline_id": timeline_key}),
+                idempotency_key=key,
+            )
+        publication = {
+            "project_id": project_id,
+            "timeline_id": timeline_key,
+            "expected_head": None,
+            "parent_composition": {
+                "config": dict(config) if config is not None else {"tracks": []},
+                "registry": {},
+                "clips": [],
+                "occurrences": [],
+            },
+            "shot_revisions": [],
+            "internal_timeline_revisions": [],
+        }
+        head = self._typed(
+            "publish_parent_composition", project_id, timeline_key, publication,
+            key=f"{key}-head", idempotency_key=f"{key}-head",
+        )
+        if not head.ok:
+            return head
+        published = head.data if isinstance(head.data, Mapping) else {}
+        return DomainResult.success(
+            {
+                "project_id": project_id,
+                "timeline_id": timeline_key,
+                "head_revision_id": published.get("new_head") or published.get("revision_id"),
+                "created": True,
+            },
+            receipt=head.receipt,
+            idempotency_key=key,
+        )
 
     def _resolve_project_ref(self, project) -> DomainResult[str]:
         """Resolve an explicit project or the runtime's selected project.

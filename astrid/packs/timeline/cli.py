@@ -20,6 +20,8 @@ Verbs (the product routes plus the nested ``shots`` mount; reads resolve the
 Runtime-owned canonical current head, while the only supported timeline
 mutation is a parent-composition candidate publish):
 
+- ``create`` — ``client.timelines.create_empty``: the runtime identity shell plus
+  the first empty parent-composition head, so the timeline can be checked out;
 - ``list`` — ``client.timelines.list`` (active timelines only), rendered as
   compact identity/count summaries; use ``show`` for the canonical current
   head inspection;
@@ -55,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 from collections.abc import Mapping
 from fractions import Fraction
@@ -120,6 +123,42 @@ def _add_project_arg(
 
 
 # -- handlers (one SDK call each, no domain rules) -------------------------
+
+
+def _parse_canvas(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\s*([1-9]\d*)[xX]([1-9]\d*)\s*", value)
+    if match is None:
+        raise argparse.ArgumentTypeError("canvas must be WIDTHxHEIGHT, e.g. 1920x1080")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _cmd_create(parsed: argparse.Namespace) -> int:
+    width, height = parsed.canvas
+    # The canvas lives in the parent composition config, where the renderer
+    # reads it (timeline-cookbook: theme_overrides.visual.canvas).
+    config = {
+        "tracks": [],
+        "theme_overrides": {
+            "visual": {"canvas": {"width": width, "height": height, "fps": parsed.fps}}
+        },
+    }
+    result = parsed.client.timelines.create_empty(
+        project=parsed.project,
+        timeline_id=parsed.timeline_id,
+        config=config,
+        idempotency_key=parsed.idempotency_key,
+    )
+    return print_result(result, as_json=parsed.json)
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
@@ -1758,6 +1797,32 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
 # -- parser ----------------------------------------------------------------
 
 
+def _configure_create(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument(
+        "timeline_id",
+        nargs="?",
+        default=None,
+        help="New timeline id (ULID). Omit to generate one; the id is printed "
+        "in the result and is what show/checkout/render accept.",
+    )
+    _add_project_arg(subparser)
+    subparser.add_argument(
+        "--canvas",
+        type=_parse_canvas,
+        default=(1920, 1080),
+        help="Canvas size WIDTHxHEIGHT (default 1920x1080).",
+    )
+    subparser.add_argument(
+        "--fps",
+        type=_positive_int,
+        default=30,
+        help="Canvas frame rate (default 30).",
+    )
+    _add_idempotency_key(subparser)
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_create)
+
+
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument(
@@ -2046,6 +2111,11 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
+        "create",
+        help="Create an empty timeline with a canvas and an empty first head (one SDK call).",
+        configure=_configure_create,
+    ),
+    CommandSpec(
         "list",
         help="List active timelines in a project (slug ascending).",
         configure=_configure_list,
@@ -2118,7 +2188,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines",
         description=(
-            "Timeline list/show/replace-parent-media/archive/recover/history/diff/visualize/render "
+            "Timeline create/list/show/replace-parent-media/archive/recover/history/diff/visualize/render "
             "(product family); nested shots beneath 'timelines shots'."
         ),
     )
