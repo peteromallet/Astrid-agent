@@ -1,0 +1,83 @@
+schema_version: 1
+id: am-snap-plate
+kind: effect
+pack_id: astrid_motion
+short_description: Pixel plate with integer zoom, stepped pans and block-wipe enter or exit.
+description: Shows a pixel-art plate at an integer zoom of 1-4, drawn with image-rendering pixelated. The plate is a managed PNG attached as clip.asset (its registry key), or a static URL in params.src. Focus and pan are in 320x180 logical px and move only on step boundaries, so every edge sits on the 6 px grid. Optional flat tint and block-wipe enter or exit.
+keywords:
+  - pixel
+  - plate
+  - snapshot
+  - pan
+  - zoom
+  - wipe
+  - stepped
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Full-frame pixel plate overlay.
+metadata:
+  label: AM Snap Plate
+  description: Pixel plate with integer zoom, stepped pan and block-wipe transitions.
+  whenToUse: Use for a pixel snapshot as the base of an illustrative shot. Attach the plate as clip.asset (the registry key from media import), not as a URL. Pan needs zoom 2-4; at zoom 1 the plate fills the frame and pan has no effect.
+defaults:
+  zoom: 1
+  focus: {x: 160, y: 90}
+  pan: {dx: 0, dy: 0}
+  stepFrames: 2
+  enter: cut
+  exit: cut
+  enterFrames: 6
+  exitFrames: 6
+  pattern: diagonal
+  seed: 1
+  wipeColor: "#1F1F1F"
+  background: "#F7F4ED"
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    src:
+      type: string
+      description: Static URL or public path. Leave empty and use clip.asset for managed media.
+    zoom:
+      type: integer
+      enum: [1, 2, 3, 4]
+    focus:
+      type: object
+      description: Logical px (320x180 space) placed at the frame centre.
+      properties:
+        x: {type: number}
+        y: {type: number}
+    pan:
+      type: object
+      description: Logical px moved per step. Applies from the first step onward.
+      properties:
+        dx: {type: number}
+        dy: {type: number}
+    stepFrames:
+      type: integer
+      enum: [2, 3]
+    tint:
+      type: object
+      properties:
+        color: {type: string}
+        opacity: {type: number, minimum: 0, maximum: 1}
+    enter:
+      type: string
+      enum: [cut, blockWipe]
+    exit:
+      type: string
+      enum: [cut, blockWipe]
+    enterFrames: {type: integer, minimum: 1}
+    exitFrames: {type: integer, minimum: 1}
+    pattern:
+      type: string
+      enum: [diagonal, random, scan]
+    seed: {type: integer}
+    wipeColor: {type: string}
+    background: {type: string}

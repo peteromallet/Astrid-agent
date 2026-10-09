@@ -1,0 +1,29 @@
+schema_version: 2
+id: astrid_motion
+name: Astrid Motion Pack
+version: 0.1.0
+status: experimental
+visibility: visible
+domain: media
+stability: experimental
+support: project
+description: Reusable pixel-motion Remotion elements for Astrid explainer videos - snapped pixel plates, stepped sprites, editorial type, floating callouts and pixel-block wipes. Every element is stepped on whole logical pixels or frames unless noted.
+keywords:
+  - motion
+  - pixel
+  - remotion
+  - element
+  - explainer
+  - callout
+permissions:
+  - id: project_files
+    reason: Provides render-time visual element definitions consumed by the rendering pack. Elements read no files of their own; managed media arrives through clip asset keys.
+content:
+  elements: elements
+documentation:
+  kind: skill
+  path: skill/SKILL.md
+agent:
+  purpose: Use when a Remotion timeline needs a pixel-motion building block - a snapped pixel plate with stepped pans and zooms, a transparent pixel sprite with stepped keyframes or a run cycle, editorial type with a masked reveal, a floating callout card with an orange connector, or a pixel-block wipe.
+  do_not_use_for: Not an executor pack - it provides effect elements only. Generating the pixel art itself belongs to the pixel and generation packs; rendering belongs to the rendering pack.
+  normal_entrypoints: []
