@@ -23,6 +23,43 @@ When the request also needs
 new generated media (for example Foley audio), use [creative work](../../_core/skill/creative-work/SKILL.md)
 to find its generation capability, then return here to assemble the result.
 
+## Start a new timeline
+
+Use this when the project has no timeline yet. A timeline has no head until its
+first parent composition is published, and checkout, `show`, `visualize`, and
+`render` all refuse a headless timeline. `timelines create` makes the identity
+and that empty first head in one call.
+
+```bash
+python3 -m astrid projects create <project-slug> --name "<Display name>" --json
+python3 -m astrid timelines create --project <project-slug> --json
+# data.timeline_id is the new id; --canvas WIDTHxHEIGHT and --fps set the canvas
+python3 -m astrid projects update <project-slug> \
+  --settings '{"default_timeline_id": "<timeline_id>"}' --json
+python3 -m astrid timelines show --project <project-slug>
+```
+
+- `timelines create` takes an optional ULID (generated when omitted), `--canvas`
+  (default `1920x1080`) and `--fps` (default `30`). The canvas is stored as
+  `theme_overrides.visual.canvas` in the parent config. Runtime keeps no display
+  name or slug for a timeline, so keep the returned `timeline_id`.
+- The default timeline is optional. Without it, commands that omit `--timeline`
+  stop with a recovery message; with it, `show`, `visualize`, `render`, and
+  `runs open --default-timeline` resolve here.
+- The new timeline has no tracks and no shots. Add them through the checkout
+  route below: `checkout` (current head), edit, `check`, then `publish`. Use
+  `timeline_document.py` from this skill directory, for example
+  `python3 scripts/timeline_document.py checkout --project <slug> --timeline <timeline_id> --file <scratch>/edit.json`.
+- Units: placement `start_ms` and row `duration_ms` are milliseconds; clip `at`,
+  `from`, `to`, and `hold` are seconds. Add a visual track with
+  `add_track(shot, kind="visual", track_id=...)`, and an audio track with
+  `kind="audio"` (`add_track` defaults to `"video"`, which is not a track kind).
+  Put a new shot in the timeline with `add_authoring_shot(work, shot_id=..., occurrence_id=..., start_ms=0)`,
+  then set the row's `duration_ms`; the template row defaults to `duration_ms: 1`.
+- Media is referenced by its managed digest after `python3 -m astrid media import <file> --project <slug> --json`.
+  `place_media(shot, "sha256:...", ...)` writes `media_id`; a registry key writes `asset`.
+- After `publish`, `show` reports the new current head.
+
 ## Live Scenes extension route
 
 When the task concerns native Three.js scene code or a

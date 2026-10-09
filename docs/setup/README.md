@@ -72,6 +72,28 @@ python3 -m astrid.setup --check --offline
 
 Setup provisions the default Hivemind source. Searching its community knowledge requires an internet connection.
 
+## 4a. Rendering prerequisites (only for rendering)
+
+Skip this unless you will render timelines (`timelines render`, `timelines visualize` frames, or `runs open`). Rendering runs Remotion under Node, and a source checkout does not provide either by default.
+
+1. Install the Node version the checkout pins (`Astrid/.node-version` and `remotion/package.json` `engines`: 20.19.4). Use the official darwin-arm64 tarball from nodejs.org, verify it against that release’s `SHASUMS256.txt` (`shasum -a 256 -c`), and extract it into a folder of your own. Do not change the system Node.
+2. Install the Remotion packages with that Node first on `PATH`. This needs network access, because two `@banodoco/*` packages are fetched from GitHub:
+
+   ```bash
+   cd Astrid/remotion
+   PATH="/path/to/node-v20.19.4-darwin-arm64/bin:$PATH" npm ci
+   ```
+
+3. Tell the launcher which Node to use. Without this it takes the first `node` on `PATH`, which may be a different major version:
+
+   ```bash
+   export ASTRID_NODE_EXECUTABLE=/path/to/node-v20.19.4-darwin-arm64/bin/node
+   ```
+
+   For a source checkout, the launcher derives `ASTRID_REMOTION_PROJECT_DIR` and `ASTRID_TIMELINE_SCHEMA_PYTHONPATH` from `Astrid/remotion` once `node_modules` exists. Set the Node variable in the shell that starts `banodoco-local up`, and restart Runtime after changing it.
+
+`node_modules` is ignored by Git; do not commit it.
+
 ## 5. Sync your agent’s skills
 
 ```bash
