@@ -65,7 +65,7 @@ python3 -m astrid.core.pack.cli validate examples/packs/media
 | Pack | Purpose |
 |---|---|
 | `minimal` | Canonical small v3 action pack: a directory inventory and a composed trailer action. |
-| `media` | V3 ingestion and composed trailer actions, plus a declared schema, brief, and Remotion title-card element. |
+| `media` | V3 ingestion and composed trailer actions, a `schema` resource and brief `template` resource, plus a Remotion title-card element. The resources are not a `documents` contribution. |
 | `file_summarizer` | V3 text inspection, caller-authored summary validation, and verdict actions; legacy pause/ack plans remain outside the action catalog. |
 | `text_digest` | Retained v2 example of agent-in-the-loop text pipelines; not the current authoring template. |
 | `text_review` | V3 deterministic summary action followed by a separate caller-authored review verdict. |

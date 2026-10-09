@@ -44,13 +44,17 @@ of copying schemas or maintaining another template here.
    invocation, inputs, outputs, and supporting resources. The SDK selector
    `kind="action"` is the unified callable route; typed
    `executor`/`orchestrator` selectors remain available for those specific
-   routes and older registrations.
+   routes and older registrations. The [minimal pack](../../../../../examples/packs/minimal)
+   shows both a direct action and a composed action.
 3. **UI:** use `ui` for an application-hosted contribution such as an editor
    extension. Declare its entry and receiving target; keep host-specific code
    at the declared path.
-4. **Rendering:** use `rendering` for renderer, planner, finalizer, or
-   reusable element entries. Visual element manifests describe effects,
-   animations, and transitions. This is not a separate top-level
+4. **Timeline visual or renderer:** use `rendering` with `type: element` for a
+   reusable effect, animation, or transition. The asset-backed
+   [Frame Overlay element](../../../local/rendering/elements/effects/frame-overlay/element.yaml)
+   is a concrete source example. Use `renderer`, `planner`, or `finalizer`
+   only for advanced render-backend work; those entries share the `rendering`
+   field but follow the separate protocol. This is not a separate top-level
    `visual_elements` family; do not add one.
 5. **Document format:** use `documents` for a versioned document schema.
    Declare the format version and schema; keep examples and supporting data as
@@ -108,7 +112,12 @@ A pack-owned visual element is a trusted source/build contribution. Its
 descriptor and resources are declared under `rendering` and included in the
 Astrid/Reigh build and generated catalog. The element kinds are effects,
 animations, and transitions; retain their owner identity and resource paths.
-Do not compile TSX at runtime or invent a second catalog.
+Do not compile TSX at runtime or invent a second catalog. When updating an
+existing element, follow the [worked update path](../../../../../docs/guides/create-a-pack.md#updating-an-existing-element):
+regenerate and check the catalog, refresh the receiving source/build, re-apply
+the current owner-qualified revision, save, reopen, and verify before render.
+A local TSX HMR refresh can change what the browser draws without updating the
+saved revision; it is not a substitute for that path.
 
 A user-authored live scene is a different object: self-contained HTML saved
 and loaded through the Runtime project-object route. Its current contract

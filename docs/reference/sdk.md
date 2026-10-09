@@ -58,14 +58,14 @@ inventory = astrid.discover()
 for cap in inventory.capabilities:
     print(cap.id, cap.capability_type)
 
-# Lookup
-cap = astrid.get_capability("editorial.arrange", kind="executor")
+# Lookup a V3 callable action
+cap = astrid.get_capability("editorial.arrange", kind="action")
 print(cap.schema, cap.inputs, cap.outputs)
 
 # Invocation (dry-run)
 result = astrid.invoke(
     "iteration.experiment_review",
-    kind="executor",
+    kind="action",
     project="demo",
     inputs={"review": "experiments/prompt-brevity/review.json"},
     dry_run=True,
@@ -80,6 +80,10 @@ gen_result = astrid.generate(
 )
 print(gen_result)
 ```
+
+The normal V3 selector for callable work is `kind="action"`. The typed
+`executor` and `orchestrator` examples below show specific registered routes;
+they are still supported, but are not separate V3 manifest families.
 
 > **Tutorial**: For a step-by-step walkthrough building your first Astrid
 > agentic UX, see [docs/build-your-first-agentic-ux.md](../guides/build-your-first-agentic-ux.md).
@@ -141,7 +145,7 @@ in the Astrid-side [external-pack contract](hivemind-pack-contract.md). The
 delivery configuration carries a full immutable source pin; setup does not
 count the pack as installed unless that exact object is locally available.
 
-### Schema Inspection
+### Schema Inspection (typed executor route)
 
 ```python
 import astrid
@@ -177,7 +181,7 @@ for alias in cap.handle.aliases:
     print(alias.alias, "->", alias.canonical_id, "deprecated:", alias.deprecated)
 ```
 
-### Dry-Run Invocation
+### Dry-Run Invocation (typed executor route)
 
 Dry-run invocations validate request construction and registry routing without
 executing side effects. The returned `InvocationResult` carries the normalized
@@ -200,8 +204,10 @@ print(result.raw_result["dry_run"])  # True
 print(result.raw_result["command"])
 ```
 
-`kind` is required (`"executor"` or `"orchestrator"`). Pass the connected
-`client=` for live module-level invocations, or use `client.invoke_result()`.
+`kind` is required. Use `"action"` for the unified V3 callable route, or use
+`"executor"` / `"orchestrator"` when selecting a specific typed route. Pass
+the connected `client=` for live module-level invocations, or use
+`client.invoke_result()`.
 For project work, `project=<slug-or-id>` overrides the runtime's persisted
 current selection; omitting it reuses that selection. Dry runs do not read
 selection or admit work.
@@ -217,7 +223,7 @@ bytes and raises typed SDK errors for runtime rejection or malformed download
 responses. It also supports projectless artifacts; authorization remains with
 the runtime.
 
-### Regular Invocation
+### Regular Invocation (typed executor route)
 
 A real executor run addressed with `project=` is admitted by the workspace
 runtime. Pack code may write attempt-local files and return a result manifest;

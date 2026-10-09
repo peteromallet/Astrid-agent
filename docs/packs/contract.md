@@ -25,15 +25,21 @@ different host or has a different implementation language.
 
 ## V3 contribution families
 
-Declare each public contribution in the corresponding closed-schema field in
-`pack.yaml`:
+The V3 schema has four public declaration fields in `pack.yaml`, but authors
+do not need to treat them as four equally common product concepts. Start with
+the user's need and map it to the existing field:
 
-| Public family | Contract |
-|---|---|
-| `actions` | Callable operations with declared invocation, input/output, and supporting resource data. |
-| `ui` | Host-mounted UI entries such as editor extensions, with their entry and target. |
-| `rendering` | Renderer, planner, finalizer, or element declarations. |
-| `documents` | Versioned document formats and schemas. |
+| Authoring need | V3 declaration | Contract |
+|---|---|---|
+| Callable operation, direct or composed | `actions` | Declared invocation, input/output, and supporting resource data. `kind="action"` is the normal V3 SDK route. |
+| Interactive host UI | `ui` | Host-mounted entry and target. The V3 schema currently supports `type: editor`. |
+| Reusable timeline visual | `rendering` with `type: element` | A manifested effect, animation, or transition selected and consumed by the rendering host. |
+| Rendering infrastructure | `rendering` with `type: renderer`, `planner`, or `finalizer` | Advanced host/backend protocol contributions; not timeline elements or callable actions. |
+| Versioned file format | `documents` | A versioned format declaration and schema. This is supported in the schema, but no current in-tree V3 pack/example declares it. |
+
+These are author-facing choices mapped to the current manifest, not a proposal
+for new sections. The `rendering` family deliberately holds both visual
+content and backend infrastructure; see the separate contracts below.
 
 The starter's `action`, `ui`, `rendering`, and `shared` role flags choose
 scaffold files. They are not a second manifest taxonomy; `shared` is private
@@ -51,13 +57,22 @@ selectors remain supported for specific typed routes and older registrations.
 An element is selected with `kind="element"`; the SDK does not invoke visual
 elements as actions.
 
+Pack source and project state have different owners. The pack owns reusable
+implementation, assets, documentation, and stable contribution identity. The
+workspace Runtime owns project media, timelines, element placements and saved
+parameters, authored live-scene objects, tasks, runs, and outputs. The
+user-owned collection keeps pack ID `local` and display name **Personal**;
+`Personal` changes the label, not owner IDs or Runtime storage.
+
 ## Visual elements and rendering
 
-The `rendering` family includes two distinct roles:
+The `rendering` family includes two distinct roles, used by different authors:
 
-- Renderer, planner, and finalizer entries provide rendering infrastructure.
+- Renderer, planner, and finalizer entries provide rendering infrastructure
+  and are advanced host/backend work.
 - `type: element` entries point to reusable element manifests. Those manifests
-  declare visual `effect`, `animation`, or `transition` kinds.
+  declare the visual `effect`, `animation`, or `transition` kinds that
+  timeline authors select. This is the common reusable-visual path.
 
 An element reference remains scoped by its owning pack and kind. Preserve
 pack ID, element ID, and existing reference/revision data when changing
@@ -66,7 +81,21 @@ family and no parallel element catalog.
 
 Pack-owned TSX components and their declared resources are trusted inputs to
 the checked-out Astrid/Reigh build and generated rendering catalog. They are
-not downloaded or compiled by Runtime at project-edit time.
+not downloaded or compiled by Runtime at project-edit time. Production and
+other machines use the source/catalog included in their build; updating them
+requires the normal source-delivery/build/reload path, not automatic pack
+installation or live source download.
+
+Changing an element's manifest, defaults, implementation, helper, or assets
+changes its catalog revision. Regenerate the editor catalog from the source
+registry; then re-apply the current owner-qualified element to update a saved
+placement's revision. HMR or a file edit does not rewrite Runtime timeline
+state. In checkout-backed development, the browser may resolve the current
+component by owner/kind/ID and show HMR-ed code under an older saved revision,
+while export validates the pinned revision. Treat preview as code feedback,
+not evidence that the saved placement is current. The step-by-step source,
+catalog, save/reopen, and render check belongs in the
+[authoring guide](../guides/create-a-pack.md#updating-an-existing-element).
 
 A user-authored live scene is a separate Runtime project object: self-contained
 HTML admitted and persisted through Runtime with the current `assets: []`

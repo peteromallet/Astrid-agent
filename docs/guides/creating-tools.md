@@ -1,18 +1,21 @@
 # Creating Tools
 
-Use this guide when Astrid is missing a capability.
+Use this guide when Astrid is missing reusable behavior. Start with the V3
+[pack guide](create-a-pack.md) for manifest shape and the source paths of
+existing examples.
 
 ## Operating Level
 
-Start with the highest-level command that fits the user request. For normal
-video creation, run an orchestrator through the SDK instead of chaining
-internal executors by hand:
+Start with the highest-level existing action that fits the request. The V3
+manifest has one `actions` family for callable work, and the SDK's normal
+selector is `kind="action"`. For example, use the existing composed hype
+action instead of wiring pipeline stages by hand:
 
 ```python
 import astrid.sdk as sdk
 result = sdk.invoke(
     "video_editing.hype",
-    kind="orchestrator",
+    kind="action",
     inputs={"video": "source.mp4", "brief": "brief.txt"},
     project="demo",
 )
@@ -25,50 +28,50 @@ capabilities run through the SDK (`astrid.sdk.discover` / `get_capability` /
 `invoke`). The runtime owns durable state; tool authors must use these public
 surfaces rather than opening a database or writing a parallel state store.
 
-Do not chain pipeline internals by hand unless you are debugging one specific
-stage. Source-analysis executors intentionally pass file artifacts such as
+Do not chain pipeline internals by hand unless debugging one specific stage.
+Source-analysis actions intentionally pass file artifacts such as
 transcripts, scenes, quote candidates, pools, timelines, and assets. Those files
 make runs resumable and auditable, but they are not the right interface for a
-creative request like "make a video about AI". Use the hype orchestrator or add
-a new orchestrator for that workflow.
+creative request like "make a video about AI". Use the hype action or compose
+existing actions into a new callable workflow when needed.
 
 Current start points:
 
 ```python
 # Source-backed edit
-sdk.invoke("video_editing.hype", kind="orchestrator", inputs={"video": "source.mp4", "brief": "brief.txt"}, project="demo")
+sdk.invoke("video_editing.hype", kind="action", inputs={"video": "source.mp4", "brief": "brief.txt"}, project="demo")
 
 # Audio-backed edit
-sdk.invoke("video_editing.hype", kind="orchestrator", inputs={"audio": "voiceover.wav", "brief": "brief.txt"}, project="demo")
+sdk.invoke("video_editing.hype", kind="action", inputs={"audio": "voiceover.wav", "brief": "brief.txt"}, project="demo")
 
 # Pure-generative edit from an existing brief
-sdk.invoke("video_editing.hype", kind="orchestrator", inputs={"brief": "examples/briefs/cinematic.txt", "target_duration": 15}, project="demo")
+sdk.invoke("video_editing.hype", kind="action", inputs={"brief": "examples/briefs/cinematic.txt", "target_duration": 15}, project="demo")
 ```
 
 If the user gives a topic instead of a brief, create or use a brief-generation
-executor, then coordinate it from an orchestrator. Do not fake source media just
-to satisfy a source-video path.
+action, then compose it with the existing workflow action. Do not fake source
+media just to satisfy a source-video path.
 
 ## Build Order
 
 Before adding anything, follow this order. Move to the next step only when the
 previous one cannot satisfy the request.
 
-1. **Try to compose existing executors.** Run `astrid.sdk.discover()` /
+1. **Try existing actions first.** Run `astrid.sdk.discover()` /
    `astrid.sdk.get_capability(<id>)` to search the registry, then inspect the
-   likely candidates. If a workflow can be built by wiring existing executors
-   together, write *only* an orchestrator that calls them. Do not duplicate
-   logic that already lives in an executor.
-2. **Create the missing executors.** Each new executor must do exactly one
-   concrete unit of work — independently runnable, inspectable, testable. Keep
-   it narrow: one network call, one transformation, one artifact in / one
-   artifact out. Workflow shape, retries-across-stages, and conditional
-   branching belong in the orchestrator, not the executor.
-3. **Write the orchestrator that composes them.** It calls the executors
-   (existing + new) and may call other orchestrators. Executors must not call
-   orchestrators.
+   likely candidates. The [minimal teaching pack](../../examples/packs/minimal)
+   shows a direct action and a second action that composes it. Add no new code
+   when those actions already satisfy the request.
+2. **Add one focused action if needed.** Give it a clear unit of work, declared
+   inputs and outputs, and only the support it needs. Keep workflow decisions
+   in a composed action rather than duplicating behavior from an existing one.
+3. **Compose through declared actions.** The manifest graph declares child
+   actions/orchestrators; call admitted child work through the SDK. Existing
+   `executor` and `orchestrator` capability types and selector values remain
+   supported for typed routes, but V3 authors declare callable entries under
+   `actions`.
 
-When an orchestrator needs child work, call the capability through
+When a composed action needs child work, call the capability through
 `astrid.sdk.invoke`: the invocation is admitted into the kernel as a run +
 task and executed through the kernel lifecycle (admit → claim → start →
 execute → complete|fail), and the finalize-time `run.json` projection
@@ -80,76 +83,68 @@ state tracking. The legacy task-mode plan schema (`plan.json`,
 `remote-artifact` leaves) was retired with the task-mode runtime and must
 not be authored.
 
-Anti-pattern: a single orchestrator `run.py` that opens HTTP sockets, parses
-model output, downloads files, and assembles grids — all inline. That is three
-or four executors hiding in a trench coat. Split them out so each piece is
-discoverable, reusable, and individually testable.
+Anti-pattern: a single action `run.py` that opens HTTP sockets, parses model
+output, downloads files, and assembles grids — all inline. That hides several
+reusable operations in one entry. Split work only when the pieces have a useful
+independent contract; keep workflow composition in an action.
 
 ## Decision Rule
 
-Create an **executor** when the missing capability performs one concrete unit of
-work. It should be independently runnable, inspectable, and testable. Examples:
-fetch source data, render a timeline, upload a video, inspect audio, build a
-sprite sheet, generate a brief from a topic, or transform one artifact into
-another.
+Create an **action** for callable work. It may do one focused operation or
+compose existing actions into a workflow. Keep child operations independently
+useful and declare the graph; do not add an extra wrapper when an existing
+action already fits. The `minimal` teaching pack demonstrates both shapes.
 
-Create an **orchestrator** when the missing capability coordinates a workflow.
-It should call or plan child executors/orchestrators and keep business flow out
-of individual tool implementations. Examples: hype pipeline, event-talk
-workflow, thumbnail workflow, topic-to-video creation, or an understanding
-dispatcher.
+An SDK **executor** or **orchestrator** is a supported typed callable route in
+existing registrations and some focused backend contracts. It is not a
+separate V3 manifest family. Prefer `kind="action"` for new V3 callable use;
+use typed selectors when a documented route requires them.
+
+Create an **editor UI contribution** when the missing behavior is an
+interactive host surface. A working UI example is the
+[live-scene editor entry](../../astrid/packs/rendering/ui/live-scenes/extension.tsx);
+the prepared scene itself is project state, not installed pack code.
 
 Create an **element** when the missing capability is a reusable render building
-block consumed by timeline JSON. Effects, animations, and transitions are
+block consumed by a timeline. Effects, animations, and transitions are
 elements. If the user needs an editable visual primitive, create or edit an
-element in its owning source pack instead of hard-coding behavior in an executor.
+element in its owning source pack instead of hard-coding behavior in an action.
 
-Create a **shared library** only when the code has no public runtime of its own.
-Hype/editing concepts belong with the owning editorial pack under
-`astrid/packs/editorial/hype`. Generic
-plumbing belongs under `astrid/core/util`. Executor-specific helpers belong
-inside that executor's optional `src/` package.
+Put private helpers with the owning action or contribution; use a shared
+library only when multiple owners need a stable common API. Hype/editing
+concepts belong with their owner under `astrid/packs/editorial/hype`; generic
+plumbing belongs under `astrid/core/util`.
 
 Create a **renderer**, **planner**, or **finalizer** only when extending the
-timeline render backend layer. These are protocol commands registered by a
-pack through `extensions.rendering.renderers`, `.planners`, or `.finalizers`;
-they are not public executor kinds. A renderer produces one validated primary
-video, a planner assigns exact frame windows to renderers, and a finalizer
-normalizes/assembles planned artifacts. Keep `rendering.render` as the public
-facade and follow `docs/contracts/render-backend-v1.md`; do not import a
-concrete backend or add engine branches to the facade. To start, scaffold the
-canonical four-file renderer pack with
-`python3 -m astrid.core.rendering.cli create <name> <dest>`, then walk the
-golden path (implement `render.py` → generated test → `renderers validate` →
-validated pack source → `renderers smoke` → provenance sidecar) described in
-[render-backend-v1.md](../contracts/render-backend-v1.md#renderer-author-golden-path).
-The `renderers`/`packs` verbs live on the internal module CLIs
-(`python3 -m astrid.core.rendering.cli`, `python3 -m astrid.core.pack.cli`),
-not on the eight-family gateway.
+render backend. In a V3 pack, declare the entry in `rendering` with its
+`type` and manifest `path`; renderer/planner/finalizer manifests and commands
+follow the separate [render backend protocol](../contracts/render-backend-v1.md).
+This is advanced host work. For a reusable timeline visual, declare
+`type: element` instead. The pack guide describes the V3 rendering declaration
+and starter; do not copy the older `extensions.rendering.*` shape into a V3
+`pack.yaml`.
 
 For a one-off experiment, keep outputs and scratch files under `runs/`. Do not
-create a public executor, orchestrator, or element unless the behavior should be
-discoverable and reusable.
+create a public action, UI contribution, or element unless the behavior should
+be discoverable and reusable.
 
 ## Common Friction Points
 
-**Too many required file paths.** This is expected for low-level executors.
-Those paths are the artifact contract. Solve it by using an orchestrator, adding
-a small helper executor for the missing artifact, or adding an orchestrator that
-owns the whole flow. Only add literal/stdin conveniences when direct executor
-use is itself the product surface.
+**Too many required file paths.** Those paths may be the direct action's
+artifact contract. Solve a repeated workflow need by composing actions or adding
+a focused helper action for a missing artifact. Only add literal/stdin
+conveniences when direct action use is itself the product surface.
 
 **Pool building rejects abstract or dialogue-light sources.** The source-video
 hype path expects usable visual and dialogue candidates. If the goal is
 abstract or purely generative, use the pure-generative path. If source-backed
-abstract editing should be reusable, add an explicit orchestrator mode or a
-focused executor change with tests rather than hand-editing triage and quote
+abstract editing should be reusable, add an explicit composed-action path or a
+focused action change with tests rather than hand-editing triage and quote
 JSON to force a pool.
 
 **No brief file exists.** Briefs are first-class input artifacts today. Use
-`examples/briefs/` as samples. If the user repeatedly asks from a topic, add a
-`generation.generate_brief` executor and call it from a topic-to-video
-orchestrator.
+`examples/briefs/` as samples. If users repeatedly start from a topic, add a
+brief-generation action and compose it with the existing workflow action.
 
 **Render is missing assets.** Rendering always needs a timeline. Pass the
 registry created by cut when the timeline references media assets. An
@@ -158,8 +153,8 @@ skip cut in the normal media pipeline unless its required timeline/registry
 artifacts already exist.
 
 **No one-command topic creation.** The current one-command path starts from a
-brief file. A topic-only command should be an orchestrator that provisions the
-brief and then delegates to the existing hype or render flow.
+brief file. A reusable topic-first path can be a composed action that creates
+the brief and delegates to the existing video workflow.
 
 ## Required Formats
 
