@@ -10,8 +10,8 @@ plus discovered external pack routes: the
 five product families from the explicit registry
 (``astrid/core/cli/domain_product.py``) with their kernel/pack ownership,
 the two manifest-declared nested mounts, the ``--json`` envelope
-convention, the stable exit codes, and the two operational families
-(``doctor``, ``backup``).
+convention, the stable exit codes, and the three operational families
+(``doctor``, ``backup``, ``dev``).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _print_entrypoint_help() -> None:
 
 The canonical Python boundary is ``import astrid`` (see docs/reference/sdk.md).
 This gateway is the CLI entry point for the five product families, setup,
-workspace status, operational families (doctor, backup), and external tools.
+workspace status, operational families (doctor, backup, dev), and external tools.
 
 Usage:
   python3 -m astrid <family> <command> [options]
@@ -49,6 +49,7 @@ Operational families:
   python3 -m astrid status [--json]
   python3 -m astrid doctor [--json]
   python3 -m astrid backup {create,restore,export,tombstone,recover,purge} [--json]
+  python3 -m astrid dev {status,promote} [--ref REF] [--force] [--json]
   python3 -m astrid auth {login,status,logout,revoke}
 
 External tools:
@@ -85,12 +86,12 @@ def _product_help_text() -> str:
     ``astrid/core/cli/domain_product.py``: the five product families (with
     their kernel/pack ownership), the two manifest-declared nested mounts,
     the ``--json`` envelope convention, the stable exit codes, and the
-    two operational families (``doctor``, ``backup``).
+    three operational families (``doctor``, ``backup``, ``dev``).
     """
-    families = "projects timelines media tasks runs setup status doctor backup hivemind"
+    families = "projects timelines media tasks runs setup status doctor backup dev hivemind"
     return f"""Astrid product commands — runtime families and external tools
 
-The gateway owns five product families, two operational families, two reserved
+The gateway owns five product families, three operational families, two reserved
 workspace commands, and the external Hivemind tool. ``shots`` mounts beneath ``timelines`` and
 ``references`` mounts beneath ``media``.
 
@@ -98,7 +99,7 @@ Usage:
   python3 -m astrid <family> <command> [options]
   python3 -m astrid <family> --help
 
-Family census (exactly seven families): projects timelines media tasks runs doctor backup
+Family census (exactly eight families): projects timelines media tasks runs doctor backup dev
 
 Reserved workspace commands (outside the family census): setup status
 
@@ -114,6 +115,7 @@ Operational families:
   status      [runtime] read-only workspace/Runtime/readiness status
   doctor      [runtime] read-only runtime health diagnostics
   backup      [runtime] create/restore/export/tombstone/recover/purge
+  dev         [operator] status: served checkout, dev tree, pack host, client/served pair; promote --ref: move the serve worktree and restart only the recorded pack host
 
 Contributor authentication (reserved):
   auth        [hivemind] login/status/logout/revoke; contribution-only access

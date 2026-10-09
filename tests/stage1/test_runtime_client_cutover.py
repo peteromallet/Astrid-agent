@@ -491,7 +491,7 @@ def test_client_reopens_after_close_against_same_daemon(tmp_path, monkeypatch):
 
 def test_serve_is_not_a_public_dispatch_command(capsys):
     assert "serve" not in dispatch._top_level_commands()
-    assert dispatch._top_level_commands() == frozenset({"projects", "timelines", "media", "tasks", "runs", "doctor", "backup"})
+    assert dispatch._top_level_commands() == frozenset({"projects", "timelines", "media", "tasks", "runs", "doctor", "backup", "dev"})
 
 
 def test_remote_boundary_has_no_storage_or_runtime_imports():

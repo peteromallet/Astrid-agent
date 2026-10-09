@@ -440,6 +440,62 @@ def _dispatch_product(args: list[str]) -> int:
         )
 
 
+def _dispatch_dev(args: list[str]) -> int:
+    """Operator commands for developing against a running runtime: status and promote."""
+    import argparse
+    import json
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        prog="astrid dev",
+        description="Develop against a running runtime: report what it serves, or promote a ref to it.",
+    )
+    operations = parser.add_subparsers(dest="operation", required=True)
+    status = operations.add_parser("status", help="served checkout, dev tree, pack host, and client/served pair check")
+    status.add_argument("--json", action="store_true")
+    promote = operations.add_parser(
+        "promote",
+        help="check REF out in the serve worktree and restart only the recorded pack host",
+    )
+    promote.add_argument("--ref", default=None, help="commit-ish to serve (default: the dev tree's HEAD)")
+    promote.add_argument("--force", action="store_true", help="promote even with in-flight work (abandons it)")
+    promote.add_argument("--json", action="store_true")
+    parsed = parser.parse_args(args)
+
+    from astrid.core.gateway.dev_operator import (
+        DevOperatorError,
+        render_human,
+        run_promote,
+        run_status,
+    )
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    try:
+        data_root = Path(resolve_runtime_data_root())
+        if parsed.operation == "status":
+            payload = run_status(data_root=data_root)
+        else:
+            payload = run_promote(data_root=data_root, ref=parsed.ref, force=parsed.force)
+    except (DevOperatorError, ValueError) as exc:
+        payload = {
+            "ok": False,
+            "state": getattr(exc, "state", "error"),
+            "error": str(exc),
+            "next_action": getattr(exc, "next_action", None),
+        }
+    if parsed.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    elif payload.get("ok"):
+        for line in render_human(payload):
+            print(line)
+    else:
+        print(f"Astrid dev {parsed.operation}: {payload['error']}", file=sys.stderr)
+        if payload.get("next_action"):
+            print(f"next action: {payload['next_action']}", file=sys.stderr)
+    return 0 if payload.get("ok") else 1
+
+
 def _product_command_needs_pack_host(family: str, args: list[str]) -> bool:
     """Return the declarative worker-host requirement for one product route.
 
@@ -467,6 +523,7 @@ _TOP_LEVEL_HANDLERS = {
     "runs": lambda args: _dispatch_product(["runs", *args]),
     "doctor": _dispatch_doctor,
     "backup": _dispatch_backup,
+    "dev": _dispatch_dev,
 }
 _CORE_ROUTE_NAMES = frozenset(_TOP_LEVEL_HANDLERS)
 

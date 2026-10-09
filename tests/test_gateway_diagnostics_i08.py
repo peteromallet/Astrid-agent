@@ -166,7 +166,7 @@ def test_total_deadline_stops_after_first_helper(monkeypatch: pytest.MonkeyPatch
 def test_public_help_auth_and_status_diagnostic_routes(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys) -> None:
     assert main(["help"]) == 0
     help_text = capsys.readouterr().out
-    assert "Family census (exactly seven families)" in help_text
+    assert "Family census (exactly eight families)" in help_text
     assert "Reserved workspace commands" in help_text
     assert "auth        [hivemind] login/status/logout/revoke" in help_text
 

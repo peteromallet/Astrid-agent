@@ -530,7 +530,7 @@ def test_product_census_hook_matches_domain_registry() -> None:
     assert dispatch._product_top_level_commands() == product_top_level_commands()
 
 
-def test_top_level_commands_are_exactly_seven_families() -> None:
+def test_top_level_commands_are_exactly_eight_families() -> None:
     from astrid.core.gateway import dispatch
 
     assert dispatch._top_level_commands() == frozenset(
@@ -542,9 +542,10 @@ def test_top_level_commands_are_exactly_seven_families() -> None:
             "runs",
             "doctor",
             "backup",
+            "dev",
         }
     )
-    assert len(dispatch._top_level_commands()) == 7
+    assert len(dispatch._top_level_commands()) == 8
 
 
 def test_all_five_product_families_route_through_product_dispatch(
@@ -713,8 +714,8 @@ def test_print_result_returns_stable_exit_codes(capsys) -> None:
 def test_product_help_text_declares_exact_census_and_mounts() -> None:
     text = _product_help_text()
     assert (
-        "Family census (exactly seven families): "
-        "projects timelines media tasks runs doctor backup" in text
+        "Family census (exactly eight families): "
+        "projects timelines media tasks runs doctor backup dev" in text
     )
     for family in PRODUCT_FAMILIES:
         assert family in text
@@ -734,14 +735,14 @@ def test_product_help_census_matches_explicit_registry() -> None:
         line for line in text.splitlines() if line.startswith("Family census")
     )
     census = census_line.split(":", 1)[1].split()
-    assert tuple(census[5:]) == ("doctor", "backup")
+    assert tuple(census[5:]) == ("doctor", "backup", "dev")
     assert set(census[:5]) == set(PRODUCT_FAMILIES)
     # Every advertised product family is a real registered product family.
     for family in census[:5]:
         assert is_product_family(family)
-    # Only the two current operational families are advertised; ``serve`` is
+    # Only the three current operational families are advertised; ``serve`` is
     # a retired rejected token, not a public family.
-    assert set(census[5:]) == {"doctor", "backup"}
+    assert set(census[5:]) == {"doctor", "backup", "dev"}
 
 
 def test_product_help_documents_stable_exit_codes() -> None:
@@ -771,4 +772,4 @@ def test_print_product_help_prints_to_stdout(capsys) -> None:
     _print_product_help()
     captured = capsys.readouterr()
     assert captured.out.startswith("Astrid product commands")
-    assert "Family census (exactly seven families)" in captured.out
+    assert "Family census (exactly eight families)" in captured.out

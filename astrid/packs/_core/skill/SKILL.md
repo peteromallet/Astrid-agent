@@ -75,9 +75,14 @@ python3 -m astrid timelines --help
 ```
 
 The top-level families are `projects`, `timelines`, `media`, `tasks`, `runs`,
-`doctor`, and `backup`. `timelines shots` and `media references` are nested
+`doctor`, `backup`, and `dev`. `timelines shots` and `media references` are nested
 mounts. Packs and capabilities are invoked through the SDK, not as extra
 gateway verbs.
+
+Operators developing against a running runtime use `python3 -m astrid dev status --json`
+to see the served checkout, host and pair state, and `python3 -m astrid dev promote --ref <sha>`
+to move the serve worktree and restart only the recorded pack host (see
+[creating packs](../../../../../docs/packs/creating-packs.md#developing-a-pack-against-a-running-runtime)).
 
 ## Find and open work
 

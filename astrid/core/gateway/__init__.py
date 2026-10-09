@@ -2,15 +2,15 @@
 """Astrid top-level command gateway.
 
 The gateway dispatches to the five product families (``projects``,
-``timelines``, ``media``, ``tasks``, ``runs``), the two operational families
-(``doctor``, ``backup``), and installed external pack tools. ``--help``/``-h``
+``timelines``, ``media``, ``tasks``, ``runs``), the three operational families
+(``doctor``, ``backup``, ``dev``), and installed external pack tools. ``--help``/``-h``
 and ``help`` print documentation (help is documentation and never requires a
 session); ``--version`` prints the version. Everything else is dispatched to
 a core family or a discovered pack route.
 
 The settled unbound allowlist is recorded in
-``SPRINT1_UNBOUND_ALLOWLIST_CONTRACT`` below: ``doctor`` and
-``backup`` are operational families that must run before any project is selected,
+``SPRINT1_UNBOUND_ALLOWLIST_CONTRACT`` below: ``doctor``, ``backup`` and
+``dev`` are operational families that must run before any project is selected,
 and ``help``/``--version`` are documentation.
 """
 
@@ -54,6 +54,7 @@ SPRINT1_UNBOUND_ALLOWLIST_CONTRACT: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("doctor",),
     ("backup",),
+    ("dev",),
     ("setup",),
     ("status",),
     ("auth",),

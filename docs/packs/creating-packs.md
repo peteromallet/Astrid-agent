@@ -490,6 +490,56 @@ python -m astrid.core.execution.capability_ledger approve
 This regenerates `config/astrid-capability-census.lock.json`, the list of approved
 source labels and executor ids. Commit it with the matrix row.
 
+## Developing a pack against a running runtime
+
+Executors and orchestrators run inside the pack host, and the host re-checks
+its source tree at start and admission. An edit to a tree the host serves
+therefore takes the host down. Develop in one checkout and serve another:
+
+- **Dev tree**: the editable checkout you import `astrid` from. Edit and commit
+  here. `python3 -m astrid dev status` prints its path.
+- **Serve worktree**: a detached git worktree of the same repository, named by
+  the source profile's `source_checkout`. The runtime boots its pack host from
+  it and nothing else.
+
+Setup is manual today (there is no `dev serve --init` yet):
+
+```bash
+git -C <dev tree> worktree add --detach ../Astrid-serve HEAD
+cp -cR <dev tree>/remotion/node_modules ../Astrid-serve/remotion/   # APFS clone
+banodoco-local up --profile astrid --source-manifest <serve profile json>
+```
+
+The loop:
+
+```bash
+python3 -m astrid dev status --json          # served sha, dev sha, host pid and readiness, pair
+python3 -m astrid dev promote --ref <sha> --json
+```
+
+`promote` checks REF out detached in the serve worktree. It refuses when that
+worktree has local changes, and when the host has active child processes or
+non-terminal tasks (`--force` abandons that work). It stops only the host pid
+recorded in `<data root>/runtime/generic-host.json`, after verifying that pid's
+identity; it never uses `pkill -f`. It then reopens through
+`AstridClient.open_from_launcher`, and reports the old and new sha, the host pid
+before and after, and whether the new host is ready on the promoted tree.
+
+`pair` compares the client's code with the served tree (pack digest and
+closure digest) and with the digest the running host attested. `paired` means
+all three agree. `drift` is the honest answer whenever the dev tree holds work
+the serve tree does not, so expect it until you promote.
+
+Two limits matter for a project pack that lives outside the checkout:
+
+- `ASTRID_PACKS_PATH` roots are discovered by the client (SDK discovery and the
+  pack CLI). The pack host does not receive them. Its bootstrap strips the
+  variable and passes only the served checkout's packs, so an external executor
+  is not registered in the host.
+- Approving a capability means a row in the served checkout's
+  `config/astrid-beta-capabilities.json`, and the census lock is regenerated in
+  that same checkout. A project pack has no approval home of its own yet.
+
 ## Reference Examples
 
 The `examples/packs/` directory contains teaching packs that demonstrate

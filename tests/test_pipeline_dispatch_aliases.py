@@ -67,7 +67,7 @@ class PipelineDispatchAliasTest(unittest.TestCase):
                 self.assertEqual(exit_code, 2)
                 self.assertIn(f"unknown command '{token}'", stderr.getvalue())
 
-    def test_top_level_handlers_are_exactly_seven_families(self) -> None:
+    def test_top_level_handlers_are_exactly_eight_families(self) -> None:
         from astrid.core.gateway.dispatch import _TOP_LEVEL_HANDLERS
 
         self.assertEqual(
@@ -80,6 +80,7 @@ class PipelineDispatchAliasTest(unittest.TestCase):
                 "runs",
                 "doctor",
                 "backup",
+                "dev",
             },
         )
         # The removed handlers (run/author/orchestrate/renderers/replay/...) do
