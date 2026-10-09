@@ -223,3 +223,63 @@ def test_diff_compares_revisions_and_offers_before_after_views(capsys):
 def test_diff_without_revisions_says_what_to_pass(capsys):
     assert run_product_family("timelines", ["diff", "--project", "demo", "T1"], client=_Client({})) == 2
     assert "--from <revision-id>" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ script / code views
+
+def _keyed_bundle() -> dict:
+    bundle = _bundle()
+    bundle["shots"]["intro"]["internal_timeline"]["clips"].append(
+        {"id": "c02-flap", "track": "type", "clipType": "am-flap", "at": 2.0, "hold": 1.5,
+         "params": {"values": [{"text": "ERR 1", "at": 0}, {"text": "ERR 4", "at": 15}]}}
+    )
+    return bundle
+
+
+def test_script_view_interleaves_words_cuts_layers_and_keyframes():
+    from astrid.sdk.timeline_views import render_script
+
+    text = render_script(_keyed_bundle())
+    lines = [line.strip() for line in text.splitlines()]
+    order = [
+        "0.00 ┃ CUT 1  c01-plate · P-01  Δ-0.10s to 'One'",
+        '0.10 │ "One year ago."  [0.10–1.60]',
+        "2.00 ┃ CUT 2  c02-plate · P-02  Δ-0.20s to 'I'",
+        '2.20 │ "I invited"  [2.20–3.10]',
+        "2.50 + am-sprite C-02",
+        "2.50 ◆ am-flap values[1] → ERR 4 (f15)",
+    ]
+    positions = [lines.index(item) for item in order]
+    assert positions == sorted(positions)
+    assert "02 OUTRO · 5.00–8.00 s · words: app.words" in text
+
+
+def test_code_view_calls_elements_with_props_keyframes_and_sources():
+    from astrid.sdk.timeline_views import clip_keyframes, render_code
+
+    text = render_code(_keyed_bundle(), window=(2.1, 3.4))
+    assert 'with shot("01 INTRO", id="intro", at=0.00, dur=5.00):' in text
+    assert 'with cut(2, at=2.00, dur=1.50):  # 00:00:02:00 "I invited"' in text
+    assert 'plate  = am_snap_plate(asset="P-02")  # id c02-plate' in text
+    assert 'type   = am_sprite(asset="C-02")  # enters +0.50 id c02-sprite' in text
+    assert "# ◆ 2.50 values[1] → ERR 4 (f15)" in text
+    assert "c01-plate" not in text and "02 OUTRO" not in text
+    assert clip_keyframes({"params": {"messages": [{"appearAt": 30, "author": "pom"}]}}, 10.0, 30) == [
+        (11.0, "messages[0] → pom (f30)")
+    ]
+
+
+def test_show_as_script_and_diff_as_code(capsys):
+    before = _keyed_bundle()
+    after = _keyed_bundle()
+    for clip in after["shots"]["intro"]["internal_timeline"]["clips"]:
+        if clip["id"] == "c02-flap":
+            clip["params"]["values"][1]["at"] = 30
+    client = _Client({"head-1": before, "head-2": after})
+    assert run_product_family("timelines", ["show", "--project", "demo", "T1", "--as", "script", "--shot", "1"], client=client) == 0
+    out = capsys.readouterr().out
+    assert "Script view" in out and "02 OUTRO" not in out and "◆ am-flap values[1] → ERR 4 (f30)" in out
+    assert run_product_family("timelines", ["diff", "--project", "demo", "T1", "--from", "head-1", "--as", "code"], client=client) == 0
+    out = capsys.readouterr().out
+    assert "-            # ◆ 2.50 values[1] → ERR 4 (f15)" in out
+    assert "+            # ◆ 3.00 values[1] → ERR 4 (f30)" in out

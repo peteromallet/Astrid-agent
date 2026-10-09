@@ -1175,6 +1175,10 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     revision = str(data.get("revision_id") or "")
     state = "current head" if data.get("is_current_head") else f"saved revision (current head is {data.get('head_revision_id')})"
     title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}\n  revision {revision}"
+    view = getattr(parsed, "as_view", None) or "cuts"
+    if view != "cuts":
+        print(_render_view(view, data["bundle"], parsed, rows, title=title))
+        return 0
     lines = [render_cut_table(table, rows, title=title), ""]
     project = str(parsed.project or data.get("project_id"))
     timeline = str(parsed.ref or data.get("timeline_id"))
@@ -1192,6 +1196,18 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     lines.append("per-track layer rows: --layers · SDK envelope: --json")
     print("\n".join(lines))
     return 0
+
+
+def _render_view(view: str, bundle: Mapping[str, Any], parsed: argparse.Namespace, rows: list, *, title: str) -> str:
+    """The script or code representation, scoped like the cut table (--range, --shot)."""
+    from astrid.sdk.timeline_cuts import _parse_range
+    from astrid.sdk.timeline_views import render_code, render_script
+
+    window = _parse_range(parsed.range) if getattr(parsed, "range", None) else None
+    shot_ids = {row["shot_id"] for row in rows} if getattr(parsed, "shot", None) else None
+    if view == "script":
+        return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids)
+    return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "))
 
 
 def _cmd_history(parsed: argparse.Namespace) -> int:
@@ -1227,8 +1243,21 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
     after = opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "to_revision", None))
     if not after.ok or not isinstance(after.data, Mapping):
         return print_result(after, as_json=parsed.json)
-    diff = diff_bundles(before.data["bundle"], after.data["bundle"])
     old, new = str(before.data["revision_id"]), str(after.data["revision_id"])
+    view = getattr(parsed, "as_view", None) or "cuts"
+    if view != "cuts":
+        import difflib
+
+        from astrid.sdk.timeline_views import render_code, render_script
+
+        render = render_script if view == "script" else render_code
+        text = difflib.unified_diff(
+            render(before.data["bundle"]).splitlines(), render(after.data["bundle"]).splitlines(),
+            fromfile=old, tofile=new, lineterm="", n=2,
+        )
+        print("\n".join(text) or f"No differences in the {view} view.")
+        return 0
+    diff = diff_bundles(before.data["bundle"], after.data["bundle"])
     diff.update({"from_revision": old, "to_revision": new, "timeline_id": after.data.get("timeline_id")})
     commands: dict[str, str] = {}
     for low, high in diff.get("windows") or []:
@@ -2003,6 +2032,12 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
         "--layers", action="store_true", default=False,
         help="Print per-track layer rows (the bounded inspection projection) instead of the default cut table.",
     )
+    subparser.add_argument(
+        "--as", dest="as_view", choices=("cuts", "script", "code"), default="cuts",
+        help="cuts (default): one row per cut. script: the words in time order with cuts, layer entrances "
+        "and element keyframes between them. code: shots and cuts as a readable program of element calls "
+        "with resolved keyframes and each element's source path.",
+    )
     # ``show`` is the human inspection route by default. Machine callers use
     # the explicit stable envelope switch and keep the SDK shape unchanged.
     _add_json_flag(subparser, default=False)
@@ -2066,6 +2101,10 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--to", dest="to_revision", default=None,
         help="Revision id to compare to (default: the current head).",
+    )
+    subparser.add_argument(
+        "--as", dest="as_view", choices=("cuts", "script", "code"), default="cuts",
+        help="cuts (default): changed clips and moved cut points. script/code: a unified diff of that view.",
     )
     subparser.add_argument("--from-version", type=int, default=None, help=argparse.SUPPRESS)
     subparser.add_argument("--to-version", type=int, default=None, help=argparse.SUPPRESS)

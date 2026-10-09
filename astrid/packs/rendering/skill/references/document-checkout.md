@@ -64,6 +64,8 @@ timelines diff       --from <old_head>: moved cuts + before/after visualize comm
 python3 -m astrid timelines show <timeline> --project <project> --range 40..44   # what's on screen, what's said
 python3 -m astrid timelines show <timeline> --project <project> --shot "05 CHURN"  # one shot (id, name or 1-based number)
 python3 -m astrid timelines diff <timeline> --project <project> --from <old_head>  # after publish (old_head is in .publication.json)
+python3 -m astrid timelines show <timeline> --project <project> --as script --shot 3  # words with cuts, entrances, keyframes; Δ = cut to word onset
+python3 -m astrid timelines show <timeline> --project <project> --as code --range 40..44  # element calls, props, keyframes, source paths
 ```
 
 Units: placements are milliseconds (`start_ms`, `duration_ms`), clips are
