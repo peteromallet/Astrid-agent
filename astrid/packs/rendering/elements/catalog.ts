@@ -761,7 +761,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:a91d9377ec28a090dc1555cbbf83367b1b4e3137664c11d2eb54fbc1b02aa95a",
+    "revision": "sha256:7093d9cd44da6d7167bf34fd1eec076620ba7ccd6fff237ac3730f88d2f5fe22",
     "runtime": {
       "adapter": "remotion"
     },

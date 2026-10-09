@@ -1,5 +1,5 @@
 import type {ReactElement} from 'react';
-import {Easing, Img, interpolate, Sequence, staticFile, useCurrentFrame} from 'remotion';
+import {Easing, Img, interpolate, Sequence, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Video} from '@remotion/media';
 import {type ElementComponentProps, narrowParams} from '../../../../../rendering/shared/element_contracts';
 
@@ -50,6 +50,16 @@ const ROW_LEFT = 120;
 const ROW_STEP = 300;
 const CARD_WIDTH = 240;
 const CARD_HEIGHT = 135;
+export const END_SPANNING_CANVAS = {width: 1920, height: 1080} as const;
+
+export function fitEndSpanningCanvas(width: number, height: number): {scale: number; left: number; top: number} {
+  const scale = Math.min(width / END_SPANNING_CANVAS.width, height / END_SPANNING_CANVAS.height);
+  return {
+    scale,
+    left: (width - END_SPANNING_CANVAS.width * scale) / 2,
+    top: (height - END_SPANNING_CANVAS.height * scale) / 2,
+  };
+}
 
 const clamp = (value: number): number => Math.max(0, Math.min(1, value));
 const phase = (value: number, start: number, end: number): number => interpolate(value, [start, end], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
@@ -124,6 +134,8 @@ function IterationWords({progress, opacity}: {progress: number; opacity: number}
 
 export default function EndSpanningLayer({clip, params: rawParams, assetEntry, fps}: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
+  const {width, height} = useVideoConfig();
+  const canvasFit = fitEndSpanningCanvas(width, height);
   const params = narrowParams<Params>(rawParams);
   const {seconds, frames, effectEndFrame} = endSpanningTiming(clip, params, fps);
   const [, iterationSeconds, anchorsSeconds, workflowSeconds] = seconds;
@@ -212,6 +224,7 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
               : 105;
 
   return <div style={{position: 'absolute', inset: 0, overflow: 'hidden', opacity: fadeOut * revealOpacity, backgroundColor: 'transparent'}}>
+    <div style={{position: 'absolute', left: canvasFit.left, top: canvasFit.top, width: END_SPANNING_CANVAS.width, height: END_SPANNING_CANVAS.height, transform: `scale(${canvasFit.scale})`, transformOrigin: 'top left'}}>
     <div style={{position: 'absolute', inset: 0, transform: `translateY(${contentShiftY}px)`}}>
       {prepVideoVisible && sourceUrl ? <div style={{position: 'absolute', left: 520, top: 44, width: 880, height: 430, opacity: prepVideoOpacity, border: `4px solid ${AMBER}`, boxShadow: '0 0 45px rgba(255,160,46,0.5)', overflow: 'hidden', backgroundColor: INK}}>
         <Video src={sourceUrl} trimBefore={prepSourceStart * fps} trimAfter={prepSourceEnd * fps} playbackRate={prepSourceSpeed} muted loop style={{width: '100%', height: '100%', objectFit: 'cover'}} />
@@ -242,6 +255,7 @@ export default function EndSpanningLayer({clip, params: rawParams, assetEntry, f
       <Heading text={params.headings?.iteration ?? DEFAULT_HEADINGS.iteration} opacity={headingOpacity.iteration} />
       <Heading text={params.headings?.anchors ?? DEFAULT_HEADINGS.anchors} opacity={headingOpacity.anchors} />
       <Heading text={params.headings?.workflow ?? DEFAULT_HEADINGS.workflow} opacity={headingOpacity.workflow} />
+    </div>
     </div>
   </div>;
 }
