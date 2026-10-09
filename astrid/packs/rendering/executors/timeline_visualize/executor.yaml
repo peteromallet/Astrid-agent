@@ -243,6 +243,12 @@
       "description": "Exact successful rendering.render run id, or latest; filmstrip defaults to latest matching timeline render."
     },
     {
+      "name": "render_every",
+      "type": "number",
+      "required": false,
+      "description": "Contact view with a render: seconds between frames sampled from the rendered video, 0.5 to 60 (default 5). Also writes loudness, true peak and silences for that render."
+    },
+    {
       "name": "include_media",
       "type": "boolean",
       "required": false,
@@ -504,6 +510,11 @@
       {
         "input": "render_run",
         "flag": "--render-run",
+        "optional": true
+      },
+      {
+        "input": "render_every",
+        "flag": "--render-every",
         "optional": true
       },
       {
