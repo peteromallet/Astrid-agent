@@ -1117,6 +1117,76 @@ class RemoteTimelines(_RemoteFamily):
             receipt=inspected.receipt,
             idempotency_key=inspected.idempotency_key,
         )
+
+    def open_bundle(self, project, ref, *, revision_id=None):
+        """Read one complete, read-only authoring bundle (parent → shots → internal timelines).
+
+        The same closure ``timeline_document.py checkout`` writes, pinned to the
+        current head or to ``revision_id``. ``timelines show`` builds its cut
+        table from it and ``timelines diff`` compares two of them. Nothing is
+        written. Returns ``{bundle, project_id, timeline_id, revision_id,
+        is_current_head}``.
+        """
+        from astrid.core.timeline.authoring_bundle import open_authoring_bundle
+
+        opened = self.open_composition(project, ref, revision_id=revision_id, limit=1)
+        if not opened.ok or not isinstance(opened.data, Mapping):
+            return opened
+        native = opened.data.get("native_inspection") if isinstance(opened.data.get("native_inspection"), Mapping) else {}
+        summary = opened.data.get("summary") if isinstance(opened.data.get("summary"), Mapping) else {}
+        project_id = native.get("project_id")
+        timeline_id = native.get("timeline_id")
+        head = summary.get("head_revision_id") or native.get("head_revision_id")
+        revision = revision_id or summary.get("revision_id") or head
+        if not all(isinstance(value, str) and value for value in (project_id, timeline_id, revision)):
+            return DomainResult.failure(ErrorObject(
+                "protocol_error",
+                "timeline inspection did not return a project id, timeline id and revision",
+                {"project": str(project), "timeline": str(ref)},
+            ))
+        parent = self._typed("get_project_parent_composition_revision", project_id, timeline_id, revision)
+        if not parent.ok or not isinstance(parent.data, Mapping):
+            return parent
+        payload = parent.data.get("payload") if isinstance(parent.data.get("payload"), Mapping) else {}
+        shots: dict[str, Any] = {}
+        internals: dict[str, Any] = {}
+        for occurrence in payload.get("occurrences") or []:
+            if not isinstance(occurrence, Mapping):
+                continue
+            shot_revision = occurrence.get("shot_revision_id") or occurrence.get("revision_id")
+            if shot_revision not in shots:
+                shot = self._typed("get_project_shot_revision", project_id, occurrence.get("shot_id"), shot_revision)
+                if not shot.ok or not isinstance(shot.data, Mapping):
+                    return shot
+                shots[shot_revision] = shot.data
+            shot_data = shots[shot_revision]
+            shot_payload = shot_data.get("payload") if isinstance(shot_data.get("payload"), Mapping) else {}
+            internal_revision = shot_data.get("internal_timeline_revision_id") or shot_payload.get("internal_timeline_revision_id")
+            if internal_revision not in internals:
+                internal = self._typed("get_project_timeline_revision", project_id, timeline_id, internal_revision)
+                if not internal.ok or not isinstance(internal.data, Mapping):
+                    return internal
+                internals[internal_revision] = internal.data
+        try:
+            bundle = open_authoring_bundle(
+                parent.data,
+                shot_revisions=list(shots.values()),
+                internal_timeline_revisions=list(internals.values()),
+            )
+        except Exception as exc:  # the bundle compiler names the inconsistent field
+            return DomainResult.failure(ErrorObject(
+                "protocol_error", f"could not open the timeline closure: {exc}",
+                {"timeline": timeline_id, "revision_id": revision},
+            ))
+        return DomainResult.success({
+            "bundle": bundle,
+            "project_id": project_id,
+            "timeline_id": timeline_id,
+            "revision_id": revision,
+            "head_revision_id": head,
+            "is_current_head": revision == head,
+        })
+
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
         return self._retired_document_route("save", idempotency_key=idempotency_key)
     def replace_clip(

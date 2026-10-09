@@ -247,8 +247,8 @@ class _RecordingTimelines:
         self._owner.calls.append(("timelines.history", {"project": project, "ref": ref}))
         return DomainResult.success([{"event": "timeline.created", "version": 1}])
 
-    def diff(self, project, ref):
-        self._owner.calls.append(("timelines.diff", {"project": project, "ref": ref}))
+    def diff(self, project, ref, **versions):
+        self._owner.calls.append(("timelines.diff", {"project": project, "ref": ref, **versions}))
         return DomainResult.success([{"version": 1, "changes": {}}])
 
 
@@ -1684,10 +1684,12 @@ def test_timelines_history_is_one_sdk_call(capsys) -> None:
 
 
 def test_timelines_diff_is_one_sdk_call(capsys) -> None:
+    # Lifecycle-version diffs stay one SDK call; revision diffs (--from/--to)
+    # are covered in tests/sdk/test_timeline_cuts.py.
     client = _FakeClient()
-    rc = _run("timelines", ["diff", "--project", "demo", "main"], client=client)
+    rc = _run("timelines", ["diff", "--project", "demo", "main", "--from-version", "1", "--to-version", "2", "--json"], client=client)
     assert rc == 0
-    assert client.calls == [("timelines.diff", {"project": "demo", "ref": "main"})]
+    assert client.calls == [("timelines.diff", {"project": "demo", "ref": "main", "from_version": 1, "to_version": 2})]
     assert len(json.loads(capsys.readouterr().out)["data"]) == 1
 
 

@@ -47,16 +47,28 @@ idempotency key for each intended publication.
 The normal inspection loop is deliberately short:
 
 ```text
-timelines show       authored structure and timing
+timelines show       cut table: timecode, shot, picture + layers, spoken words
         ↓
 timelines visualize  composed pixels, with synchronized input lanes
         ↓
 checkout             detached, editable JSON at the current head
         ↓
-check                local validation and a readable diff
+check                local validation; "summary" lists moved clips in timeline seconds
         ↓
 publish              one parent compare-and-swap publication
+        ↓
+timelines diff       --from <old_head>: moved cuts + before/after visualize commands
 ```
+
+```bash
+python3 -m astrid timelines show <timeline> --project <project> --range 40..44   # what's on screen, what's said
+python3 -m astrid timelines show <timeline> --project <project> --shot "05 CHURN"  # one shot (id, name or 1-based number)
+python3 -m astrid timelines diff <timeline> --project <project> --from <old_head>  # after publish (old_head is in .publication.json)
+```
+
+Units: placements are milliseconds (`start_ms`, `duration_ms`), clips are
+shot-relative seconds (`at`, `hold`, `from`, `to`). `show`, `diff` and the
+`check` summary all report timeline seconds, the numbers `--range`/`--at` take.
 
 Both inspection commands print the next useful command in human output and
 return the complete set of copyable commands in `data.navigation` (or

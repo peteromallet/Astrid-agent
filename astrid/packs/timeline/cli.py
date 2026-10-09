@@ -892,6 +892,17 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         name: getattr(parsed, name, None)
         for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor", "revision_id")
     }
+    # Default human view: the editor's cut table (one row per picture cut with
+    # timecode, shot name, layers and spoken words). The per-track inspection
+    # projection stays one flag away (--layers) and is used for --json and for
+    # the clip/occurrence/asset/track/cursor/detail selectors it alone supports.
+    layered = bool(
+        getattr(parsed, "layers", False) or parsed.json
+        or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor", "detail"))
+    )
+    bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not layered and callable(bundle_opener):
+        return _print_cut_table(parsed, bundle_opener)
     normalized = inspection_options(values)
     opener = getattr(parsed.client.timelines, "open_composition", None)
     if not callable(opener):
@@ -1147,14 +1158,96 @@ def _cmd_recover(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
+    """Print the cut table for ``timelines show`` (human default)."""
+    from astrid.sdk.timeline_cuts import build_cut_table, filter_rows, render_cut_table
+
+    opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
+    if not opened.ok or not isinstance(opened.data, Mapping):
+        return print_result(opened, as_json=False)
+    data = opened.data
+    table = build_cut_table(data["bundle"])
+    try:
+        rows = filter_rows(table, range_value=getattr(parsed, "range", None), shot=getattr(parsed, "shot", None))
+    except ValueError as exc:
+        print(f"error validation_error: {exc}")
+        return 2
+    revision = str(data.get("revision_id") or "")
+    state = "current head" if data.get("is_current_head") else f"saved revision (current head is {data.get('head_revision_id')})"
+    title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}\n  revision {revision}"
+    lines = [render_cut_table(table, rows, title=title), ""]
+    project = str(parsed.project or data.get("project_id"))
+    timeline = str(parsed.ref or data.get("timeline_id"))
+    visual = ["python3", "-m", "astrid", "timelines", "visualize", "--project", project, "--timeline-slug", timeline]
+    if not data.get("is_current_head"):
+        visual += ["--revision-id", revision]
+    if rows and (getattr(parsed, "range", None) or getattr(parsed, "shot", None)):
+        low, high = rows[0]["start"], rows[-1]["end"]
+        lines.append("see these cuts: " + shlex.join(visual + ["--view", "contact", "--range", f"{low:.2f}..{high:.2f}"]))
+    else:
+        lines.append("see the whole video: " + shlex.join(visual + ["--view", "contact"]))
+    lines.append("one moment: " + shlex.join(visual) + " --at SECONDS   ·   every N frames: --range A..B --every-frames N")
+    edit = _editing_navigation(project=project, timeline=timeline)
+    lines.append(f"edit: {edit['commands']['checkout']}   (guide: {edit['guide']})")
+    lines.append("per-track layer rows: --layers · SDK envelope: --json")
+    print("\n".join(lines))
+    return 0
+
+
 def _cmd_history(parsed: argparse.Namespace) -> int:
     result = parsed.client.timelines.history(parsed.project, parsed.ref)
     return print_result(result, as_json=parsed.json)
 
 
 def _cmd_diff(parsed: argparse.Namespace) -> int:
-    result = parsed.client.timelines.diff(parsed.project, parsed.ref)
-    return print_result(result, as_json=parsed.json)
+    from_revision = getattr(parsed, "from_revision", None)
+    if from_revision is None:
+        from_version = getattr(parsed, "from_version", None)
+        to_version = getattr(parsed, "to_version", None)
+        if from_version is None and to_version is None:
+            print(
+                "error validation_error: say what to compare: --from <revision-id> [--to <revision-id>] "
+                "compares two saved revisions (default --to: current head). The previous head of an edit "
+                "is old_head in its .publication.json; `timelines show` prints the current revision."
+            )
+            return 2
+        result = parsed.client.timelines.diff(
+            parsed.project, parsed.ref, from_version=from_version, to_version=to_version,
+        )
+        return print_result(result, as_json=parsed.json)
+    opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not callable(opener):
+        print("error unavailable: this client cannot open timeline revisions")
+        return 2
+    from astrid.sdk.timeline_cuts import diff_bundles, render_diff
+
+    before = opener(parsed.project, parsed.ref, revision_id=from_revision)
+    if not before.ok or not isinstance(before.data, Mapping):
+        return print_result(before, as_json=parsed.json)
+    after = opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "to_revision", None))
+    if not after.ok or not isinstance(after.data, Mapping):
+        return print_result(after, as_json=parsed.json)
+    diff = diff_bundles(before.data["bundle"], after.data["bundle"])
+    old, new = str(before.data["revision_id"]), str(after.data["revision_id"])
+    diff.update({"from_revision": old, "to_revision": new, "timeline_id": after.data.get("timeline_id")})
+    commands: dict[str, str] = {}
+    for low, high in diff.get("windows") or []:
+        for label, revision in (("before", old), ("after", new)):
+            commands[f"{label} {low:g}..{high:g}"] = shlex.join([
+                "python3", "-m", "astrid", "timelines", "visualize", "--project", str(parsed.project),
+                "--timeline-slug", str(parsed.ref), "--revision-id", revision,
+                "--range", f"{low:g}..{high:g}", "--every-frames", "5",
+            ])
+    diff["commands"] = commands
+    if parsed.json:
+        print(json.dumps({"ok": True, "data": diff, "error": None}, indent=2, sort_keys=True))
+        return 0
+    lines = [render_diff(diff, title=f"Timeline {after.data.get('timeline_id')}: {old} → {new}")]
+    if commands:
+        lines.append("see it: frames of only the changed moments, before and after (no full render):")
+        lines.extend(f"  {label}: {command}" for label, command in commands.items())
+    print("\n".join(lines))
+    return 0
 
 
 def _visualize_format_argument(value: str) -> str:
@@ -1872,6 +1965,11 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Default: a cut table, one row per picture cut: timeline seconds and timecode, the shot "
+        "(chapter) name, the picture clip, the layers over it and the words spoken under it. "
+        "Filter with --range START..END (seconds) or --shot <id|name|ordinal>; --revision-id shows a saved revision."
+    )
     subparser.epilog = (
         "Next: use `timelines visualize` for composed pixels. For edits, use the "
         "timeline_editing document-checkout recipe (checkout → edit → check → publish). "
@@ -1901,6 +1999,10 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--cursor", default=None, help="Continue a bounded inspection page from its cursor.")
     subparser.add_argument("--revision-id", default=None, help="Inspect an exact immutable timeline revision.")
     subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
+    subparser.add_argument(
+        "--layers", action="store_true", default=False,
+        help="Print per-track layer rows (the bounded inspection projection) instead of the default cut table.",
+    )
     # ``show`` is the human inspection route by default. Machine callers use
     # the explicit stable envelope switch and keep the SDK shape unchanged.
     _add_json_flag(subparser, default=False)
@@ -1950,9 +2052,24 @@ def _configure_history(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_diff(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Compare two saved revisions as an editor would: which clips moved or changed, which cut points "
+        "moved (timeline seconds), and the visualize commands that capture only the changed window, "
+        "before and after."
+    )
     _add_project_arg(subparser)
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    _add_json_flag(subparser)
+    subparser.add_argument(
+        "--from", dest="from_revision", default=None,
+        help="Revision id to compare from (e.g. old_head in an edit's .publication.json).",
+    )
+    subparser.add_argument(
+        "--to", dest="to_revision", default=None,
+        help="Revision id to compare to (default: the current head).",
+    )
+    subparser.add_argument("--from-version", type=int, default=None, help=argparse.SUPPRESS)
+    subparser.add_argument("--to-version", type=int, default=None, help=argparse.SUPPRESS)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_diff)
 
 

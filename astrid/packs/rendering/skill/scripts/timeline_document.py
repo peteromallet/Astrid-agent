@@ -14,6 +14,8 @@ from astrid.sdk.authoring_bundle import (
     validate_authoring_candidate,
 )
 from astrid.sdk.autobootstrap import ensure_runtime
+from astrid.sdk.timeline_cuts import base_bundle, diff_bundles, render_diff
+from astrid.core.timeline.authoring_bundle import AuthoringBundleError
 from astrid.sdk.workspace_client import WorkspaceClient, resolve_runtime_connection
 
 
@@ -191,9 +193,20 @@ def main():
         print(json.dumps({"binding": pin, "file": str(args.file), "next": "check then publish to pin this binding"}))
         return
     reject_local_media_inputs(candidate, args.file.parent.resolve())
-    validation = validate_authoring_candidate(candidate)
+    try:
+        validation = validate_authoring_candidate(candidate)
+    except AuthoringBundleError as exc:
+        # One line an agent can act on, not a traceback.
+        hint = (
+            "add or copy shots with astrid.sdk.timeline_editing.add_authoring_shot, which fills source_mapping"
+            if "source_mapping" in str(exc) else f"fix the field named above in {args.file}"
+        )
+        raise SystemExit(f"check failed: {exc}\n{hint}, then run check again")
     inventory = authoring_media_inventory(candidate)
+    # An editor's summary first: which clips moved, in timeline seconds.
+    edit = diff_bundles(base_bundle(candidate), candidate)
     report = {
+        "summary": render_diff(edit).splitlines(),
         "validation": validation,
         "diff": diff_authoring_candidate(candidate),
         "media": inventory["media"],
@@ -201,7 +214,7 @@ def main():
     }
     dump(args.file.with_suffix(".check.json"), report)
     if args.command == "check":
-        print(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2, ensure_ascii=False))
         return
     # Verify selection against this launcher before crossing the publication boundary.
     with AstridClient.open_from_launcher(start_pack_host=False) as client:

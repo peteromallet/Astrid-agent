@@ -1039,3 +1039,20 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
         assert service._timeline_resource("main")["head_revision_id"] == "newer-head"
     finally:
         service.close()
+
+
+def test_diff_of_an_unedited_checkout_is_empty_and_names_clips_by_id():
+    """Placements were compared dict-vs-list, so every check reported them all as changed."""
+    parent, shots, timelines = _closure(shared=False)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    assert diff_authoring_candidate(candidate)["change_count"] == 0
+    shot = next(iter(candidate["shots"].values()))
+    clip = shot["internal_timeline"]["clips"][0]
+    clip["at"] = clip.get("at", 0) + 0.5
+    changed = diff_authoring_candidate(candidate)["changed"]
+    assert [row["path"].rsplit(".", 2)[-2:] for row in changed] == [[clip["id"], "at"]]
+    candidate["placements"].reverse()
+    paths = [row["path"] for row in diff_authoring_candidate(candidate)["changed"]]
+    assert ("placements.order" in paths) is (len(candidate["placements"]) > 1)

@@ -1159,8 +1159,24 @@ def _diff_values(before: Any, after: Any, path: str, result: list[dict[str, Any]
             else:
                 _diff_values(before[index], after[index], child_path, result)
         return
+    if (
+        isinstance(before, (int, float)) and isinstance(after, (int, float))
+        and not isinstance(before, bool) and not isinstance(after, bool)
+        and abs(before - after) <= 1e-9 * max(1.0, abs(before), abs(after))
+    ):
+        return  # float arithmetic noise (e.g. 2.833333 vs 2.8333330000000005) is not an edit
     if before != after:
         result.append({"path": path, "kind": "changed", "before": _copy(before), "after": _copy(after)})
+
+
+def _keyed_rows(rows: Any, key: str) -> Any:
+    """Key a list of objects by a unique id field; leave anything else as is."""
+    if isinstance(rows, Mapping) or not isinstance(rows, list):
+        return rows
+    ids = [row.get(key) if isinstance(row, Mapping) else None for row in rows]
+    if not ids or not all(isinstance(value, str) and value for value in ids) or len(set(ids)) != len(ids):
+        return rows
+    return {value: row for value, row in zip(ids, rows)}
 
 
 def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -1193,7 +1209,24 @@ def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(value, Mapping)
         },
     }
+    # The base stores placements keyed by occurrence id and the candidate keeps
+    # an ordered list; compare like with like, or every check reports the whole
+    # placement map as changed. Clips are keyed by their id so a diff path names
+    # the clip (``clips[c21-00-plate].at``) instead of a list position.
     changes: list[dict[str, Any]] = []
+    base_order = list(base["placements"]) if isinstance(base["placements"], Mapping) else None
+    current["placements"] = _keyed_rows(current["placements"], "occurrence_id")
+    base["placements"] = _keyed_rows(base["placements"], "occurrence_id")
+    if isinstance(current["placements"], Mapping) and base_order is not None:
+        current_order = list(current["placements"])
+        shared = [key for key in current_order if key in base_order]
+        if shared != [key for key in base_order if key in current_order]:
+            changes.append({"path": "placements.order", "kind": "changed", "before": base_order, "after": current_order})
+    for side in (base, current):
+        for shot in side["shots"].values():
+            internal = shot.get("internal_timeline")
+            if isinstance(internal, Mapping) and isinstance(internal.get("clips"), list):
+                shot["internal_timeline"] = {**internal, "clips": _keyed_rows(internal["clips"], "id")}
     _diff_values(base, current, "", changes)
     return {
         "base_parent": _copy(_mapping(root.get("base_parent"), "candidate.base_parent")),
