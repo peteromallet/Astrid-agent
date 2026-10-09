@@ -872,7 +872,9 @@ def _render_timeline_human(result: object) -> str:
         if page.get("remaining_clips") not in (None, 0):
             page_line += f"; {page['remaining_clips']} remain after this page"
         lines.append(page_line)
-    if pagination.get("next_cursor"):
+    if data.get("page_hint"):
+        lines.append(f"  {data['page_hint']}")
+    elif pagination.get("next_cursor"):
         lines.append(f"  page: more results available (cursor {pagination['next_cursor']})")
     omissions = data.get("omission_metadata") if isinstance(data.get("omission_metadata"), Mapping) else native.get("omission_metadata") if isinstance(native.get("omission_metadata"), Mapping) else {}
     omitted_count = omissions.get("authored_values_omitted")
@@ -882,6 +884,21 @@ def _render_timeline_human(result: object) -> str:
     if navigation:
         _append_navigation_footer(lines, navigation)
     return "\n".join(lines)
+
+
+def _decimal_projection(data: dict[str, Any]) -> dict[str, Any]:
+    """Presentation: rational time pairs become decimal seconds; the exact value stays under ``*_exact``."""
+    from astrid.sdk.timeline_cuts import decimal_seconds
+
+    return decimal_seconds(data)
+
+
+def _projection_cursor(data: Mapping[str, Any]) -> str | None:
+    """The next cursor of a paged inspection projection, if there is one."""
+    pagination = data.get("pagination") if isinstance(data.get("pagination"), Mapping) else {}
+    native = data.get("native_inspection") if isinstance(data.get("native_inspection"), Mapping) else {}
+    cursor = pagination.get("next_cursor") or native.get("next_cursor")
+    return cursor if isinstance(cursor, str) and cursor else None
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
@@ -896,12 +913,11 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         name: getattr(parsed, name, None)
         for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor", "revision_id")
     }
-    # Default human view: the editor's cut table (one row per picture cut with
-    # timecode, shot name, layers and spoken words). The per-track inspection
-    # projection stays one flag away (--layers) and is used for --json and for
-    # the clip/occurrence/asset/track/cursor/detail selectors it alone supports.
+    # Default view: the editor's complete cut table (every cut, layer and word; --json is the same
+    # table, complete). The per-track inspection projection (paged, --limit/--cursor) stays behind
+    # --layers and the clip/occurrence/asset/track/cursor/detail selectors it alone supports.
     layered = bool(
-        getattr(parsed, "layers", False) or parsed.json
+        getattr(parsed, "layers", False)
         or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor", "detail"))
     )
     bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
@@ -939,6 +955,28 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         )
     if result.ok and isinstance(result.data, Mapping):
         data = dict(result.data)
+        if parsed.json:
+            # Machine output reads decimal seconds; the human renderer keeps the exact rationals it computes with.
+            data = _decimal_projection(data)
+        data["working_copy"] = None
+        cursor = _projection_cursor(data)
+        if cursor:
+            data["next_cursor"] = cursor
+            shown = [clip for clip in data.get("clips") or [] if isinstance(clip, Mapping)]
+            bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
+            total = None
+            if callable(bundle_opener):
+                from astrid.sdk.timeline_cuts import count_clips
+
+                opened = bundle_opener(parsed.project, parsed.ref, revision_id=values.get("revision_id"))
+                if opened.ok and isinstance(opened.data, Mapping):
+                    total = count_clips(opened.data["bundle"])
+            last_shot = shown[-1].get("shot_id") if shown else None
+            count = f"{len(shown)} of {total}" if total is not None else f"{len(shown)} (more)"
+            data["page_hint"] = (
+                f"showing {count} clips · next: --cursor {cursor}"
+                + (f" · or --shot {last_shot}" if last_shot else "")
+            )
         data["navigation"] = _show_navigation_help(
             project=parsed.project,
             ref=parsed.ref,
@@ -1162,49 +1200,156 @@ def _cmd_recover(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _working_copy(parsed: argparse.Namespace) -> dict[str, Any] | None:
+    """The unpublished working copy of this timeline (its document and edits), or None."""
+    from astrid.sdk.timeline_checkout import Checkout, find_draft
+
+    try:
+        path = find_draft(parsed.project, parsed.ref)
+    except Exception as exc:  # the runtime is not reachable: say so, show the published head
+        print(f"working copy: not checked ({exc}); showing the published head", file=sys.stderr)
+        return None
+    if path is None:
+        return None
+    checkout = Checkout.load(path)
+    return {
+        "bundle": checkout.document(),
+        "path": str(path),
+        "base_revision": checkout.base_revision,
+        "changes": list(checkout.edits().get("changes") or []),
+    }
+
+
 def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
-    """Print the cut table for ``timelines show`` (human default)."""
-    from astrid.sdk.timeline_cuts import build_cut_table, filter_rows, render_cut_table
+    """Print the cut table for ``timelines show`` (human default, or the complete --json)."""
+    from astrid.sdk.timeline_cuts import (
+        build_cut_table,
+        cut_table_payload,
+        filter_rows,
+        page_rows,
+        paging_hint,
+        parse_seconds,
+        render_cut_table,
+        render_summary,
+        resolve_shot,
+    )
+    from astrid.sdk.timeline_views import render_at, render_clips
 
     opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
     if not opened.ok or not isinstance(opened.data, Mapping):
-        return print_result(opened, as_json=False)
+        return print_result(opened, as_json=bool(parsed.json))
     data = opened.data
-    table = build_cut_table(data["bundle"])
+    # The working copy (unpublished draft) is what show reads unless --published or an exact revision is asked for.
+    working = None
+    if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+        working = _working_copy(parsed)
+    bundle = working["bundle"] if working else data["bundle"]
+    table = build_cut_table(bundle)
+    changes = working["changes"] if working else []
+    changed = {str(change.get("clip_id")) for change in changes if change.get("clip_id")}
+    working_info = None if working is None else {
+        "draft": working["path"], "base_revision": working["base_revision"], "edits": len(changes),
+    }
+    banner: list[str] = []
+    if working_info is not None:
+        banner = [
+            f"WORKING COPY · {len(changes)} unpublished edits vs published {working['base_revision']} · "
+            "--published for the live version"
+        ]
+    if parsed.json:
+        payload = cut_table_payload(bundle, table)
+        payload.update({
+            "project_id": data.get("project_id"),
+            "timeline_id": data.get("timeline_id"),
+            "revision_id": data.get("revision_id"),
+            "is_current_head": data.get("is_current_head"),
+            "head_revision_id": data.get("head_revision_id"),
+            "working_copy": working_info,
+        })
+        return print_result(
+            DomainResult.success(payload, receipt=opened.receipt, idempotency_key=opened.idempotency_key),
+            as_json=True,
+        )
+    revision = str(data.get("revision_id") or "")
+    state = "current head" if data.get("is_current_head") else f"saved revision (current head is {data.get('head_revision_id')})"
+    title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}\n  revision {revision}"
+    project = str(parsed.project or data.get("project_id"))
+    timeline = str(parsed.ref or data.get("timeline_id"))
+    show_base = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
+
+    if getattr(parsed, "at", None):
+        try:
+            seconds = parse_seconds(parsed.at)
+        except ValueError as exc:
+            print(f"error validation_error: {exc}")
+            return 2
+        text = render_at(bundle, table, seconds, changed=changed, show_command=shlex.join(show_base))
+        if text is None:
+            print(f"error validation_error: no cut at {seconds:.2f} s (the timeline runs {table['duration']:.2f} s)")
+            return 2
+        print("\n".join(banner + [title, text]))
+        return 0
+    if getattr(parsed, "clips", False):
+        if not getattr(parsed, "shot", None):
+            print("error validation_error: --clips needs --shot N (one chapter)")
+            return 2
+        try:
+            shot_ids = resolve_shot(table, parsed.shot)
+        except ValueError as exc:
+            print(f"error validation_error: {exc}")
+            return 2
+        print("\n".join(banner + [title, render_clips(bundle, shot_ids, changed=changed)]))
+        return 0
+    if getattr(parsed, "summary", False):
+        lines = banner + [title, "", render_summary(table)]
+        if changes:
+            lines += ["", f"unpublished edits ({len(changes)}):"]
+            for change in changes:
+                lines.append(f"  ✎ {change.get('kind')} {change.get('clip_id')} "
+                             f"({', '.join(change.get('fields') or []) or '-'}) at {change.get('after') or change.get('before')}")
+        lines += ["", f"full table: {shlex.join(show_base)}   (no flag)  ·  one chapter: --shot N   ·  clips in a chapter: --shot N --clips"]
+        print("\n".join(lines))
+        return 0
     try:
         rows = filter_rows(table, range_value=getattr(parsed, "range", None), shot=getattr(parsed, "shot", None))
     except ValueError as exc:
         print(f"error validation_error: {exc}")
         return 2
-    revision = str(data.get("revision_id") or "")
-    state = "current head" if data.get("is_current_head") else f"saved revision (current head is {data.get('head_revision_id')})"
-    title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}\n  revision {revision}"
     view = getattr(parsed, "as_view", None) or "cuts"
     if view != "cuts":
-        print(_render_view(view, data["bundle"], parsed, rows, title=title))
+        print("\n".join(banner + [_render_view(view, bundle, parsed, rows, title=title, changed=changed)]))
         return 0
-    lines = [render_cut_table(table, rows, title=title), ""]
-    project = str(parsed.project or data.get("project_id"))
-    timeline = str(parsed.ref or data.get("timeline_id"))
+    try:
+        shown, info = page_rows(rows, page=getattr(parsed, "page", None), page_size=getattr(parsed, "page_size", None))
+    except ValueError as exc:
+        print(f"error validation_error: {exc}")
+        return 2
+    lines = banner + [render_cut_table(table, shown, title=title, changed=changed), ""]
+    if info is not None:
+        lines.insert(len(lines) - 1, paging_hint(table, rows, shown, info))
     visual = ["python3", "-m", "astrid", "timelines", "visualize", "--project", project, "--timeline-slug", timeline]
     if not data.get("is_current_head"):
         visual += ["--revision-id", revision]
-    if rows and (getattr(parsed, "range", None) or getattr(parsed, "shot", None)):
-        low, high = rows[0]["start"], rows[-1]["end"]
+    if shown and (getattr(parsed, "range", None) or getattr(parsed, "shot", None) or info is not None):
+        low, high = shown[0]["start"], shown[-1]["end"]
         lines.append("see these cuts: " + shlex.join(visual + ["--view", "contact", "--range", f"{low:.2f}..{high:.2f}"]))
     else:
         lines.append("see the whole video: " + shlex.join(visual + ["--view", "contact"]))
-    lines.append("one moment: " + shlex.join(visual) + " --at SECONDS   ·   every N frames: --range A..B --every-frames N")
+    lines.append("one moment: " + shlex.join(show_base) + " --at 1:02   ·   one chapter: --shot N --clips   ·   overview: --summary")
+    lines.append("one moment on screen: " + shlex.join(visual) + " --at SECONDS   ·   every N frames: --range A..B --every-frames N")
     lines.append("how one cut moves: " + shlex.join(visual + ["--view", "motion", "--cut", "N"])
                  + "   ·   lint: " + shlex.join(["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]))
     edit = _editing_navigation(project=project, timeline=timeline)
     lines.append(f"edit: {edit['commands']['checkout']}   (guide: {edit['guide']})")
-    lines.append("per-track layer rows: --layers · SDK envelope: --json")
+    lines.append("per-track layer rows: --layers · SDK envelope (complete): --json")
     print("\n".join(lines))
     return 0
 
 
-def _render_view(view: str, bundle: Mapping[str, Any], parsed: argparse.Namespace, rows: list, *, title: str) -> str:
+def _render_view(
+    view: str, bundle: Mapping[str, Any], parsed: argparse.Namespace, rows: list, *, title: str,
+    changed: set[str] | None = None,
+) -> str:
     """The script or code representation, scoped like the cut table (--range, --shot)."""
     from astrid.sdk.timeline_cuts import _parse_range
     from astrid.sdk.timeline_views import render_code, render_script
@@ -1212,7 +1357,7 @@ def _render_view(view: str, bundle: Mapping[str, Any], parsed: argparse.Namespac
     window = _parse_range(parsed.range) if getattr(parsed, "range", None) else None
     shot_ids = {row["shot_id"] for row in rows} if getattr(parsed, "shot", None) else None
     if view == "script":
-        return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids)
+        return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids, changed=changed)
     return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "))
 
 
@@ -2555,7 +2700,15 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--summary",
         action="store_true",
-        help="Presentation flag for the canonical bounded inspection (no legacy document).",
+        help="One line per chapter (name, span, cut count, first words); with a working copy, its edits too.",
+    )
+    subparser.add_argument("--page", type=int, default=None, help="Cut table page N (1-based); with no --page-size, 20 cuts a page.")
+    subparser.add_argument("--page-size", type=int, default=None, help="Cuts per page (default: all cuts).")
+    subparser.add_argument("--at", default=None, help="The one cut on screen at SECONDS or m:ss: its clips, the words around it, next cuts.")
+    subparser.add_argument("--clips", action="store_true", default=False, help="With --shot N: every clip in that chapter, one line each.")
+    subparser.add_argument(
+        "--published", action="store_true", default=False,
+        help="Read the published head, ignoring the unpublished working copy (when one exists).",
     )
     subparser.add_argument(
         "--occurrence",
@@ -2573,7 +2726,7 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
     subparser.add_argument(
         "--layers", action="store_true", default=False,
-        help="Print per-track layer rows (the bounded inspection projection) instead of the default cut table.",
+        help="Print per-track layer rows (the bounded, paged inspection projection) instead of the cut table.",
     )
     subparser.add_argument(
         "--as", dest="as_view", choices=("cuts", "script", "code"), default="cuts",
