@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 PROTOCOL = "workspace.v1"
-SCHEMA_DIGEST = "sha256:62da8b1285ba3586b3b9707d4f7ea9b1bd4c31833b7fffc6cbacd2b2a8442f0f"
-OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+SCHEMA_DIGEST = "sha256:da08421fc9bc3315a493804549f0cc5acb42ce89c7a075e76cbddcff841eef02"
+OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
 @dataclass(frozen=True)
@@ -320,10 +320,11 @@ class Task:
     execution_binding: Mapping[str, Any] | None = None
     storage_estimate: Mapping[str, int] | None = None
     required_facts: Mapping[str, Any] | None = None
+    expected_effect: Mapping[str, Any] | None = None
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> "Task":
-        return cls(task_id=value["task_id"], run_id=value["run_id"], state=value["state"], version=int(value["version"]), capability_id=value["capability_id"], capability_digest=value["capability_digest"], idempotency_key=value["idempotency_key"], created_at=value["created_at"], updated_at=value["updated_at"], input_object_ids=list(value.get("input_object_ids") or []), spec=dict(value.get("spec") or {}), generation_intent=dict(value["generation_intent"]) if value.get("generation_intent") is not None else None, project_id=value.get("project_id"), attempt_id=value.get("attempt_id"), runtime_epoch=int(value["runtime_epoch"]), result=value.get("result"), execution_request=dict(value["execution_request"]) if value.get("execution_request") is not None else None, execution_binding=dict(value["execution_binding"]) if value.get("execution_binding") is not None else None, storage_estimate=dict(value["storage_estimate"]) if value.get("storage_estimate") is not None else None, required_facts=dict(value["required_facts"]) if value.get("required_facts") is not None else None)
+        return cls(task_id=value["task_id"], run_id=value["run_id"], state=value["state"], version=int(value["version"]), capability_id=value["capability_id"], capability_digest=value["capability_digest"], idempotency_key=value["idempotency_key"], created_at=value["created_at"], updated_at=value["updated_at"], input_object_ids=list(value.get("input_object_ids") or []), spec=dict(value.get("spec") or {}), generation_intent=dict(value["generation_intent"]) if value.get("generation_intent") is not None else None, project_id=value.get("project_id"), attempt_id=value.get("attempt_id"), runtime_epoch=int(value["runtime_epoch"]), result=value.get("result"), execution_request=dict(value["execution_request"]) if value.get("execution_request") is not None else None, execution_binding=dict(value["execution_binding"]) if value.get("execution_binding") is not None else None, storage_estimate=dict(value["storage_estimate"]) if value.get("storage_estimate") is not None else None, required_facts=dict(value["required_facts"]) if value.get("required_facts") is not None else None, expected_effect=dict(value["expected_effect"]) if value.get("expected_effect") is not None else None)
 
 
 @dataclass(frozen=True)
@@ -482,10 +483,14 @@ class Executor:
     dependency_digest: str | None = None
     source_epoch: str | None = None
     verified_facts: Mapping[str, Any] | None = None
+    readiness: str | None = None
+    readiness_reason: str | None = None
+    last_seen_at: str | None = None
+    runtime_session_id: str | None = None
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> "Executor":
-        return cls(executor_id=value["executor_id"], max_concurrency=int(value["max_concurrency"]), resource_keys=tuple(value.get("resource_keys", [])), capabilities=tuple(Capability.from_json(item) for item in value.get("capabilities", [])), protocol=value["protocol"], runtime_epoch=int(value["runtime_epoch"]) if value.get("runtime_epoch") is not None else None, source_digest=value.get("source_digest"), dependency_digest=value.get("dependency_digest"), source_epoch=value.get("source_epoch"), verified_facts=dict(value["verified_facts"]) if value.get("verified_facts") is not None else None)
+        return cls(executor_id=value["executor_id"], max_concurrency=int(value["max_concurrency"]), resource_keys=tuple(value.get("resource_keys", [])), capabilities=tuple(Capability.from_json(item) for item in value.get("capabilities", [])), protocol=value["protocol"], runtime_epoch=int(value["runtime_epoch"]) if value.get("runtime_epoch") is not None else None, source_digest=value.get("source_digest"), dependency_digest=value.get("dependency_digest"), source_epoch=value.get("source_epoch"), verified_facts=dict(value["verified_facts"]) if value.get("verified_facts") is not None else None, readiness=value.get("readiness"), readiness_reason=value.get("readiness_reason"), last_seen_at=value.get("last_seen_at"), runtime_session_id=value.get("runtime_session_id"))
 
 
 def _decode_error(status: int, body: bytes, *, request_id: str = "") -> ApiError:
@@ -1008,14 +1013,6 @@ class WorkspaceClient:
         items, next_cursor = self._page(value)
         return list(items), next_cursor
 
-    def get_source_frame_thumbnail(self, project_id: str, source_object_id: str, source_time_seconds: float, *, recipe_version: int = 1) -> Mapping[str, Any] | None:
-        query = f"?source_object_id={_path_part(source_object_id)}&source_time_seconds={float(source_time_seconds):.6f}&recipe_version={int(recipe_version)}"
-        value = self._json(self._request("GET", f"/v1/projects/{_path_part(project_id)}/thumbnails/source-frame" + query)[2])
-        return value.get("thumbnail")
-
-    def ensure_source_frame_thumbnail(self, project_id: str, thumbnail: Mapping[str, Any], *, idempotency_key: str) -> MutationResult:
-        return self._mutation_json(self._request("POST", f"/v1/projects/{_path_part(project_id)}/thumbnails/source-frame", body=json.dumps(dict(thumbnail), separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
-
     def get_object(self, object_id: str, *, byte_range: tuple[int, int | None] | None = None) -> ByteResponse:
         headers: dict[str, str] = {}
         if byte_range:
@@ -1254,6 +1251,24 @@ class WorkspaceClient:
     def register_executor(self, executor: Mapping[str, Any], *, idempotency_key: str) -> Executor:
         _, _, body = self._request("POST", "/v1/executors", body=json.dumps(dict(executor), separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))
         return Executor.from_json(self._json(body))
+
+    def get_executor(self, executor_id: str) -> Executor:
+        _, _, body = self._request("GET", f"/v1/executors/{_path_part(executor_id)}")
+        return Executor.from_json(self._json(body))
+
+    def get_local_worker_generation(self) -> Mapping[str, Any]:
+        _, _, body = self._request("GET", "/v1/control/local-worker/generation")
+        return self._json(body)
+
+    def start_local_worker(self, profile_id: str, expected_workspace_uuid: str) -> Mapping[str, Any]:
+        payload = {"profile_id": profile_id, "expected_workspace_uuid": expected_workspace_uuid}
+        _, _, body = self._request("POST", "/v1/control/local-worker/start", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"})
+        return self._json(body)
+
+    def relinquish_local_worker(self, executor_incarnation: str, evidence_digest: str) -> Mapping[str, Any]:
+        payload = {"executor_incarnation": executor_incarnation, "evidence_digest": evidence_digest}
+        _, _, body = self._request("POST", "/v1/control/local-worker/relinquish", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"})
+        return self._json(body)
 
     def list_capabilities(self, *, cursor: str | None = None, limit: int = 50) -> tuple[list[Capability], str | None]:
         query = (f"?limit={int(limit)}" if cursor or int(limit) != 50 else "") + (f"&cursor={_path_part(cursor)}" if cursor else "")

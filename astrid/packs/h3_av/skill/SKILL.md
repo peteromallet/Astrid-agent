@@ -48,6 +48,34 @@ asset transfer. The CPU transport regression in
 `tests/packs/h3_av/test_runtime_contract.py` exercises real H3 stages with separate
 directories and removes each preceding attempt before continuing.
 
+## Resume and fresh operations
+
+Resume an interrupted operation with `--resume` and the same `--out` directory,
+request, asset map, project, and execution request. The operation journal keeps
+the H3 submission identity; each SDK receipt keeps that stage's frozen Runtime
+admission. Resume observes the admitted task and reads its Runtime-managed
+outputs again. It does not resubmit inference when a wait or output read fails.
+Re-running without `--resume` in an operation directory that has history is
+refused. Start a fresh intended operation in a new empty output directory.
+Each resume uses current Runtime authorization; the journal does not preserve
+revoked access.
+
+An older schema-1 operation can be observed from its saved result only when the
+journal still matches the stage inputs and capability, and the saved result
+contains a task/run locator that Runtime confirms. A saved attempt is pinned
+when present. A DTO alone, missing or mismatched identity, or an uncertain
+admission with neither a receipt nor a trustworthy saved result is not enough
+to replay work; H3 stops and asks for recovery evidence instead of guessing a
+task from its time or capability name.
+
+After a resumed stage settles, H3 retrieves output bytes through Runtime's
+managed-output API and checks the declared object digest and size before
+composition. The local composition and verification stages then create the
+candidate evidence and final receipt. A passed raw-generation publication is
+recorded as raw internal lineage until the publication finalizer verifies and
+publishes the composed candidate; candidate verification alone does not claim
+that final publication occurred.
+
 ## Request shape
 
 Start with `schemas/request.v1.json` or the following compact shape:

@@ -119,6 +119,22 @@ def test_rejects_ambiguous_or_unsafe_target_before_transport() -> None:
         )
 
 
+def test_remote_activation_gate_round_trips_only_for_exact_runpod_target() -> None:
+    target = {"kind": "runpod", "pod_id": "pod-1", "provider_account_ref": "account-1"}
+    request = {"schema_version": 1, "target": target, "remote_activation_required": True}
+    assert normalize_execution_request(request) == request
+    assert normalize_execution_request({"target": target, "remote_activation_required": False}) == {
+        "target": target, "remote_activation_required": False,
+    }
+    with pytest.raises(ExecutionRequestError, match="must be a boolean"):
+        normalize_execution_request({"target": target, "remote_activation_required": "yes"})
+    with pytest.raises(ExecutionRequestError, match="requires a RunPod target"):
+        normalize_execution_request({
+            "target": {"kind": "machine", "id": "local"},
+            "remote_activation_required": True,
+        })
+
+
 def test_normalizes_full_immutable_execution_contract() -> None:
     request = normalize_execution_request(
         {

@@ -270,6 +270,89 @@ raising `AstridSDKError` subclasses for code that wants precise recovery
 branches. `invoke_result` is the canonical agent-loop boundary when catching
 and serializing those typed failures is preferable.
 
+When a caller already has a task/run locator from a trusted journal, use
+`observe_task_invocation` to read Runtime state through the same normalized
+result path. It is read-only: it does not admit, retry, or settle work, and a
+caller-supplied locator is not proof that an admission occurred. The SDK checks
+the returned task/run identity and can optionally read settled managed-output
+rows:
+
+```python
+from astrid.sdk import observe_task_invocation
+
+result = observe_task_invocation(
+    client,
+    capability_id="h3_av.compose",
+    capability_type="executor",
+    native_kind="executor",
+    task_id="task-from-journal",
+    run_id="run-from-journal",
+    wait=False,
+    read_managed_outputs=True,
+)
+```
+
+Use `wait=True` to follow the known task to a terminal state. An unavailable or
+mismatched Runtime identity remains an unsuccessful result; observation never
+substitutes for exact admission recovery. With `wait=False`, `ok` means the
+Runtime task read succeeded, so inspect the returned task state before treating
+the work as complete.
+
+### Exact admission recovery
+
+Use `recovery_path` when one invocation must survive a lost response or process
+restart. It is opt-in; calls without it keep their normal behavior. Keep the
+same receipt path and request for a resume:
+
+```python
+from pathlib import Path
+
+receipt = Path("operation/04-run.recovery.json")
+result = client.invoke_result(
+    "vibecomfy.run",
+    kind="executor",
+    project="demo",
+    inputs=run_inputs,
+    execution_request=execution_request,
+    recovery_path=receipt,
+    wait=True,
+)
+
+# After a restart, reconnect with current Runtime credentials and repeat the
+# same invocation arguments with the same receipt path.
+result = client.invoke_result(
+    "vibecomfy.run",
+    kind="executor",
+    project="demo",
+    inputs=run_inputs,
+    execution_request=execution_request,
+    recovery_path=receipt,
+    resume=True,
+    wait=True,
+)
+```
+
+The receipt freezes the prepared admission and its idempotency key before the
+first Runtime request. If the response or saved task locator is lost, resume
+reads the exact known task or replays those frozen admission arguments under
+that same key. It does not prepare a different task, make a new key, or retry
+executor work. A timeout or temporary task/output read failure is returned to
+the caller; retry observation explicitly with `resume=True` after the Runtime
+is reachable. Runtime checks current authorization for replay and readback, so
+a receipt does not preserve revoked access. A new intended execution uses a
+new receipt path and a fresh invocation; an existing receipt path is not a
+fresh-operation slot.
+
+Recovery owns Runtime task admission and observation only. It does not claim a
+machine or prepare its software. Complete any machine/target preparation first
+and freeze that execution request into the invocation; recovery reuses the
+recorded request and does not silently select or replace a target.
+
+For generation tasks, authorized task reads include the immutable admitted
+`expected_effect` alongside `generation_intent`. Downstream code can compare
+that declaration with Runtime's applied publication and managed-output rows;
+reading it grants no mutation authority.
+
 ### Typed Error Handling
 
 All SDK errors inherit from `AstridSDKError`. Catch the base class for general

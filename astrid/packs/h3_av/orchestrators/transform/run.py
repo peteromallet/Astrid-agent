@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
+import os
 import re
+import shutil
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -28,7 +32,7 @@ from astrid.packs.h3_av.src.receipt import (
 )
 from astrid.packs.h3_av.src.request import load_request
 from astrid.packs.h3_av.src.request_v2 import branch_for
-from astrid.sdk import AstridClient
+from astrid.sdk import AstridClient, observe_task_invocation
 from astrid.sdk.results import InvocationResult
 
 
@@ -39,15 +43,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--project")
     parser.add_argument("--execution-request", type=Path)
-    parser.add_argument(
+    worker_group = parser.add_mutually_exclusive_group()
+    worker_group.add_argument(
         "--worker-qualification",
         type=Path,
         help="deployment-owned qualified-worker receipt required before targeted admission",
     )
+    worker_group.add_argument(
+        "--prepared-worker",
+        type=Path,
+        help="select a prepared RunPod deployment for the canonical VibeComfy task",
+    )
     parser.add_argument(
         "--require-worker-qualification",
         action="store_true",
-        help="fail before admission unless --worker-qualification is supplied and valid",
+        help="fail before admission unless a qualified or prepared worker is selected",
     )
     parser.add_argument(
         "--editorial-approved",
@@ -62,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="resume delivery from a saved canonical run result without resampling",
+        help="resume from SDK recovery receipts or verified legacy locators without resampling",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -405,6 +415,8 @@ def _retrieve_compiled_workflow(
     compiled: Any,
     compilation: Mapping[str, Any],
     out_dir: Path,
+    *,
+    materialized_paths: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Retrieve and attest the exact canonical bundle selected by compilation."""
 
@@ -435,7 +447,60 @@ def _retrieve_compiled_workflow(
                 f"managed workflow member {filename!r} failed compilation hash/provenance verification"
             )
         inputs[port] = _descriptor(row, filename=filename)
+        if materialized_paths is not None:
+            materialized_paths[port] = path
     return inputs
+
+
+def _materialize_prepared_worker_workflow_bundle(
+    paths: Mapping[str, Path],
+    compilation: Mapping[str, Any],
+    destination: Path,
+) -> Path:
+    """Freeze the verified H3 bundle under this operation for P2 staging."""
+
+    expected_names = {
+        "python": "workflow.py",
+        "companion": "workflow.vibe.json",
+        "source": "source.json",
+    }
+    if set(paths) != set(expected_names):
+        raise RuntimeError("prepared RunPod execution requires the complete canonical workflow bundle")
+    workflow = compilation.get("workflow")
+    if not isinstance(workflow, Mapping):
+        raise RuntimeError("compilation.json is missing its selected workflow manifest")
+    expected_hashes: dict[str, str] = {}
+    for port, filename in expected_names.items():
+        row = workflow.get(filename)
+        digest = row.get("sha256") if isinstance(row, Mapping) else None
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise RuntimeError(f"compilation.json has no valid hash for {filename!r}")
+        source = Path(paths[port])
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError(f"materialized workflow member {filename!r} is not a regular file")
+        if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+            raise RuntimeError(f"materialized workflow member {filename!r} changed after verification")
+        expected_hashes[filename] = digest
+
+    if destination.is_symlink():
+        raise RuntimeError("prepared workflow bundle path must not be a symlink")
+    if destination.exists():
+        if not destination.is_dir() or {item.name for item in destination.iterdir()} != set(expected_names.values()):
+            raise RuntimeError("saved prepared workflow bundle has unexpected content")
+        for port, filename in expected_names.items():
+            target = destination / filename
+            if (target.is_symlink() or not target.is_file()
+                    or hashlib.sha256(target.read_bytes()).hexdigest() != expected_hashes[filename]):
+                raise RuntimeError("saved prepared workflow bundle differs from the frozen compilation")
+    else:
+        destination.mkdir(parents=True, mode=0o700)
+        try:
+            for port, filename in expected_names.items():
+                (destination / filename).write_bytes(Path(paths[port]).read_bytes())
+        except BaseException:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+    return destination / "workflow.py"
 
 
 def _provenance(preparation: Mapping[str, Any], compilation: Mapping[str, Any]) -> dict[str, Any]:
@@ -496,6 +561,8 @@ def _invoke(
     project: str | None,
     execution_request: Mapping[str, Any] | None = None,
     idempotency_context: Mapping[str, Any] | None = None,
+    recovery_path: Path | None = None,
+    resume: bool = False,
 ) -> Any:
     result = client.invoke_result(
         capability_id,
@@ -506,6 +573,9 @@ def _invoke(
         execution_request=execution_request,
         idempotency_context=idempotency_context,
         wait=True,
+        recovery_path=recovery_path,
+        resume=resume,
+        read_managed_outputs=True,
     )
     if not result.ok:
         raise RuntimeError(f"{capability_id} failed: {result.error}")
@@ -665,100 +735,96 @@ def _load_invocation_result(path: Path, *, expected_input_digest: str) -> Invoca
     )
 
 
-def _reobserve_saved_result(
+def _observe_legacy_saved_result(
     client: Any,
     saved: InvocationResult,
     *,
     phase: str,
+    attempt_pin: str | None = None,
 ) -> InvocationResult:
-    """Re-read one saved child identity from Runtime before resuming.
+    """Adapt a schema-1 result locator to the SDK's shared task observer.
 
-    The saved DTO is only a locator for the prior task.  Runtime remains the
-    authority for terminal state, settlement bytes, and managed lineage; a
-    missing or changed identity is explicit unknown and must not resample.
+    This is only for operations created before per-stage SDK receipts existed.
+    Runtime remains the authority for task state and managed lineage.
     """
 
     task_id = saved.kernel_task_id
     run_id = saved.kernel_run_id
-    attempt_id = saved.kernel_attempt_id
-    if not all(isinstance(value, str) and value for value in (task_id, run_id, attempt_id)):
+    saved_attempt_id = saved.kernel_attempt_id
+    if not all(isinstance(value, str) and value for value in (task_id, run_id)):
         raise RuntimeError(
-            f"cannot resume {phase}: saved result is missing task/run/attempt identity"
+            f"cannot resume {phase}: saved result is missing task/run identity"
         )
-
-    tasks = getattr(client, "tasks", None)
-    show = getattr(tasks, "show", None)
-    read_outputs = getattr(tasks, "list_managed_outputs", None)
-    if not callable(show) or not callable(read_outputs):
+    expected_attempt_id = attempt_pin or saved_attempt_id
+    if attempt_pin and saved_attempt_id and attempt_pin != saved_attempt_id:
+        raise RuntimeError(f"cannot resume {phase}: saved attempt disagrees with journal admission")
+    observed = observe_task_invocation(
+        client,
+        capability_id=saved.capability_id,
+        capability_type=saved.capability_type,
+        native_kind=saved.native_kind,
+        task_id=task_id,
+        run_id=run_id,
+        attempt_id=expected_attempt_id,
+        wait=False,
+        read_managed_outputs=True,
+        executor_version=saved.executor_version,
+        manifest_path=saved.manifest_path,
+    )
+    if not observed.ok:
         raise RuntimeError(
-            f"cannot resume {phase}: Runtime identity and managed-output readback are unavailable"
+            f"cannot resume {phase}: Runtime settlement for task {task_id!r} is unknown or unsuccessful"
         )
-
-    observed = show(task_id)
-    observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
-    task = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
-    if not observed_ok or not isinstance(task, Mapping):
-        raise RuntimeError(
-            f"cannot resume {phase}: Runtime settlement for task {task_id!r} is unknown"
-        )
-    task = dict(task)
-    if task.get("task_id", task.get("id")) != task_id:
-        raise RuntimeError(f"cannot resume {phase}: Runtime returned a different task identity")
-    if task.get("run_id") != run_id or task.get("attempt_id") != attempt_id:
+    task = observed.raw_result.get("task") if isinstance(observed.raw_result, Mapping) else None
+    if not isinstance(task, Mapping):
+        raise RuntimeError(f"cannot resume {phase}: Runtime settlement has no task resource")
+    if task.get("task_id", task.get("id")) != task_id or task.get("run_id") != run_id:
         raise RuntimeError(f"cannot resume {phase}: Runtime task identity disagrees with saved identity")
+    observed_attempt_id = str(task.get("attempt_id") or "")
+    if expected_attempt_id and observed_attempt_id != expected_attempt_id:
+        raise RuntimeError(f"cannot resume {phase}: Runtime attempt identity disagrees with saved identity")
     state = str(task.get("state") or task.get("status") or "").lower()
     if state not in {"succeeded", "completed"}:
         raise RuntimeError(
             f"cannot resume {phase}: Runtime task {task_id!r} is not settled ({state or 'unknown'}); refusing replay"
         )
-    settled = task.get("result")
-    if not isinstance(settled, Mapping):
+    if not isinstance(task.get("result"), Mapping):
         raise RuntimeError(f"cannot resume {phase}: Runtime settlement has no result")
+    return observed
 
-    managed_response = read_outputs(task_id)
-    managed_ok = bool(getattr(managed_response, "ok", isinstance(managed_response, Mapping)))
-    managed = getattr(
-        managed_response,
-        "data",
-        managed_response if isinstance(managed_response, (list, tuple)) else None,
-    )
-    if not managed_ok:
-        raise RuntimeError(
-            f"cannot resume {phase}: Runtime managed-output readback for task {task_id!r} is unknown"
-        )
-    if isinstance(managed, tuple) and len(managed) == 2 and isinstance(managed[0], list):
-        managed = managed[0]
-    if not isinstance(managed, list):
-        raise RuntimeError(f"cannot resume {phase}: Runtime managed-output readback is invalid")
 
-    output_rows = settled.get("outputs")
-    raw_result = {
-        "ok": True,
-        "state": "completed",
-        "kernel_run_id": run_id,
-        "kernel_task_id": task_id,
-        "kernel_attempt_id": attempt_id,
-        "task": task,
-        "result": dict(settled),
-        "outputs": {"artifacts": list(output_rows) if isinstance(output_rows, list) else []},
-        "managed_outputs": managed,
-    }
-    return InvocationResult(
-        capability_id=saved.capability_id,
-        capability_type=saved.capability_type,
-        native_kind=saved.native_kind,
-        ok=True,
-        error=None,
-        manifest_path=saved.manifest_path,
-        raw_result=raw_result,
-        run_id=saved.run_id,
-        run_root=saved.run_root,
-        outputs={"artifacts": raw_result["outputs"]["artifacts"], "managed_outputs": managed},
-        executor_version=saved.executor_version,
-        kernel_run_id=run_id,
-        kernel_task_id=task_id,
-        kernel_attempt_id=attempt_id,
-    )
+def _recovery_receipt_path(saved_result: Path, journal: OperationJournal) -> Path:
+    """Return the deterministic SDK receipt slot for this submission and stage."""
+
+    submission_id = journal.submission_id
+    if not isinstance(submission_id, str) or not submission_id:
+        raise RuntimeError("H3 operation journal is missing its submission identity")
+    return saved_result.with_name(f".{saved_result.name}.{submission_id}.recovery.json")
+
+
+def _assert_recorded_identity(
+    result: InvocationResult,
+    previous: Mapping[str, Any] | None,
+    *,
+    phase: str,
+) -> None:
+    if previous is None:
+        return
+    recorded_capability = previous.get("capability_id")
+    if (
+        isinstance(recorded_capability, str)
+        and recorded_capability
+        and recorded_capability != result.capability_id
+    ):
+        raise RuntimeError(f"cannot resume {phase}: capability identity disagrees with journal admission")
+    for journal_key, result_value in (
+        ("task_id", result.kernel_task_id),
+        ("run_id", result.kernel_run_id),
+        ("attempt_id", result.kernel_attempt_id),
+    ):
+        recorded = previous.get(journal_key)
+        if isinstance(recorded, str) and recorded and recorded != result_value:
+            raise RuntimeError(f"cannot resume {phase}: observed identity disagrees with journal admission")
 
 
 def _invoke_stage(
@@ -775,7 +841,7 @@ def _invoke_stage(
     execution_request: Mapping[str, Any] | None = None,
     idempotency_context: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
-    """Invoke one canonical stage once, or reuse its settled DTO on resume."""
+    """Invoke one canonical stage through the SDK's durable recovery receipt."""
 
     input_digest = _stable_digest({
         "capability_id": capability_id,
@@ -784,32 +850,75 @@ def _invoke_stage(
         "execution_request": execution_request,
     })
     previous = journal.latest(phase)
+    receipt_path = _recovery_receipt_path(saved_result, journal)
+    if resume and receipt_path.is_file():
+        if previous is not None:
+            recorded_digest = previous.get("input_digest")
+            if isinstance(recorded_digest, str) and recorded_digest != input_digest:
+                raise RuntimeError(f"cannot resume {phase}: different stage inputs from the journal")
+            recorded_capability = previous.get("capability_id")
+            if isinstance(recorded_capability, str) and recorded_capability != capability_id:
+                raise RuntimeError(f"cannot resume {phase}: journaled capability identity changed")
+        result = _invoke(
+            client,
+            capability_id,
+            inputs=inputs,
+            out=out,
+            project=project,
+            execution_request=execution_request,
+            idempotency_context=idempotency_context,
+            recovery_path=receipt_path,
+            resume=True,
+        )
+        _assert_recorded_identity(result, previous, phase=phase)
+        journal.record(
+            phase,
+            "reused",
+            capability_id=capability_id,
+            input_digest=input_digest,
+            task_id=result.kernel_task_id,
+            run_id=result.kernel_run_id,
+            attempt_id=result.kernel_attempt_id,
+        )
+        return result
     if resume and saved_result.is_file():
         if previous is None:
             raise RuntimeError(
                 f"cannot resume {phase}: saved result has no matching journal admission"
             )
+        recorded_digest = previous.get("input_digest")
+        if isinstance(recorded_digest, str) and recorded_digest != input_digest:
+            raise RuntimeError(f"cannot resume {phase}: different stage inputs from the journal")
         result = _load_invocation_result(saved_result, expected_input_digest=input_digest)
         if not result.ok:
             raise RuntimeError(f"saved {phase} result is not successful")
         if result.capability_id != capability_id:
             raise RuntimeError(f"saved {phase} result belongs to {result.capability_id!r}")
-        recorded_identity = tuple(
-            previous.get(key) for key in ("task_id", "run_id", "attempt_id")
+        result = _observe_legacy_saved_result(
+            client,
+            result,
+            phase=phase,
+            attempt_pin=(
+                previous.get("attempt_id")
+                if isinstance(previous.get("attempt_id"), str)
+                else None
+            ),
         )
-        result_identity = (
-            result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id
+        _assert_recorded_identity(result, previous, phase=phase)
+        journal.record(
+            phase,
+            "reused",
+            capability_id=capability_id,
+            input_digest=input_digest,
+            task_id=result.kernel_task_id,
+            run_id=result.kernel_run_id,
+            attempt_id=result.kernel_attempt_id,
         )
-        if all(isinstance(value, str) and value for value in recorded_identity):
-            if recorded_identity != result_identity:
-                raise RuntimeError(
-                    f"cannot resume {phase}: saved result identity disagrees with journal admission"
-                )
-        result = _reobserve_saved_result(client, result, phase=phase)
-        journal.record(phase, "reused", capability_id=capability_id)
         return result
     if resume and previous is not None and previous.get("status") in {"started", "uncertain", "completed"}:
-        raise RuntimeError(f"cannot resume {phase}: invocation result is missing after {previous.get('status')}")
+        raise RuntimeError(
+            f"cannot resume {phase}: SDK recovery receipt and legacy result are missing after {previous.get('status')}"
+        )
     journal.record(phase, "started", capability_id=capability_id, input_digest=input_digest)
     try:
         result = _invoke(
@@ -820,6 +929,7 @@ def _invoke_stage(
             project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
+            recovery_path=receipt_path,
         )
     except Exception as exc:
         journal.record(
@@ -832,6 +942,7 @@ def _invoke_stage(
         phase,
         "completed",
         capability_id=capability_id,
+        input_digest=input_digest,
         task_id=result.kernel_task_id,
         run_id=result.kernel_run_id,
         attempt_id=result.kernel_attempt_id,
@@ -876,6 +987,38 @@ def _invoke_canonical_run(
     except OperationJournalError as exc:
         raise RuntimeError(str(exc)) from exc
 
+    receipt_path = _recovery_receipt_path(saved_result, journal)
+    if resume and receipt_path.is_file():
+        if prior_run is not None:
+            recorded_admission = prior_run.get("admission_digest")
+            if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
+                raise RuntimeError("cannot resume canonical run: journaled admission identity changed")
+        result = _invoke(
+            client,
+            "vibecomfy.run",
+            inputs=inputs,
+            out=out,
+            project=project,
+            execution_request=execution_request,
+            idempotency_context=idempotency_context,
+            recovery_path=receipt_path,
+            resume=True,
+        )
+        identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
+        if not all(isinstance(value, str) and value for value in identity):
+            raise RuntimeError("canonical run receipt returned incomplete task/run/attempt identity")
+        _assert_recorded_identity(result, prior_run, phase="canonical run")
+        journal.set_admission_phase("settled")
+        journal.record(
+            "run",
+            "reused",
+            task_id=identity[0],
+            run_id=identity[1],
+            attempt_id=identity[2],
+            admission_digest=admission_digest,
+        )
+        return result
+
     if resume and saved_result.is_file():
         if prior_run is None:
             raise RuntimeError(
@@ -889,15 +1032,20 @@ def _invoke_canonical_run(
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
             raise RuntimeError("saved canonical run result is missing task/run/attempt identity")
-        recorded_identity = tuple(
-            prior_run.get(key) for key in ("task_id", "run_id", "attempt_id")
+        recorded_admission = prior_run.get("admission_digest")
+        if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
+            raise RuntimeError("cannot resume canonical run: journaled admission identity changed")
+        result = _observe_legacy_saved_result(
+            client,
+            result,
+            phase="canonical run",
+            attempt_pin=(
+                prior_run.get("attempt_id")
+                if isinstance(prior_run.get("attempt_id"), str)
+                else None
+            ),
         )
-        if all(isinstance(value, str) and value for value in recorded_identity):
-            if recorded_identity != identity:
-                raise RuntimeError(
-                    "cannot resume canonical run: saved result identity disagrees with journal admission"
-                )
-        result = _reobserve_saved_result(client, result, phase="canonical run")
+        _assert_recorded_identity(result, prior_run, phase="canonical run")
         journal.set_admission_phase("settled")
         journal.record(
             "run", "reused", task_id=identity[0], run_id=identity[1],
@@ -919,6 +1067,7 @@ def _invoke_canonical_run(
             client, "vibecomfy.run", inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
+            recovery_path=receipt_path,
         )
         identity = (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id)
         if not all(isinstance(value, str) and value for value in identity):
@@ -1021,7 +1170,27 @@ def _finalizer_generation_intent(
     }
 
 
-def run_transform(args: argparse.Namespace) -> dict[str, Any]:
+@contextmanager
+def _operation_directory_writer_lock(root: Path):
+    """Allow one H3 writer per operation directory at a time."""
+
+    lock_path = root / ".operation.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("H3 operation directory is already in use") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     if args.dry_run:
@@ -1032,6 +1201,7 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify"],
         }
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
         try:
@@ -1057,9 +1227,15 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             encoding="utf-8",
         )
     elif args.require_worker_qualification:
-        raise RuntimeError(
-            "worker qualification is required before targeted H3 admission"
-        )
+        if args.prepared_worker is None:
+            raise RuntimeError(
+                "worker qualification is required before targeted H3 admission"
+            )
+    if args.prepared_worker is not None:
+        from astrid.packs.runpod.prepared_task import load_prepared_worker_selection
+
+        prepared_selection = load_prepared_worker_selection(args.prepared_worker)
+        execution_request = prepared_selection.execution_request(execution_request)
     cleanup_receipt = _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
@@ -1132,7 +1308,14 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError("managed H3 assets failed compilation hash/provenance verification")
         provenance = _provenance(preparation, compilation)
         provenance_path = _write_provenance_preparation(root, preparation, provenance)
-        bundle_inputs = _retrieve_compiled_workflow(client, compiled, compilation, root / "02-compile")
+        materialized_workflow: dict[str, Path] = {}
+        bundle_inputs = _retrieve_compiled_workflow(
+            client,
+            compiled,
+            compilation,
+            root / "02-compile",
+            materialized_paths=materialized_workflow,
+        )
         # Canonical workflow Python is executable input.  Carry the explicit
         # consent scalar required by VibeComfy's audited validation gate;
         # execution-request targeting is not itself Python consent.
@@ -1167,8 +1350,21 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         }
         saved_run_path = root / "04-run" / "run-result.json"
         child_execution_request = _execution_request_for_child(execution_request)
+        run_client = client
+        if prepared_selection is not None:
+            prepared_workflow_path = _materialize_prepared_worker_workflow_bundle(
+                materialized_workflow,
+                compilation,
+                root / "04-run" / "prepared-workflow-bundle",
+            )
+            run_client = prepared_selection.bind_client(
+                client,
+                workflow_path=prepared_workflow_path,
+                workflow_bundle_path=prepared_workflow_path.parent,
+                workflow_inputs=compilation["workflow_inputs"],
+            )
         run = _invoke_canonical_run(
-            client,
+            run_client,
             inputs=run_inputs,
             execution_request=child_execution_request,
             out=root / "04-run",
@@ -1373,6 +1569,17 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         "final_receipt": str(final_receipt_path),
         "final_receipt_status": receipt["overall_status"],
     }
+
+
+def run_transform(args: argparse.Namespace) -> dict[str, Any]:
+    """Run one serialized H3 operation in its existing output directory."""
+
+    if getattr(args, "dry_run", False):
+        return _run_transform_unlocked(args)
+    root = args.out.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with _operation_directory_writer_lock(root):
+        return _run_transform_unlocked(args)
 
 
 def main(argv: list[str] | None = None) -> int:

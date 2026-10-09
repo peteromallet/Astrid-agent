@@ -72,7 +72,7 @@ def test_managed_video_is_in_task_authorization_manifest():
     client = SimpleNamespace(tasks=SimpleNamespace(create=create))
     authority = {'mode': 'filmstrip', 'video_object_id': DIGEST}
     with pytest.raises(ReachedAdmission):
-        invocation._kernel_invoke(SimpleNamespace(id='rendering.timeline_visualize'),
+        invocation._kernel_invoke(SimpleNamespace(id='rendering.timeline_visualize', capability_type='executor'),
             kind='executor', project='p', outputs={},
             inputs={'rendered_video': {'object_id': DIGEST, 'digest': DIGEST}},
             idempotency_context=authority, _client=client)
@@ -82,7 +82,7 @@ def test_managed_video_is_in_task_authorization_manifest():
 
 def test_mismatched_video_identity_rejected_before_admission():
     with pytest.raises(CapabilityValidationError, match='identity mismatch'):
-        invocation._kernel_invoke(SimpleNamespace(id='rendering.timeline_visualize'),
+        invocation._kernel_invoke(SimpleNamespace(id='rendering.timeline_visualize', capability_type='executor'),
             kind='executor', project='p', outputs={},
             inputs={'rendered_video': {'object_id': DIGEST, 'digest': 'sha256:' + 'c' * 64}},
             idempotency_context={'mode': 'filmstrip', 'video_object_id': DIGEST})

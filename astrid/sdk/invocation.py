@@ -998,9 +998,9 @@ def _prepare_managed_render_inputs(
         review_shots: list[dict[str, Any]] = []
         review_phrases: list[dict[str, Any]] = []
         shot_occurrences: list[dict[str, Any]] = []
-        shot_records: dict[str, dict[str, Any]] = {}
-        review_bindings: dict[str, list[dict[str, Any]]] = {}
-        from .render_shot_snapshot import shot_text_snapshot
+        shot_records: dict[tuple[str, str], dict[str, Any]] = {}
+        review_bindings: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        from .remote import RemoteShots
         raw_clips = snapshot.config.get("clips", [])
         canonical_expansion = snapshot.expansion if isinstance(snapshot.expansion, Mapping) and snapshot.expansion.get("canonical") is True else None
         if canonical_expansion is not None:
@@ -1008,22 +1008,47 @@ def _prepare_managed_render_inputs(
                 if not isinstance(shot, Mapping) or not isinstance(shot.get("shot_id"), str):
                     continue
                 shot_id = str(shot["shot_id"])
+                revision_id = shot.get("revision_id")
+                if not isinstance(revision_id, str) or not revision_id:
+                    raise CapabilityValidationError(
+                        f"canonical shot {shot_id!r} has no immutable revision identity"
+                    )
+                shot_key = (shot_id, revision_id)
                 bindings = [dict(item) for item in shot.get("text_bindings", []) if isinstance(item, Mapping)]
-                shot_records[shot_id] = {
+                if values.get("review") is True:
+                    verified_bindings = []
+                    text_reader = getattr(_client, "shots", None)
+                    if not callable(getattr(text_reader, "_text_binding_content", None)):
+                        text_reader = RemoteShots(_client)
+                    for binding in bindings:
+                        if binding.get("kind") != "voiceover_script":
+                            verified_bindings.append(binding)
+                            continue
+                        verified = text_reader._text_binding_content(binding)
+                        if not verified.ok:
+                            message = getattr(verified.error, "message", "pinned narration could not be verified")
+                            raise CapabilityValidationError(str(message))
+                        verified_bindings.append(dict(verified.data))
+                    bindings = verified_bindings
+                shot_records[shot_key] = {
                     "shot_id": shot_id,
+                    "revision_id": revision_id,
                     "name": str(shot.get("name") or shot_id),
-                    "version": shot.get("revision_id"),
+                    "version": revision_id,
                     "text_bindings": [{key: value for key, value in binding.items() if key != "text"} for binding in bindings],
                 }
-                review_bindings[shot_id] = bindings
+                review_bindings[shot_key] = bindings
             for occurrence in canonical_expansion.get("occurrences", []):
                 if not isinstance(occurrence, Mapping):
                     continue
                 shot_id = occurrence.get("shot_id")
+                revision_id = occurrence.get("revision_id")
                 occurrence_id = occurrence.get("occurrence_id")
-                if not isinstance(shot_id, str) or not isinstance(occurrence_id, str):
+                if (not isinstance(shot_id, str) or not isinstance(revision_id, str)
+                        or not isinstance(occurrence_id, str)):
                     continue
-                name = str(shot_records.get(shot_id, {}).get("name") or occurrence.get("name") or shot_id)
+                shot_key = (shot_id, revision_id)
+                name = str(shot_records.get(shot_key, {}).get("name") or occurrence.get("name") or shot_id)
                 at = float(occurrence.get("at", float(occurrence.get("at_ms", 0)) / 1000.0))
                 hold = float(occurrence.get("hold", float(occurrence.get("duration_ms", 0)) / 1000.0))
                 shot_occurrences.append({
@@ -1035,10 +1060,10 @@ def _prepare_managed_render_inputs(
                     "timeline_document_id": str(occurrence.get("parent_document_id") or snapshot.timeline_id),
                     "source_index": int(occurrence.get("ordinal", len(shot_occurrences))),
                     "output_identity": occurrence.get("output_identity"),
-                    "revision_id": occurrence.get("revision_id"),
+                    "revision_id": revision_id,
                 })
                 review_shots.append({"shot_id": shot_id, "name": name, "at": at, "hold": hold})
-                for binding in review_bindings.get(shot_id, []):
+                for binding in review_bindings.get(shot_key, []):
                     text = binding.get("text")
                     if binding.get("kind") != "voiceover_script" or not isinstance(text, str) or not text.strip():
                         continue
@@ -1949,6 +1974,8 @@ def _kernel_invoke(
     storage_estimate: Mapping[str, int] | None = None,
     registry: Any | None = None,
     _client: Any | None = None,
+    _recovery: Any | None = None,
+    _recovery_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, str, Path | None, dict[str, Any], bool, Any]:
     """Admit an invocation through the runtime client and generic host.
 
@@ -2315,7 +2342,32 @@ def _kernel_invoke(
         )
     if execution_request is not None:
         admission["execution_request"] = dict(execution_request)
-    result = create_task(**admission)
+    if _recovery is None:
+        result = create_task(**admission)
+    else:
+        prepare = getattr(tasks, "prepare_admission", None)
+        dispatch = getattr(tasks, "dispatch_admission", None)
+        if not callable(prepare) or not callable(dispatch):
+            raise CapabilityInvocationError("recovery requires separable Runtime task admission")
+        if project:
+            resolved = tasks._typed("get_project", project)
+            if not resolved.ok:
+                raise CapabilityInvocationError("recovery cannot resolve the canonical task project")
+            canonical_project = resolved.data.get("project_id")
+            if not isinstance(canonical_project, str) or not canonical_project:
+                raise CapabilityInvocationError("recovery project lookup returned no canonical identity")
+            admission["project_id"] = canonical_project
+            if isinstance(admission.get("settlement_effect"), Mapping):
+                effect = dict(admission["settlement_effect"])
+                if effect.get("target_id") == project:
+                    effect["target_id"] = canonical_project
+                admission["settlement_effect"] = effect
+        prepared = prepare(**admission)
+        if prepared.ok:
+            _recovery.freeze(prepared.data, metadata=_recovery_metadata or {})
+            result = dispatch(prepared.data)
+        else:
+            result = prepared
     result_ok = bool(getattr(result, "ok", isinstance(result, Mapping)))
     data = getattr(result, "data", result if isinstance(result, Mapping) else None)
     if not result_ok:
@@ -2340,6 +2392,8 @@ def _kernel_invoke(
         raise CapabilityInvocationError(
             "runtime task admission returned an incomplete task resource"
         )
+    if _recovery is not None:
+        _recovery.locate(data)
     attempt_id = str(data.get("attempt_id") or "")
     raw_result = {
         "ok": True,
@@ -2418,7 +2472,20 @@ def _wait_for_kernel_task(
 
     deadline = time.monotonic() + float(timeout_seconds)
     while True:
-        observed = show(task_id)
+        try:
+            observed = show(task_id)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "error": {
+                    "code": "task_status_unavailable",
+                    "message": "render task status could not be read",
+                    "details": {"error_type": type(exc).__name__},
+                },
+            }, False, ""
         observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
         data = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
         if not observed_ok or not isinstance(data, Mapping):
@@ -2512,6 +2579,394 @@ def _wait_for_kernel_task(
         time.sleep(min(float(poll_seconds), remaining))
 
 
+def _observe_task_invocation(
+    client: Any,
+    *,
+    capability_id: str,
+    capability_type: str,
+    native_kind: str,
+    task_id: str,
+    run_id: str,
+    initial_raw_result: Mapping[str, Any] | None = None,
+    initial_task: Mapping[str, Any] | None = None,
+    initial_error: Mapping[str, Any] | None = None,
+    initial_ok: bool = True,
+    attempt_id: str = "",
+    wait: bool = False,
+    timeout_seconds: float = 3600.0,
+    poll_seconds: float = 1.0,
+    read_managed_outputs: bool = False,
+    executor_version: str | None = None,
+    out: Path | str | None = None,
+    project: str | None = None,
+    authority_context: Mapping[str, Any] | None = None,
+    manifest_path: Path | str | None = None,
+) -> InvocationResult:
+    """Observe a known Runtime task and build the existing SDK result shape.
+
+    ``initial_raw_result`` can be the admission response or a receipt/legacy
+    locator's already-read task. When a legacy locator has no saved DTO, a
+    non-waiting observation performs one authorized task read. Waiting always
+    uses the same Runtime polling and result construction as fresh invocation.
+    This helper reads task/output state only; it never dispatches or settles.
+    """
+    raw_result = dict(initial_raw_result) if isinstance(initial_raw_result, Mapping) else None
+    ok = bool(initial_ok)
+    if raw_result is None and isinstance(initial_task, Mapping):
+        attempt_id = str(initial_task.get("attempt_id") or attempt_id)
+        raw_result = {
+            "ok": True,
+            "run_id": run_id,
+            "kernel_run_id": run_id,
+            "kernel_task_id": task_id,
+            "kernel_attempt_id": attempt_id,
+            "task": dict(initial_task),
+        }
+    elif raw_result is None and isinstance(initial_error, Mapping):
+        raw_result = {"ok": False, "error": dict(initial_error)}
+        ok = False
+    if raw_result is None and ok and not wait:
+        tasks = getattr(client, "tasks", None)
+        show = getattr(tasks, "show", None)
+        if not callable(show):
+            raise CapabilityInvocationError(
+                "runtime client does not expose task status for invocation observation"
+            )
+        try:
+            observed = show(task_id)
+        except Exception as exc:
+            raw_result = {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "error": {
+                    "code": "task_status_unavailable",
+                    "message": "render task status could not be read",
+                    "details": {"error_type": type(exc).__name__},
+                },
+            }
+            ok = False
+            observed = None
+        observed_ok = bool(getattr(observed, "ok", isinstance(observed, Mapping)))
+        data = getattr(observed, "data", observed if isinstance(observed, Mapping) else None)
+        if observed is None:
+            pass
+        elif observed_ok and isinstance(data, Mapping):
+            raw_result = {
+                "ok": True,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": str(data.get("attempt_id") or ""),
+                "task": dict(data),
+            }
+            attempt_id = str(data.get("attempt_id") or attempt_id)
+        else:
+            error = getattr(observed, "error", None)
+            if hasattr(error, "as_dict"):
+                error = error.as_dict()
+            raw_result = {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "error": {
+                    "code": "task_status_unavailable",
+                    "message": "render task status could not be read",
+                    "details": dict(error) if isinstance(error, Mapping) else {},
+                },
+            }
+            ok = False
+    elif raw_result is None:
+        raw_result = {"ok": False}
+
+    if wait and ok:
+        raw_result, ok, waited_attempt_id = _wait_for_kernel_task(
+            client,
+            task_id=task_id,
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            read_managed_outputs=read_managed_outputs,
+        )
+        if waited_attempt_id:
+            attempt_id = waited_attempt_id
+
+    raw_result = dict(raw_result)
+    if not wait:
+        observed_task = raw_result.get("task")
+        if isinstance(observed_task, Mapping):
+            state = str(observed_task.get("state") or observed_task.get("status") or "").lower()
+            if state:
+                raw_result.setdefault(
+                    "state",
+                    "completed" if state in {"succeeded", "completed"} else state,
+                )
+            settled = observed_task.get("result")
+            if state in {"succeeded", "completed"}:
+                settled = dict(settled) if isinstance(settled, Mapping) else {}
+                raw_result.setdefault("result", settled)
+                output_rows = settled.get("outputs")
+                raw_result.setdefault("outputs", {
+                    "artifacts": list(output_rows) if isinstance(output_rows, list) else []
+                })
+            elif isinstance(settled, Mapping):
+                raw_result.setdefault("result", dict(settled))
+    if executor_version is not None:
+        raw_result.setdefault("executor_version", executor_version)
+    raw_result.setdefault("kernel_run_id", run_id)
+    raw_result.setdefault("kernel_task_id", task_id)
+    raw_result.setdefault("kernel_attempt_id", attempt_id)
+    discovered_manifest = (
+        str(manifest_path)
+        if manifest_path
+        else _discover_invocation_manifest_path(raw_result, out=out)
+    )
+    if (
+        wait
+        and ok
+        and capability_id == "rendering.timeline_visualize"
+        and isinstance(authority_context, Mapping)
+        and authority_context.get("mode") in {"filmstrip", "input_only"}
+    ):
+        discovered_manifest = _materialize_filmstrip_outputs(
+            raw_result,
+            client,
+            project=project,
+        )
+
+    error = raw_result.get("error")
+    sdk_error = (
+        {
+            **dict(error),
+            "sdk_error": "CapabilityRuntimeError",
+            "sdk_category": "runtime",
+        }
+        if isinstance(error, Mapping)
+        else None
+    )
+    run_id_raw = raw_result.get("run_id")
+    run_root_raw = raw_result.get("run_root")
+    executor_version_raw = raw_result.get("executor_version")
+    return InvocationResult(
+        capability_id=capability_id,
+        capability_type=capability_type,
+        native_kind=native_kind,
+        ok=ok,
+        error=sdk_error,
+        manifest_path=discovered_manifest,
+        raw_result=raw_result,
+        run_id=run_id_raw if isinstance(run_id_raw, str) and run_id_raw else run_id,
+        run_root=(
+            str(Path(run_root_raw).expanduser().resolve())
+            if isinstance(run_root_raw, str) and run_root_raw
+            else None
+        ),
+        outputs=_invocation_outputs(
+            raw_result,
+            manifest_path=discovered_manifest,
+            capability_id=capability_id,
+        ),
+        executor_version=(
+            executor_version_raw
+            if isinstance(executor_version_raw, str) and executor_version_raw
+            else None
+        ),
+        kernel_run_id=run_id,
+        kernel_task_id=task_id,
+        kernel_attempt_id=attempt_id,
+    )
+
+
+def observe_task_invocation(
+    client: Any,
+    *,
+    capability_id: str,
+    capability_type: str,
+    native_kind: str,
+    task_id: str,
+    run_id: str,
+    attempt_id: str | None = None,
+    wait: bool = True,
+    timeout_seconds: float = 3600.0,
+    poll_seconds: float = 1.0,
+    read_managed_outputs: bool = False,
+    executor_version: str | None = None,
+    manifest_path: str | None = None,
+) -> InvocationResult:
+    """Read one caller-supplied Runtime locator through the SDK result path.
+
+    This is a read-only compatibility seam for callers that already possess a
+    task/run locator. It never admits, retries, or settles a task; a locator is
+    not evidence that an admission happened or that the observed task matches.
+    Runtime's response must match the supplied identity before success is
+    returned.
+
+    With ``wait=False``, ``ok`` means the task read succeeded; inspect the
+    observed task state before treating the underlying work as complete.
+    """
+    required = {
+        "capability_id": capability_id,
+        "capability_type": capability_type,
+        "native_kind": native_kind,
+        "task_id": task_id,
+        "run_id": run_id,
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        raise CapabilityValidationError(
+            "task observation requires non-empty capability and task/run identities"
+        )
+    if attempt_id is not None and (not isinstance(attempt_id, str) or not attempt_id):
+        raise CapabilityValidationError("attempt_id must be a non-empty string when supplied")
+    if not isinstance(wait, bool) or not isinstance(read_managed_outputs, bool):
+        raise CapabilityValidationError("wait and read_managed_outputs must be booleans")
+    observed = _observe_task_invocation(
+        client,
+        capability_id=capability_id,
+        capability_type=capability_type,
+        native_kind=native_kind,
+        task_id=task_id,
+        run_id=run_id,
+        attempt_id=attempt_id or "",
+        wait=wait,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        read_managed_outputs=read_managed_outputs,
+        executor_version=executor_version,
+        manifest_path=manifest_path,
+    )
+    if not observed.ok:
+        return observed
+    task = observed.raw_result.get("task") if isinstance(observed.raw_result, Mapping) else None
+    observed_task_id = (
+        task.get("task_id", task.get("id")) if isinstance(task, Mapping) else None
+    )
+    observed_run_id = task.get("run_id") if isinstance(task, Mapping) else None
+    observed_attempt_id = task.get("attempt_id") if isinstance(task, Mapping) else None
+    observed_capability_id = task.get("capability_id") if isinstance(task, Mapping) else None
+    if (
+        observed_task_id != task_id
+        or observed_run_id != run_id
+        or (attempt_id is not None and observed_attempt_id != attempt_id)
+        or (
+            isinstance(observed_capability_id, str)
+            and observed_capability_id != capability_id
+        )
+    ):
+        error = {
+            "code": "task_identity_mismatch",
+            "message": "Runtime task identity disagrees with the supplied locator",
+            "details": {
+                "expected_task_id": task_id,
+                "expected_run_id": run_id,
+                "expected_attempt_id": attempt_id,
+                "expected_capability_id": capability_id,
+            },
+        }
+        raw_result = dict(observed.raw_result)
+        raw_result["ok"] = False
+        raw_result["error"] = error
+        return InvocationResult(
+            capability_id=observed.capability_id,
+            capability_type=observed.capability_type,
+            native_kind=observed.native_kind,
+            ok=False,
+            error=error,
+            manifest_path=observed.manifest_path,
+            raw_result=raw_result,
+            run_id=run_id,
+            run_root=observed.run_root,
+            outputs=observed.outputs,
+            executor_version=observed.executor_version,
+            kernel_run_id=run_id,
+            kernel_task_id=task_id,
+            kernel_attempt_id=attempt_id or "",
+        )
+    if not wait and read_managed_outputs:
+        state = str(task.get("state") or task.get("status") or "").lower()
+        if state in {"succeeded", "completed"}:
+            managed_outputs, read_error = _read_task_managed_outputs(client, task_id)
+            if read_error is not None:
+                raw_result = dict(observed.raw_result)
+                raw_result["ok"] = False
+                raw_result["error"] = read_error
+                return InvocationResult(
+                    capability_id=observed.capability_id,
+                    capability_type=observed.capability_type,
+                    native_kind=observed.native_kind,
+                    ok=False,
+                    error=read_error,
+                    manifest_path=observed.manifest_path,
+                    raw_result=raw_result,
+                    run_id=observed.run_id,
+                    run_root=observed.run_root,
+                    outputs=observed.outputs,
+                    executor_version=observed.executor_version,
+                    kernel_run_id=run_id,
+                    kernel_task_id=task_id,
+                    kernel_attempt_id=attempt_id or "",
+                )
+            raw_result = dict(observed.raw_result)
+            raw_result["managed_outputs"] = managed_outputs or []
+            observed = InvocationResult(
+                capability_id=observed.capability_id,
+                capability_type=observed.capability_type,
+                native_kind=observed.native_kind,
+                ok=True,
+                error=observed.error,
+                manifest_path=observed.manifest_path,
+                raw_result=raw_result,
+                run_id=observed.run_id,
+                run_root=observed.run_root,
+                outputs=_invocation_outputs(
+                    raw_result,
+                    manifest_path=observed.manifest_path,
+                    capability_id=capability_id,
+                ),
+                executor_version=observed.executor_version,
+                kernel_run_id=run_id,
+                kernel_task_id=task_id,
+                kernel_attempt_id=observed.kernel_attempt_id or attempt_id or "",
+            )
+    return observed
+
+
+def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_seconds):
+    """Observe a frozen admission before any live manifest/preflight resolution."""
+    result = receipt.recover_task()
+    metadata = receipt.data["metadata"]
+    locator = receipt.data["locator"] or {}
+    run_id, task_id = locator.get("run_id", ""), locator.get("task_id", "")
+    attempt_id = ""
+    if result.ok:
+        task = result.data if isinstance(result.data, Mapping) else None
+        raw_error = None
+    else:
+        task = None
+        raw_error = result.error.as_dict()
+    return _observe_task_invocation(
+        client,
+        capability_id=metadata["capability_id"],
+        capability_type=metadata["capability_type"],
+        native_kind=metadata["native_kind"],
+        task_id=task_id,
+        run_id=run_id,
+        initial_task=task,
+        initial_error=raw_error,
+        initial_ok=bool(result.ok),
+        attempt_id=attempt_id,
+        wait=wait,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        read_managed_outputs=bool(metadata.get("read_managed_outputs")),
+        executor_version=metadata.get("executor_version"),
+        out=metadata.get("out"),
+        project=metadata.get("project"),
+        authority_context=metadata.get("authority_context"),
+    )
+
+
 def invoke(
     capability_id: str,
     *,
@@ -2541,9 +2996,46 @@ def invoke(
     poll_seconds: float = 1.0,
     _include_internal: bool = False,
     _internal_dispatch_token: object | None = None,
+    recovery_path: Path | str | None = None,
+    resume: bool = False,
+    read_managed_outputs: bool = False,
+    _recovery: Any | None = None,
 ) -> InvocationResult:
+    """Invoke a manifest capability through the SDK.
+
+    Runtime managed-output rows are read automatically for typed generation
+    intents. Set ``read_managed_outputs=True`` to request the same readback for
+    another executor; the choice is frozen with an opt-in recovery receipt.
+    """
     if _include_internal and _internal_dispatch_token is not _INTERNAL_DISPATCH_TOKEN:
         raise TypeError("private capabilities can only be invoked through internal dispatch")
+    if not isinstance(read_managed_outputs, bool):
+        raise CapabilityValidationError("read_managed_outputs must be a boolean")
+    if resume and recovery_path is None:
+        raise CapabilityValidationError("resume requires recovery_path")
+    if recovery_path is not None and _recovery is None:
+        if dry_run:
+            raise CapabilityValidationError("recovery is unavailable for dry-run previews")
+        from .recovery import AdmissionReceipt
+
+        forwarded = dict(locals())
+        forwarded.pop("forwarded", None)
+        forwarded.pop("AdmissionReceipt", None)
+        request = {name: forwarded[name] for name in (
+            "capability_id", "kind", "project", "inputs", "outputs", "out", "brief",
+            "execution_request", "idempotency_context", "project_root", "extra_pack_roots",
+            "python_exec", "orchestrator_args", "argv", "read_managed_outputs",
+        )}
+        try:
+            with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
+                if resume:
+                    return _resume_receipt_invocation(receipt, client=client, wait=wait,
+                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                forwarded["_recovery"] = receipt
+                forwarded.pop("capability_id")
+                return invoke(capability_id, **forwarded)
+        except OSError as exc:
+            raise CapabilityInvocationError("recovery receipt storage is unavailable") from exc
     try:
         normalized_execution_request = normalize_execution_request(execution_request)
     except ExecutionRequestError as exc:
@@ -2867,6 +3359,9 @@ def invoke(
             kernel_attempt_id=None,
         )
 
+    if _recovery is not None and capability.capability_type != "executor":
+        raise CapabilityValidationError("recovery requires a Runtime task executor")
+
     if capability.capability_type == "orchestrator":
         # The Runtime task registry is the executor/worker surface.  A
         # parent orchestrator is the public launcher that coordinates those
@@ -2914,6 +3409,16 @@ def invoke(
             "admission_metadata": invocation_admission_metadata,
             "storage_estimate": invocation_storage_estimate,
         }
+        if _recovery is not None:
+            kernel_kwargs["_recovery"] = _recovery
+            kernel_kwargs["_recovery_metadata"] = {
+                "capability_id": capability.id, "capability_type": capability.capability_type,
+                "native_kind": capability.native_kind, "executor_version": kernel_capability_version,
+                "read_managed_outputs": capability.capability_type == "executor"
+                    and (read_managed_outputs or intent_modality is not None),
+                "out": str(out) if out is not None else None, "project": project,
+                "authority_context": invocation_authority_context,
+            }
         if generation_intent is not None:
             kernel_kwargs["generation_intent"] = generation_intent
         if variant_context is not None:
@@ -2927,80 +3432,28 @@ def invoke(
             **kernel_kwargs,
             _client=_client,
         )
-        if wait and ok:
-            raw_result, ok, waited_attempt_id = _wait_for_kernel_task(
-                _client,
-                task_id=kt,
-                run_id=kr,
-                timeout_seconds=timeout_seconds,
-                poll_seconds=poll_seconds,
-                read_managed_outputs=(
-                    capability.capability_type == "executor"
-                    and intent_modality is not None
-                ),
-            )
-            if waited_attempt_id:
-                ka = waited_attempt_id
-        run_id_raw = raw_result.get("run_id") if isinstance(raw_result, dict) else None
-        run_root_raw = raw_result.get("run_root") if isinstance(raw_result, dict) else None
-        raw_result = dict(raw_result) if isinstance(raw_result, dict) else {}
-        if kernel_capability_version is not None:
-            raw_result.setdefault("executor_version", kernel_capability_version)
-        executor_version_raw = raw_result.get("executor_version")
-        raw_result.setdefault("kernel_run_id", kr)
-        raw_result.setdefault("kernel_task_id", kt)
-        raw_result.setdefault("kernel_attempt_id", ka)
-        manifest_path = (
-            str(mpath) if mpath else _discover_invocation_manifest_path(raw_result, out=out)
-        )
-        if (wait and ok and capability.id == "rendering.timeline_visualize"
-                and (invocation_authority_context or {}).get("mode") in {"filmstrip", "input_only"}):
-            manifest_path = _materialize_filmstrip_outputs(
-                raw_result,
-                _client,
-                project=project,
-            )
-        return InvocationResult(
+        return _observe_task_invocation(
+            _client,
             capability_id=capability.id,
             capability_type=capability.capability_type,
             native_kind=capability.native_kind,
-            ok=ok,
-            # Preserve the kernel's typed handler failure on the primary
-            # result surface.  Historically this was only available under
-            # ``raw_result.error`` and task events, forcing callers to make a
-            # second ledger query to understand a failed invocation.
-            error=(
-                {
-                    **dict(raw_result.get("error")),
-                    "sdk_error": "CapabilityRuntimeError",
-                    "sdk_category": "runtime",
-                }
-                if isinstance(raw_result.get("error"), Mapping)
-                else None
+            task_id=kt,
+            run_id=kr,
+            initial_raw_result=raw_result if isinstance(raw_result, Mapping) else None,
+            initial_ok=ok,
+            attempt_id=ka,
+            wait=wait,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            read_managed_outputs=(
+                capability.capability_type == "executor"
+                and (read_managed_outputs or intent_modality is not None)
             ),
-            manifest_path=manifest_path,
-            raw_result=raw_result,
-            run_id=run_id_raw if isinstance(run_id_raw, str) and run_id_raw else kr,
-            # Kernel-managed invocations publish through private staging and
-            # then remove it. Only propagate a run_root explicitly supplied
-            # by a durable/custom kernel result; never synthesize the projects
-            # root or leak the attempt staging path.
-            run_root=(
-                str(Path(run_root_raw).expanduser().resolve())
-                if isinstance(run_root_raw, str) and run_root_raw
-                else None
-            ),
-            outputs=_invocation_outputs(
-                raw_result,
-                manifest_path=manifest_path,
-                capability_id=capability.id,
-            ),
-            executor_version=executor_version_raw
-            if isinstance(executor_version_raw, str) and executor_version_raw
-            else None,
-            kernel_run_id=kr,
-            kernel_task_id=kt,
-            kernel_attempt_id=ka,
+            executor_version=kernel_capability_version,
+            out=out,
+            project=project,
+            authority_context=invocation_authority_context,
+            manifest_path=mpath,
         )
     except AstridSDKError:
         raise

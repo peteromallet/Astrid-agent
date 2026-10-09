@@ -252,6 +252,7 @@ class WorkspaceClient:
                 "recover_project_reference", "associate_reference", "set_primary_reference",
                 "link_references", "create_document", "list_documents", "get_document",
                 "update_document", "ingest_object", "ingest_project_object",
+                "import_project_media", "get_project_media_import",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
                 "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
@@ -263,6 +264,8 @@ class WorkspaceClient:
                 "create_generation", "create_variant",
                 "list_capabilities", "register_capability", "claim_task", "register_executor",
                 "settle_attempt", "fail_attempt", "publish_timeline_render",
+                "record_remote_activation", "control_remote_credential", "get_executor",
+                "get_local_worker_generation", "relinquish_local_worker", "start_local_worker",
             }
             if operation not in operations:
                 raise ValueError(f"unknown generated workspace operation: {operation!r}")
@@ -703,6 +706,23 @@ class WorkspaceClient:
             filename=filename,
         )
 
+    def import_project_media(
+        self, project_id: str, data: bytes, *, media_type: str,
+        idempotency_key: str, filename: str | None = None,
+        expected_digest: str | None = None, width: int | None = None,
+        height: int | None = None, duration_seconds: float | None = None,
+    ) -> Any:
+        """Import managed bytes and their truthful project catalog entry together."""
+        return self._call_generated(
+            "import_project_media", project_id, data, media_type=media_type,
+            idempotency_key=idempotency_key, filename=filename,
+            expected_digest=expected_digest, width=width, height=height,
+            duration_seconds=duration_seconds,
+        )
+
+    def get_project_media_import(self, project_id: str, import_operation_id: str) -> Any:
+        return self._call_generated("get_project_media_import", project_id, import_operation_id)
+
     def list_project_objects(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_project_objects", project_id, cursor=cursor, limit=limit)
 
@@ -769,7 +789,7 @@ class WorkspaceClient:
     def head_object(self, object_id: str) -> Any:
         return self._call_generated("head_object", object_id)
 
-    def admit_task(
+    def prepare_task_admission(
         self,
         *,
         capability_id: str,
@@ -786,12 +806,10 @@ class WorkspaceClient:
         execution_request: Mapping[str, Any] | None = None,
         child_delegation: Mapping[str, Any] | None = None,
     ) -> Any:
-        """Admit one task through the Runtime-owned admission contract.
+        """Complete generated arguments with current fresh-admission preflight.
 
-        Targeted requests are fail-closed unless the handshake explicitly
-        advertises first-class targeted execution binding.  The current
-        workspace.v1 Runtime has no such field or claim contract, so a target
-        is never queued as an opaque spec hint.
+        Dispatch of these arguments is separate so exact replay does not
+        rebuild placement, managed descriptors, or preflight evidence.
         """
         wire_spec = dict(spec or {})
         if execution_request is not None:
@@ -847,10 +865,75 @@ class WorkspaceClient:
         }
         if execution_request is not None:
             admission["execution_request"] = normalized
-        return self._call_generated("admit_task", **admission)
+        return admission
+
+    def dispatch_task_admission(self, admission: Mapping[str, Any]) -> Any:
+        """Send already completed generated-client arguments without rebuilding them."""
+        return self._call_generated("admit_task", **dict(admission))
+
+    def admit_task(
+        self,
+        *,
+        capability_id: str,
+        capability_digest: str,
+        input_object_ids: list[str],
+        idempotency_key: str,
+        schema_version: str = "1",
+        settlement_effect: Mapping[str, Any] | None = None,
+        project_id: str | None = None,
+        spec: Mapping[str, Any] | None = None,
+        generation_intent: Mapping[str, Any] | None = None,
+        storage_estimate: Mapping[str, int] | None = None,
+        required_facts: Mapping[str, Any] | None = None,
+        execution_request: Mapping[str, Any] | None = None,
+        child_delegation: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Prepare and send one ordinary Runtime admission."""
+        return self.dispatch_task_admission(self.prepare_task_admission(
+            capability_id=capability_id, capability_digest=capability_digest,
+            input_object_ids=input_object_ids, idempotency_key=idempotency_key,
+            schema_version=schema_version, settlement_effect=settlement_effect,
+            project_id=project_id, spec=spec, generation_intent=generation_intent,
+            storage_estimate=storage_estimate, required_facts=required_facts,
+            execution_request=execution_request, child_delegation=child_delegation,
+        ))
 
     def get_task(self, task_id: str) -> Any:
         return self._call_generated("get_task", task_id)
+
+    def get_executor(self, executor_id: str) -> Any:
+        """Read the exact Runtime executor registration and readiness witness."""
+        return self._call_generated("get_executor", executor_id)
+
+    def get_local_worker_generation(self) -> Any:
+        """Read the exact current local-worker generation, if one is active."""
+        return self._call_generated("get_local_worker_generation")
+
+    def relinquish_local_worker(
+        self, executor_incarnation: str, evidence_digest: str
+    ) -> Any:
+        """Relinquish only the local generation identified by both witnesses."""
+        return self._call_generated(
+            "relinquish_local_worker", executor_incarnation, evidence_digest
+        )
+
+    def start_local_worker(self, profile_id: str, expected_workspace_uuid: str) -> Any:
+        """Restart the selected Runtime-owned local worker after remote drain."""
+        return self._call_generated(
+            "start_local_worker", profile_id, expected_workspace_uuid
+        )
+
+    def record_remote_activation(
+        self, task_id: str, qualification: Mapping[str, Any]
+    ) -> Any:
+        """Commit one exact task-bound remote activation through Runtime."""
+        return self._call_generated("record_remote_activation", task_id, qualification)
+
+    def control_remote_credential(
+        self, task_id: str, control: Mapping[str, Any]
+    ) -> Any:
+        """Apply one exact Runtime credential-generation control operation."""
+        return self._call_generated("control_remote_credential", task_id, control)
 
     def list_project_tasks(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_project_tasks", project_id, cursor=cursor, limit=limit)

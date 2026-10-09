@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone
 import hashlib
 import heapq
 import hmac
@@ -22,12 +21,14 @@ import secrets as secrets_module
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
@@ -60,11 +61,13 @@ from astrid.core.execution.managed_tool_session import (
     SessionBinding,
 )
 from astrid.core.execution.process_group import (
-    _process_snapshot,
+    group_exists as _owned_group_exists,
+)
+from astrid.core.execution.process_group import (
     popen_owned_group,
 )
 from astrid.core.execution.process_group import (
-    group_exists as _owned_group_exists,
+    process_birth_identity as _process_birth_identity,
 )
 from astrid.core.execution.process_group import (
     release_group as _release_owned_group,
@@ -128,6 +131,7 @@ _SUFFIX_MEDIA_TYPES = {
 _ACTIVATION_VERSION = "runtime.local-worker-activation/v1"
 _ACTIVATION_ACCEPTED_VERSION = "astrid.local-worker-activation-accepted/v1"
 _ACTIVATION_RECEIPT_MODE = "runtime-owner-receipt/v1"
+_ACTIVATION_BOOTSTRAP_MODE = "runtime-worker-bootstrap/v1"
 _ACTIVATION_REQUEST_VERSION = "astrid.local-worker-activation-request/v1"
 _ACTIVATION_RECEIPT_VERSION = "runtime.local-worker-activation-recorded/v1"
 _ACTIVATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -1764,8 +1768,7 @@ def source_checkout_closure_digest(checkout: str | Path) -> str:
 
 def process_birth_identity(pid: int | None = None) -> str:
     """Return the OS birth token used to distinguish a reused PID."""
-    info = _process_snapshot().get(int(pid if pid is not None else os.getpid()))
-    return str(info.birth) if info is not None else ""
+    return _process_birth_identity(pid)
 
 
 def _admitted_source_roots(root: Path, definition: Any) -> tuple[Path, ...]:
@@ -6386,7 +6389,10 @@ def _await_worker_activation(
     process birth identity have all been accepted. Local owner grants relay
     acceptance over this same socket: the owner invokes Runtime's bound callback
     and confirms its committed receipt before this receiver sends the final ACK.
-    Legacy provider grants retain their one-grant/one-ACK exchange.
+    Bootstrap grants only acknowledge private delivery. Runtime enables their
+    credential for registration and independently qualifies the host before
+    committing activation; this ACK grants no claim authority. Legacy provider
+    grants retain their one-grant/one-ACK exchange.
     """
 
     if descriptor < 3 or not operation_id or not channel_id:
@@ -6404,19 +6410,20 @@ def _await_worker_activation(
     try:
         control.settimeout(timeout_seconds)
         grant = _read_activation_frame(control)
-        local_receipt = "acceptance_mode" in grant
+        identified_grant = "acceptance_mode" in grant
+        local_receipt = grant.get("acceptance_mode") == _ACTIVATION_RECEIPT_MODE
         expected_keys = {
             "version", "operation_id", "channel_id", "credential_file",
             "executor_incarnation", "evidence_digest", "host",
         }
-        if local_receipt:
+        if identified_grant:
             expected_keys |= {"acceptance_mode", "activation_id"}
         if set(grant) != expected_keys:
             raise HostError("parked activation grant has an invalid shape")
         if require_receipt and not local_receipt:
             raise HostError("local parked activation requires a Runtime acceptance receipt")
-        if local_receipt and (
-            grant["acceptance_mode"] != _ACTIVATION_RECEIPT_MODE
+        if identified_grant and (
+            grant["acceptance_mode"] not in {_ACTIVATION_RECEIPT_MODE, _ACTIVATION_BOOTSTRAP_MODE}
             or not isinstance(grant["activation_id"], str)
             or not grant["activation_id"]
             or len(grant["activation_id"]) > 256
@@ -6469,7 +6476,7 @@ def _await_worker_activation(
             "evidence_digest": digest,
             "host": host,
         }
-        if local_receipt:
+        if identified_grant:
             accepted["activation_id"] = grant["activation_id"]
         try:
             _send_activation_frame(control, accepted)
@@ -6483,6 +6490,70 @@ def _await_worker_activation(
         raise HostError("parked activation channel failed") from exc
     finally:
         control.close()
+
+
+def _await_worker_activation_socket(
+    socket_path: str,
+    *,
+    operation_id: str,
+    channel_id: str,
+    credential_file: str,
+    timeout_seconds: float,
+    require_receipt: bool = False,
+) -> dict[str, Any]:
+    """Accept one private remote bootstrap over a short-lived Unix socket.
+
+    The GenericPackHost itself owns this listener; no sidecar supervisor or
+    ambient network port is created. The coordinator connects through the
+    existing SSH command boundary and sends the same bounded activation frame
+    used by local parked hosts.
+    """
+    path = Path(socket_path).expanduser()
+    if not path.is_absolute() or str(path) != socket_path or path.is_symlink():
+        raise HostError("parked activation socket path must be canonical and absolute")
+    if len(os.fsencode(path)) >= 108:
+        raise HostError("parked activation socket path exceeds the Linux Unix-socket limit")
+    parent = path.parent
+    for ancestor in (parent, *parent.parents):
+        if ancestor.is_symlink():
+            raise HostError("parked activation socket path traverses a symlink")
+    if path.exists():
+        raise HostError("parked activation socket path already exists")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    created: os.stat_result | None = None
+    try:
+        parent.mkdir(mode=0o700)
+        parent_info = parent.stat()
+        if (not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != os.getuid()
+                or stat.S_IMODE(parent_info.st_mode) != 0o700):
+            raise HostError("parked activation socket directory is not private")
+        listener.bind(str(path))
+        os.chmod(path, 0o600)
+        created = path.lstat()
+        if (not stat.S_ISSOCK(created.st_mode) or created.st_uid != os.getuid()
+                or stat.S_IMODE(created.st_mode) != 0o600):
+            raise HostError("parked activation socket identity is unsafe")
+        listener.listen(1)
+        listener.settimeout(timeout_seconds)
+        control, _ = listener.accept()
+        return _await_worker_activation(
+            control.detach(), operation_id=operation_id, channel_id=channel_id,
+            credential_file=credential_file, timeout_seconds=timeout_seconds,
+            require_receipt=require_receipt,
+        )
+    except HostError:
+        raise
+    except (OSError, socket.timeout) as exc:
+        raise HostError("parked activation channel failed") from exc
+    finally:
+        listener.close()
+        if created is not None:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    path.unlink()
+            except OSError:
+                pass
 
 
 def _await_enabled_runtime_credential(
@@ -6542,6 +6613,7 @@ def _cli() -> int:
         help="fail startup unless an exact execution target is configured",
     )
     parser.add_argument("--activation-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--activation-socket", help=argparse.SUPPRESS)
     parser.add_argument("--activation-operation-id", help=argparse.SUPPRESS)
     parser.add_argument("--activation-channel-id", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -6552,23 +6624,20 @@ def _cli() -> int:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     if (args.readiness_profile_path is None) != (args.readiness_profile_hash is None):
         parser.error("--readiness-profile-path and --readiness-profile-hash must be supplied together")
-    activation_values = (
-        args.activation_fd,
-        args.activation_operation_id,
-        args.activation_channel_id,
-    )
-    if any(value is not None for value in activation_values) != all(
-        value is not None for value in activation_values
-    ):
+    has_activation_transport = args.activation_fd is not None or args.activation_socket is not None
+    if (args.activation_fd is not None and args.activation_socket is not None) or (
+        has_activation_transport != (args.activation_operation_id is not None
+                                     and args.activation_channel_id is not None)
+    ) or ((args.activation_operation_id is None) != (args.activation_channel_id is None)):
         parser.error("parked activation arguments must be supplied together")
     target_requested = bool(
         args.execution_target_json is not None
         or os.environ.get("ASTRID_EXECUTION_TARGET_JSON", "").strip()
     )
-    if target_requested and args.activation_fd is None:
+    if target_requested and not has_activation_transport:
         parser.error("targeted execution requires Worker-supervised activation")
     activation = None
-    if args.activation_fd is not None:
+    if has_activation_transport:
         if not args.credential_file:
             parser.error("parked activation requires --credential-file")
         try:
@@ -6576,14 +6645,19 @@ def _cli() -> int:
             target = json.loads(target_json) if target_json else {}
             if not isinstance(target, Mapping):
                 raise HostError("parked activation target must be an object")
-            activation = _await_worker_activation(
-                args.activation_fd,
-                operation_id=args.activation_operation_id,
-                channel_id=args.activation_channel_id,
-                credential_file=args.credential_file,
-                timeout_seconds=args.activation_timeout_seconds,
-                require_receipt=target.get("kind") == "machine",
-            )
+            activation_args = {
+                "operation_id": args.activation_operation_id,
+                "channel_id": args.activation_channel_id,
+                "credential_file": args.credential_file,
+                "timeout_seconds": args.activation_timeout_seconds,
+                "require_receipt": target.get("kind") == "machine",
+            }
+            if args.activation_fd is not None:
+                activation = _await_worker_activation(args.activation_fd, **activation_args)
+            else:
+                activation = _await_worker_activation_socket(
+                    args.activation_socket, **activation_args
+                )
         except (HostError, json.JSONDecodeError) as exc:
             parser.error(str(exc))
     verified_model_root: ModelRootBinding | None = None
@@ -6700,6 +6774,20 @@ def _cli() -> int:
     except HostError as exc:
         parser.error(str(exc))
 
+    output_root = os.environ.get("ASTRID_OUTPUT_ROOT")
+    if activation is not None and activation.get("acceptance_mode") == _ACTIVATION_BOOTSTRAP_MODE:
+        if not output_root or not Path(output_root).is_absolute() or Path(output_root).is_symlink():
+            parser.error("activated host requires an absolute non-symlink output root")
+        if args.attempt_root or args.attempt_base:
+            parser.error("bootstrap host attempt directories are owned by its output root")
+        try:
+            with tempfile.TemporaryFile(dir=output_root) as output_probe:
+                output_probe.write(b"ready")
+                output_probe.flush()
+        except OSError as exc:
+            parser.error(f"activated host output root is not writable: {exc}")
+        args.attempt_base = str(Path(output_root) / "attempts")
+
     host = GenericPackHost(
         pack_roots=args.pack_root,
         client=client,
@@ -6759,6 +6847,11 @@ def _cli() -> int:
             "process_birth_id": process_birth_identity(),
             "endpoint": str(args.runtime_endpoint).rstrip("/") if args.runtime_endpoint else None,
             "executor_id": host.executor_id,
+            "output_root": output_root,
+            "attempt_base": str(host.attempt_base) if host.attempt_base else None,
+            "session_ref": os.environ.get("ASTRID_SESSION_REF"),
+            "session_config_digest": os.environ.get("ASTRID_SESSION_CONFIG_DIGEST"),
+            "data_root": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
             "capability_count": len(host.capabilities),
             "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
             "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
@@ -6783,7 +6876,7 @@ def _cli() -> int:
             "activation": {
                 key: activation[key]
                 for key in (
-                    "version", "operation_id", "channel_id",
+                    "version", "operation_id", "channel_id", "activation_id",
                     "executor_incarnation", "evidence_digest", "host",
                 )
             }
