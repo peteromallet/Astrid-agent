@@ -2134,7 +2134,8 @@ def test_mid_render_evidence_abort_keeps_measurement_on_runtime_failure(tmp_path
     assert runtime.settlements == []
     assert len(runtime.failures) == 1
     diagnostic = runtime.failures[0][3]["failure_diagnostic"]
-    assert diagnostic["category"] == "run_budget_exceeded"
+    assert diagnostic["category"] == "attempt_cap_exceeded"
+    assert "over its 1-byte cap" in runtime.failures[0][2]
     assert diagnostic["observed_bytes"] == 2
     assert diagnostic["configured_cap_bytes"] == 1
     assert diagnostic["largest_paths"] == [

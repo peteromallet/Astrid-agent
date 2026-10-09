@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -8,10 +10,13 @@ from pathlib import Path
 import pytest
 
 from astrid.core.execution.guards import (
+    EVIDENCE_STATUS_NAME,
     ExecutionDeadlineError,
     ExecutionGuardPolicy,
     EvidenceCapError,
     WarmReuseExpectationError,
+    read_evidence_status,
+    write_evidence_status,
 )
 import astrid.core.execution.generic_host as generic_host
 from astrid.core.execution.generic_host import GenericPackHost
@@ -20,29 +25,18 @@ from astrid.core.execution.generic_host import GenericPackHost
 def test_generated_evidence_cap_is_enforced(tmp_path) -> None:
     (tmp_path / "evidence.bin").write_bytes(b"12345")
     policy = ExecutionGuardPolicy(evidence_cap_bytes=4)
-    with pytest.raises(EvidenceCapError, match="exceeds cap") as failure:
+    with pytest.raises(EvidenceCapError, match="over its 4-byte cap") as failure:
         policy.assert_evidence_cap(tmp_path)
-    assert failure.value.diagnostic == {
-        "category": "run_budget_exceeded",
-        "attempt_observed_bytes": 5,
-        "attempt_previous_bytes": 0,
-        "attempt_delta_bytes": 5,
-        "run_observed_bytes": 5,
-        "cap_bytes": 4,
-        "observed_bytes": 5,
-        "generated_file_count": 1,
-        "immutable_file_count": 0,
-        "immutable_input_bytes": 0,
-        "immutable_input_manifest_digest": (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        ),
-        "vanished_file_count": 0,
-        "path_classes": {"evidence.bin": {"files": 1, "bytes": 5}},
-        "largest_paths": [
-            {"path": "evidence.bin", "bytes": 5, "classification": "generated"}
-        ],
-        "largest_paths_truncated": False,
-    }
+    diagnostic = failure.value.diagnostic
+    assert diagnostic["category"] == "attempt_cap_exceeded"
+    assert diagnostic["attempt_observed_bytes"] == 5
+    assert diagnostic["cap_bytes"] == 4
+    assert diagnostic["observed_bytes"] == 5
+    assert diagnostic["generated_file_count"] == 1
+    assert diagnostic["path_classes"] == {"evidence.bin": {"files": 1, "bytes": 5}}
+    assert diagnostic["largest_paths"] == [
+        {"path": "evidence.bin", "bytes": 5, "classification": "generated"}
+    ]
 
     policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
     assert policy.assert_evidence_cap(tmp_path)["observed_bytes"] == 5
@@ -161,33 +155,119 @@ def test_generated_budget_accumulates_and_excludes_immutable_inputs(tmp_path) ->
     assert second["attempt_delta_bytes"] == 2
     assert second["run_observed_bytes"] == 5
     output.write_bytes(b"123456")
-    with pytest.raises(EvidenceCapError, match="run budget"):
+    with pytest.raises(EvidenceCapError, match="over its 5-byte cap"):
         policy.assert_evidence_cap(tmp_path, immutable_inputs=baseline)
 
 
-def test_budget_latches_after_cross_attempt_breach(tmp_path) -> None:
+def _attempt(root: Path, size: int) -> Path:
+    root.mkdir()
+    (root / "out.bin").write_bytes(b"x" * size)
+    return root
+
+
+def test_sequential_tasks_each_under_cap_all_succeed_though_they_sum_over_it(tmp_path) -> None:
     policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    third = tmp_path / "third"
-    for directory in (first, second, third):
-        directory.mkdir()
-    (first / "out").write_bytes(b"123")
-    (second / "out").write_bytes(b"456")
-    (third / "out").write_bytes(b"7")
+    for index in range(6):  # 18 bytes in total, far over the 5-byte cap
+        attempt = _attempt(tmp_path / f"attempt-{index}", 3)
+        assert policy.assert_evidence_cap(attempt)["observed_bytes"] == 3
+        shutil.rmtree(attempt)  # the ephemeral attempt root is removed at cleanup
+    policy.assert_budget_available()
+    assert policy.evidence_budget.charged_bytes == 0
+
+
+def test_one_overrun_fails_only_its_task_and_the_next_task_succeeds(tmp_path) -> None:
+    policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
+    small = _attempt(tmp_path / "small", 3)
+    policy.assert_evidence_cap(small)
+    shutil.rmtree(small)
+    large = _attempt(tmp_path / "large", 6)
+    with pytest.raises(EvidenceCapError, match="over its 5-byte cap") as failure:
+        policy.assert_evidence_cap(large)
+    assert failure.value.diagnostic["category"] == "attempt_cap_exceeded"
+    shutil.rmtree(large)  # the failed task's root is cleaned up
+    policy.assert_budget_available()
+    following = _attempt(tmp_path / "following", 4)
+    assert policy.assert_evidence_cap(following)["observed_bytes"] == 4
+
+
+def test_retained_roots_count_until_removed_then_admission_recovers(tmp_path) -> None:
+    policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
+    first = _attempt(tmp_path / "retained-1", 3)
     policy.assert_evidence_cap(first)
-    with pytest.raises(EvidenceCapError, match="run budget") as failure:
+    second = _attempt(tmp_path / "retained-2", 3)
+    with pytest.raises(EvidenceCapError, match="held by 1 other attempt root") as failure:
         policy.assert_evidence_cap(second)
-    assert failure.value.diagnostic["category"] == "run_budget_exceeded"
-    assert failure.value.diagnostic["path_classes"] == {"out": {"files": 1, "bytes": 3}}
-    with pytest.raises(EvidenceCapError, match="exhausted"):
-        policy.assert_evidence_cap(third)
-    assert policy.evidence_budget.exhausted is True
-    assert policy.evidence_budget.breach == {
-        "attempt_observed_bytes": 3,
-        "run_observed_bytes": 6,
-        "cap_bytes": 5,
-    }
+    assert failure.value.diagnostic["category"] == "live_budget_exceeded"
+    assert failure.value.diagnostic["other_live_bytes"] == 3
+    shutil.rmtree(first)  # an operator removes the retained root; no restart
+    assert policy.assert_evidence_cap(second)["observed_bytes"] == 3
+
+
+def test_admission_gate_refuses_only_while_bytes_on_disk_exceed_cap(tmp_path) -> None:
+    policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
+    policy.assert_budget_available()
+    held = _attempt(tmp_path / "held", 6)
+    with pytest.raises(EvidenceCapError, match="over its 5-byte cap"):
+        policy.assert_evidence_cap(held)
+    with pytest.raises(EvidenceCapError, match="over the 5-byte cap"):
+        policy.assert_budget_available()
+    shutil.rmtree(held)
+    policy.assert_budget_available()
+
+
+def test_explicit_release_drops_the_charge_at_once(tmp_path) -> None:
+    policy = ExecutionGuardPolicy(evidence_cap_bytes=10)
+    root = _attempt(tmp_path / "attempt", 4)
+    policy.assert_evidence_cap(root)
+    assert policy.evidence_budget.charged_bytes == 4
+    policy.evidence_budget.release(str(root.resolve()))
+    assert policy.evidence_budget.charged_bytes == 0
+
+
+def test_envelope_cap_admits_a_render_that_the_generic_cap_would_refuse(tmp_path) -> None:
+    policy = ExecutionGuardPolicy(evidence_cap_bytes=5)
+    generic = _attempt(tmp_path / "generic", 9)
+    with pytest.raises(EvidenceCapError, match="over its 5-byte cap"):
+        policy.assert_evidence_cap(generic)
+    shutil.rmtree(generic)
+    admitted = _attempt(tmp_path / "admitted", 9)
+    assert policy.assert_evidence_cap(admitted, cap_bytes=12)["cap_bytes"] == 12
+
+
+def test_attempt_cap_is_raised_only_to_an_admitted_envelope() -> None:
+    assert generic_host._attempt_evidence_cap(5, None) == 5
+    assert generic_host._attempt_evidence_cap(5, {"scratch_bytes": 7, "output_bytes": 1}) == 8
+    assert generic_host._attempt_evidence_cap(10, {"scratch_bytes": 1, "output_bytes": 1}) == 10
+
+
+def test_live_scratch_overrun_names_the_budget_and_the_next_step(tmp_path) -> None:
+    root = tmp_path / "attempt"
+    (root / "outputs").mkdir(parents=True)
+    (root / "frames").mkdir()
+    (root / "frames" / "frame-0001.png").write_bytes(b"x" * 5)
+    with pytest.raises(generic_host.StorageEnvelopeError, match="scratch budget") as failure:
+        generic_host._assert_live_storage_envelope(
+            {"scratch_bytes": 1, "output_bytes": 10},
+            root,
+            root / "outputs",
+        )
+    assert "review render" in str(failure.value)
+    assert "no host restart" not in str(failure.value).lower() or "restart" in str(failure.value)
+
+
+def test_evidence_status_round_trip_reports_host_liveness(tmp_path) -> None:
+    path = tmp_path / EVIDENCE_STATUS_NAME
+    assert read_evidence_status(path) is None
+    payload = {"pid": os.getpid(), "charged_bytes": 7, "cap_bytes": 9, "live_attempts": 1}
+    write_evidence_status(path, payload)
+    record = read_evidence_status(path)
+    assert record["charged_bytes"] == 7
+    assert record["cap_bytes"] == 9
+    assert record["host_alive"] is True
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    finished.wait(timeout=10)
+    write_evidence_status(path, {**payload, "pid": finished.pid})
+    assert read_evidence_status(path)["host_alive"] is False
 
 
 def test_modified_or_managed_input_is_not_exempt(tmp_path) -> None:
@@ -223,7 +303,7 @@ def test_running_writer_is_detected_while_still_alive(tmp_path) -> None:
         while time.monotonic() < deadline:
             if output.exists():
                 assert process.poll() is None
-                with pytest.raises(EvidenceCapError, match="run budget"):
+                with pytest.raises(EvidenceCapError, match="over its 1024-byte cap"):
                     policy.assert_evidence_cap(tmp_path)
                 break
             time.sleep(0.01)

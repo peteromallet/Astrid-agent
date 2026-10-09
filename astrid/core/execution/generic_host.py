@@ -51,9 +51,11 @@ from astrid.core.env_vars import (
 )
 from astrid.core.execution.capability_ledger import load_capability_ledger
 from astrid.core.execution.guards import (
+    EVIDENCE_STATUS_NAME,
     EvidenceCapError,
     ExecutionGuardError,
     ExecutionGuardPolicy,
+    write_evidence_status,
 )
 from astrid.core.execution.managed_tool_session import (
     CapabilityDescriptor,
@@ -1632,6 +1634,27 @@ def _task_storage_estimate(task_data: Mapping[str, Any]) -> dict[str, int] | Non
     return {"scratch_bytes": scratch_bytes, "output_bytes": output_bytes}
 
 
+def _evidence_cap_message(detail: str | None) -> str:
+    """Name the failed task's evidence overrun and the next step, for Runtime."""
+    if not detail:
+        return "generated evidence cap exceeded"
+    return f"generated evidence cap exceeded: {detail}"
+
+
+def _attempt_evidence_cap(policy_cap_bytes: int, storage_estimate: Mapping[str, int] | None) -> int:
+    """Return one attempt's evidence cap: the host cap, or its admitted envelope.
+
+    An admitted storage envelope already bounds scratch and output on their
+    own (see ``_assert_live_storage_envelope``), and its frame sequence can be
+    larger than the generic cap. Raising the cap to that envelope never makes
+    the attempt unbounded; it stops a valid render from failing the generic cap.
+    """
+    if storage_estimate is None:
+        return int(policy_cap_bytes)
+    envelope = int(storage_estimate["scratch_bytes"]) + int(storage_estimate["output_bytes"])
+    return max(int(policy_cap_bytes), envelope)
+
+
 def _assert_live_storage_envelope(
     estimate: Mapping[str, int] | None,
     root: Path,
@@ -1652,7 +1675,9 @@ def _assert_live_storage_envelope(
             **_storage_envelope_measurement(root, output_root),
         }
         raise StorageEnvelopeError(
-            f"live output bytes {output_bytes} exceed task output limit {estimate['output_bytes']}",
+            f"live output bytes {output_bytes} exceed task output limit {estimate['output_bytes']}; "
+            "this task exceeded its output budget. Shorten the output or re-admit with a smaller "
+            "range. The host does not need a restart.",
             diagnostic=diagnostic,
         )
     if scratch_bytes > int(estimate["scratch_bytes"]):
@@ -1664,7 +1689,10 @@ def _assert_live_storage_envelope(
             **_storage_envelope_measurement(root, output_root),
         }
         raise StorageEnvelopeError(
-            f"live scratch bytes {scratch_bytes} exceed task scratch limit {estimate['scratch_bytes']}",
+            f"live scratch bytes {scratch_bytes} exceed task scratch limit {estimate['scratch_bytes']}; "
+            f"this task exceeded its scratch budget ({scratch_bytes} of {estimate['scratch_bytes']} bytes). "
+            "Re-run as a review render (JPEG frames), render a shorter range, or free disk on the "
+            "temporary volume. The host does not need a restart.",
             diagnostic=diagnostic,
         )
 
@@ -1716,7 +1744,9 @@ def _task_storage_envelope(
         )
     if scratch_bytes > scratch_limit:
         raise HostError(
-            f"attempt scratch bytes {scratch_bytes} exceed task scratch limit {scratch_limit}"
+            f"attempt scratch bytes {scratch_bytes} exceed task scratch limit {scratch_limit}; "
+            "this task exceeded its scratch budget. Re-run as a review render (JPEG frames) or a "
+            "shorter range, or free disk on the temporary volume. The host does not need a restart."
         )
     return {
         "scratch_bytes": scratch_bytes,
@@ -2609,6 +2639,7 @@ class GenericPackHost:
         # Set by the host entrypoint.  The latch record is written here so that
         # `astrid doctor` can report a blocked host from another process.
         self.cleanup_latch_path: Path | None = None
+        self.evidence_status_path: Path | None = None
         self._last_cleanup_receipt: dict[str, Any] | None = None
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
@@ -2677,6 +2708,7 @@ class GenericPackHost:
             if self._cleanup_uncertain:
                 raise HostError("process cleanup uncertainty; attempt retained")
             _cleanup_ephemeral_attempt(root)
+            self.execution_policy.evidence_budget.release(str(Path(root).resolve(strict=False)))
         except Exception as exc:
             self._latch_cleanup_uncertainty(str(exc))
             self._last_cleanup_receipt = {
@@ -5092,6 +5124,10 @@ class GenericPackHost:
         # debug/single-attempt callers. Long-lived hosts use ``attempt_base``
         # so sequential tasks get isolated namespaces.
         root = self._allocate_attempt_root(task_id, attempt_id)
+        attempt_evidence_cap = _attempt_evidence_cap(
+            self.execution_policy.evidence_cap_bytes,
+            storage_estimate,
+        )
         execution_deadline = self.execution_policy.deadline_from_now()
         runtime_limit = contract_limits.get("max_runtime_seconds")
         if runtime_limit is not None:
@@ -5109,6 +5145,7 @@ class GenericPackHost:
         evidence_root: Path | None = None
         immutable_input_baseline: dict[str, tuple[int, str]] = {}
         evidence_cap_exceeded = False
+        evidence_failure_message: str | None = None
         evidence_failure_receipt: dict[str, Any] | None = None
         storage_failure_receipt: dict[str, Any] | None = None
         deadline_failed = False
@@ -5193,7 +5230,7 @@ class GenericPackHost:
 
         def cancelled():
             nonlocal deadline_exceeded, evidence_cap_exceeded
-            nonlocal evidence_failure_receipt
+            nonlocal evidence_failure_receipt, evidence_failure_message
             if self.execution_policy.deadline_expired(execution_deadline) or (
                 collection_deadline is not None
                 and self.execution_policy.deadline_expired(collection_deadline)
@@ -5208,10 +5245,12 @@ class GenericPackHost:
                     self.execution_policy.assert_evidence_cap(
                         evidence_root,
                         immutable_inputs=immutable_input_baseline,
+                        cap_bytes=attempt_evidence_cap,
                     )
                 except EvidenceCapError as exc:
                     evidence_cap_exceeded = True
                     evidence_failure_receipt = evidence_failure_diagnostic(exc)
+                    evidence_failure_message = str(exc)
                     cancel_signal.set()
                     return True
             try:
@@ -5253,13 +5292,13 @@ class GenericPackHost:
                 self.client.fail(
                     task_id,
                     lease_token,
-                    "generated evidence cap exceeded",
+                    _evidence_cap_message(evidence_failure_message),
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
                     failure_diagnostic=evidence_failure_receipt,
                 )
-                raise HostError("generated evidence cap exceeded")
+                raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
                 terminalize_deadline()
 
@@ -5744,11 +5783,13 @@ class GenericPackHost:
                 evidence_receipt = self.execution_policy.assert_evidence_cap(
                     root,
                     immutable_inputs=immutable_input_baseline,
+                    cap_bytes=attempt_evidence_cap,
                 )
                 self.execution_policy.assert_deadline(execution_deadline)
             except ExecutionGuardError as exc:
                 if isinstance(exc, EvidenceCapError):
                     evidence_failure_receipt = evidence_failure_diagnostic(exc)
+                    evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
                 harvested = harvest_staged_outputs(
@@ -6103,8 +6144,28 @@ class GenericPackHost:
                 cleanup_receipt.update({"status": "uncertain", "errors": list(cleanup_errors)})
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
+            self._publish_evidence_status()
             if cleanup_errors:
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
+
+    def _publish_evidence_status(self) -> None:
+        """Expose the live evidence charge for ``astrid doctor``; never fails a task."""
+        if self.evidence_status_path is None:
+            return
+        budget = self.execution_policy.evidence_budget
+        try:
+            write_evidence_status(
+                self.evidence_status_path,
+                {
+                    "pid": os.getpid(),
+                    "charged_bytes": budget.charged_bytes,
+                    "cap_bytes": self.execution_policy.evidence_cap_bytes,
+                    "live_attempts": budget.live_attempts,
+                    "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                },
+            )
+        except OSError:
+            return
 
     def cancel_task(
         self,
@@ -6849,6 +6910,7 @@ def _cli() -> int:
     )
     if support_root is not None:
         host.cleanup_latch_path = support_root / CLEANUP_LATCH_NAME
+        host.evidence_status_path = support_root / EVIDENCE_STATUS_NAME
     host.discover()
     host.preflight()
 

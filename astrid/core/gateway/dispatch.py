@@ -264,6 +264,9 @@ def _dispatch_doctor(args: list[str]) -> int:
     from astrid.core.pack.loader import pack_quarantine_section
 
     report["pack_quarantine"] = pack_quarantine_section()
+    from astrid.core.execution.guards import EVIDENCE_STATUS_NAME, read_evidence_status
+
+    report["evidence_budget"] = read_evidence_status(Path(support_root) / EVIDENCE_STATUS_NAME)
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
@@ -283,6 +286,16 @@ def _dispatch_doctor(args: list[str]) -> int:
         print(f"Astrid doctor\nstate: {state}")
         for record in report.get("pack_quarantine", {}).get("quarantined", []):
             print(f"quarantined pack {record['pack_id']}: {record['error']}; fix: {record['fix']}")
+        budget = report.get("evidence_budget")
+        if budget:
+            host = "alive" if budget.get("host_alive") else "host not running"
+            print(
+                f"evidence budget: {budget.get('charged_bytes')} of {budget.get('cap_bytes')} bytes "
+                f"held by {budget.get('live_attempts')} live attempt(s) "
+                f"(pack host pid {budget.get('pid')}, {host}, as of {budget.get('updated_at')})"
+            )
+        else:
+            print("evidence budget: no pack host has reported yet")
         print(f"runtime compatibility: {compatibility['status']}")
         if compatibility["status"] != "ok":
             print(f"compatibility detail: {compatibility['reason']}")
