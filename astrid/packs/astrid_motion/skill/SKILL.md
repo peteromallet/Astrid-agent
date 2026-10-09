@@ -140,6 +140,25 @@ it. It advances one block set per frame over `frames`, then holds.
 {"id":"wipe-out","at":5.5,"track":"fx","clipType":"am-pixel-wipe","hold":0.6,"params":{"mode":"cover","frames":12,"color":"#1F1F1F","pattern":"random","seed":7}}
 ```
 
+## am-pixel-shape: procedural pixel ring, dot, underline or arrow
+
+A hard-edged pixel mark drawn with no asset, on the sticker grid (`px_scale` 6
+matches `am-sprite` at scale 6). Use it instead of drawing a PNG for a ring
+around a word, a pixel full stop, an underline or an arrow. Static.
+
+| param | default | meaning |
+|---|---|---|
+| `shape` | `ring` | `ring` (ellipse outline), `dot` (filled ellipse; 3x3 is a full stop), `underline` (bottom `stroke` rows), `arrow` (shaft and right-pointing head). |
+| `color` | `#1F1F1F` | ink colour. |
+| `px_scale` | 6 | screen px per cell. |
+| `x`, `y` | 0 | logical px of the top-left, as `am-sprite`. |
+| `w`, `h` | 24 | box size in cells. |
+| `stroke` | 2 | stroke thickness in cells. |
+
+```json
+{"id":"ring-tomorrow","at":3.0,"track":"fx","clipType":"am-pixel-shape","hold":2.0,"params":{"shape":"ring","color":"#A94714","px_scale":6,"x":120,"y":60,"w":60,"h":24,"stroke":2}}
+```
+
 ## Media registry entry (for `clip.asset`)
 
 ```json
