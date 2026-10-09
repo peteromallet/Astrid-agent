@@ -131,3 +131,42 @@ def test_top_level_help_describes_unified_agent_and_toolkit_surface(capsys) -> N
         assert family in output
     for command in ("astrid login", "astrid status", "astrid logout", "astrid revoke"):
         assert command in output
+
+
+def test_missing_agent_launcher_names_package_and_override_and_never_falls_back_to_omp(
+    monkeypatch, capsys
+) -> None:
+    from astrid import omp_agent
+
+    monkeypatch.delenv("ASTRID_AGENT_LAUNCHER", raising=False)
+    monkeypatch.delenv("OMP_AGENT_LAUNCHER", raising=False)
+    monkeypatch.setattr(omp_agent, "_LAUNCHER_CANDIDATES", ())
+    monkeypatch.setattr(
+        omp_agent.shutil,
+        "which",
+        lambda name: "/Users/x/.bun/bin/omp" if name == "omp" else None,
+    )
+    monkeypatch.setattr(
+        omp_agent.os,
+        "execvp",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not exec omp")),
+    )
+
+    assert omp_agent._find_launcher() is None
+    assert omp_agent.main(["say hello"]) == 1
+
+    err = capsys.readouterr().err
+    assert "could not locate the `agent` launcher" in err
+    assert "@oh-my-pi/pi-coding-agent" in err
+    assert "ASTRID_AGENT_LAUNCHER" in err
+    assert "/Users/x/.bun/bin/omp" in err and "no `agent run` command" in err
+
+
+def test_agent_launcher_override_is_honored_before_path_lookup(monkeypatch, tmp_path) -> None:
+    from astrid import omp_agent
+
+    script = tmp_path / "agent"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(omp_agent.shutil, "which", lambda name: None)
+    assert omp_agent._find_launcher({"ASTRID_AGENT_LAUNCHER": str(script)}) == script
+    assert omp_agent._find_launcher({"ASTRID_AGENT_LAUNCHER": str(tmp_path / "missing")}) is None
