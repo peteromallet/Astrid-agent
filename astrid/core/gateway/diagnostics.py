@@ -273,3 +273,50 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
             "executable": mode != "shared",
         }]
     return build_diagnostic(mode=mode, facts=facts, problem_code=problem_code, failure_boundary=failure_boundary, elapsed_ms=elapsed, timed_out=timed_out, next_actions=next_actions), workspace_result, runtime_result
+
+
+def expected_runtime_pairing() -> dict[str, str]:
+    """Return the Runtime schema digest and commit this Astrid client was built against."""
+    from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST, SOURCE_COMMIT
+
+    return {"schema_digest": SCHEMA_DIGEST, "runtime_commit": SOURCE_COMMIT}
+
+
+def runtime_compatibility(runtime: Any, *, support_root: str) -> dict[str, Any]:
+    """Compare the live Runtime's health schema digest with this client's pin.
+
+    Read-only: the Runtime's ``status`` observer already reports the health
+    digest, so this never connects, handshakes or starts anything. Status is
+    ``ok`` when the digests match, ``mismatch`` when they differ (with the
+    one-line fix), and ``unknown`` when no digest can be observed.
+    """
+    from astrid.sdk.client import RUNTIME_PAIRING_FIX
+
+    expected = expected_runtime_pairing()
+    try:
+        observed = runtime.observe("status", support_root=support_root)
+    except Exception as exc:  # the Runtime CLI boundary reports typed failures
+        return {"status": "unknown", "expected": expected, "observed": None, "fix": None, "reason": str(exc)}
+    data = observed.data if isinstance(observed.data, Mapping) else {}
+    health = data.get("health")
+    digest = health.get("schema_digest") if isinstance(health, Mapping) else None
+    if not isinstance(digest, str) or not digest:
+        return {
+            "status": "unknown",
+            "expected": expected,
+            "observed": {"schema_digest": None},
+            "fix": None,
+            "reason": "runtime reported no health schema digest (is it running?)",
+        }
+    if digest == expected["schema_digest"]:
+        return {"status": "ok", "expected": expected, "observed": {"schema_digest": digest}, "fix": None}
+    return {
+        "status": "mismatch",
+        "expected": expected,
+        "observed": {"schema_digest": digest},
+        "fix": RUNTIME_PAIRING_FIX,
+        "reason": (
+            f"runtime schema digest {digest} does not match this Astrid client's "
+            f"{expected['schema_digest']} (Runtime commit {expected['runtime_commit']})"
+        ),
+    }

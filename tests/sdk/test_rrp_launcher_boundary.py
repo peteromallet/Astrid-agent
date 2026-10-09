@@ -123,5 +123,8 @@ def test_doctor_uses_nonstarting_runtime_observer(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path / "support")
 
     assert dispatch._dispatch_doctor(["--json"]) == 0
-    assert seen == ["doctor"]
+    # Doctor reads the Runtime doctor observer, plus the read-only status
+    # observer for the client/Runtime pairing check. Never up/start/connect.
+    assert seen[0] == "doctor"
+    assert set(seen) <= {"doctor", "status"}
     assert '"state": "ready"' in capsys.readouterr().out

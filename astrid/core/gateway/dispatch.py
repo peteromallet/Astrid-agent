@@ -188,9 +188,11 @@ def _dispatch_doctor(args: list[str]) -> int:
         from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
+        runtime = RuntimeCLI()
+        support_root = resolve_runtime_data_root()
         diagnostic, _workspace, observed = collect_diagnostic(
-            RuntimeCLI(),
-            support_root=resolve_runtime_data_root(),
+            runtime,
+            support_root=support_root,
             mode="shared" if parsed.shared else "local",
             command="doctor",
         )
@@ -207,6 +209,16 @@ def _dispatch_doctor(args: list[str]) -> int:
             "authorization_required": False,
             "error": str(exc),
         }
+        if not parsed.diagnostic:
+            from astrid.core.gateway.diagnostics import expected_runtime_pairing
+
+            payload["runtime_compatibility"] = {
+                "status": "unknown",
+                "expected": expected_runtime_pairing(),
+                "observed": None,
+                "fix": None,
+                "reason": "runtime is not reachable",
+            }
         if parsed.diagnostic:
             from astrid.core.gateway.diagnostics import build_diagnostic, _failure_from
             code, boundary = _failure_from(exc)
@@ -237,11 +249,25 @@ def _dispatch_doctor(args: list[str]) -> int:
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
+    from astrid.core.gateway.diagnostics import runtime_compatibility
+
+    compatibility = runtime_compatibility(runtime, support_root=str(support_root))
+    report["runtime_compatibility"] = compatibility
+    if compatibility["status"] == "mismatch":
+        # A mismatched pair is not a healthy setup even when the Runtime itself is ready.
+        report["healthy"] = False
+        report["issues"] = [*report.get("issues", []), compatibility["reason"] + f"; fix: {compatibility['fix']}"]
+        result_code = 1
     if parsed.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         state = report.get("state", "ready") if isinstance(report, dict) else "ready"
         print(f"Astrid doctor\nstate: {state}")
+        print(f"runtime compatibility: {compatibility['status']}")
+        if compatibility["status"] != "ok":
+            print(f"compatibility detail: {compatibility['reason']}")
+        if compatibility["fix"]:
+            print(f"fix: {compatibility['fix']}")
         if isinstance(report, dict) and report.get("recovery_action"):
             print(f"recovery action: {report['recovery_action']}")
     return result_code

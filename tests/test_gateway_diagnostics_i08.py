@@ -205,3 +205,106 @@ def test_public_doctor_permission_diagnostic_is_observer_only(monkeypatch: pytes
     assert diagnostic["problemCode"] == "permission_limited"
     assert diagnostic["failureBoundary"] == "runtime-permission"
     assert observer.observe_calls == 1
+
+
+class _PairingObserver:
+    """Per-command fake: doctor reports ready; status carries the health digest."""
+
+    def __init__(self, *, health_digest: str | None, doctor_ok: bool = True) -> None:
+        self.health_digest = health_digest
+        self.doctor_ok = doctor_ok
+        self.commands: list[str] = []
+
+    def inspect(self, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+        return RuntimeResult(("runtime", "workspace", "inspect"), 0, {"ok": True, "realm_id": "selected"})
+
+    def observe(self, command: str, *, support_root: str, timeout: float = 5.0) -> RuntimeResult:
+        self.commands.append(command)
+        if command == "doctor":
+            return RuntimeResult(("runtime", "doctor"), 0 if self.doctor_ok else 1, {"ok": self.doctor_ok, "healthy": self.doctor_ok, "issues": []})
+        health = None if self.health_digest is None else {"status": "ok", "schema_digest": self.health_digest}
+        data = {"ok": health is not None, "health": health}
+        return RuntimeResult(("runtime", "status"), 0 if health else 1, data)
+
+
+def test_runtime_compatibility_is_ok_when_live_digest_matches_client_pin() -> None:
+    from astrid.core.gateway.diagnostics import expected_runtime_pairing, runtime_compatibility
+    from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST, SOURCE_COMMIT
+
+    observer = _PairingObserver(health_digest=SCHEMA_DIGEST)
+    report = runtime_compatibility(observer, support_root="/support")
+
+    assert report["status"] == "ok"
+    assert report["fix"] is None
+    assert report["expected"] == expected_runtime_pairing() == {
+        "schema_digest": SCHEMA_DIGEST,
+        "runtime_commit": SOURCE_COMMIT,
+    }
+    assert observer.commands == ["status"]
+
+
+def test_runtime_compatibility_mismatch_names_both_digests_and_gives_one_line_fix() -> None:
+    from astrid.core.gateway.diagnostics import runtime_compatibility
+    from astrid.sdk.client import RUNTIME_PAIRING_FIX
+    from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST, SOURCE_COMMIT
+
+    live = "sha256:" + "e64d2bd2" + "0" * 56
+    report = runtime_compatibility(_PairingObserver(health_digest=live), support_root="/support")
+
+    assert report["status"] == "mismatch"
+    assert report["observed"] == {"schema_digest": live}
+    assert report["fix"] == RUNTIME_PAIRING_FIX
+    assert SOURCE_COMMIT in report["fix"]
+    assert "\n" not in report["fix"]
+    assert live in report["reason"] and SCHEMA_DIGEST in report["reason"]
+
+
+def test_runtime_compatibility_is_unknown_without_a_live_health_digest() -> None:
+    from astrid.core.gateway.diagnostics import runtime_compatibility
+
+    report = runtime_compatibility(_PairingObserver(health_digest=None), support_root="/support")
+
+    assert report["status"] == "unknown"
+    assert report["fix"] is None
+    assert "no health schema digest" in report["reason"]
+
+
+def test_public_doctor_json_reports_mismatch_unhealthy_and_nonzero(monkeypatch, tmp_path, capsys) -> None:
+    observer = _PairingObserver(health_digest="sha256:" + "e" * 64)
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", lambda: observer)
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path / "support")
+
+    assert main(["doctor", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runtime_compatibility"]["status"] == "mismatch"
+    assert payload["healthy"] is False
+    assert any("does not match" in issue and "fix:" in issue for issue in payload["issues"])
+
+
+def test_public_doctor_json_reports_ok_pairing_and_keeps_exit_zero(monkeypatch, tmp_path, capsys) -> None:
+    from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+
+    observer = _PairingObserver(health_digest=SCHEMA_DIGEST)
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", lambda: observer)
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path / "support")
+
+    assert main(["doctor"]) == 0
+    text = capsys.readouterr().out
+    assert "runtime compatibility: ok" in text
+    assert "fix:" not in text
+
+
+def test_public_doctor_reports_unknown_compatibility_when_runtime_is_down(monkeypatch, tmp_path, capsys) -> None:
+    class Down:
+        def observe(self, command, *, support_root, timeout=5.0):
+            from astrid.runtime_cli import RuntimeCLIError
+
+            raise RuntimeCLIError("runtime is down", code="runtime_unavailable")
+
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", lambda: Down())
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path / "support")
+
+    assert main(["doctor", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runtime_compatibility"]["status"] == "unknown"
+    assert payload["runtime_compatibility"]["expected"]["runtime_commit"]
