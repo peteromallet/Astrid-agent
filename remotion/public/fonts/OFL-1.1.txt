@@ -1,4 +1,4 @@
-Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter)
+Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
 Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 Copyright 2021 The Sixtyfour Project Authors (https://github.com/jenskutilek/homecomputer-fonts)
 Copyright 2022–2024 Helena Zhang (helenazhang.com)

@@ -8,20 +8,25 @@ separate Remotion acceptance gate.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).parents[1]
 REMOTION = ROOT / "remotion"
 FONTS = REMOTION / "public" / "fonts"
+COVERAGE_RECORD = ROOT / "tests" / "fixtures" / "remotion-font-coverage.json"
+PRINTABLE_ASCII = "".join(chr(code) for code in range(0x20, 0x7F))
 
 EXPECTED = {
     "Sixtyfour.woff2": (7_608, "0c35bb8333a12a822333f10fc4fd22e607b80a254b8b31faa8eed1cd4badc24e"),
-    "Inter-Bold.woff2": (19_980, "47d42151dff6d13f1c2b9a1f278290f625593c1f01c89612ee4ae7f063167f7a"),
-    "Inter-Regular.woff2": (27_380, "39689184132e9fba8fb1066f429125d14445352a566f47f4edcae7c3c90e486d"),
-    "JetBrainsMono-Bold.woff2": (13_352, "8df3ca627bd8e1cb0e5414f7429fe7a2cf82732b0fc43f2d05bc2c471b64fcfc"),
-    "JetBrainsMono-Regular.woff2": (2_180, "1b53536573e8f2e886848fee9a53c278a8f92b02ac794a83437ad9277120df47"),
+    "Inter-Bold.woff2": (41_296, "aeaf0d0fa3262f4df2da7acf660544cb15aa24dcb63e574daed6ba7e92333a01"),
+    "Inter-Regular.woff2": (40_128, "5f04e9f02a74eab4ec87eda5b79b5be1c0567c868688b0a08564b2fe5c6da928"),
+    "JetBrainsMono-Bold.woff2": (36_856, "a1475eef9934d6b3a6d15494f312ee1056b7556d59b1e22cb4e0c618338cd170"),
+    "JetBrainsMono-Regular.woff2": (35_416, "2955337d809a64d58c56730b8344315198ec76214e02710774dd72d6a5de7b87"),
     "DepartureMono-Regular.woff2": (22_496, "5b4fed1daa90708aa9c6ee1190abca9dc22164a1c1def0020386e46b61038cfb"),
     "Gelasio-Regular.woff2": (20_284, "698c2aa61ec1960371b6ed32e6120f028fa614613256f4b9e3f5d10ceb013eb5"),
     "Gelasio-Italic.woff2": (22_272, "2df3d4a4d0cefc6440710666fa425627e54cb73707224bec044bca8e65940222"),
@@ -36,6 +41,39 @@ def test_shipped_font_bytes_match_reviewed_manifest() -> None:
         assert path.is_file(), name
         assert path.stat().st_size == size
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+
+
+def _shipped_font_files() -> list[Path]:
+    return sorted(FONTS.glob("*.woff2"))
+
+
+def test_every_vendored_face_covers_all_printable_ascii() -> None:
+    # A face missing printable ASCII renders those characters in the next
+    # family of the stack without any error, and the loader's probe check cannot
+    # see that. This record makes the coverage a reviewed, byte-pinned fact.
+    record = json.loads(COVERAGE_RECORD.read_text(encoding="utf-8"))
+    assert record["ascii_range"] == "U+0020-U+007E"
+    recorded = record["files"]
+    assert set(recorded) == {path.name for path in _shipped_font_files()}, (
+        "every shipped woff2 needs a coverage record; regenerate tests/fixtures/remotion-font-coverage.json"
+    )
+    assert len(PRINTABLE_ASCII) == 95
+    for name, entry in recorded.items():
+        assert entry["ascii_missing"] == [], f"{name} lacks printable ASCII: {entry['ascii_missing']}"
+        assert entry["ascii_covered"] == 95, name
+        digest = hashlib.sha256((FONTS / name).read_bytes()).hexdigest()
+        assert entry["sha256"] == digest, f"{name} changed; regenerate the coverage record"
+
+
+def test_recorded_coverage_matches_binaries_when_fonttools_is_available() -> None:
+    ttlib = pytest.importorskip("fontTools.ttLib")
+    pytest.importorskip("brotli")
+    recorded = json.loads(COVERAGE_RECORD.read_text(encoding="utf-8"))["files"]
+    for path in _shipped_font_files():
+        cmap = ttlib.TTFont(str(path)).getBestCmap()
+        assert len(cmap) == recorded[path.name]["cmap_codepoints"], path.name
+        missing = [char for char in PRINTABLE_ASCII if ord(char) not in cmap]
+        assert missing == [], f"{path.name} lacks printable ASCII: {missing}"
 
 
 def test_loader_is_local_typed_and_has_one_face_per_family_style_weight() -> None:

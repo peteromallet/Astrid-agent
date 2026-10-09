@@ -209,7 +209,7 @@ def test_ci_changed_json_fixture_maps_to_owner_without_pytest_json_target(
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
-    assert payload["lanes"]["changed"]["passed"] == 4
+    assert payload["lanes"]["changed"]["passed"] == 6
     assert _LOCAL_FONT_TEST in result.stderr
     assert _LOCAL_FONT_FIXTURE not in result.stderr
 

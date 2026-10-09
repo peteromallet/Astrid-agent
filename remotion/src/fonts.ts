@@ -17,7 +17,8 @@ export type LocalFontFace = {
 /**
  * Every font named by the 2RP theme and the Astrid video brand is shipped
  * locally. Keep this list in lockstep with public/fonts/FONT_PROVENANCE.md and
- * never add a hosted source.
+ * never add a hosted source. Every face must cover all printable ASCII; the
+ * coverage record and its test are in tests/test_remotion_local_fonts.py.
  */
 export const LOCAL_FONT_FACES: readonly LocalFontFace[] = [
   { family: "Sixtyfour", file: "fonts/Sixtyfour.woff2", weight: 400 },

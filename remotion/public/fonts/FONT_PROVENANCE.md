@@ -5,10 +5,14 @@ so an offline render never asks Google Fonts, a CDN, or another network host
 for CSS or font bytes. `OFL-1.1.txt` is shipped beside these binaries and
 contains the complete license text and copyright notices.
 
-The upstream Google Fonts repository revision used for the family and license
-records of Inter, JetBrains Mono and Gelasio below is:
+The upstream Google Fonts repository revision used for the Gelasio records
+below is:
 
 `ade3d1533e06b2b1462ffcde8e08b129627ca360`
+
+Inter and JetBrains Mono were re-vendored from their upstream releases (the
+Google Fonts copies they replace covered 2 of 95 printable ASCII characters;
+see `LOCAL_FONT_ACCEPTANCE.md`).
 
 Every family below is distributed under the SIL Open Font License, Version
 1.1. The local binary SHA-256 values below are the acceptance-manifest values;
@@ -29,22 +33,24 @@ not expected to equal a locally subsetted or format-converted binary.
 ## Inter
 
 - Theme role: 2RP body text.
-- Local files: `Inter-Regular.woff2` (27,380 bytes), `Inter-Bold.woff2` (19,980 bytes).
-- Local SHA-256: `39689184132e9fba8fb1066f429125d14445352a566f47f4edcae7c3c90e486d` (regular); `47d42151dff6d13f1c2b9a1f278290f625593c1f01c89612ee4ae7f063167f7a` (bold).
-- Upstream family: [rsms/inter](https://github.com/rsms/inter); curated license/source record is [Google Fonts `ofl/inter`](https://github.com/google/fonts/tree/ade3d1533e06b2b1462ffcde8e08b129627ca360/ofl/inter).
-- Upstream revision: `ade3d1533e06b2b1462ffcde8e08b129627ca360`.
-- Upstream Git source blob: `047c92f6e2212473dc436020afed689527076d44` (`Inter[opsz,wght].ttf`).
-- License: SIL Open Font License 1.1; copyright notice is `Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter)`.
+- Local files: `Inter-Regular.woff2` (40,128 bytes, 400 upright), `Inter-Bold.woff2` (41,296 bytes, 700 upright). Static faces; they replace the earlier variable Google Fonts subsets.
+- Local SHA-256: `5f04e9f02a74eab4ec87eda5b79b5be1c0567c868688b0a08564b2fe5c6da928` (regular); `aeaf0d0fa3262f4df2da7acf660544cb15aa24dcb63e574daed6ba7e92333a01` (bold).
+- Upstream source: [rsms/inter release v4.1](https://github.com/rsms/inter/releases/tag/v4.1), asset `Inter-4.1.zip` (33,707,794 bytes, SHA-256 `9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`). Members used: `extras/ttf/Inter-Regular.ttf` (411,640 bytes, SHA-256 `40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82`) and `extras/ttf/Inter-Bold.ttf` (420,428 bytes, SHA-256 `288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f`).
+- Upstream revision: tag `v4.1` at commit `e3a3d4c57d5ecc01453a575621882a384c1995a3`.
+- Derivation: the official static TTFs are subset to the Latin set listed under Gelasio, plus the arrow block U+2190-2199, with all layout features kept and written as WOFF2 (`fontTools` 4.60.2, `brotli` 1.2.0). Result: 292 codepoints, 95/95 printable ASCII.
+- Previous files (superseded, Google Fonts `ofl/inter` at ade3d15, variable `Inter[opsz,wght].ttf`): 27,380 and 19,980 bytes, SHA-256 `39689184...` and `47d42151...`. They covered 2 of 95 printable ASCII.
+- License: SIL Open Font License 1.1; copyright notice is `Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)`, as in the release `LICENSE.txt`.
 
 ## JetBrains Mono
 
 - Theme role: 2RP monospace text.
-- Local files: `JetBrainsMono-Regular.woff2` (2,180 bytes), `JetBrainsMono-Bold.woff2` (13,352 bytes).
-- Local SHA-256: `1b53536573e8f2e886848fee9a53c278a8f92b02ac794a83437ad9277120df47` (regular); `8df3ca627bd8e1cb0e5414f7429fe7a2cf82732b0fc43f2d05bc2c471b64fcfc` (bold).
-- Upstream family: [JetBrains/JetBrainsMono](https://github.com/JetBrains/JetBrainsMono); curated license/source record is [Google Fonts `ofl/jetbrainsmono`](https://github.com/google/fonts/tree/ade3d1533e06b2b1462ffcde8e08b129627ca360/ofl/jetbrainsmono).
-- Upstream revision: `ade3d1533e06b2b1462ffcde8e08b129627ca360`.
-- Upstream Git source blob: `aa310be8b717fe3774f9444dd89d5f4101cc6d10` (`JetBrainsMono[wght].ttf`).
-- License: SIL Open Font License 1.1; copyright notice is `Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)`.
+- Local files: `JetBrainsMono-Regular.woff2` (35,416 bytes, 400 upright), `JetBrainsMono-Bold.woff2` (36,856 bytes, 700 upright). Static faces; they replace the earlier Google Fonts subsets.
+- Local SHA-256: `2955337d809a64d58c56730b8344315198ec76214e02710774dd72d6a5de7b87` (regular); `a1475eef9934d6b3a6d15494f312ee1056b7556d59b1e22cb4e0c618338cd170` (bold).
+- Upstream source: [JetBrains/JetBrainsMono release v2.304](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304), asset `JetBrainsMono-2.304.zip` (5,622,857 bytes, SHA-256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`). Members used: `fonts/ttf/JetBrainsMono-Regular.ttf` (SHA-256 `a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f`) and `fonts/ttf/JetBrainsMono-Bold.ttf` (SHA-256 `5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb`).
+- Upstream revision: tag `v2.304` at commit `cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9`.
+- Derivation: the same subset as Inter. Result: 249 codepoints, 95/95 printable ASCII. The upstream font has no U+2009 thin space, so that character is not in these faces and falls back.
+- Previous files (superseded, Google Fonts `ofl/jetbrainsmono` at ade3d15): 2,180 and 13,352 bytes, SHA-256 `1b535365...` and `8df3ca62...`. They covered 2 of 95 printable ASCII.
+- License: SIL Open Font License 1.1; copyright notice is `Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)`, as in the release `OFL.txt`.
 
 ## Departure Mono
 
@@ -75,3 +81,28 @@ face in that list. The loader waits for `document.fonts.load` and verifies
 the Remotion render. Faces with `style: "italic"` load with the `italic` font
 keyword. The focused test also rejects hosted font imports, URL fetches, and
 missing glyph-proof coverage.
+
+Every shipped face must cover all 95 printable ASCII characters (U+0020-U+007E).
+The loader's `document.fonts.check` probe cannot detect a missing glyph (the
+browser falls through to the next family silently), so coverage is pinned in
+`tests/fixtures/remotion-font-coverage.json`: per face, the SHA-256, the cmap
+size and the list of missing printable ASCII. The test fails on any binary
+change until the record is regenerated, on any unrecorded `.woff2`, and on any
+missing ASCII. When `fontTools` and `brotli` are importable, the test also
+recomputes the cmap from the binaries. To regenerate after a change:
+
+```python
+from fontTools.ttLib import TTFont
+import hashlib, json, pathlib
+fonts = pathlib.Path("remotion/public/fonts")
+out = {"description": "Printable ASCII (U+0020-U+007E) coverage per shipped Remotion font face, generated with fontTools from the committed woff2 files.", "ascii_range": "U+0020-U+007E", "files": {}}
+for path in sorted(fonts.glob("*.woff2")):
+    cmap = TTFont(path).getBestCmap()
+    missing = [chr(c) for c in range(0x20, 0x7F) if c not in cmap]
+    out["files"][path.name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                               "cmap_codepoints": len(cmap),
+                               "ascii_covered": 95 - len(missing), "ascii_missing": missing}
+with open("tests/fixtures/remotion-font-coverage.json", "w", encoding="utf-8") as fh:
+    json.dump(out, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+```
