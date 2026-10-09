@@ -1,6 +1,0 @@
-{
-  "profile": "astrid",
-  "source_checkout": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.otto/worktrees/h3-av-simplicity-20260924-T2",
-  "runtime_checkout": "/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime/.otto/worktrees/h3-runtime-contract-20260927",
-  "runtime_environment": "/Users/peteromalley/Documents/reigh-workspace/Astrid/.venv"
-}
