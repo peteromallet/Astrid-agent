@@ -166,6 +166,14 @@ _RUNTIME_OUTPUT_NAMESPACES = frozenset(
 )
 
 
+# Runtime limits (Runtime/runtime_protocol/server.py MAX_BODY_BYTES and
+# service.py OBJECT_MAX_BYTES). Outputs above INLINE_OUTPUT_MAX_BYTES, or
+# beyond the inline budget, are uploaded as objects before settlement.
+RUNTIME_OBJECT_LIMIT_BYTES = 64 * 1024 * 1024
+INLINE_SETTLEMENT_BUDGET_BYTES = 40 * 1024 * 1024
+INLINE_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
+
+
 def _settlement_media_type(descriptor: Mapping[str, Any]) -> str:
     """Publish a MIME media type while retaining internal artifact semantics."""
 
@@ -4451,6 +4459,36 @@ class GenericPackHost:
         uploaded: list[dict[str, Any]] = []
         seen_filenames: set[str] = set()
         inline = bool(getattr(self.client, "INLINE_SETTLEMENT_OUTPUTS", False))
+        # The Runtime refuses request bodies over 64 MiB before reading them
+        # and closes the socket, which surfaces as EPIPE, not as an error. One
+        # settlement inlines every output as base64 (4/3 of its size), so
+        # preflight: refuse objects the Runtime cannot store at all, and send
+        # large outputs through the attempt-bound object upload (one request
+        # per object; settlement then only names their digests).
+        sizes = []
+        for descriptor in outputs:
+            raw = descriptor.get("path")
+            try:
+                sizes.append(Path(str(raw)).stat().st_size if raw else 0)
+            except OSError:
+                sizes.append(0)
+        for descriptor, size in zip(outputs, sizes):
+            if size > RUNTIME_OBJECT_LIMIT_BYTES:
+                raise HostError(
+                    f"output {descriptor.get('name') or descriptor.get('path')!r} is {size / 2**20:.1f} MiB; the Runtime "
+                    f"stores objects up to {RUNTIME_OBJECT_LIMIT_BYTES // 2**20} MiB. Produce less: for timelines "
+                    "visualize use --resolution 480x270, a narrower --range, a coarser --every, or --view contact."
+                )
+        can_upload = all(value is not None for value in (run_id, task_id, attempt_id, lease_id, fence))
+        inline_budget = INLINE_SETTLEMENT_BUDGET_BYTES
+        if inline and not can_upload:
+            encoded = sum(4 * ((size + 2) // 3) for size in sizes)
+            if encoded > inline_budget:
+                raise HostError(
+                    f"outputs total {sum(sizes) / 2**20:.1f} MiB ({encoded / 2**20:.1f} MiB encoded), over the "
+                    f"{inline_budget // 2**20} MiB inline settlement budget, and this attempt has no upload binding. "
+                    "Produce less (timelines visualize: --resolution 480x270, a narrower --range, a coarser --every)."
+                )
         for index, descriptor in enumerate(outputs):
             descriptor = dict(descriptor)
             raw_path = descriptor.pop("path", None)
@@ -4467,7 +4505,12 @@ class GenericPackHost:
                 )
             seen_filenames.add(filename)
             media_type = _settlement_media_type({**descriptor, "filename": filename})
-            if inline:
+            encoded_size = 4 * ((sizes[index] + 2) // 3)
+            send_inline = inline and not (
+                can_upload and (sizes[index] > INLINE_OUTPUT_MAX_BYTES or encoded_size > inline_budget)
+            )
+            if send_inline:
+                inline_budget -= encoded_size
                 data = path.read_bytes()
                 descriptor["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
                 descriptor["media_type"] = media_type
