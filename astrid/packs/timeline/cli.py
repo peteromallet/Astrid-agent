@@ -1226,14 +1226,14 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.rendering.executors.timeline_visualize.motion.conditions import run_checks
     from astrid.packs.rendering.executors.timeline_visualize.motion.rules import resolve_rules
 
-    if getattr(parsed, "list_checks", False):
-        print(check_help())
-        return 0
     try:
         rules = resolve_rules(getattr(parsed, "rules", None), search=not getattr(parsed, "no_rules", False))
     except (OSError, ValueError) as exc:
         print(f"error validation_error: {exc}", file=sys.stderr)
         return 2
+    if getattr(parsed, "list_checks", False):
+        print(check_help(rules))
+        return 0
     opener = getattr(parsed.client.timelines, "open_bundle", None)
     if not callable(opener):
         print("error unavailable: this client cannot open a timeline bundle", file=sys.stderr)
@@ -1278,8 +1278,14 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         return 0
     counts: dict[str, int] = {}
     info: dict[str, int] = {}
-    rules_line = (f"rules: {rules['path']} ({len(rules['params'])} thresholds, {len(rules['severity'])} severities)"
-                  if rules else "rules: built-in defaults (add astrid-lint.toml to set your own; --list-checks)")
+    if rules:
+        effective = ", ".join(f"{k}={v:g}" for k, v in sorted(rules["params"].items()))
+        severities = ", ".join(f"{k}={v}" for k, v in sorted(rules["severity"].items()))
+        rules_line = (f"rules: {rules['path']} ({effective or 'no thresholds'}"
+                      + (f"; severity {severities}" if severities else "") + ")")
+    else:
+        rules_line = ("rules: built-in defaults (no astrid-lint.toml in this folder or its parents; "
+                      "--rules FILE to name one; --list-checks for the keys)")
     lines = [
         f"Timeline {opened.data.get('timeline_id')} · {len(results)} cut(s) · revision {opened.data.get('revision_id')}",
         rules_line,
@@ -1295,6 +1301,11 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
 
     for finding in sorted(timeline_findings, key=lambda f: rank.get(f.severity, 3)):
         emit(finding)
+    from astrid.packs.rendering.executors.timeline_visualize.layers.base import checks as registered_checks
+
+    ran = sorted(name for name in registered_checks() if name not in set((rules or {}).get("disable") or ())
+                 and "frames" not in registered_checks()[name].needs)
+    lines.append(f"checks run: {', '.join(ran)} (a check with no line passed or is off: see --list-checks)")
     for cut, findings in results:
         for finding in findings:
             emit(finding, cut["start"])
@@ -1451,6 +1462,13 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         return 0
     if getattr(parsed, "preset", None) == "compare" or getattr(parsed, "view", None) == "diff":
         return _cmd_visualize_diff(parsed)
+    try:
+        at_note = _resolve_word_at(parsed)
+    except ValueError as exc:
+        print(f"error validation_error: {exc}", file=sys.stderr)
+        return 2
+    if at_note:
+        print(at_note)
     _resolve_view(parsed)
     human_outputs: Mapping[str, Any] | None = None
 
@@ -1623,6 +1641,64 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
 # Flags that only mean something to the paired filmstrip (input lanes, pages).
 _FILMSTRIP_ONLY = ("sample", "show", "hide", "track", "page_size", "include_media", "detail", "render_run",
                    "occurrence", "clip", "asset", "shot", "context", "neighbors", "include_cuts")
+
+
+def _resolve_word_at(parsed: argparse.Namespace) -> str | None:
+    """``--at viral``: the first onset of that spoken word (or on-screen text) in seconds; returns a note."""
+    value = getattr(parsed, "at", None)
+    if value in (None, ""):
+        return None
+    try:
+        float(str(value).replace(":", ""))
+        return None
+    except ValueError:
+        pass
+    opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not callable(opener):
+        raise ValueError("--at with a word needs a client that can open the timeline")
+    opened = opener(parsed.project, parsed.timeline_slug or parsed.timeline_ref, revision_id=getattr(parsed, "revision_id", None))
+    if not opened.ok or not isinstance(opened.data, Mapping):
+        raise ValueError(f"cannot open the timeline to find {value!r}")
+    from astrid.core.timeline.cuts import occurrences_from_bundle
+    from astrid.packs.rendering.executors.timeline_visualize.motion import model
+
+    wanted = str(value).strip().strip("\"'").lower()
+    elements = model.elements_from_occurrences(occurrences_from_bundle(opened.data["bundle"]))
+    for word in model.words(elements):
+        if word.text.strip(".,!?;:\"'").lower() == wanted:
+            parsed.at = f"{word.start:.3f}"
+            return f'--at {value!r}: the word "{word.text}" at {word.start:.2f} s'
+    import re as _re
+
+    pattern = _re.compile(rf"\b{_re.escape(wanted)}\b", _re.IGNORECASE)
+    fps = 30.0
+
+    def keyed(value, start):
+        """(time, text) of frame-keyed items (at/appearAt/atFrame/startAt) inside params."""
+        if isinstance(value, Mapping):
+            frame = next((value[k] for k in ("at", "appearAt", "atFrame", "startAt")
+                          if isinstance(value.get(k), (int, float)) and not isinstance(value.get(k), bool)), None)
+            texts = [v for v in value.values() if isinstance(v, str)]
+            texts += [x for v in value.values() if isinstance(v, list) for x in v if isinstance(x, str)]
+            if frame is not None:
+                yield start + float(frame) / fps, " ".join(texts)
+            for child in value.values():
+                yield from keyed(child, start)
+        elif isinstance(value, list):
+            for child in value:
+                yield from keyed(child, start)
+
+    for element in sorted(elements, key=lambda e: e.start):
+        texts = [str(element.params.get(key) or "") for key in ("text", "title", "body", "label", "name")]
+        texts.append((element.asset or "").rsplit(":", 1)[-1])
+        if any(pattern.search(text) for text in texts if text):
+            parsed.at = f"{element.start:.3f}"
+            return f"--at {value!r}: {element.label} enters at {element.start:.2f} s"
+        for t, text in keyed(element.params, element.start):
+            if pattern.search(text):
+                parsed.at = f"{t:.3f}"
+                return f"--at {value!r}: {element.label} shows {text[:40]!r} at {t:.2f} s"
+    raise ValueError(f"no spoken word or on-screen element matches {value!r}; pass seconds instead")
 
 
 def _resolve_view(parsed: argparse.Namespace) -> None:
@@ -1893,7 +1969,7 @@ def _visualize_plan(parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> in
         lines.append(f"  {frames} frames on {math.ceil(frames / max(1, int(options.get('page_size') or 50)))} page(s)")
     lines.append(f"  expect ~{max(8, round(5 + frames * 0.3))} s of capture when the host is free (frames are cached "
                  "after the first run)")
-    lines.append("  run it: the same command without --plan")
+    lines.append("  run it: the same command without --plan (the run prints next: earlier/later/zoom/other preset)")
     print("\n".join(lines))
     return 0
 
@@ -2626,7 +2702,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         ),
     )
     subparser.add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
-    subparser.add_argument("--at", default=None, help="Focus a timestamp.")
+    subparser.add_argument("--at", default=None,
+                           help="A moment: seconds (7.2), or a spoken word or on-screen text in quotes (--at viral) "
+                                "resolved to its first onset. Alone: one frame; with --preset motion: 1 s around it.")
     subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
     subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
     subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
@@ -2686,7 +2764,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         choices=("filmstrip", "contact", "motion", "diff"),
         default=None,
         help=(
-            "Rendered paired filmstrip (default; the only view for drill-down pages). "
+            "Usually leave this out and use --preset (or just give a window). filmstrip: Rendered paired filmstrip "
+            "with input lanes (the only view for drill-down pages; chosen when --show/--sample/--track is used). "
             "contact: ONE overview page of the whole video, one tile per picture cut (capped at 120), 480x270. "
             "motion: one cut (--cut N) as a motion sheet you can judge as stills: frame strip, onion skins, "
             "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270). "
@@ -2764,7 +2843,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
                            help="Filmstrip cards per static page (default: 50 standalone; paired pages use one row, or explicitly opt into up to two rows / 10 cards).")
     subparser.add_argument("--size", default=None, metavar="WIDTHxHEIGHT",
                            help="Frame size for the window presets, e.g. 960x540 (scan/beat 480x270, motion 640x360, "
-                                "frame 1280x720 by default).")
+                                "frame 1280x720 by default). The page stays ONE page, so many frames shrink: for the "
+                                "biggest frames show fewer (a shorter --window/--range, or larger --every-frames).")
     subparser.add_argument("--window", dest="window_s", type=float, default=None, metavar="SECONDS",
                            help="With --at: the window width centred on it (motion 3 s, scan 10 s, beat 6 s).")
     subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",

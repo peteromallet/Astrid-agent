@@ -311,6 +311,10 @@ def events(element: Element, fps: float) -> list[Event]:
                                f"{element.label} → ({key.get('x')},{key.get('y')})", "step"))
     for frame in params.get("punchAt") or ():
         found.append(Event(element.start + _num(frame) / fps, "key", element.id, f"{element.label} punch", "punch"))
+    push = _map(params.get("push"))
+    if push and _num(push.get("frames")) > 0:
+        found.append(Event(element.start + _num(push.get("at")) / fps, "key", element.id,
+                           f"{element.label} push to {push.get('to')}x over {_num(push.get('frames')) / fps:.1f}s", "ease"))
     if params.get("underlineAt") is not None:
         found.append(Event(element.start + _num(params.get("underlineAt")) / fps, "key", element.id,
                            f"{element.label} underline", "ease"))
@@ -388,9 +392,20 @@ def mouth_state(element: Element, clip_frame: int, fps: float) -> str:
     return "closed"
 
 
+def pushed_zoom(params: Mapping[str, Any], clip_frame: int) -> float:
+    """``pushedZoom`` from presenter-core.ts: the base zoom, or a slow push in progress."""
+    base = round(min(3.0, max(1.0, _num(params.get("zoom"), 1.0))))
+    push = _map(params.get("push"))
+    frames = _num(push.get("frames"), 0.0)
+    if not push or frames <= 0 or not isinstance(push.get("to"), (int, float)):
+        return float(base)
+    t = min(1.0, max(0.0, (clip_frame - _num(push.get("at"), 0.0)) / frames))
+    return base + (min(4.0, max(1.0, float(push["to"]))) - base) * t
+
+
 def presenter_view(params: Mapping[str, Any], clip_frame: int) -> tuple[float, float, float]:
     """``presenterView`` (no bob): ``(scale, originX, originY)`` in screen px."""
-    base = _int(params.get("zoom"), 1, 3, 1)
+    base = pushed_zoom(params, clip_frame)
     punched = any(_num(p) <= clip_frame < _num(p) + 6 for p in params.get("punchAt") or ())
     zoom = min(base + 1, 4) if punched else base
     scale = LOGICAL_PX * zoom
@@ -400,9 +415,11 @@ def presenter_view(params: Mapping[str, Any], clip_frame: int) -> tuple[float, f
     steps = clip_frame // _int(params.get("stepFrames"), 2, 3, 2)
     fx = _num(focus.get("x"), LOGICAL_W / 2) + _num(pan.get("dx")) * steps
     fy = _num(focus.get("y"), LOGICAL_H / 2) + _num(pan.get("dy")) * steps
-    fx = round(min(max(fx, view_w / 2), LOGICAL_W - view_w / 2))
-    fy = round(min(max(fy, view_h / 2), LOGICAL_H - view_h / 2))
-    return scale, CANVAS[0] / 2 - fx * scale, CANVAS[1] / 2 - fy * scale
+    fx = min(max(fx, view_w / 2), LOGICAL_W - view_w / 2)
+    fy = min(max(fy, view_h / 2), LOGICAL_H - view_h / 2)
+    if base == round(base):  # a held zoom stays on whole logical px; a push glides
+        fx, fy = round(fx), round(fy)
+    return scale, round(CANVAS[0] / 2 - fx * scale), round(CANVAS[1] / 2 - fy * scale)
 
 
 def face_box(element: Element, clip_frame: int = 0) -> tuple[float, float, float, float] | None:

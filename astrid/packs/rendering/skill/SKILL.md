@@ -36,9 +36,10 @@ python3 -m astrid timelines visualize <timeline> --project <project> --at 7.2   
 python3 -m astrid timelines lint <timeline> --project <project>                               # checks, ~1 s
 ```
 
-Each run prints the page, the counts, `wall = queued + capture + compose` and `next:` commands
-(earlier, later, zoom in on the busiest moment, zoom out, another preset, the cut). Override with
-`--every`, `--columns` (≤ 16) and `--size WxH`; a window over budget says which preset fits.
+`--at` also takes a spoken word or on-screen text (`--at viral`). Each run prints the page, counts,
+`wall = queued + capture + compose` and `next:` (earlier, later, zoom in on the busiest moment, zoom
+out, another preset, the cut). Override with `--every`, `--columns` (≤ 16), `--size WxH`; one page
+always, so for the biggest frames show fewer (`--window 0.5`); over budget names the preset that fits.
 
 ## How an agent edits motion (you cannot watch video; read these instead)
 

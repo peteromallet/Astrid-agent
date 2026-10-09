@@ -19,8 +19,9 @@ python3 -m astrid timelines visualize --list-layers      # layers (built-in and 
 python3 -m astrid timelines lint --list-checks           # checks, their threshold keys and defaults
 ```
 
-The host serves the packs of the promoted checkout. A new module runs in `timelines lint` (client-side)
-at once, and in `visualize` sheets after it is committed and promoted.
+`timelines lint` and `--list-layers`/`--list-checks` run client-side, so a new module works there at once.
+`visualize` sheets are drawn by the pack host, which serves the promoted checkout: a new layer shows up in
+sheets after its commit is promoted (ask whoever runs `astrid dev promote`).
 
 ## 1. A layer
 
@@ -56,12 +57,12 @@ order=100, checks=())`:
 |---|---|
 | `cut` | the cut or window: `index, start, end, duration, shot, clip_id, layers, deliberate_hold, sequence`; `window=True` for a range |
 | `cuts` | every picture cut |
-| `elements`, `all_elements` | clips in the window / in the timeline (`type, track, start, end, params, clip, asset, label`) |
+| `elements`, `all_elements` | clips in the window / in the timeline: `id`, `short_id` (the id in the document, e.g. `c24-02-am-sprite`), `type` (clipType), `track`, `start`, `end`, `params`, `clip` (the raw clip), `asset`, `label`, `audio`, `sequence` |
 | `words`, `beats`, `sfx`, `events` | VO words (`start, end, text`); `{"beats","downbeats","hits"}`; `(start, end, name)`; entrances/exits/keys |
 | `tracks` | data tracks in the window (see §4) |
 | `frames` | `{timeline frame: PNG path}` when the layer needs frames; `ctx.frame_image(n)` opens one |
 | `fps`, `window`, `width` | frame rate, the panel time window `(start, end)`, the panel width |
-| helpers | `ctx.panel(height, title=...)`, `ctx.x_of(t)`, `ctx.visible(t0, t1)`, `ctx.rel(t)` |
+| helpers | `ctx.panel(height, title=...)` (a blank panel with the time grid), `ctx.x_of(t)` (panel x), `ctx.visible(t0, t1)`, `ctx.rel(t)`; colours `PALETTE` keys: `bg, panel, ink, muted, grid, grid_strong, cut, word, word_ink, beat, downbeat, hit, sfx, enter, exit, key, warn, bad, good`; `draw_text(draw, (x, y), text, size, colour)` |
 | `shared` | scratch dict shared by the layers of one sheet |
 
 ## 2. A check (a condition)
@@ -85,19 +86,26 @@ CHECK = Check("wordy-type", "on-screen type longer than max_words_on_screen word
 ```
 
 `Check(name, help, run, params={key: default}, scope="cut"|"timeline", needs=("doc",), codes=())`:
-- `run(ctx)` returns `Finding`s. Build them with `ctx.finding(code, message, t=..., severity="warn",
-  fix=...)`. `ctx` is a `CheckContext` with `cut` (`None` for timeline scope), `cuts`, `elements`
-  (in the cut), `all_elements`, `words`, `beats`, `sfx`, `tracks`, `params`, `fps`, `frames`.
+- `run(ctx)` returns a list of `Finding`s (empty = passed). Build them with
+  `ctx.finding(code, message, t=..., severity="warn", fix=...)`; severity defaults to `warn`.
+  `ctx` is a `CheckContext`: `cut` (`None` for timeline scope), `cuts`, `elements` (in the cut),
+  `all_elements`, `words`, `beats`, `sfx`, `tracks`, `fps`, `frames`; read thresholds with
+  `ctx.param("key")` (the merged value: your default, overridden by the rules file).
 - `params` declares your threshold keys and defaults. `None` means off until a rules file sets it.
   Keys are shared, so another check reading `min_text_px` gets the same value.
-- `severity` is `error | warn | info`. `fix` is machine-applicable: `{"clip": id, "set": {"params.x": 1104}}`
-  or `{"clip": id, "move_s": 0.12}`.
+- `severity` is `error | warn | info`. `fix` is advisory data for an agent or tool (nothing applies it
+  automatically, and keys are not validated): `{"clip": <short_id>, "set": {"params.x": 1104}}` sets
+  document paths relative to the clip; `{"clip": <short_id>, "move_s": 0.12}` moves the clip. Use real
+  param names from the element's `element.yaml`.
 - `needs=("frames",)` runs only inside `visualize --view motion`, where frames exist. Doc checks also
-  run in `timelines lint`. A check can ship with a layer: `Layer(..., checks=(CHECK,))`.
+  run in `timelines lint`. A check can ship with a layer, `Layer(..., checks=(CHECK,))`, OR be exported
+  as `CHECK`; do one or the other (the same name registered twice keeps the last).
 
 ## 3. Project rules: `astrid-lint.toml` (no Python)
 
-Put it in your working directory (or any parent), or pass `--rules FILE`:
+Put it in the folder you run `timelines lint` from (or any parent), or pass `--rules FILE`. The first
+line of `timelines lint` says which file is in force and its values (`rules: built-in defaults` means none
+was found). Finding codes for `[severity]` come from `timelines lint --list-checks`:
 
 ```toml
 # thresholds: any key from `timelines lint --list-checks`
@@ -114,8 +122,9 @@ LONG = "error"
 disable = ["vo-level"]        # skip whole checks by name
 ```
 
-`timelines lint` prints `rules: <path>`. An unknown key is an error that lists the known keys.
-`--strict` exits 1 on any `error` finding. `visualize --view motion` uses the same file.
+An unknown key is an error that lists the known keys. `--list-checks` shows the values in force.
+A check with no finding line passed (or is off until a threshold is set); `checks run:` lists them.
+`--strict` exits 1 on any `error` finding. `visualize --cut N` uses the same file.
 
 ## 4. Data tracks
 
@@ -140,21 +149,26 @@ A data track is typed time data on a clip: `clip["app"]["data"][<name>]`.
 
 - `time: "clip"` means seconds from the clip's start (like `app.words`). `"source"` means media seconds,
   mapped through the clip's `from` (like `app.beats`).
-- `source.handle` uses the media-handle grammar: `sha256:<hex>`, `run:<run_id>/<port>#n` or `ref:<name>`.
+- `source` is provenance. `producer` names what made the track (`"my-tool@1"`, or `"hand"` for one
+  you typed). `handle` is the media it was computed from, in the media-handle grammar (`sha256:<hex>`,
+  `run:<run_id>/<port>#n` or `ref:<name>`); leave it out for a hand-made track.
 - Reading: every layer and check gets them in timeline seconds through `ctx.tracks`
   (`motion.data.tracks(...)`). The sync layer draws any points/intervals/series track as a lane.
   The `composition` check uses a `face` boxes track, when present, as the presenter's face.
 - Derived tracks (read-only views of older data): `words`, `beats`, `music_hits`, `face_zone`, `presenter_words`.
 
-Attach one to a checked-out document, then check and publish as usual:
+Find clip ids with `timelines show <timeline> --project P --as code` (each element ends `# id …`).
+Attach a track to a checked-out document (a local copy; nothing changes until you publish), then check
+and publish as usual. Use a scratch folder of your own for the files:
 
 ```bash
-python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout --project P --timeline T --file /tmp/edit.json
-python3 -m astrid.packs.rendering.skill.scripts.timeline_data add --file /tmp/edit.json --clip v17-04-am-sprite --name claw_contact --track track.json
-python3 -m astrid.packs.rendering.skill.scripts.timeline_data loudness --file /tmp/edit.json   # producer: RMS dBFS per VO/music clip
-python3 -m astrid.packs.rendering.skill.scripts.timeline_data list --file /tmp/edit.json
-python3 -m astrid.packs.rendering.skill.scripts.timeline_document check --file /tmp/edit.json
-python3 -m astrid.packs.rendering.skill.scripts.timeline_document publish --file /tmp/edit.json --idempotency-key <key>
+python3 -m astrid.packs.rendering.skill.scripts.timeline_document checkout --project P --timeline T --file <scratch>/edit.json
+python3 -m astrid.packs.rendering.skill.scripts.timeline_data add --file <scratch>/edit.json --clip v17-04-am-sprite --name claw_contact --track track.json
+python3 -m astrid.packs.rendering.skill.scripts.timeline_data loudness --file <scratch>/edit.json   # producer: RMS dBFS per VO/music clip
+python3 -m astrid.packs.rendering.skill.scripts.timeline_data list --file <scratch>/edit.json
+python3 -m astrid.packs.rendering.skill.scripts.timeline_data validate --file <scratch>/edit.json
+python3 -m astrid.packs.rendering.skill.scripts.timeline_document check --file <scratch>/edit.json
+python3 -m astrid.packs.rendering.skill.scripts.timeline_document publish --file <scratch>/edit.json --idempotency-key <key>
 ```
 
 A check reads a track by name:

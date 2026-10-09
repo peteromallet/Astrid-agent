@@ -280,9 +280,10 @@ def layer_help() -> str:
     return "\n".join(lines)
 
 
-def check_help() -> str:
-    """The ``timelines lint --list-checks`` text."""
+def check_help(rules: Mapping[str, Any] | None = None) -> str:
+    """The ``timelines lint --list-checks`` text (effective values when a rules file is in force)."""
     registry = checks()
+    overrides = dict((rules or {}).get("params") or {})
     lines = ["Checks (timelines lint runs every doc check; frame checks run in --view motion):"]
     for check in sorted(registry.values(), key=lambda c: c.name):
         tags = [check.scope, "needs " + "+".join(check.needs)]
@@ -292,7 +293,12 @@ def check_help() -> str:
             tags.append("from " + check.source)
         lines.append(f"  {check.name:<16} {check.help}  [{'; '.join(tags)}]")
         for key, default in check.params.items():
-            lines.append(f"      {key} = {default!r}" + ("   (off until set)" if default is None else ""))
+            if key in overrides:
+                lines.append(f"      {key} = {overrides[key]:g}   (from {rules.get('path')}; default {default!r})")
+            else:
+                lines.append(f"      {key} = {default!r}" + ("   (off until set)" if default is None else ""))
+        if check.name in set((rules or {}).get("disable") or ()):
+            lines.append("      (disabled by the rules file)")
     for name, error in sorted(_BROKEN.items()):
         lines.append(f"  (broken) {name}: {error}")
     lines.append("Thresholds: astrid-lint.toml (found from the working directory upwards) or --rules FILE, "
