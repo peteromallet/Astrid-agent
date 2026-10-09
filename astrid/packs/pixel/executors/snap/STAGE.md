@@ -9,7 +9,7 @@ the modal colour of its source region, not a bilinear average.
 
 ## Inputs
 
-- `image` (file, required): managed image. Import it first, then pass the digest.
+- `image` (file, required): managed image descriptor `{digest, filename, media_type, size_bytes}` from `python -m astrid media import`. A bare digest string fails with `image not found`.
 - `crop` (json, optional): `{x, y, width, height}` in source pixels. Applied before everything else.
 - `auto_grid` (boolean, default `false`): detect the block lattice from edge periodicity.
   Use it for images that already sit on a pixel lattice. If detection fails, the
@@ -38,7 +38,7 @@ result = sdk.invoke(
     kind="executor",
     project="almost-ready",
     inputs={
-        "image": "<managed image digest>",
+        "image": {"digest": "sha256:<digest>", "filename": "<file.png>", "media_type": "image/png", "size_bytes": 199012},
         "crop": {"x": 60, "y": 190, "width": 460, "height": 210},
         "grid_width": 48,
         "grid_height": 48,

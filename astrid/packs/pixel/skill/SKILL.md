@@ -12,7 +12,9 @@ Do not use it to generate images (use `generation`) or to smooth or upscale art
 
 ## Entrypoints
 
-Both executors take a managed image. Import the file first, then pass its digest:
+Both executors take a managed image. Import the file first, then pass its
+descriptor (`digest`, `filename`, `media_type`, `size_bytes` from the import
+result). A bare digest string fails at runtime with `image not found`:
 
 ```bash
 python3 -m astrid media import <file.png> --project almost-ready --json
@@ -20,20 +22,33 @@ python3 -m astrid media import <file.png> --project almost-ready --json
 
 ```python
 import astrid.sdk as sdk
+from astrid.sdk import AstridClient
 
-snapped = sdk.invoke(
-    "pixel.snap",
-    kind="executor",
-    project="almost-ready",
-    inputs={"image": "<digest>", "grid_width": 48, "grid_height": 48, "fit": "none"},
-)
-cutout = sdk.invoke(
-    "pixel.cutout",
-    kind="executor",
-    project="almost-ready",
-    inputs={"image": "<digest>", "mode": "flat", "grid": "48x48", "fit": "none"},
-)
+image = {
+    "digest": "sha256:<digest>",
+    "filename": "<file.png>",
+    "media_type": "image/png",
+    "size_bytes": 199012,
+}
+with AstridClient.open_from_launcher() as client:  # sdk.invoke needs an explicit client
+    snapped = sdk.invoke(
+        "pixel.snap",
+        kind="executor",
+        project="almost-ready",
+        inputs={"image": image, "grid_width": 48, "grid_height": 48, "fit": "none"},
+        client=client,
+    )
+    cutout = sdk.invoke(
+        "pixel.cutout",
+        kind="executor",
+        project="almost-ready",
+        inputs={"image": image, "mode": "flat", "grid": "48x48", "fit": "none"},
+        client=client,
+    )
 ```
+
+Invocations are admitted as tasks. Identical inputs reuse the existing task,
+so after a fix re-run with `python3 -m astrid tasks retry <task-id> --project almost-ready`.
 
 Pass `crop` ({x, y, width, height} in source pixels) to either executor to cut a
 region first, for example a character pose out of a reference sheet.

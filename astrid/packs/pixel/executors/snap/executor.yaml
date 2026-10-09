@@ -17,7 +17,7 @@ inputs:
     type: file
     required: true
     artifact_type: image
-    description: Managed image (import with python -m astrid media import, then pass its digest).
+    description: Managed image descriptor {digest, filename, media_type, size_bytes} from python -m astrid media import.
   - name: crop
     type: json
     required: false

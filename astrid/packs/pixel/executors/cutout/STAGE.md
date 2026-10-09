@@ -38,7 +38,7 @@ result = sdk.invoke(
     kind="executor",
     project="almost-ready",
     inputs={
-        "image": "<managed image digest>",
+        "image": {"digest": "sha256:<digest>", "filename": "<file.png>", "media_type": "image/png", "size_bytes": 199012},
         "mode": "flat",
         "grid": "auto",
         "trim": True,
