@@ -10,8 +10,6 @@ type Layer = 'A' | 'B' | 'C';
 type SketchState = {at: number; interface?: Layer; behaviour?: Layer; data?: Layer};
 type Prompt = {text: string; at: number};
 type Params = {
-  x?: number;
-  y?: number;
   width?: number;
   height?: number;
   title?: string;
@@ -19,6 +17,13 @@ type Params = {
   prompt?: Prompt | null;
   allAt?: number | null;
   seed?: number;
+  /** Group position in frame px. Default: centred in width x height. */
+  x?: number;
+  y?: number;
+  /** Integer scale of the group, 1 or 2. Default: whichever is closest to 70% of the frame height. */
+  scale?: 1 | 2;
+  /** Pixel arrow cursor. Path points are window px (border included) at absolute frames. */
+  cursor?: CursorSpec | null;
 };
 
 type Region = 'interface' | 'behaviour' | 'data';
@@ -38,7 +43,7 @@ const DEFAULT_PROMPT_TEXT = 'make the sidebar go right, the button a slider, and
 
 // ---- Geometry (window-local px; the body sits 2 px in and 50 px down) -------
 const W = 960;
-const H = 600;
+const H = 636;
 const BODY_X = 2;
 const BODY_Y = 50;
 const BODY_W = W - 4;
@@ -46,6 +51,13 @@ const BODY_H = H - 52;
 const BLOCK = 6;
 const SIDEBAR = 192;
 const PAD = 24;
+// The group is the window plus the prompt bar below it. At scale 1 it is 756 px,
+// 70% of a 1080 px frame.
+const BUBBLE_GAP = 24;
+const BUBBLE_H = 96;
+const GROUP_H = H + BUBBLE_GAP + BUBBLE_H;
+const FRAME_H = 1080;
+const snap6 = (value: number): number => Math.round(value / BLOCK) * BLOCK;
 
 const INK = COLOR.ink;
 const PANEL = COLOR.panel;
@@ -64,9 +76,9 @@ const layout = (iface: Layer): {sidebar: 'left' | 'right' | null; main: Box; dat
     return {
       sidebar: 'left',
       main,
-      data: {x: SIDEBAR + PAD, y: PAD, w: main.w - PAD * 2, h: 216},
-      behaviour: {x: SIDEBAR + PAD, y: 264, w: main.w - PAD * 2, h: 132},
-      control: {x: SIDEBAR + PAD, y: 420, w: main.w - PAD * 2, h: 96},
+      data: {x: SIDEBAR + PAD, y: PAD, w: main.w - PAD * 2, h: 234},
+      behaviour: {x: SIDEBAR + PAD, y: 288, w: main.w - PAD * 2, h: 132},
+      control: {x: SIDEBAR + PAD, y: 450, w: main.w - PAD * 2, h: 96},
       tabs: false,
     };
   }
@@ -75,9 +87,9 @@ const layout = (iface: Layer): {sidebar: 'left' | 'right' | null; main: Box; dat
     return {
       sidebar: 'right',
       main,
-      data: {x: PAD, y: PAD, w: main.w - PAD * 2, h: 216},
-      behaviour: {x: PAD, y: 264, w: main.w - PAD * 2, h: 132},
-      control: {x: PAD, y: 420, w: main.w - PAD * 2, h: 96},
+      data: {x: PAD, y: PAD, w: main.w - PAD * 2, h: 234},
+      behaviour: {x: PAD, y: 288, w: main.w - PAD * 2, h: 132},
+      control: {x: PAD, y: 450, w: main.w - PAD * 2, h: 96},
       tabs: false,
     };
   }
@@ -85,9 +97,9 @@ const layout = (iface: Layer): {sidebar: 'left' | 'right' | null; main: Box; dat
   return {
     sidebar: null,
     main,
-    data: {x: PAD, y: 72, w: main.w - PAD * 2, h: 216},
-    behaviour: {x: PAD, y: 312, w: main.w - PAD * 2, h: 132},
-    control: {x: PAD, y: 468, w: main.w - PAD * 2, h: 56},
+    data: {x: PAD, y: 72, w: main.w - PAD * 2, h: 234},
+    behaviour: {x: PAD, y: 330, w: main.w - PAD * 2, h: 132},
+    control: {x: PAD, y: 486, w: main.w - PAD * 2, h: 56},
     tabs: true,
   };
 };
@@ -477,12 +489,91 @@ const flickerPlan = (frame: number, changedAt: number | null): {phase: 0 | 1 | n
   return {phase, spark};
 };
 
+// ---- Cursor ----------------------------------------------------------------
+type CursorPoint = {x: number; y: number; frame: number};
+type CursorSpec = {at?: number; path?: CursorPoint[]; holdFrames?: number; stepFrames?: number};
+
+// Chunky pixel arrow: '#' outline, 'p' fill, '.' empty. One cell is one BLOCK.
+const ARROW = [
+  '#.........',
+  '##........',
+  '#p#.......',
+  '#pp#......',
+  '#ppp#.....',
+  '#pppp#....',
+  '#ppppp#...',
+  '#pppppp#..',
+  '#ppppppp#.',
+  '#pppp#####',
+  '#pp#pp#...',
+  '#p#.#pp#..',
+  '##..#pp#..',
+  '#....#pp#.',
+  '.....#pp#.',
+  '......##..',
+];
+
+// Cursor position at `frame`. It holds on each point and steps toward the next
+// one every stepFrames, snapped to the 6 px grid. It hides holdFrames after the
+// last point.
+const cursorPosition = (cursor: CursorSpec | null, frame: number): {x: number; y: number} | null => {
+  if (!cursor || !Array.isArray(cursor.path) || cursor.path.length === 0) return null;
+  const pts = [...cursor.path].sort((a, b) => a.frame - b.frame);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const hold = integerIn(cursor.holdFrames, 0, 600, 18);
+  if (frame < finiteNumber(cursor.at, first.frame)) return null;
+  if (frame >= last.frame + hold) return null;
+  if (frame <= first.frame) return {x: snap6(first.x), y: snap6(first.y)};
+  if (frame >= last.frame) return {x: snap6(last.x), y: snap6(last.y)};
+  const step = integerIn(cursor.stepFrames, 1, 12, 2);
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (frame >= a.frame && frame < b.frame) {
+      const span = Math.max(1, b.frame - a.frame);
+      const t = Math.min(1, (Math.floor((frame - a.frame) / step) * step) / span);
+      return {x: snap6(a.x + (b.x - a.x) * t), y: snap6(a.y + (b.y - a.y) * t)};
+    }
+  }
+  return {x: snap6(last.x), y: snap6(last.y)};
+};
+
+const CursorArrow = ({x, y}: {x: number; y: number}): ReactElement => {
+  const cells: ReactElement[] = [];
+  ARROW.forEach((row, r) => {
+    row.split('').forEach((ch, c) => {
+      if (ch === '.') return;
+      cells.push(
+        <div
+          key={`${r}-${c}`}
+          style={{position: 'absolute', left: x + c * BLOCK, top: y + r * BLOCK, width: BLOCK, height: BLOCK, background: ch === '#' ? INK : PANEL}}
+        />,
+      );
+    });
+  });
+  return <>{cells}</>;
+};
+
+// Integer scale: the requested one, else whichever of 1 or 2 is closest to 70% of the frame.
+const pickScale = (requested: unknown, frameH: number): 1 | 2 => {
+  if (requested === 1 || requested === 2) return requested;
+  const target = 0.7 * frameH;
+  return Math.abs(GROUP_H * 2 - target) < Math.abs(GROUP_H - target) ? 2 : 1;
+};
+
 export default function AmUiSketch(props: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const params = narrowParams<Params>(props.params);
-  const width = finiteNumber(params.width, W);
-  const height = finiteNumber(params.height, H + 120);
+  const width = finiteNumber(params.width, 1920);
+  const height = finiteNumber(params.height, FRAME_H);
   const seed = integerIn(params.seed, 0, 2 ** 30, 1);
+  const scale = pickScale(params.scale, height);
+  const groupW = W * scale;
+  const groupH = GROUP_H * scale;
+  const gx = typeof params.x === 'number' && Number.isFinite(params.x) ? snap6(params.x) : snap6((width - groupW) / 2);
+  const gy = typeof params.y === 'number' && Number.isFinite(params.y) ? snap6(params.y) : snap6((height - groupH) / 2);
+  const cursorPos = cursorPosition(params.cursor ?? null, frame);
   const states = Array.isArray(params.states) && params.states.length > 0 ? params.states : DEFAULT_STATES;
   const resolved = resolveStates(states);
   const allAt = typeof params.allAt === 'number' ? params.allAt : null;
@@ -537,7 +628,9 @@ export default function AmUiSketch(props: ElementComponentProps): ReactElement |
   const caretOn = prompt !== null && Math.floor(frame / 3) % 2 === 0;
 
   return (
-    <div style={{position: 'absolute', left: finiteNumber(params.x, 0), top: finiteNumber(params.y, 0), width, height, overflow: 'hidden'}}>
+    <div style={{position: 'absolute', left: 0, top: 0, width, height, overflow: 'hidden'}}>
+      <div style={{position: 'absolute', left: gx, top: gy, width: groupW, height: groupH}}>
+      <div style={{position: 'absolute', left: 0, top: 0, width: W, height: GROUP_H, transform: `scale(${scale})`, transformOrigin: '0 0'}}>
       {/* Window */}
       <div
         style={{
@@ -576,6 +669,7 @@ export default function AmUiSketch(props: ElementComponentProps): ReactElement |
             ))}
           </div>
         </div>
+      {cursorPos ? <CursorArrow x={cursorPos.x} y={cursorPos.y} /> : null}
       </div>
 
       {/* Prompt bubble: "ask the LLM to change it" */}
@@ -607,6 +701,8 @@ export default function AmUiSketch(props: ElementComponentProps): ReactElement |
           ) : null}
         </div>
       ) : null}
+      </div>
+      </div>
     </div>
   );
 }

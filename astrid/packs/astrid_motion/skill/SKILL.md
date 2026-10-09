@@ -351,7 +351,8 @@ cells, the current bin marked orange).
 
 A ruled app window drawn only with shapes (2 px ink outline, sand title bar,
 three pixel dots). Three layers swap independently. Missing layer values carry
-forward.
+forward. The window is 960x636 and the prompt bar sits 24 px below it, so the
+group is 756 px tall: exactly 70% of a 1080 frame.
 
 - `states` [{at, interface?, behaviour?, data?}] with values `A`, `B` or `C`.
   - INTERFACE: A is a left sidebar with a big `RUN` button, B a right sidebar
@@ -363,12 +364,21 @@ forward.
 - A change flickers the changed region in 6 px blocks (density 35% then 20%) on
   two frames, then swaps in. A burst of orange 6 px sparks steps out from the
   region centre over three steps.
+- `cursor` {at, path: [{x, y, frame}], holdFrames (18), stepFrames (2)}: a chunky
+  pixel arrow (6 px cells). It holds on each path point and steps toward the
+  next every `stepFrames`, snapped to 6 px. Path points are window px (the
+  960 px window, border included) at absolute clip frames. Place each point on
+  the region that changes next, arriving about 8 to 14 frames before the swap.
+  It hides `holdFrames` after the last point. `null` or omitted: no cursor.
 - `prompt` {text, at}: a chat bubble below the window types in at two frames a
   character with a caret, then a `LLM` chip follows. `null` or omitted hides it.
 - `allAt`: at that frame every layer mutates once every two frames for twelve
   frames, with a spark each step. Then the states resume.
-- `title` (default `untitled app`), `x`, `y`, `width` (960 window), `height`
-  (720 includes the bubble), `seed`.
+- Placement: `x`, `y` (group top-left in frame px; default centred in
+  `width` x `height`, which default to 1920x1080). `scale` (1 or 2, integer;
+  default the one closest to 70% of the frame height, which is 1 at 1080).
+  At scale 2 the group is 1920x1512, so it needs a frame at least that tall or
+  an explicit `y`. `title` (default `untitled app`), `seed`.
 
 Keep layer changes at least six frames apart so each flicker reads.
 
