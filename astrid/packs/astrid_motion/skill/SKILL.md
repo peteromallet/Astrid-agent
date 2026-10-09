@@ -225,39 +225,58 @@ Departure Mono, and the crop marks are inset 48 px.
 ## am-discord: pixel-styled Discord channel reconstruction
 
 A reconstruction, not a screenshot. It has no Discord logo or wordmark. The
-window is 1280x720, centred, with a 2 px outline and a hard 12 px shadow.
-Message text is Inter (Noto Sans is not shipped), names are Inter bold, and
-timestamps and system lines are Departure Mono. Palette values come from the
-lore notes (04-lore.md B3) and are [S] or [U] there. Check them against a real
-client before sign-off.
+window is 1280 px wide and centred. Its height is `frame.height`, or with
+`fit: "content"` it hugs the visible stack (never below `minHeight`, default
+360). The window snaps taller as messages land. Message text is Inter (Noto
+Sans is not shipped), names are Inter bold, and timestamps and system lines are
+Departure Mono. Palette values come from the lore notes (04-lore.md B3) and are
+[S] or [U] there. Check them against a real client before sign-off.
 
 - `channel`, `server`, `channels`: header and sidebar text, verbatim.
-- `messages` [{author, tag, avatarColor, time, lines, appearAt, typeOn}]:
-  `lines` are paragraphs, shown verbatim. `@everyone` renders as a mention pill.
-  `{u:word}` marks a word that the `underline` list can target. `time` is shown
-  as given. With `typeOn`, characters reveal on `typeStepFrames` (default 2)
-  steps.
+  `sidebar: false` hides the channel list and widens the chat.
+- `messages` [{author, tag, avatarColor, time, lines, appearAt, typeOn}]: one
+  message per post. Adjacent messages from the same author, tag and time render
+  as one block, with one header and then the lines. `lines` are paragraphs,
+  shown verbatim. `@everyone` is a mention pill. `{u:word}` is a static
+  underline and marks the word as a target. `time` is shown as given. With
+  `typeOn`, characters reveal on `typeStepFrames` (default 2) steps.
 - `dateDividers` [{label, at, jump?}]: after the first divider, the date flips
-  split-flap through the days between dates over `jumpFrames` (default 12, the
-  day step is ease-out), then lands. `jump: false` lands at once.
+  split-flap through the days between the two dates over `jumpFrames` (default
+  12, ease-out), then lands. `jump: false` lands at once.
 - `reactions` [{emoji, countFrom, countTo, startAt, stepFrames, onMessage?,
   mine?}]: a pill with a stamp entrance (0.6, 1.1, 1.0), counting in
-  `stepFrames`. Attaches to `onMessage`, or else to the latest message posted
-  by `startAt`. Emoji is Unicode, or a path or URL for a pixel icon.
+  `stepFrames`. Attaches to `onMessage`, or else the latest message posted by
+  `startAt`. Emoji is Unicode, or a path or URL for a pixel icon.
 - `joins` [{name, at, time?}]: system lines with a green pixel arrow, stacking
   upward. Accelerate them by shrinking the gaps between `at` values.
-- `underline` [{word, at, color}]: draws in over 6 frames, one step per frame.
-- `strike` [{word, at}]: rust bar on frame `at`, orange bar one frame later,
-  offset by 3 px. `word` matches the first occurrence, or use `onMessage`.
+- Decorations take `{word, at, onMessage?}`. The first match is used unless
+  `onMessage` is given. Each one steps on whole frames:
+  - `underline` [{color}]: draws in over 6 frames, one step per frame.
+  - `strike`: rust bar on frame `at`, orange bar one frame later, offset 3 px.
+  - `highlight` [{color: '#ED6B23', alpha: 0.45}]: a Vox-style swipe behind the
+    word, wiping across in 4 stepped frames.
+  - `circle`: a rust (#A94714) hand-drawn ellipse, drawn in 6 stepped segments.
+    The shape is seeded from the word, so it is repeatable.
+  - `annotation` [{text}]: a Departure Mono callout card above the word, with an
+    orange connector that grows in 2 steps. The card lands on `at + 2`. Its look
+    is taken from am-callout. Headroom is added above the stack when any
+    annotation is present.
+- `camera` [{at, zoom: 1|2|3, focus: {x, y}}]: stepped integer push-ins of the
+  whole window. Each step snaps on its frame, with no easing. `focus` is in
+  window px, measured from the window's top-left at its current size, and lands
+  on the frame centre. Use it to punch into a word, and read the focus from a
+  zoom-1 still first.
 - `badge` (default `RECONSTRUCTION · REACTIONS & JOINS ILLUSTRATIVE`, empty to
-  hide) sits under the window's bottom-right. `frame` {width, height, radius,
-  outline, shadow} sets the window.
+  hide) sits at the frame's bottom-right. It does not move with the camera.
+  `frame` {width, height, radius, outline, shadow} sets the window.
 
-Messages, joins and dividers interleave by `at`, newest at the bottom, and the
-top fades out. Keep the joins and reactions labelled illustrative (the badge).
+Messages, joins and dividers interleave by `at`, newest at the bottom. The
+window keeps its width and centre. The top fades only in frame mode. Keep joins
+and reactions labelled illustrative (the badge).
 
-The element validates against the 500-char description limit and keywords with
-no spaces, so write multi-word keywords with hyphens.
+Stills for this element are in production/explorations/elements/am-discord_*.png.
+The `am-discord_pushin-zoom2-tomorrow-*` stills show the highlighter and the
+camera together.
 
 ## am-flap: split-flap readout
 

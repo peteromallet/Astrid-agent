@@ -1,4 +1,4 @@
-import type {ReactElement} from 'react';
+import type {CSSProperties, ReactElement} from 'react';
 import {useCurrentFrame} from 'remotion';
 import {
   type ElementComponentProps,
@@ -13,8 +13,17 @@ import {
   renderableFile,
 } from '../../_shared/am';
 import {
+  type CameraStep,
   type Token,
+  annotationShown,
+  cameraAt,
+  circleProgress,
+  connectorProgress,
   dividerState,
+  fitHeight,
+  handCirclePath,
+  hexAlpha,
+  highlightProgress,
   reactionCount,
   revealed,
   stampScale,
@@ -25,10 +34,12 @@ import {
 } from './discord-core';
 
 // am-discord: a pixel-styled RECONSTRUCTION of a Discord channel window. It is
-// not a screenshot and carries no Discord logo or wordmark. The window is 1280x720,
-// centred on the plate, with a 2 px outline and a hard offset shadow. Messages
-// stack from the bottom, joins and date dividers interleave in time order, and
-// reactions, underline and strike decorations tick on whole frames.
+// not a screenshot and carries no Discord logo or wordmark. The window is
+// 1280 px wide. Its height is fixed, or (fit "content") hugs the visible stack.
+// Messages stack from the bottom, joins and date dividers interleave in time
+// order, and reactions, highlighter, underline, strike, circle and annotation
+// decorations step on whole frames. A camera steps the whole window in integer
+// zoom, so it can push in on one word.
 // Discord palette: community values from the lore notes (04-lore.md B3), so
 // they are [S]/[U] and should be checked against a real client before sign-off.
 
@@ -42,7 +53,6 @@ const PALETTE = {
   text: '#F2F3F5',
   body: '#F2F3F5',
   muted: '#949BA4',
-  icon: '#B5BAC1',
   blurple: '#5865F2',
   blurpleInk: '#FFFFFF',
   green: '#23A559',
@@ -52,9 +62,26 @@ const PALETTE = {
   orange: COLOR.orange,
 };
 
+const PANEL = COLOR.panel;
+const INK = COLOR.ink;
 const MONO = `'${FAMILY.label}', monospace`;
 const SANS = `'${FAMILY.body}', 'Noto Sans', sans-serif`;
 const EMOJI = `'Apple Color Emoji', 'Noto Color Emoji', sans-serif`;
+const BODY_FONT = `400 17px ${FAMILY.body}, sans-serif`;
+
+// Layout constants (px). The 6 px rhythm: chrome 48, rail 72, sidebar 240.
+const RAIL_W = 72;
+const SIDEBAR_W = 240;
+const BORDER = 2;
+const HEADER_H = 49;
+const INPUT_BLOCK_H = 78;
+const MESSAGE_PAD = 12;
+const LINE_H = 24;
+const DIVIDER_H = 48;
+const JOIN_H = 36;
+const REACTION_ROW_H = 36;
+const ANNOTATION_HEADROOM = 64;
+const MESSAGE_TEXT_INSET = 90; // avatar 42 + gap 12 + padding 18 x 2 + 8 spare
 
 type MessageSpec = {
   author: string;
@@ -76,20 +103,29 @@ type ReactionSpec = {
   mine: boolean;
 };
 type JoinSpec = {name: string; at: number; time: string};
-type MarkSpec = {word: string; at: number; color: string; onMessage: number | null};
-type StrikeSpec = {word: string; at: number; onMessage: number | null};
+type TargetSpec = {word: string; at: number; onMessage: number | null};
+type MarkSpec = TargetSpec & {color: string};
+type HighlightSpec = TargetSpec & {color: string; alpha: number};
+type AnnotationSpec = TargetSpec & {text: string};
 type FrameSpec = {width: number; height: number; radius: number; outline: string; shadow: number};
 
 type Params = {
   server?: string;
   channel?: string;
   channels?: string[];
+  sidebar?: boolean;
+  fit?: string;
+  minHeight?: number;
   messages?: unknown[];
   dateDividers?: unknown[];
   reactions?: unknown[];
   joins?: unknown[];
   underline?: unknown[];
   strike?: unknown[];
+  highlight?: unknown[];
+  circle?: unknown[];
+  annotation?: unknown[];
+  camera?: unknown[];
   badge?: string;
   frame?: Partial<FrameSpec>;
   jumpFrames?: number;
@@ -107,81 +143,113 @@ const nonEmptyStr = (value: unknown): string | null =>
 const hexOr = (value: unknown, fallback: string): string =>
   typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim() : fallback;
 
+const frameOf = (value: unknown, fallback = 0): number =>
+  Math.max(0, Math.round(finiteNumber(value, fallback)));
+
 const onMessageOf = (value: unknown): number | null =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
 
-const parseMessages = (items: unknown[] | undefined): MessageSpec[] =>
+const listOf = <T,>(items: unknown[] | undefined, map: (o: Record<string, unknown>) => T | null): T[] =>
   (items ?? []).flatMap((raw) => {
-    const m = obj(raw);
+    const value = map(obj(raw));
+    return value ? [value] : [];
+  });
+
+const targetOf = (o: Record<string, unknown>): TargetSpec | null => {
+  const word = nonEmptyStr(o.word);
+  return word ? {word, at: frameOf(o.at), onMessage: onMessageOf(o.onMessage)} : null;
+};
+
+// Adjacent messages from the same author, tag and time render as one block:
+// one header, then the lines, as Discord groups them.
+const parseMessages = (items: unknown[] | undefined): MessageSpec[] => {
+  const raw = listOf<MessageSpec>(items, (m) => {
     const author = nonEmptyStr(m.author);
     const lines = Array.isArray(m.lines) ? m.lines.filter((l): l is string => typeof l === 'string') : [];
-    if (!author || lines.length === 0) return [];
-    return [{
+    if (!author || lines.length === 0) return null;
+    return {
       author,
       tag: strOr(m.tag, ''),
       avatarColor: hexOr(m.avatarColor, '#5865F2'),
       time: strOr(m.time, ''),
       lines,
-      appearAt: Math.max(0, Math.round(finiteNumber(m.appearAt, 0))),
+      appearAt: frameOf(m.appearAt),
       typeOn: m.typeOn === true,
-    }];
+    };
   });
+  const grouped: MessageSpec[] = [];
+  for (const m of raw) {
+    const last = grouped[grouped.length - 1];
+    if (last && last.author === m.author && last.tag === m.tag && last.time === m.time && last.avatarColor === m.avatarColor) {
+      grouped[grouped.length - 1] = {...last, lines: [...last.lines, ...m.lines], typeOn: last.typeOn || m.typeOn};
+    } else {
+      grouped.push(m);
+    }
+  }
+  return grouped;
+};
 
 const parseDividers = (items: unknown[] | undefined): DividerSpec[] =>
-  (items ?? []).flatMap((raw) => {
-    const d = obj(raw);
+  listOf<DividerSpec>(items, (d) => {
     const label = nonEmptyStr(d.label);
-    if (!label) return [];
-    return [{
-      label,
-      at: Math.max(0, Math.round(finiteNumber(d.at, 0))),
-      jump: typeof d.jump === 'boolean' ? d.jump : null,
-    }];
+    if (!label) return null;
+    return {label, at: frameOf(d.at), jump: typeof d.jump === 'boolean' ? d.jump : null};
   });
 
 const parseReactions = (items: unknown[] | undefined): ReactionSpec[] =>
-  (items ?? []).flatMap((raw) => {
-    const r = obj(raw);
+  listOf<ReactionSpec>(items, (r) => {
     const emoji = nonEmptyStr(r.emoji);
-    if (!emoji) return [];
-    return [{
+    if (!emoji) return null;
+    return {
       emoji,
       countFrom: Math.round(finiteNumber(r.countFrom, 0)),
       countTo: Math.round(finiteNumber(r.countTo, 0)),
-      startAt: Math.max(0, Math.round(finiteNumber(r.startAt, 0))),
+      startAt: frameOf(r.startAt),
       stepFrames: integerIn(r.stepFrames, 1, 60, 3),
       onMessage: onMessageOf(r.onMessage),
       mine: r.mine === true,
-    }];
+    };
   });
 
 const parseJoins = (items: unknown[] | undefined): JoinSpec[] =>
-  (items ?? []).flatMap((raw) => {
-    const j = obj(raw);
+  listOf<JoinSpec>(items, (j) => {
     const name = nonEmptyStr(j.name);
-    if (!name) return [];
-    return [{name, at: Math.max(0, Math.round(finiteNumber(j.at, 0))), time: strOr(j.time, '')}];
+    return name ? {name, at: frameOf(j.at), time: strOr(j.time, '')} : null;
   });
 
 const parseMarks = (items: unknown[] | undefined): MarkSpec[] =>
-  (items ?? []).flatMap((raw) => {
-    const u = obj(raw);
-    const word = nonEmptyStr(u.word);
-    if (!word) return [];
-    return [{
-      word,
-      at: Math.max(0, Math.round(finiteNumber(u.at, 0))),
-      color: hexOr(u.color, COLOR.orange),
-      onMessage: onMessageOf(u.onMessage),
-    }];
+  listOf<MarkSpec>(items, (u) => {
+    const t = targetOf(u);
+    return t ? {...t, color: hexOr(u.color, COLOR.orange)} : null;
   });
 
-const parseStrikes = (items: unknown[] | undefined): StrikeSpec[] =>
-  (items ?? []).flatMap((raw) => {
-    const s = obj(raw);
-    const word = nonEmptyStr(s.word);
-    if (!word) return [];
-    return [{word, at: Math.max(0, Math.round(finiteNumber(s.at, 0))), onMessage: onMessageOf(s.onMessage)}];
+const parseHighlights = (items: unknown[] | undefined): HighlightSpec[] =>
+  listOf<HighlightSpec>(items, (h) => {
+    const t = targetOf(h);
+    return t
+      ? {...t, color: hexOr(h.color, COLOR.orange), alpha: clamp(finiteNumber(h.alpha, 0.45), 0, 1)}
+      : null;
+  });
+
+const parseAnnotations = (items: unknown[] | undefined): AnnotationSpec[] =>
+  listOf<AnnotationSpec>(items, (a) => {
+    const t = targetOf(a);
+    const text = nonEmptyStr(a.text);
+    return t && text ? {...t, text} : null;
+  });
+
+const parseStrikes = (items: unknown[] | undefined): TargetSpec[] =>
+  listOf<TargetSpec>(items, targetOf);
+
+const parseCamera = (items: unknown[] | undefined): CameraStep[] =>
+  listOf<CameraStep>(items, (c) => {
+    const focus = obj(c.focus);
+    return {
+      at: frameOf(c.at),
+      zoom: integerIn(c.zoom, 1, 3, 1),
+      fx: finiteNumber(focus.x, Number.NaN),
+      fy: finiteNumber(focus.y, Number.NaN),
+    };
   });
 
 const DEFAULT_FRAME: FrameSpec = {width: 1280, height: 720, radius: 12, outline: '#25241F', shadow: 12};
@@ -198,13 +266,15 @@ const parseFrame = (raw: Partial<FrameSpec> | undefined): FrameSpec => {
 };
 
 // Per-token decoration, keyed by "message:line:token".
-type Decor = {underline?: {at: number; color: string}; strike?: {at: number}};
+type Decor = {
+  underline?: {at: number; color: string};
+  strike?: {at: number};
+  highlight?: {at: number; color: string; alpha: number};
+  circle?: {at: number; d: string};
+  annotation?: {at: number; text: string};
+};
 
-const findToken = (
-  tokenLines: Token[][][],
-  word: string,
-  onMessage: number | null,
-): string | null => {
+const findToken = (tokenLines: Token[][][], word: string, onMessage: number | null): string | null => {
   const key = wordKey(word);
   const messageIndexes = onMessage !== null ? [onMessage] : tokenLines.map((_, i) => i);
   for (const mi of messageIndexes) {
@@ -219,6 +289,37 @@ const findToken = (
     }
   }
   return null;
+};
+
+// Text width measured on a canvas with the same font as the DOM body text, so
+// the fit height follows the real wrapping. Falls back to an average advance.
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+const measure = (text: string): number => {
+  if (measureCtx === undefined) {
+    try {
+      measureCtx = document.createElement('canvas').getContext('2d');
+    } catch {
+      measureCtx = null;
+    }
+  }
+  if (!measureCtx) return text.length * 8.5;
+  measureCtx.font = BODY_FONT;
+  return measureCtx.measureText(text).width;
+};
+
+const wrapCount = (text: string, width: number): number => {
+  let lines = 1;
+  let current = '';
+  for (const word of text.split(' ')) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (current && measure(candidate) > width) {
+      lines += 1;
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  return lines;
 };
 
 const PixelArrow = ({color}: {color: string}): ReactElement => (
@@ -301,14 +402,6 @@ const DividerRow = ({label, flip}: {label: string; flip: {top: string; bottom: s
   </div>
 );
 
-type LineProps = {
-  tokens: Token[];
-  visible: number[];
-  decor: (ti: number) => Decor | undefined;
-  frame: number;
-  caretAt: number | null;
-};
-
 const TokenNode = ({
   token, shown, decor, frame,
 }: {token: Token; shown: number; decor: Decor | undefined; frame: number}): ReactElement => {
@@ -339,66 +432,147 @@ const TokenNode = ({
       </>
     );
   }
+
+  // Stacking: highlighter (0) sits behind the text (1); the marks, circle and
+  // annotation draw over it (2 to 4).
+  const hl = decor.highlight;
+  const highlight = hl && frame >= hl.at ? (
+    <span
+      key="hl"
+      style={{
+        position: 'absolute', left: 0, top: 11, height: 12, zIndex: 0,
+        width: `${highlightProgress(frame, hl.at) * 100}%`,
+        background: hexAlpha(hl.color, hl.alpha),
+      }}
+    />
+  ) : null;
+
+  const marks: ReactElement[] = [];
   const u = decor.underline;
-  const s = decor.strike;
-  const bars: ReactElement[] = [];
   if (u && frame >= u.at) {
-    bars.push(
+    marks.push(
       <span
         key="u"
         style={{
-          position: 'absolute', left: 0, bottom: -5, height: 3,
+          position: 'absolute', left: 0, bottom: -5, height: 3, zIndex: 2,
           width: `${underlineProgress(frame, u.at) * 100}%`, background: u.color,
         }}
       />,
     );
   }
+  const s = decor.strike;
   if (s && frame >= s.at) {
-    bars.push(
-      <span
-        key="s-rust"
-        style={{position: 'absolute', left: 0, right: 0, top: 11, height: 3, background: PALETTE.rust}}
-      />,
+    marks.push(
+      <span key="s-rust" style={{position: 'absolute', left: 0, right: 0, top: 11, height: 3, zIndex: 2, background: PALETTE.rust}} />,
     );
   }
   if (s && frame >= s.at + 1) {
-    bars.push(
-      <span
-        key="s-orange"
-        style={{position: 'absolute', left: 3, right: -3, top: 13, height: 3, background: PALETTE.orange}}
-      />,
+    marks.push(
+      <span key="s-orange" style={{position: 'absolute', left: 3, right: -3, top: 13, height: 3, zIndex: 2, background: PALETTE.orange}} />,
     );
   }
+
+  const c = decor.circle;
+  if (c && frame >= c.at) {
+    const prog = circleProgress(frame, c.at);
+    marks.push(
+      <svg
+        key="circle"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute', left: -18, top: -9, width: 'calc(100% + 36px)', height: 'calc(100% + 18px)',
+          overflow: 'visible', pointerEvents: 'none', zIndex: 3,
+        }}
+      >
+        <path
+          d={c.d}
+          pathLength={1}
+          strokeDasharray={`${prog} 1`}
+          fill="none"
+          stroke={PALETTE.rust}
+          strokeWidth={3}
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>,
+    );
+  }
+
+  const a = decor.annotation;
+  if (a && frame >= a.at) {
+    const grow = connectorProgress(frame, a.at);
+    marks.push(
+      <span
+        key="ann-line"
+        style={{position: 'absolute', left: 10, bottom: '100%', width: 2, height: 26 * grow, zIndex: 3, background: PALETTE.orange}}
+      />,
+    );
+    if (grow >= 1) {
+      marks.push(
+        <span
+          key="ann-dot"
+          style={{position: 'absolute', left: 7, top: -3, width: 8, height: 8, borderRadius: 4, zIndex: 3, background: PALETTE.orange}}
+        />,
+      );
+    }
+    if (annotationShown(frame, a.at)) {
+      marks.push(
+        <span
+          key="ann-card"
+          style={{
+            position: 'absolute', left: 0, bottom: 'calc(100% + 26px)', zIndex: 4, pointerEvents: 'none',
+            fontFamily: MONO, fontSize: 15, lineHeight: '20px', color: INK, whiteSpace: 'nowrap',
+            background: PANEL, border: `1px solid ${COLOR.rule}`, borderRadius: 4, padding: '6px 10px',
+            boxShadow: '0 12px 30px rgba(31, 31, 31, 0.14)',
+          }}
+        >
+          {a.text}
+        </span>,
+      );
+    }
+  }
+
   return (
-    <span style={{position: 'relative', display: 'inline-block'}}>
-      {body}
-      {hiddenNode}
-      {bars}
+    <span style={{position: 'relative', display: 'inline-block', isolation: 'isolate'}}>
+      {highlight}
+      <span style={{position: 'relative', zIndex: 1}}>
+        {body}
+        {hiddenNode}
+      </span>
+      {marks}
     </span>
   );
 };
 
+type LineProps = {
+  tokens: Token[];
+  visible: number[];
+  decor: (ti: number) => Decor | undefined;
+  frame: number;
+  caretAt: number | null;
+};
+
 const Line = ({tokens, visible, decor, frame, caretAt}: LineProps): ReactElement => {
   const nodes: ReactElement[] = [];
+  const caret = (key: string): ReactElement => (
+    <span key={key} style={{display: 'inline-block', width: 2, height: 18, background: PALETTE.text, verticalAlign: 'middle'}} />
+  );
   tokens.forEach((token, ti) => {
-    if (caretAt === ti) {
-      nodes.push(<span key={`caret-${ti}`} style={{display: 'inline-block', width: 2, height: 18, background: PALETTE.text, verticalAlign: 'middle'}} />);
-    }
+    if (caretAt === ti) nodes.push(caret(`caret-${ti}`));
     nodes.push(
-      <TokenNode
-        key={`t-${ti}`}
-        token={token}
-        shown={visible[ti] ?? token.text.length}
-        decor={decor(ti)}
-        frame={frame}
-      />,
+      <TokenNode key={`t-${ti}`} token={token} shown={visible[ti] ?? token.text.length} decor={decor(ti)} frame={frame} />,
     );
   });
-  if (caretAt === tokens.length) {
-    nodes.push(<span key="caret-end" style={{display: 'inline-block', width: 2, height: 18, background: PALETTE.text, verticalAlign: 'middle'}} />);
-  }
-  return <div style={{minHeight: 24, lineHeight: '24px', whiteSpace: 'pre-wrap', color: PALETTE.body, fontFamily: SANS, fontSize: 17}}>{nodes}</div>;
+  if (caretAt === tokens.length) nodes.push(caret('caret-end'));
+  return (
+    <div style={{minHeight: LINE_H, lineHeight: `${LINE_H}px`, whiteSpace: 'pre-wrap', color: PALETTE.body, fontFamily: SANS, fontSize: 17}}>
+      {nodes}
+    </div>
+  );
 };
+
+const seedOf = (key: string): number => Array.from(key).reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
 
 export default function AmDiscord(props: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
@@ -409,12 +583,19 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
   const channels = Array.isArray(p.channels) && p.channels.length > 0
     ? p.channels.filter((c): c is string => typeof c === 'string')
     : ['# announcements', '# general', '# testing'];
+  const sidebarOn = p.sidebar !== false;
+  const fitContent = p.fit === 'content';
+  const minHeight = integerIn(p.minHeight, 180, 1080, 360);
   const messages = parseMessages(p.messages);
   const dividers = parseDividers(p.dateDividers).sort((a, b) => a.at - b.at);
   const reactions = parseReactions(p.reactions);
   const joins = parseJoins(p.joins);
   const underlines = parseMarks(p.underline);
   const strikes = parseStrikes(p.strike);
+  const highlights = parseHighlights(p.highlight);
+  const circles = listOf<TargetSpec>(p.circle, targetOf);
+  const annotations = parseAnnotations(p.annotation);
+  const cameras = parseCamera(p.camera).sort((a, b) => a.at - b.at);
   const jumpFrames = integerIn(p.jumpFrames, 1, 60, 12);
   const typeStep = integerIn(p.typeStepFrames, 1, 12, 2);
   const badge = strOr(p.badge, 'RECONSTRUCTION · REACTIONS & JOINS ILLUSTRATIVE');
@@ -425,13 +606,28 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
 
   // Decorations address a token. The first match wins unless onMessage is given.
   const decorMap = new Map<string, Decor>();
+  const put = (key: string, patch: Decor): void => {
+    decorMap.set(key, {...decorMap.get(key), ...patch});
+  };
   for (const u of underlines) {
     const key = findToken(tokenLines, u.word, u.onMessage);
-    if (key) decorMap.set(key, {...decorMap.get(key), underline: {at: u.at, color: u.color}});
+    if (key) put(key, {underline: {at: u.at, color: u.color}});
   }
   for (const s of strikes) {
     const key = findToken(tokenLines, s.word, s.onMessage);
-    if (key) decorMap.set(key, {...decorMap.get(key), strike: {at: s.at}});
+    if (key) put(key, {strike: {at: s.at}});
+  }
+  for (const h of highlights) {
+    const key = findToken(tokenLines, h.word, h.onMessage);
+    if (key) put(key, {highlight: {at: h.at, color: h.color, alpha: h.alpha}});
+  }
+  for (const c of circles) {
+    const key = findToken(tokenLines, c.word, c.onMessage);
+    if (key) put(key, {circle: {at: c.at, d: handCirclePath(seedOf(key))}});
+  }
+  for (const a of annotations) {
+    const key = findToken(tokenLines, a.word, a.onMessage);
+    if (key) put(key, {annotation: {at: a.at, text: a.text}});
   }
 
   // Reactions attach to a message: explicit onMessage, else the latest message posted by startAt.
@@ -443,6 +639,8 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
     });
     return best;
   };
+  const reactsFor = (index: number): ReactionSpec[] =>
+    reactions.filter((r) => reactionTarget(r) === index && frame >= r.startAt);
 
   // Chat stack: messages, joins and dividers in time order, newest at the bottom.
   type Item =
@@ -455,18 +653,40 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
     ...joins.map((j, index) => ({kind: 'join' as const, at: j.at, index})),
     ...dividers.map((d, index) => ({kind: 'divider' as const, at: d.at, index})),
   ].sort((a, b) => a.at - b.at || rank(a) - rank(b));
-
   const visibleItems = items.filter((item) => item.at <= frame);
-  const dividerFrom = (index: number): string => (index > 0 ? dividers[index - 1].label : dividers[index].label);
-  const dividerJump = (index: number): boolean => {
-    const d = dividers[index];
-    if (d.jump !== null) return d.jump;
-    return index > 0;
+
+  // Window height. Fit "content" hugs the visible stack; otherwise the frame height.
+  const sidebarW = sidebarOn ? SIDEBAR_W : 0;
+  const textWidth = win.width - BORDER * 2 - RAIL_W - sidebarW - MESSAGE_TEXT_INSET;
+  const headroom = annotations.length > 0 ? ANNOTATION_HEADROOM : 0;
+  const itemHeight = (item: Item): number => {
+    if (item.kind === 'join') return JOIN_H;
+    if (item.kind === 'divider') return DIVIDER_H;
+    const lines = tokenLines[item.index];
+    const text = lines.reduce((sum, tokens) => sum + wrapCount(tokens.map((t) => t.text).join(''), textWidth) * LINE_H, 0);
+    return MESSAGE_PAD + LINE_H + text + (reactsFor(item.index).length > 0 ? REACTION_ROW_H : 0);
   };
+  const stack = visibleItems.reduce((sum, item) => sum + itemHeight(item), 0);
+  const winH = fitContent ? fitHeight(stack, headroom, minHeight, win.height) : win.height;
+  const winLeft = (1920 - win.width) / 2;
+  const winTop = (1080 - winH) / 2;
+
+  // Camera: the whole window steps to zoom about its focus, then sits at the frame centre.
+  const cam = cameraAt(cameras, frame);
+  const camFx = cam && Number.isFinite(cam.fx) ? cam.fx : win.width / 2;
+  const camFy = cam && Number.isFinite(cam.fy) ? cam.fy : winH / 2;
+  const cameraStyle: CSSProperties = cameras.length > 0 && cam
+    ? {
+        transform: `translate(${960 - (winLeft + camFx)}px, ${540 - (winTop + camFy)}px) scale(${cam.zoom})`,
+        transformOrigin: `${camFx}px ${camFy}px`,
+      }
+    : {};
 
   const renderDivider = (index: number): ReactElement | null => {
     const d = dividers[index];
-    const state = dividerState(d.label, d.at, frame, dividerFrom(index), dividerJump(index), jumpFrames);
+    const from = index > 0 ? dividers[index - 1].label : d.label;
+    const jump = d.jump !== null ? d.jump : index > 0;
+    const state = dividerState(d.label, d.at, frame, from, jump, jumpFrames);
     if (state.phase === 'hidden') return null;
     if (state.phase === 'landed') return <DividerRow key={`d${index}`} label={state.text} flip={null} />;
     return <DividerRow key={`d${index}`} label="" flip={{top: state.top, bottom: state.bottom}} />;
@@ -509,7 +729,7 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
       left -= tokens.reduce((s, t) => s + t.text.length, 0);
       return counts;
     });
-    const reacts = reactions.filter((r) => reactionTarget(r) === index && frame >= r.startAt);
+    const reacts = reactsFor(index);
 
     return (
       <div
@@ -517,13 +737,13 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
         style={{
           display: 'flex',
           gap: 12,
-          padding: '12px 18px 0',
+          padding: `${MESSAGE_PAD}px 18px 0`,
           transform: age === 0 ? 'translateY(6px)' : undefined,
         }}
       >
         <Avatar name={m.author} color={m.avatarColor} />
         <div style={{minWidth: 0, flex: 1}}>
-          <div style={{display: 'flex', alignItems: 'center', gap: 10, lineHeight: '24px', whiteSpace: 'nowrap'}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 10, lineHeight: `${LINE_H}px`, whiteSpace: 'nowrap'}}>
             <span style={{fontFamily: SANS, fontWeight: 700, fontSize: 16, color: PALETTE.text}}>{m.author}</span>
             {m.tag ? (
               <span
@@ -535,9 +755,7 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
                 {m.tag}
               </span>
             ) : null}
-            {m.time ? (
-              <span style={{fontFamily: MONO, fontSize: 13, color: PALETTE.muted}}>{m.time}</span>
-            ) : null}
+            {m.time ? <span style={{fontFamily: MONO, fontSize: 13, color: PALETTE.muted}}>{m.time}</span> : null}
           </div>
           {m.lines.map((_, li) => (
             <Line
@@ -585,7 +803,7 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
         key={`j${index}`}
         style={{
           display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px 0 18px',
-          fontFamily: MONO, fontSize: 15, lineHeight: '24px', color: PALETTE.muted,
+          fontFamily: MONO, fontSize: 15, lineHeight: `${LINE_H}px`, color: PALETTE.muted,
           transform: age === 0 ? 'translateX(-6px)' : undefined,
         }}
       >
@@ -599,9 +817,6 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
     );
   };
 
-  const winLeft = (1920 - win.width) / 2;
-  const winTop = (1080 - win.height) / 2;
-
   return (
     <div style={{position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden'}}>
       <div
@@ -610,86 +825,101 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
           left: winLeft,
           top: winTop,
           width: win.width,
-          height: win.height,
-          borderRadius: win.radius,
-          border: `2px solid ${win.outline}`,
-          boxShadow: `${win.shadow}px ${win.shadow}px 0 0 ${win.outline}`,
-          background: PALETTE.chat,
-          overflow: 'hidden',
-          display: 'flex',
-          boxSizing: 'border-box',
+          height: winH,
+          ...cameraStyle,
         }}
       >
-        {/* Server rail */}
-        <div style={{width: 72, background: PALETTE.rail, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 12, gap: 12, flexShrink: 0}}>
-          <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.blurple, color: PALETTE.blurpleInk, fontFamily: SANS, fontWeight: 700, fontSize: 14, lineHeight: '48px', textAlign: 'center'}}>
-            {server.slice(0, 2).toUpperCase()}
-          </div>
-          <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.chat}} />
-          <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.chat}} />
-        </div>
-
-        {/* Channel sidebar */}
-        <div style={{width: 240, background: PALETTE.side, flexShrink: 0, display: 'flex', flexDirection: 'column'}}>
-          <div style={{height: 48, lineHeight: '48px', padding: '0 18px', fontFamily: SANS, fontWeight: 700, fontSize: 16, color: PALETTE.text, borderBottom: `1px solid ${PALETTE.rail}`, whiteSpace: 'nowrap', overflow: 'hidden'}}>
-            {server}
-          </div>
-          <div style={{padding: '18px 12px 0 12px'}}>
-            <div style={{fontFamily: MONO, fontSize: 12, lineHeight: '24px', color: PALETTE.muted, padding: '0 6px', letterSpacing: '0.08em', textTransform: 'uppercase'}}>
-              Text channels
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: win.radius,
+            border: `${BORDER}px solid ${win.outline}`,
+            boxShadow: `${win.shadow}px ${win.shadow}px 0 0 ${win.outline}`,
+            background: PALETTE.chat,
+            overflow: 'hidden',
+            display: 'flex',
+            boxSizing: 'border-box',
+          }}
+        >
+          {/* Server rail */}
+          <div style={{width: RAIL_W, background: PALETTE.rail, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 12, gap: 12, flexShrink: 0}}>
+            <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.blurple, color: PALETTE.blurpleInk, fontFamily: SANS, fontWeight: 700, fontSize: 14, lineHeight: '48px', textAlign: 'center'}}>
+              {server.slice(0, 2).toUpperCase()}
             </div>
-            {channels.map((name) => {
-              const active = name === channel;
-              return (
-                <div
-                  key={name}
-                  style={{
-                    height: 36, lineHeight: '36px', padding: '0 10px', margin: '2px 0', borderRadius: 4,
-                    background: active ? PALETTE.selected : 'transparent',
-                    color: active ? PALETTE.text : PALETTE.muted,
-                    fontFamily: SANS, fontWeight: 500, fontSize: 16, whiteSpace: 'nowrap', overflow: 'hidden',
-                  }}
-                >
-                  {name}
-                </div>
-              );
-            })}
+            <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.chat}} />
+            <div style={{width: 48, height: 48, clipPath: STEPPED, background: PALETTE.chat}} />
           </div>
-        </div>
 
-        {/* Main */}
-        <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column'}}>
-          <div style={{height: 48, lineHeight: '48px', padding: '0 18px', fontFamily: SANS, fontWeight: 700, fontSize: 16, color: PALETTE.text, borderBottom: `1px solid ${PALETTE.rail}`, flexShrink: 0, whiteSpace: 'nowrap'}}>
-            {channel}
-          </div>
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'flex-end',
-              overflow: 'hidden',
-              paddingBottom: 12,
-              WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, #000 60px)',
-              maskImage: 'linear-gradient(to bottom, transparent 0, #000 60px)',
-            }}
-          >
-            {visibleItems.map((item) => {
-              if (item.kind === 'message') return renderMessage(item.index);
-              if (item.kind === 'join') return renderJoin(item.index);
-              return renderDivider(item.index);
-            })}
-          </div>
-          <div style={{padding: '12px 18px 18px', flexShrink: 0}}>
+          {/* Channel sidebar (optional) */}
+          {sidebarOn ? (
+            <div style={{width: SIDEBAR_W, background: PALETTE.side, flexShrink: 0, display: 'flex', flexDirection: 'column'}}>
+              <div style={{height: 48, lineHeight: '48px', padding: '0 18px', fontFamily: SANS, fontWeight: 700, fontSize: 16, color: PALETTE.text, borderBottom: `1px solid ${PALETTE.rail}`, whiteSpace: 'nowrap', overflow: 'hidden'}}>
+                {server}
+              </div>
+              <div style={{padding: '18px 12px 0 12px'}}>
+                <div style={{fontFamily: MONO, fontSize: 12, lineHeight: `${LINE_H}px`, color: PALETTE.muted, padding: '0 6px', letterSpacing: '0.08em', textTransform: 'uppercase'}}>
+                  Text channels
+                </div>
+                {channels.map((name) => {
+                  const active = name === channel;
+                  return (
+                    <div
+                      key={name}
+                      style={{
+                        height: 36, lineHeight: '36px', padding: '0 10px', margin: '2px 0', borderRadius: 4,
+                        background: active ? PALETTE.selected : 'transparent',
+                        color: active ? PALETTE.text : PALETTE.muted,
+                        fontFamily: SANS, fontWeight: 500, fontSize: 16, whiteSpace: 'nowrap', overflow: 'hidden',
+                      }}
+                    >
+                      {name}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Main */}
+          <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column'}}>
+            <div style={{height: 48, lineHeight: '48px', padding: '0 18px', fontFamily: SANS, fontWeight: 700, fontSize: 16, color: PALETTE.text, borderBottom: `1px solid ${PALETTE.rail}`, flexShrink: 0, whiteSpace: 'nowrap'}}>
+              {channel}
+            </div>
             <div
               style={{
-                height: 48, boxSizing: 'border-box', borderRadius: 8, background: PALETTE.input,
-                padding: '0 16px', lineHeight: '48px', fontFamily: SANS, fontSize: 15, color: PALETTE.muted,
-                whiteSpace: 'nowrap', overflow: 'hidden',
+                flex: 1,
+                minHeight: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'flex-end',
+                overflow: 'hidden',
+                paddingTop: headroom,
+                paddingBottom: 12,
+                ...(fitContent
+                  ? {}
+                  : {
+                      WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, #000 60px)',
+                      maskImage: 'linear-gradient(to bottom, transparent 0, #000 60px)',
+                    }),
               }}
             >
-              {`Message ${channel}`}
+              {visibleItems.map((item) => {
+                if (item.kind === 'message') return renderMessage(item.index);
+                if (item.kind === 'join') return renderJoin(item.index);
+                return renderDivider(item.index);
+              })}
+            </div>
+            <div style={{padding: '12px 18px 18px', flexShrink: 0}}>
+              <div
+                style={{
+                  height: 48, boxSizing: 'border-box', borderRadius: 8, background: PALETTE.input,
+                  padding: '0 16px', lineHeight: '48px', fontFamily: SANS, fontSize: 15, color: PALETTE.muted,
+                  whiteSpace: 'nowrap', overflow: 'hidden',
+                }}
+              >
+                {`Message ${channel}`}
+              </div>
             </div>
           </div>
         </div>
@@ -699,16 +929,16 @@ export default function AmDiscord(props: ElementComponentProps): ReactElement | 
         <div
           style={{
             position: 'absolute',
-            right: winLeft,
-            top: winTop + win.height + 18,
+            right: 104,
+            bottom: 44,
             fontFamily: MONO,
             fontSize: 14,
             lineHeight: '20px',
             letterSpacing: '0.08em',
             whiteSpace: 'nowrap',
-            color: COLOR.ink,
-            background: COLOR.panel,
-            border: `1px solid ${COLOR.ink}`,
+            color: INK,
+            background: PANEL,
+            border: `1px solid ${INK}`,
             padding: '6px 12px',
           }}
         >

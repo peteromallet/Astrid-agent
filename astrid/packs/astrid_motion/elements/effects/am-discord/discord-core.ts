@@ -1,7 +1,7 @@
 // Pure am-discord logic (no React, no DOM). Markup, typing reveal, split-flap
 // date schedule, reaction counts and decoration targets. Kept separate so the
 // schedule can be checked without rendering.
-import {clamp} from '../../_shared/am';
+import {clamp, hashUnit} from '../../_shared/am';
 
 export type Token = {kind: 'text' | 'u' | 'mention'; text: string};
 
@@ -132,4 +132,66 @@ export const stampScale = (frame: number, startAt: number): number => {
   if (k === 0) return 0.6;
   if (k === 1) return 1.1;
   return 1;
+};
+
+// ---- Camera (stepped push-ins) ---------------------------------------------
+
+export type CameraStep = {at: number; zoom: number; fx: number; fy: number};
+
+// The last camera step that has started by `frame`. Steps snap; nothing eases.
+export const cameraAt = (steps: CameraStep[], frame: number): CameraStep | null => {
+  let active: CameraStep | null = null;
+  for (const step of steps) {
+    if (step.at <= frame) active = step;
+  }
+  return active;
+};
+
+// ---- Highlighter, circle and annotation timing -----------------------------
+
+// Vox-style swipe: the bar wipes across the word in 4 stepped frames.
+export const highlightProgress = (frame: number, at: number): number => clamp(frame - at + 1, 0, 4) / 4;
+
+// Hand-drawn circle: 6 stepped segments, one per frame.
+export const circleProgress = (frame: number, at: number): number => clamp(frame - at + 1, 0, 6) / 6;
+
+// Annotation: connector grows in 2 steps, the card lands on the frame after.
+export const connectorProgress = (frame: number, at: number): number => clamp(frame - at + 1, 0, 2) / 2;
+export const annotationShown = (frame: number, at: number): boolean => frame >= at + 2;
+
+// A hand-drawn ellipse in a 0..100 box (container percent). About 1.15 turns,
+// so the stroke overlaps itself, with a seeded radius wobble. Same seed, same stroke.
+export const handCirclePath = (seed: number): string => {
+  const steps = 72;
+  const start = -1.95;
+  const sweep = Math.PI * 2 * 1.15;
+  const parts: string[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    const angle = start + sweep * t;
+    const wobble = 1 + (hashUnit(seed, i) - 0.5) * 0.04;
+    const drift = t > 0.85 ? 1 + (t - 0.85) * 0.18 : 1;
+    const rx = 48 * wobble * drift;
+    const ry = 42 * wobble;
+    const x = 50 + rx * Math.cos(angle);
+    const y = 50 + ry * Math.sin(angle);
+    parts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`);
+  }
+  return parts.join(' ');
+};
+
+// ---- Fit to content --------------------------------------------------------
+
+// Window height that hugs the visible stack. 143 px is the window chrome (border,
+// header, input bar and the chat padding); `headroom` is room above the stack
+// for annotation cards. Clamped to [minHeight, maxHeight].
+export const fitHeight = (stack: number, headroom: number, minHeight: number, maxHeight: number): number =>
+  clamp(143 + headroom + stack, minHeight, maxHeight);
+
+export const hexAlpha = (hex: string, alpha: number): string => {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
 };
