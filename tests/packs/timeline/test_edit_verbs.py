@@ -228,7 +228,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     assert out[-1].startswith("next: timelines edit t --project P")
 
     assert _run("status", "t", "--project", "P") == 0
-    assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 unpublished edit(s)')
+    assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 unpublished changes')
 
     assert _run("edit", "t", "--project", "P", "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
@@ -236,7 +236,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
 
     assert _run("status", "t", "--project", "P") == 0
     status = capsys.readouterr().out
-    assert status.startswith('WORKING COPY "main" · 1 unpublished edit(s) vs published rev-0')
+    assert status.startswith('WORKING COPY "main" · 1 unpublished change vs published rev-0')
     assert "a-rocket" in status
 
     assert _run("discard", "t", "--project", "P") == 0

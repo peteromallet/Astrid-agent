@@ -921,6 +921,8 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor", "detail"))
     )
     bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if getattr(parsed, "as_view", None) == "sheet":
+        return _print_sheet(parsed, bundle_opener)
     if not layered and callable(bundle_opener):
         return _print_cut_table(parsed, bundle_opener)
     normalized = inspection_options(values)
@@ -1218,6 +1220,47 @@ def _working_copy_view(parsed: argparse.Namespace) -> dict[str, Any] | None:
         "base_revision": checkout.base_revision,
         "changes": list(checkout.edits().get("changes") or []),
     }
+
+
+def _short_rev(revision: Any) -> str:
+    text = str(revision or "")
+    return text.removeprefix("authoring-parent-revision-")[:8] or text
+
+
+def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
+    """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
+    from astrid.sdk.timeline_checkout import Checkout, find_draft
+    from astrid.sdk.timeline_sheet import SheetError, moment_range, render_sheet
+
+    tl, banner = None, None
+    if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+        try:
+            path = find_draft(parsed.project, parsed.ref, client=parsed.client)
+        except Exception as exc:  # noqa: BLE001 - say so and show the head
+            print(f"working copy: not checked ({exc}); showing the published head", file=sys.stderr)
+            path = None
+        if path is not None:
+            tl = Checkout.load(path)
+            n = len(tl.changes())
+            banner = (f"WORKING COPY · {n} unpublished change{'s' if n != 1 else ''} vs published "
+                      f"{_short_rev(tl.base_revision)} · --published for the live version")
+    if tl is None:
+        opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
+        if not opened.ok or not isinstance(opened.data, Mapping):
+            return print_result(opened, as_json=False)
+        tl = Checkout(dict(opened.data["bundle"]))
+        banner = f"PUBLISHED {_short_rev(opened.data.get('revision_id') or (tl.bundle.get('base_parent') or {}).get('revision_id'))}"
+    start = end = None
+    if parsed.range:
+        try:
+            start, end = moment_range(tl, parsed.range)
+        except (SheetError, Exception) as exc:  # noqa: BLE001
+            print(f"--range: {exc}", file=sys.stderr)
+            return 2
+    print(render_sheet(tl, start=start, end=end, banner=banner), end="")
+    where = f"{parsed.ref} --project {parsed.project}"
+    print(f"\nnext: save this to a file, edit it, then  timelines apply {where} FILE   ·   or  timelines edit {where} --clip c30.cover --until Astrid")
+    return 0
 
 
 def _working_banner(working: Mapping[str, Any]) -> str:
@@ -2772,10 +2815,11 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
         help="Print per-track layer rows (the bounded, paged inspection projection) instead of the cut table.",
     )
     subparser.add_argument(
-        "--as", dest="as_view", choices=("cuts", "script", "code"), default="cuts",
-        help="cuts (default): one row per cut. script: the words in time order with cuts, layer entrances "
-        "and element keyframes between them. code: shots and cuts as a readable program of element calls "
-        "with resolved keyframes and each element's source path.",
+        "--as", dest="as_view", choices=("cuts", "script", "code", "sheet"), default="cuts",
+        help="cuts (default): one row per cut. sheet: the cut sheet, an A/V script you can edit and "
+        "`timelines apply` (with --range \"word\"..\"word\" or A..B seconds or c30..c31). script: the words in "
+        "time order with cuts, layer entrances and element keyframes between them. code: shots and cuts as a "
+        "readable program of element calls with resolved keyframes and each element's source path.",
     )
     # ``show`` is the human inspection route by default. Machine callers use
     # the explicit stable envelope switch and keep the SDK shape unchanged.
@@ -3280,9 +3324,10 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
                          "--close-gap-before WORD, --insert TIME:SECONDS, --line/--insert-line/--remove-line, "
                          "--gap-after SEG=S, --from-script VO.json)", 2)
     if selector and not any(v is not None for v in (parsed.at_word, parsed.at, parsed.nudge, parsed.nudge_frames,
-                                                    parsed.extend, parsed.duration, parsed.swap_asset)) and not parsed.set:
-        raise _VerbError("say what to do to the clip: --at-word, --at, --nudge, --nudge-frames, --extend, "
-                         "--duration, --set or --swap-asset", 2)
+                                                    parsed.extend, parsed.duration, parsed.swap_asset, parsed.on_moment,
+                                                    parsed.until_moment, parsed.for_seconds)) and not parsed.set:
+        raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
+                         "--extend, --duration, --set or --swap-asset", 2)
     parsed.set = _parse_set(parsed.set)
     if parsed.duration is not None and parsed.extend is not None:
         raise _VerbError("--duration and --extend both set a length; pick one", 2)
@@ -3363,10 +3408,16 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip = tl.cut(cut_ref).picture
         if clip is None:
             raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
-    if parsed.at_word is not None:
+    if parsed.on_moment is not None:
+        clip.on(parsed.on_moment)
+    elif parsed.at_word is not None:
         clip.enter_at(tl.word(parsed.at_word, n=parsed.n), offset=parsed.offset or 0.0)
     elif parsed.at is not None:
         clip.enter_at(parsed.at, offset=parsed.offset or 0.0)
+    if parsed.until_moment is not None:
+        clip.until(parsed.until_moment)
+    if parsed.for_seconds is not None:
+        clip.hold_for(parsed.for_seconds)
     if parsed.nudge is not None or parsed.nudge_frames is not None:
         clip.nudge(parsed.nudge or 0.0, frames=parsed.nudge_frames or 0)
     if parsed.extend is not None:
@@ -3422,9 +3473,11 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     if tl is None:
         print(f"no working copy · next: timelines checkout {parsed.timeline} --project {parsed.project}")
         return 0
-    edits = tl.edits()
-    print(f'WORKING COPY "{name}" · {len(edits["changes"])} unpublished edit(s) vs published {tl.base_revision}')
-    for line in _edit_lines_from(edits, tl):
+    changes = tl.changes()
+    edits = {"changes": changes}
+    print(f'WORKING COPY "{name}" · {len(changes)} unpublished change{"s" if len(changes) != 1 else ""} '
+          f"vs published {_short_rev(tl.base_revision)}")
+    for line in changes:
         print(f"  {line}")
     report = tl.check()
     for line in _check_lines(report):
@@ -3570,7 +3623,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     _add_timeline_args(subparser, required_timeline=False)
     subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
     selector = subparser.add_argument_group("clip selector (one)")
-    selector.add_argument("--clip", default=None, help="Clip by asset key, id or prefix, element, or on-screen text.")
+    selector.add_argument("--clip", default=None, help="Clip by address (c30.cover), layer name, asset key, id or prefix, element, or on-screen text.")
     selector.add_argument("--near", default=None, help="With --clip: the match nearest this word or time.")
     selector.add_argument("--cut", default=None, help="Cut number (show's numbering); alone, the cut's picture clip.")
     move = subparser.add_argument_group("move")
@@ -3578,6 +3631,12 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     move.add_argument("--n", type=int, default=None, help="Which occurrence of --at-word (1-based).")
     move.add_argument("--at", default=None, help="Start the clip at this time (seconds or m:ss).")
     move.add_argument("--offset", type=float, default=None, help="Seconds after the word or time.")
+    move.add_argument("--on", dest="on_moment", default=None, metavar="MOMENT",
+                      help='Start on a moment: "viral", after "Astrid", beat 2 after "Astrid", c22, +0.8s, "viral" +2f.')
+    move.add_argument("--until", dest="until_moment", default=None, metavar="MOMENT",
+                      help='End on a moment (its start stays): "Astrid", after "viral", c26.')
+    move.add_argument("--for", dest="for_seconds", type=float, default=None, metavar="SECONDS",
+                      help="A literal length (prefer --until when the end means something).")
     nudge = subparser.add_argument_group("nudge and length")
     nudge.add_argument("--nudge", type=float, default=None, help="Move by seconds.")
     nudge.add_argument("--nudge-frames", dest="nudge_frames", type=int, default=None, help="Move by frames.")
@@ -3619,6 +3678,42 @@ def _configure_words(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--find", default=None, help="Only words containing this text.")
     subparser.add_argument("--range", default=None, metavar="A..B", help="Only words between two times (seconds or m:ss).")
     subparser.set_defaults(handler=_cmd_words)
+
+
+def _configure_apply(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Apply an edited cut sheet (from `timelines show --as sheet`, whole or a fragment) to the working copy. "
+        "Only the cuts in the file change; then every moment resolves again and the change is checked."
+    )
+    _add_timeline_args(subparser)
+    subparser.add_argument("sheet", help="The edited sheet file.")
+    subparser.set_defaults(handler=_cmd_apply)
+
+
+@_guard(2)
+def _cmd_apply(parsed: argparse.Namespace) -> int:
+    from pathlib import Path as _Path
+
+    from astrid.sdk.timeline_sheet import SheetError, apply_sheet
+
+    text = _Path(parsed.sheet).expanduser().read_text(encoding="utf-8")
+    tl, existed = _working_copy(parsed, create=True)
+    if not existed:
+        print(f"no working copy yet: checked out {parsed.timeline} from its published head")
+    try:
+        changes = apply_sheet(tl, text)
+    except SheetError as exc:
+        raise _VerbError(f"{parsed.sheet}: {exc}", 2) from None
+    for line in _cap(changes) or ["no change (the sheet matches the working copy)"]:
+        print(line)
+    report = tl.check()
+    for line in _cap(_check_lines(report)):
+        print(line)
+    tl.save()
+    where = f"{parsed.timeline} --project {parsed.project}"
+    print(f"next: timelines visualize {where} (your change, before/after: --compare published)   ·   "
+          f"timelines status {where}   ·   timelines publish {where} -m \"…\"")
+    return 0 if report.valid else 1
 
 
 def _configure_status(subparser: argparse.ArgumentParser) -> None:
@@ -3734,6 +3829,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "edit",
         help="Edit a clip or the timeline in the working copy, in timeline seconds, then check and save.",
         configure=_configure_edit,
+    ),
+    CommandSpec(
+        "apply",
+        help="Apply an edited cut sheet (show --as sheet) to the working copy.",
+        configure=_configure_apply,
     ),
     CommandSpec(
         "words",
