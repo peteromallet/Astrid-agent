@@ -9,9 +9,9 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
 
-    assert sources["counts"]["pack_labels"] == 94
-    assert sources["counts"]["historical_pack_labels"] == 99
-    assert sources["counts"]["executor_inventory"] == 86
+    assert sources["counts"]["pack_labels"] == 95
+    assert sources["counts"]["historical_pack_labels"] == 100
+    assert sources["counts"]["executor_inventory"] == 87
     assert sources["counts"]["legacy_ids"] == 19
     assert all(section["complete"] for section in sources["coverage"].values())
     assert not sources["coverage"]["source_labels"]["missing"]

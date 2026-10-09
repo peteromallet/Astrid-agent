@@ -494,6 +494,8 @@ sample is excluded. `--shot first` and numeric `--shot N` use authored shot
 order; use the exact shot name or a time range when chronological order is
 what matters.
 
+For the rhythm of a whole cut (how it moves and breathes, not what each frame shows), run the `editorial.pacing` executor rather than a visualize mode: `sdk.invoke("editorial.pacing", kind="executor", project="<slug>", inputs={"timeline_ref": "<ref>", "window": [start, end]}, client=client)` (`window` optional). It reads the current head read-only and writes a rhythm sheet PNG, Markdown and JSON with chapters, one log-scaled bar per visual cut, words per second with silences, cuts per 10 s against speech, and stalls. The requested `--view pacing` flag is not wired yet: `timelines visualize --view` accepts only `filmstrip`.
+
 ### Structural-to-visual navigation recipe
 
 For an agent-facing investigation, keep the structural and visual calls next

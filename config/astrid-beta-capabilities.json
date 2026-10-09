@@ -104,6 +104,18 @@
    "required_packages": []
   },
   {
+   "id": "editorial.pacing",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "editorial.quality_zones",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",

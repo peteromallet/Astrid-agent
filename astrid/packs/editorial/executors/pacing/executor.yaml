@@ -1,0 +1,67 @@
+schema_version: 1
+id: editorial.pacing
+name: Pacing Rhythm Sheet
+kind: built_in
+version: 1.0.0
+short_description: "Rhythm sheet for one timeline: cut-length bars, speech density, silences, energy and stalls."
+description: >-
+  Reads one canonical timeline through the runtime at its current head (read-only) and renders a
+  rhythm sheet: chapters on a time ruler, a log-scaled bar per visual cut coloured by kind, words per
+  second over a 2 s window with silences of 0.4 s or more, cuts per 10 s against speech, an optional
+  beats lane, and a summary of longest holds, densest 10 s and stalls. Writes pacing.png, pacing.md and
+  pacing.json. It never writes to the timeline.
+keywords: [pacing, rhythm, editorial, review, timeline, cuts, speech, stalls]
+inputs:
+  - name: project_slug
+    type: string
+    required: false
+    description: Owning project slug, derived from the project binding of the invocation.
+  - name: timeline_ref
+    type: string
+    required: true
+    description: Timeline slug, UUID or ULID to read at its current head.
+  - name: window
+    type: json
+    required: false
+    description: Optional [start, end] seconds that the sheet and its statistics are zoomed to.
+outputs:
+  - name: pacing_png
+    type: file
+    path_template: "{out}/pacing.png"
+    artifact_type: image
+    description: Rhythm sheet, 2400x1350 PNG.
+  - name: pacing_md
+    type: file
+    path_template: "{out}/pacing.md"
+    artifact_type: null
+    description: Markdown with the summary, cut table, stalls, silences and method notes.
+  - name: pacing_json
+    type: file
+    path_template: "{out}/pacing.json"
+    artifact_type: null
+    description: Machine-readable rhythm model (cuts, words, density grid, silences, stalls, summary).
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.editorial.executors.pacing.run
+    - "--project"
+    - "{project_slug}"
+    - "--timeline-ref"
+    - "{timeline_ref}"
+    - "--out"
+    - "{out}"
+  input_args:
+    - input: window
+      flag: "--window"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.editorial.executors.pacing.run
+  output_result_manifest: true

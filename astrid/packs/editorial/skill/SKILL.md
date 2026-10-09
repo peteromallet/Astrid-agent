@@ -67,6 +67,7 @@ These executors are not part of the numbered 0–14 pipeline. They have no
 |---|---|
 | `editorial.human_notes` | Convert free-text human editorial notes into structured `editor_review.json` for the pipeline. Optional `--apply` chains a full revise cycle. |
 | `editorial.inspect_cut` | Debugging tool: inspect a cut run directory and print a script/structure/clip text report. Supports `--json` and `--clip` flags. Called internally by `editor_review`. |
+| `editorial.pacing` | Rhythm sheet for one timeline, read-only through the runtime: chapter band, log-scaled bar per visual cut coloured by kind, words per second with silences of 0.4 s or more, cuts per 10 s against speech, and stalls. Inputs `timeline_ref` (required) and `window` `[start, end]` (optional). Writes `pacing_png`, `pacing_md`, `pacing_json`. |
 | `editorial.human_review` | Generic human-gate primitive. Serves an HTML page on localhost, collects human decisions as JSON, blocks until submit. Token-authenticated POSTs. |
 | `editorial.boundary_candidates` | Package candidate video frames for visual scene-boundary review. |
 | `editorial.script_pipeline` | Preset-driven creative-writing pipeline: generates short scripts through rough attempts, synthesis, style pass, and optional judging. |
