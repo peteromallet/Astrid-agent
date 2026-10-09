@@ -1322,6 +1322,9 @@ def _filmstrip_sidecars(root: Path) -> dict[str, Any]:
             cards = None
         if isinstance(cards, list):
             found["timing"] = {"frames": len(cards)}
+    previews = sorted(root.glob("motion-*.gif"))
+    if previews:
+        found["preview"] = str(previews[0])
     findings = root / "findings.txt"
     if findings.is_file() and findings.stat().st_size < 262144:
         try:

@@ -261,7 +261,7 @@ def lint_cuts(
     results = []
     for cut in cuts:
         inside = model.in_window(elements, float(cut["start"]), float(cut["end"]))
-        mapped = model.beats_in(beats, elements, float(cut["start"]) - 0.5, float(cut["end"]) + 0.5) if beats else None
+        mapped = model.timeline_beats(beats, elements, float(cut["start"]) - 0.5, float(cut["end"]) + 0.5)
         findings = composition(cut, inside, fps, track_order=track_order, min_text_px=min_text_px)
         findings += timing(cut, inside, words, fps, beats=mapped, sfx=sfx)
         results.append((cut, sorted(findings, key=lambda f: (f.t, f.code))))

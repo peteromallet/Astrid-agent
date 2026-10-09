@@ -202,6 +202,61 @@ def beats_in(beats: Mapping[str, Any] | None, elements: Iterable[Element], start
     return out
 
 
+def doc_beats(elements: Iterable[Element], start: float, end: float) -> dict[str, list]:
+    """Beats the timeline itself carries: ``app.beats`` on music clips (cue seconds).
+
+    The EDL builder copies each music clip's slice of the cue's beats.json there
+    (as VO clips carry ``app.words``), so the sync layer and lint need no
+    sidecar file. ``--beats FILE`` overrides with :func:`beats_in`.
+    """
+    out: dict[str, list] = {"beats": [], "downbeats": [], "hits": []}
+    sources: set[str] = set()
+    for element in elements:
+        if not element.audio:
+            continue
+        beats = _map(_map(element.clip.get("app")).get("beats"))
+        if not beats:
+            continue
+        offset = _num(element.clip.get("from"))
+        if beats.get("source"):
+            sources.add(str(beats["source"]))
+
+        def mapped(cue: Any) -> float | None:
+            if isinstance(cue, bool) or not isinstance(cue, (int, float)):
+                return None
+            t = element.start + float(cue) - offset
+            inside_clip = element.start - 1e-6 <= t < element.end + 1e-6
+            return t if inside_clip and start - 1e-6 <= t <= end + 1e-6 else None
+
+        for key in ("beats", "downbeats"):
+            out[key].extend(t for t in (mapped(v) for v in beats.get(key) or ()) if t is not None)
+        for hit in beats.get("hits") or ():
+            if isinstance(hit, (list, tuple)) and hit:
+                t, kind = mapped(hit[0]), str(hit[1]) if len(hit) > 1 else "hit"
+            elif isinstance(hit, Mapping):
+                t, kind = mapped(hit.get("t")), str(hit.get("kind") or "hit")
+            else:
+                continue
+            if t is not None:
+                out["hits"].append((t, kind))
+    for key in ("beats", "downbeats"):
+        out[key] = sorted(set(round(t, 6) for t in out[key]))
+    out["hits"] = sorted(set((round(t, 6), kind) for t, kind in out["hits"]))
+    if sources:
+        out["source"] = sorted(sources)
+    return out
+
+
+def timeline_beats(override: Mapping[str, Any] | None, elements: Iterable[Element], start: float, end: float) -> dict[str, list]:
+    """``--beats`` when given, else the beats the music clips carry."""
+    elements = list(elements)
+    if isinstance(override, Mapping) and override:
+        mapped = beats_in(override, elements, start, end)
+        mapped["source"] = ["--beats"]
+        return mapped
+    return doc_beats(elements, start, end)
+
+
 # ---------------------------------------------------------------- events
 
 @dataclass(frozen=True)

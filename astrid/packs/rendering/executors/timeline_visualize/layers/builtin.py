@@ -96,7 +96,8 @@ def _offset_note(ctx: LayerContext, t: float, *, context: bool = False) -> str:
 
 def render_sync(ctx: LayerContext) -> LayerResult:
     """One time axis: words, music beats/hits, sfx, element events and cuts, with offsets."""
-    rows = [("VO words", 34), ("music", 26), ("sfx", 24)]
+    audio = ctx.shared.get("audio")
+    rows = [("VO words", 34), ("music", 26), ("sfx", 24)] + ([("audio", 34)] if audio is not None else [])
     event_rows = sorted({e.element for e in ctx.events if e.kind != "cut"})
     height = 30 + sum(h for _n, h in rows) + 22 * max(1, len(event_rows)) + 12
     image = ctx.panel(height, title="sync")
@@ -113,7 +114,7 @@ def render_sync(ctx: LayerContext) -> LayerResult:
             draw_text(draw, (x0 + 2, y + (4 if index % 2 == 0 else 16)), label, 12, PALETTE["word_ink"])
     y += rows[0][1]
     # music
-    draw_text(draw, (10, y + 6), "music", 13, PALETTE["muted"])
+    draw_text(draw, (10, y + 1), "music", 13, PALETTE["muted"])
     for t in ctx.beats.get("beats") or []:
         draw.line((ctx.x_of(t), y + 12, ctx.x_of(t), y + 24), fill=PALETTE["beat"], width=1)
     for t in ctx.beats.get("downbeats") or []:
@@ -123,7 +124,11 @@ def render_sync(ctx: LayerContext) -> LayerResult:
         draw.polygon(((x - 5, y + 2), (x + 5, y + 2), (x, y + 12)), fill=PALETTE["hit"])
         draw_text(draw, (x + 6, y), kind, 11, PALETTE["hit"])
     if not any(ctx.beats.get(key) for key in ("beats", "downbeats", "hits")):
-        draw_text(draw, (ctx.plot_left + 4, y + 6), "no beats (pass --beats CUE.beats.json)", 11, PALETTE["muted"])
+        draw_text(draw, (ctx.plot_left + 4, y + 6),
+                  "no beats: the music clip carries no app.beats (rebuild with the EDL builder) and no --beats was given",
+                  11, PALETTE["muted"])
+    elif ctx.beats.get("source"):
+        draw_text(draw, (10, y + 15), ("beats: " + ", ".join(ctx.beats["source"]))[:26], 10, PALETTE["muted"])
     y += rows[1][1]
     # sfx
     draw_text(draw, (10, y + 5), "sfx", 13, PALETTE["muted"])
@@ -132,6 +137,14 @@ def render_sync(ctx: LayerContext) -> LayerResult:
         draw.rectangle((x0, y + 4, max(ctx.x_of(end), x0 + 3), y + 18), fill=PALETTE["sfx"])
         draw_text(draw, (x0 + 5, y + 3), name, 11, PALETTE["ink"])
     y += rows[2][1]
+    if audio is not None:
+        from ..motion.audio import draw_lane
+
+        draw_text(draw, (10, y + 2), "audio", 13, PALETTE["muted"])
+        draw_text(draw, (10, y + 17), "music up · VO down", 10, PALETTE["muted"])
+        draw_lane(draw, audio, x0=ctx.plot_left, x1=ctx.plot_right, y0=y + 2, y1=y + 32,
+                  colours={"music": "#5b4a86", "vo": "#5fd4c4", "sfx": PALETTE["hit"]}, silence_colour=PALETTE["warn"])
+        y += rows[3][1]
     # element events
     labels = {e.id: e.label for e in ctx.elements}
     labels.update({e.element: e.label for e in ctx.events if e.element not in labels})
@@ -173,7 +186,19 @@ def render_sync(ctx: LayerContext) -> LayerResult:
             if hit is not None and abs(hit[0] - event.t) <= 0.3:
                 parts.append(f"sfx {hit[2]} {hit[0] - event.t:+.2f}s")
             findings.append("TIME   " + "; ".join(parts))
-    return LayerResult(image, findings[:10], "sync")
+    if audio is not None:
+        for begin, finish in audio.silences("vo"):
+            lo, hi = max(begin, start), min(finish, end)
+            if hi - lo >= 0.4:
+                music = audio.level_db("music", lo, hi)
+                under = f"music under it at {music:.0f} dBFS" if music > -60 else "and no music: dead air"
+                findings.append(f"AUDIO  no VO {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s); {under}")
+        for begin, finish in audio.dead_air():
+            lo, hi = max(begin, start), min(finish, end)
+            if hi - lo >= 0.3:
+                findings.append(f"AUDIO  dead air {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s): no VO, music or sfx")
+        findings.extend(f"AUDIO  {note}" for note in audio.notes[:2])
+    return LayerResult(image, findings[:12], "sync")
 
 
 # ---------------------------------------------------------------- curves (data)

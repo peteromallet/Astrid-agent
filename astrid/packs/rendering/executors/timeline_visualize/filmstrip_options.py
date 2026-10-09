@@ -208,6 +208,12 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         if type(budget) is not int or not 8 <= budget <= MOTION_FRAME_BUDGET_MAX:
             raise ValueError(f'frame_budget must be an integer between 8 and {MOTION_FRAME_BUDGET_MAX}')
         result['frame_budget'] = budget
+    preview = values.get('preview') or False
+    if not isinstance(preview, bool):
+        raise ValueError('preview must be a boolean')
+    if preview and not motion:
+        raise ValueError('--preview applies to --view motion (an animated GIF of that cut for humans)')
+    result['preview'] = preview
     result['layers'] = layer_names(values.get('layers'))
     result['beats'] = beats_value(values.get('beats'))
     result['request'] = {

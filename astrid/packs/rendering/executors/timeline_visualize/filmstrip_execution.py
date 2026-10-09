@@ -1618,6 +1618,24 @@ def _compose_synchronized_surface(
             image.close()
 
 
+def _materialized_asset_files(registry_path) -> dict[str, str]:
+    """``{asset key: local file}`` from the host-materialized registry (audio lanes read these)."""
+    if not registry_path:
+        return {}
+    try:
+        registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    assets = registry.get("assets") if isinstance(registry, Mapping) else None
+    if not isinstance(assets, Mapping):
+        return {}
+    return {
+        str(key): str(entry["file"])
+        for key, entry in assets.items()
+        if isinstance(entry, Mapping) and isinstance(entry.get("file"), str) and Path(entry["file"]).is_file()
+    }
+
+
 def execute_filmstrip(args, *, authority=None):
     started_at = time.time()
     if args.filmstrip_authority:
@@ -1749,7 +1767,8 @@ def execute_filmstrip(args, *, authority=None):
     try:
         result = build_filmstrip_pack(out_root=pack_root, video_path=video,
                                       snapshot=snapshot, options=options,
-                                      frame_provider=frame_provider)
+                                      frame_provider=frame_provider,
+                                      asset_files=_materialized_asset_files(getattr(args, 'assets_registry', None)))
     except BaseException:
         if frame_provider is not None:
             frame_provider.close(force=True)

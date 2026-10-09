@@ -181,6 +181,13 @@
       "description": "Motion view: maximum captured frames (default 60, at most 120)."
     },
     {
+      "name": "preview",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "Motion view: also write motion-cut-NN.gif, a timing-faithful animated preview of the cut from the frames already captured (for humans)."
+    },
+    {
       "name": "sample",
       "type": "string",
       "required": false,
@@ -423,6 +430,11 @@
       {
         "input": "frame_budget",
         "flag": "--frame-budget",
+        "optional": true
+      },
+      {
+        "input": "preview",
+        "flag": "--preview",
         "optional": true
       },
       {

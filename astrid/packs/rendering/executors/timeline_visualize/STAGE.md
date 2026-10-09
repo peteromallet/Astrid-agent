@@ -70,7 +70,12 @@ each entrance/keyframe, then an even fill. The registered layers
 (`layers/`, plus any `astrid/packs/*/visualize_layers/*.py`) write
 `motion-cut-NN.png` (sync, curves, stillness, pixel change, lip-sync on one
 time axis), `motion-cut-NN-frames.png` (strip with collapsed HOLD tiles, onion
-skins) and `findings.txt`. The client passes a cue's beats with `beats`.
+skins) and `findings.txt`. Music beats come from `app.beats` on the music clips
+(cue seconds, the slice of the cue's beats.json each clip plays; the EDL builder
+writes it like `app.words`); the `beats` input overrides them. With the host's
+materialized audio files both views draw a decimated VO/music/sfx loudness lane
+with VO gaps and dead air (`motion/audio.py`, 20 ms bins, WAV only), and
+`preview=true` adds `motion-cut-NN.gif`: the captured frames at their real timing.
 Every view writes `timing.json` (started/capture/compose seconds, frames,
 resolution) into the bundle, so the CLI can report wall = queue + capture +
 compose after the host settles only the bundle.

@@ -31,11 +31,30 @@ CONTACT_GUTTER = 12
 CONTACT_MARGIN = 16
 CONTACT_BAND_HEIGHT = 22
 CONTACT_WORDS_MAX = 12
+CONTACT_AUDIO_HEIGHT = 34
 _CONTACT_PALETTE = ('#2f6f73', '#5a4f8a', '#7a5a2e', '#2e5b8a', '#6b3f5e', '#3d6b3a', '#8a4b3a', '#3c5f7a')
 _CONTACT_BACKGROUND = '#111827'
 _CONTACT_INK = '#e5e7eb'
 _CONTACT_MUTED = '#9fb0bf'
 _CONTACT_TIME = '#8ce0d0'
+
+
+def contact_band_width(columns: int) -> int:
+    """Pixel width of the chapter band (and the audio lane) for a sheet with ``columns``."""
+    columns = max(1, min(int(columns or CONTACT_DEFAULT_COLUMNS), 12))
+    return columns * (CONTACT_TILE_WIDTH + CONTACT_GUTTER) - CONTACT_GUTTER
+
+
+def contact_silence_findings(audio, *, minimum: float = 1.0) -> list[str]:
+    """Stretches of 1 s+ without VO, and whether music or sfx keep sound under them."""
+    lines = []
+    for begin, finish in audio.silences('vo', minimum=minimum):
+        music = audio.level_db('music', begin, finish)
+        under = f'music under it at {music:.0f} dBFS' if music > -60 else 'no music: dead air'
+        lines.append(f'SILENCE {begin:.2f}–{finish:.2f}s ({finish - begin:.2f} s) no VO; {under}')
+    for begin, finish in audio.dead_air():
+        lines.append(f'DEADAIR {begin:.2f}–{finish:.2f}s ({finish - begin:.2f} s) no VO, music or sfx')
+    return lines[:24] + audio.notes[:3]
 
 
 def contact_reasons(reasons: Mapping[int, set], *, mode: str, limit: int = CONTACT_MAX_TILES) -> tuple[dict, int | None]:
@@ -97,7 +116,7 @@ def _card_chapter(card: Mapping[str, Any], index_by_occurrence: Mapping[str, int
 
 def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: str, render_run_id: str,
                        render_selection: str, occurrences=(), duration_seconds: float | None = None,
-                       show_output: bool = True, thinned_from: int | None = None, overlay=None) -> list[str]:
+                       show_output: bool = True, thinned_from: int | None = None, overlay=None, audio=None) -> list[str]:
     """Write one bounded contact sheet (``contact-sheet.png``) and return its path."""
     from PIL import Image, ImageDraw
 
@@ -149,7 +168,9 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
     provenance_lines = _png_chrome_lines(measure, provenance, chrome_font, width - 2 * CONTACT_MARGIN, 2)
     header_bottom = 10 + 22 * len(title_lines) + 4 + 16 * len(provenance_lines)
     band_y = header_bottom + 10
-    grid_top = band_y + CONTACT_BAND_HEIGHT + 22
+    audio_y = band_y + CONTACT_BAND_HEIGHT + 2
+    audio_h = CONTACT_AUDIO_HEIGHT if audio is not None else 0
+    grid_top = band_y + CONTACT_BAND_HEIGHT + audio_h + 22
     height = grid_top + sum(row_heights) + CONTACT_GUTTER * max(0, len(rows) - 1) + CONTACT_MARGIN
     if width * height > 64_000_000:
         raise ValueError('Contact sheet exceeds 64 million pixels; reduce the tile count.')
@@ -191,10 +212,22 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
         if label and room >= 24:
             fitted = label if _png_text_width(measure, label, chrome_font) <= room else _png_ellipsis(measure, label, chrome_font, room)
             _png_draw_text(draw, (x0 + 4, band_y + 4), fitted, chrome_font, fill='white')
-    _png_draw_text(draw, (band_left, band_y + CONTACT_BAND_HEIGHT + 4), '0s', chrome_font, fill=_CONTACT_MUTED)
+    if audio is not None:
+        from .motion.audio import draw_lane
+        draw.rectangle((band_left, audio_y, band_right, audio_y + audio_h - 1), fill='#0b1220')
+        draw_lane(draw, audio, x0=band_left, x1=band_right, y0=audio_y, y1=audio_y + audio_h,
+                  colours={'music': '#5b4a86', 'vo': '#5fd4c4', 'sfx': '#facc15'}, silence_colour='#f59e0b')
+        legend = 'audio: music up (violet) · VO down (teal) · sfx (yellow) · amber = no VO 0.4 s+ · red = dead air'
+        _png_draw_text(draw, (band_right - _png_text_width(draw, legend, chrome_font), audio_y + audio_h + 4),
+                       legend, chrome_font, fill=_CONTACT_MUTED)
+    label_y = band_y + CONTACT_BAND_HEIGHT + audio_h + 4
+    _png_draw_text(draw, (band_left, label_y), '0s', chrome_font, fill=_CONTACT_MUTED)
     end_label = f'{total:.1f}s'
-    _png_draw_text(draw, (band_right - _png_text_width(draw, end_label, chrome_font), band_y + CONTACT_BAND_HEIGHT + 4),
-                   end_label, chrome_font, fill=_CONTACT_MUTED)
+    if audio is None:
+        _png_draw_text(draw, (band_right - _png_text_width(draw, end_label, chrome_font), label_y),
+                       end_label, chrome_font, fill=_CONTACT_MUTED)
+    else:
+        _png_draw_text(draw, (band_left + 40, label_y), end_label + ' total', chrome_font, fill=_CONTACT_MUTED)
 
     y = grid_top
     index = 0

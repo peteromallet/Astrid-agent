@@ -1465,6 +1465,8 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs["cut"] = str(parsed.cut)
     if getattr(parsed, "frame_budget", None) is not None:
         inputs["frame_budget"] = parsed.frame_budget
+    if getattr(parsed, "preview", False):
+        inputs["preview"] = True
     if getattr(parsed, "beats", None):
         try:
             inputs["beats"] = _read_beats(parsed.beats)
@@ -1607,6 +1609,8 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     for page in pages:
         if page != primary:
             lines.append(f"  also: {page}")
+    if outputs.get("preview"):
+        lines.append(f"  preview for humans (animated, sampled frames at real timing): {outputs['preview']}")
     frames = timing.get("frames")
     resolution = timing.get("resolution") or inputs.get("resolution")
     if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
@@ -2310,7 +2314,8 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--range", dest="range", default=None, help="Only cuts overlapping START..END seconds.")
     subparser.add_argument("--revision-id", default=None, help="Lint a saved revision instead of the head.")
     subparser.add_argument("--beats", default=None, metavar="BEATS_JSON",
-                           help="A music cue's beats.json: also report accents 0.10–0.20 s off a music hit or downbeat.")
+                           help="Override the beats the music clips carry (app.beats, written by the EDL builder) "
+                                "with a cue's beats.json. Beats add accents 0.10–0.20 s off a music hit or downbeat.")
     subparser.add_argument("--min-text-px", dest="min_text_px", type=float, default=32.0,
                            help="Smallest acceptable text size in px at 1080p (default 32).")
     subparser.add_argument("--all", action="store_true", help="Also print info lines (EDGE crops, BEAT near-misses).")
@@ -2411,11 +2416,17 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--beats", default=None, metavar="BEATS_JSON",
-        help="A music cue's beats.json (beats/downbeats/hits in cue seconds) for the sync layer and lint.",
+        help="Override the beats the music clips carry (app.beats) with a cue's beats.json "
+             "(beats/downbeats/hits in cue seconds).",
     )
     subparser.add_argument(
         "--frame-budget", dest="frame_budget", type=int, default=None,
         help="motion view: maximum captured frames (default 60, at most 120).",
+    )
+    subparser.add_argument(
+        "--preview", action="store_true", default=None,
+        help="motion view: also write an animated GIF of the cut (<= 480x270, the captured frames at their real "
+             "timing) for people; agents read the sheets.",
     )
     subparser.add_argument(
         "--list-layers", dest="list_layers", action="store_true",

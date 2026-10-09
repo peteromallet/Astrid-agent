@@ -30,18 +30,19 @@ One tile per picture cut (`#N` = the cut number in `timelines show`), 480x270, a
 ```bash
 python3 -m astrid timelines show <timeline> --project <project>                  # cut table: numbers, layers, words
 python3 -m astrid timelines visualize <timeline> --project <project> --view contact   # --layer bounds: boxes
-python3 -m astrid timelines lint <timeline> --project <project> --beats CUE.beats.json  # ~1 s, no capture
+python3 -m astrid timelines lint <timeline> --project <project>                  # ~1 s, no capture
 python3 -m astrid timelines visualize <timeline> --project <project> --range 10..20 --every-frames 10
 ```
 
 Each run prints the page path, tile/frame count, `wall = queued + capture + compose`
-and the next three commands; `--json` gives the SDK envelope. Read the contact sheet
-first, fix what `lint` names (each line ends with the fix), then drill in.
+and the next three commands; `--json` gives the SDK envelope. Under the chapter band an
+audio lane shows music (up), VO (down), gaps without VO (amber) and dead air (red).
+Read the sheet first, fix what `lint` names (each line ends with the fix), then drill in.
 
 ## How an agent edits motion (you cannot watch video; read these instead)
 
 ```bash
-python3 -m astrid timelines visualize <timeline> --project <project> --view motion --cut 17 --beats CUE.beats.json
+python3 -m astrid timelines visualize <timeline> --project <project> --view motion --cut 17
 ```
 
 1. Read `findings` (also `findings.txt` next to the page): FACE/FRAME/SAFE/SMALL/SYNC lines name
@@ -51,7 +52,8 @@ python3 -m astrid timelines visualize <timeline> --project <project> --view moti
    axis) and `motion-cut-17-frames.png` (strip with HOLD tiles; onion skins t-2…t+6 per entrance).
 3. Edit (checkout → edit → check → publish), re-run the same command (cached frames: seconds),
    then `timelines diff --from <old head>`. Mark intended freezes `app.deliberate_hold: true`.
-4. Render only when the sheets read right. `--layer a,b` picks layers; `--list-layers` lists them.
+4. Render only when the sheets read right. Beats come from the music clip's `app.beats` (the EDL
+   builder copies the cue's beats.json there; `--beats FILE` overrides); `--preview` adds a GIF for people.
 
 ## Add a visualize layer
 

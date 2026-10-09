@@ -329,3 +329,90 @@ def test_timelines_lint_prints_one_line_per_finding(capsys):
     assert "FRAME  cut 1" in out and "60 px past the frame edge" in out
     assert "SAFE   cut 1" in out and "set params.x ≤ 1104" in out
     assert out.strip().splitlines()[-2].startswith("warnings: ")
+
+
+# --- beats on the timeline, audio lanes, preview -----------------------------------------
+
+def _wav(path: Path, seconds: float, *, loud: list[tuple[float, float]], rate: int = 8000) -> None:
+    """A mono 16-bit tone that sounds only inside ``loud`` windows."""
+    import math
+    import struct
+    import wave
+
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        frames = bytearray()
+        for i in range(int(seconds * rate)):
+            t = i / rate
+            on = any(a <= t < b for a, b in loud)
+            frames += struct.pack("<h", int(12000 * math.sin(2 * math.pi * 220 * t)) if on else 0)
+        out.writeframes(bytes(frames))
+
+
+def _with_music(snapshot: dict) -> dict:
+    occ = "occ-ch01"
+    snapshot["clips"].append(_clip("music", "music", "audio", 0.0, 3.0, occ, clipType="media", asset=f"{occ}:music-cue",
+                                   **{"from": 10.0, "to": 13.0},
+                                   app={"beats": {"source": "cue.beats.json", "beats": [10.5, 11.0, 11.5],
+                                                  "downbeats": [10.5], "hits": [[10.52, "stab"]]}}))
+    for clip in snapshot["clips"]:
+        if clip["id"].endswith(":vo"):
+            clip["asset"] = f"{occ}:vo-s01"
+    snapshot["tracks"].append({"id": "music", "kind": "audio"})
+    return snapshot
+
+
+def test_beats_travel_on_the_music_clip_and_flags_override():
+    snapshot = _with_music(layered_snapshot())
+    elements = model.elements_from_occurrences(occurrences_from_snapshot(snapshot))
+    beats = model.timeline_beats(None, elements, 0.0, 3.0)
+    # cue second 10.5 plays at timeline 0.5 (clip at 0.0 plays the cue from 10.0)
+    assert beats["beats"] == [0.5, 1.0, 1.5] and beats["hits"] == [(0.52, "stab")]
+    assert beats["source"] == ["cue.beats.json"]
+    override = model.timeline_beats({"beats": [10.25]}, elements, 0.0, 3.0)
+    assert override["beats"] == [0.25] and override["source"] == ["--beats"]
+
+
+def test_audio_envelope_finds_vo_gaps_and_dead_air(tmp_path):
+    from astrid.packs.rendering.executors.timeline_visualize.motion import audio
+
+    snapshot = _with_music(layered_snapshot())
+    elements = model.elements_from_occurrences(occurrences_from_snapshot(snapshot))
+    _wav(tmp_path / "vo.wav", 1.0, loud=[(0.1, 0.4)])
+    _wav(tmp_path / "music.wav", 14.0, loud=[(10.0, 10.6), (11.5, 13.0)])
+    files = {"occ-ch01:vo-s01": tmp_path / "vo.wav", "occ-ch01:music-cue": tmp_path / "music.wav"}
+    env = audio.envelope(elements, files, 0.0, 3.0, bins=300)
+    assert env.step >= audio.MIN_BIN_S
+    assert any(a <= 0.45 and b >= 1.4 for a, b in env.silences("vo"))
+    dead = env.dead_air()
+    assert dead and 0.55 <= dead[0][0] <= 0.7 and 1.4 <= dead[0][1] <= 1.6  # music muted 10.6–11.5 cue seconds
+    assert env.level_db("music", 0.0, 0.5) > -25
+
+
+def test_contact_and_motion_draw_audio_and_preview(tmp_path, monkeypatch):
+    snapshot = _with_music(layered_snapshot())
+    _wav(tmp_path / "vo.wav", 1.0, loud=[(0.1, 0.4)])
+    _wav(tmp_path / "music.wav", 14.0, loud=[(10.0, 10.6), (11.5, 13.0)])
+    registry = tmp_path / "assets.json"
+    registry.write_text(json.dumps({"assets": {
+        "occ-ch01:vo-s01": {"file": str(tmp_path / "vo.wav")},
+        "occ-ch01:music-cue": {"file": str(tmp_path / "music.wav")},
+    }}))
+    contact = _execute(tmp_path / "c", snapshot, {"view": "contact", "assets_registry": registry}, monkeypatch)
+    lines = contact["outputs"]["findings"]
+    assert any(line.startswith("DEADAIR") for line in lines) and any(line.startswith("SILENCE") for line in lines)
+    motion = _execute(tmp_path / "m", snapshot, {"view": "motion", "cut": "1", "preview": True,
+                                                 "assets_registry": registry}, monkeypatch)
+    outputs = motion["outputs"]
+    assert any(line.startswith("AUDIO") and "dead air" in line for line in outputs["findings"])
+    assert any("vs music" in line for line in outputs["findings"])  # beats from the music clip
+    gif = Path(outputs["pack_root"]) / "motion-cut-01.gif"
+    with Image.open(gif) as preview:
+        assert preview.size[0] <= 480 and preview.n_frames >= 10
+    from astrid.sdk.invocation import _filmstrip_sidecars
+
+    assert _filmstrip_sidecars(Path(outputs["pack_root"]))["preview"].endswith("motion-cut-01.gif")
+    with pytest.raises(ValueError, match="--view motion"):
+        filmstrip_options({"view": "contact", "preview": True})

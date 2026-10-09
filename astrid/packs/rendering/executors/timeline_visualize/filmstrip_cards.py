@@ -1608,7 +1608,22 @@ def _static(cards, out_root, columns, page_size, timeline_name, render_run_id, r
     return {'png': png_paths}
 
 
-def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None) -> dict:
+def _audio_envelope(snapshot: Mapping, asset_files: Mapping[str, str] | None, start: float, end: float, bins: int):
+    """Decimated VO/music/sfx loudness from the timeline's own audio clips, or None without files."""
+    if not asset_files:
+        return None
+    from .motion.audio import envelope
+    from .motion.sheet import snapshot_elements
+
+    _occurrences, elements = snapshot_elements(snapshot)
+    try:
+        return envelope(elements, asset_files, start, end, bins=bins)
+    except Exception:  # noqa: BLE001 - an unreadable audio file must not lose the page
+        return None
+
+
+def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None,
+                         asset_files: Mapping[str, str] | None = None) -> dict:
     index = plan_filmstrip(snapshot, options)
     # Keep the resolved component contract in the frame index itself; the
     # The static surface must not infer visibility from whether optional lanes happen to
@@ -1720,8 +1735,13 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         cut = select_cut(snapshot, options.get('cut'), fps_value)
         context = build_context(snapshot, cut, frames, fps=fps_value, frame_size=size,
                                 beats=options.get('beats'), layer_names=options.get('layers') or ())
+        context.shared['audio'] = _audio_envelope(snapshot, asset_files, context.window[0], context.window[1],
+                                                  context.plot_right - context.plot_left)
+        context.shared['preview'] = bool(options.get('preview'))
         sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
         paths = {'png': sheet['png']}
+        if sheet.get('preview'):
+            paths['preview'] = sheet['preview']
         index['motion_findings'] = sheet['findings']
         index['motion_layers'] = sheet['layers']
     elif options.get('view') == 'contact':
@@ -1737,13 +1757,17 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
 
             def overlay(image, seconds):
                 return overlay_bounds(image, contact_elements, seconds, contact_fps, labels=False)
+        from .contact_sheet import contact_band_width, contact_silence_findings
+        audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns))
         paths = {'png': static_contact_png(
             display_cards, out_root, columns=columns, timeline_name=timeline_label,
             render_run_id=snapshot['render_run_id'], render_selection=render_selection,
             occurrences=[o for o in snapshot.get('occurrences') or [] if isinstance(o, Mapping)],
             duration_seconds=duration, show_output='output' in components,
-            thinned_from=(index.get('contact') or {}).get('thinned_from'), overlay=overlay,
+            thinned_from=(index.get('contact') or {}).get('thinned_from'), overlay=overlay, audio=audio,
         )}
+        if audio is not None:
+            index['motion_findings'] = contact_silence_findings(audio)
     else:
         paths = _static(display_cards, out_root, columns, page_size, timeline_label, snapshot['render_run_id'], render_selection, display_audio, components=options.get('components'), detail=bool(options.get('detail')))
     for name, filename in [('json', 'frame-index.json'), ('markdown', 'filmstrip.md')]:

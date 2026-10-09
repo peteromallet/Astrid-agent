@@ -109,7 +109,7 @@ def build_context(
         elements=inside,
         all_elements=elements,
         words=[w for w in model.words(elements) if w.end > window[0] - 0.5 and w.start < window[1] + 0.5],
-        beats=model.beats_in(beats, elements, window[0], window[1]),
+        beats=model.timeline_beats(beats, elements, window[0], window[1]),
         sfx=[s for s in model.sfx(elements) if s[1] > window[0] and s[0] < window[1]],
         events=visual_events,
         frames=dict(frames),
@@ -160,7 +160,7 @@ def _wrap(draw, text: str, size: int, width: int) -> list[str]:
 # Findings read top-down by what to fix first: composition and timing
 # problems, then holds and sync detail, then descriptive lines, then info.
 _RANK = ("ERROR", "FACE", "FRAME", "SAFE", "SMALL", "COVER", "SYNC", "SFX", "SHORT", "HOLD", "STILL", "LIPSYNC",
-         "STRIP", "TIME", "CURVE", "DIFF", "ONION", "BEAT", "EDGE")
+         "AUDIO", "STRIP", "TIME", "CURVE", "DIFF", "ONION", "BEAT", "EDGE")
 
 
 def _finding_rank(line: str) -> tuple[int, int]:
@@ -227,4 +227,35 @@ def compose_motion_sheet(
         path = Path(out_root) / f"motion-cut-{number:02d}{suffix}.png"
         sheet.save(path)
         pages.append(str(path))
-    return {"png": pages, "findings": findings, "layers": [name for name, _r in results]}
+    preview = write_preview(ctx, out_root) if ctx.shared.get("preview") else None
+    return {"png": pages, "findings": findings, "layers": [name for name, _r in results], "preview": preview}
+
+
+PREVIEW_MAX_SIZE = (480, 270)
+
+
+def write_preview(ctx: LayerContext, out_root: Path) -> str | None:
+    """A timing-faithful animated GIF of the cut for humans, from the frames already captured.
+
+    Each sampled frame is shown until the next one (so dense runs after an
+    entrance play at their real speed and holds hold); no extra capture.
+    """
+    frames = sorted(f for f in ctx.frames if float(ctx.cut["start"]) * ctx.fps - 2 <= f < float(ctx.cut["end"]) * ctx.fps)
+    if len(frames) < 2:
+        return None
+    images, durations = [], []
+    for index, frame in enumerate(frames):
+        image = ctx.frame_image(frame)
+        if image is None:
+            continue
+        image.thumbnail(PREVIEW_MAX_SIZE)
+        draw = ImageDraw.Draw(image)
+        label = ctx.rel(frame / ctx.fps)
+        draw.rectangle((0, 0, 8 + 7 * len(label), 16), fill="#000000")
+        draw_text(draw, (4, 1), label, 12, "#ffffff")
+        following = frames[index + 1] if index + 1 < len(frames) else frame + int(ctx.fps // 2)
+        durations.append(max(20, int(round((following - frame) / ctx.fps * 1000))))
+        images.append(image.convert("P", palette=Image.ADAPTIVE, colors=128))
+    path = Path(out_root) / f"motion-cut-{int(ctx.cut['index']):02d}.gif"
+    images[0].save(path, save_all=True, append_images=images[1:], duration=durations, loop=0, optimize=True)
+    return str(path)
