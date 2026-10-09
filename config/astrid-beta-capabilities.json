@@ -1083,6 +1083,26 @@
    "required_env": [],
    "required_binaries": ["node"],
    "required_packages": []
+  },
+  {
+   "id": "pixel.cutout",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy chroma or flat-background cutout with hard alpha; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": ["PIL", "numpy"]
+  },
+  {
+   "id": "pixel.snap",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy pixel-grid snap and palette quantize; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": ["PIL", "numpy"]
   }
  ]
 }

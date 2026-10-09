@@ -1,0 +1,114 @@
+schema_version: 1
+id: pixel.cutout
+name: Pixel Cutout
+kind: built_in
+version: 1.0.0
+short_description: Remove a flat, chroma-key, or light background into hard-alpha RGBA, optionally on the snapped pixel grid.
+description: >-
+  Crops (optional), optionally snaps to a logical grid first (grid=auto or WxH), then
+  removes the background: chroma (key colour, default magenta), flat (dominant border
+  colour detected automatically), or luma (light backdrop). Only background connected to
+  the border is removed, so enclosed key-coloured pixels and the dark outline survive.
+  Alpha is strictly 0 or 255. Optionally trims to the alpha bounding box with padding and
+  drops small detached specks. Outputs an RGBA PNG and a JSON report.
+keywords: [pixel, pixel-art, cutout, transparency, chroma-key, background-removal, alpha, sprite]
+inputs:
+  - name: image
+    type: file
+    required: true
+    artifact_type: image
+    description: Managed image (import with python -m astrid media import, then pass its digest).
+  - name: crop
+    type: json
+    required: false
+    description: Optional {x, y, width, height} in source pixels, applied before anything else.
+  - name: mode
+    type: string
+    required: false
+    default: chroma
+    description: chroma (key colour), flat (auto-detected border colour), or luma (light backdrop).
+  - name: key
+    type: string
+    required: false
+    default: "#FF00FF"
+    description: Key colour for chroma mode.
+  - name: tolerance
+    type: integer
+    required: false
+    default: 48
+    description: RGB distance (0-255) from the key or border colour that counts as background.
+  - name: grid
+    type: string
+    required: false
+    description: "auto to detect the pixel lattice, or WIDTHxHEIGHT to snap first; omit to cut at full resolution."
+  - name: fit
+    type: string
+    required: false
+    default: contain
+    description: Fit used with an explicit grid (cover, contain or none). contain keeps the whole subject.
+  - name: trim
+    type: boolean
+    required: false
+    default: true
+    description: Crop to the alpha bounding box.
+  - name: trim_padding
+    type: integer
+    required: false
+    default: 2
+    description: Padding in output pixels around the trimmed bounding box.
+  - name: keep_largest
+    type: boolean
+    required: false
+    default: true
+    description: Drop detached specks smaller than 5% of the largest foreground component.
+outputs:
+  - name: cutout
+    type: file
+    path_template: "{out}/cutout.png"
+    artifact_type: image
+    description: RGBA PNG with hard alpha.
+  - name: report
+    type: file
+    path_template: "{out}/report.json"
+    artifact_type: null
+    description: Background key, bounding box, grid used, and speck statistics.
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.pixel.executors.cutout.run
+    - "--image"
+    - "{image}"
+    - "--out"
+    - "{out}"
+    - "--mode"
+    - "{mode}"
+    - "--key"
+    - "{key}"
+    - "--tolerance"
+    - "{tolerance}"
+    - "--fit"
+    - "{fit}"
+    - "--trim"
+    - "{trim}"
+    - "--trim-padding"
+    - "{trim_padding}"
+    - "--keep-largest"
+    - "{keep_largest}"
+  input_args:
+    - input: crop
+      flag: "--crop"
+      optional: true
+    - input: grid
+      flag: "--grid"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.pixel.executors.cutout.run
+  output_result_manifest: true

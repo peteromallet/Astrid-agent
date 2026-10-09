@@ -1,0 +1,119 @@
+schema_version: 1
+id: pixel.snap
+name: Pixel Snap
+kind: built_in
+version: 1.0.0
+short_description: Snap a generated image onto a logical pixel grid with mode downsampling, optional palette, and a scaled preview.
+description: >-
+  Crops (optional), then downsamples a managed image onto a logical pixel grid by
+  taking each cell's modal colour, so 1 px outlines survive. The grid is either explicit
+  (grid_width x grid_height, with fit cover/contain/none) or detected from the image's
+  own pixel lattice (auto_grid). Optional palette (hex list or the astrid preset) or
+  max_colors quantisation, then a nearest-neighbour preview. Outputs a grid-size native
+  PNG, a scaled preview PNG, and a JSON report.
+keywords: [pixel, pixel-art, grid, palette, quantize, snap, sprite, downsample]
+inputs:
+  - name: image
+    type: file
+    required: true
+    artifact_type: image
+    description: Managed image (import with python -m astrid media import, then pass its digest).
+  - name: crop
+    type: json
+    required: false
+    description: Optional {x, y, width, height} in source pixels, applied before anything else.
+  - name: auto_grid
+    type: boolean
+    required: false
+    default: false
+    description: Detect the pixel-block lattice from edge periodicity instead of using grid_width/grid_height.
+  - name: grid_width
+    type: integer
+    required: false
+    default: 320
+    description: Logical grid width in cells (explicit grid only).
+  - name: grid_height
+    type: integer
+    required: false
+    default: 180
+    description: Logical grid height in cells (explicit grid only).
+  - name: fit
+    type: string
+    required: false
+    default: cover
+    description: "cover crops to the grid aspect, contain pads to it, none stretches the source."
+  - name: palette
+    type: string
+    required: false
+    description: Preset name (astrid) or comma-separated hex colours to map cells onto.
+  - name: max_colors
+    type: integer
+    required: false
+    description: Quantise to this many colours (2-256) when no palette is given.
+  - name: scale
+    type: integer
+    required: false
+    default: 6
+    description: Integer nearest-neighbour factor for the preview output.
+  - name: dither
+    type: boolean
+    required: false
+    default: false
+    description: Floyd-Steinberg dithering when a palette or max_colors is applied.
+outputs:
+  - name: native
+    type: file
+    path_template: "{out}/native.png"
+    artifact_type: image
+    description: Grid-size RGBA PNG with hard alpha (the true pixel art).
+  - name: preview
+    type: file
+    path_template: "{out}/preview.png"
+    artifact_type: image
+    description: Native grid scaled by an integer factor with nearest-neighbour sampling.
+  - name: report
+    type: file
+    path_template: "{out}/report.json"
+    artifact_type: null
+    description: Detected grid, colours used, and palette distance statistics.
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.pixel.executors.snap.run
+    - "--image"
+    - "{image}"
+    - "--out"
+    - "{out}"
+    - "--auto-grid"
+    - "{auto_grid}"
+    - "--grid-width"
+    - "{grid_width}"
+    - "--grid-height"
+    - "{grid_height}"
+    - "--fit"
+    - "{fit}"
+    - "--scale"
+    - "{scale}"
+    - "--dither"
+    - "{dither}"
+  input_args:
+    - input: crop
+      flag: "--crop"
+      optional: true
+    - input: palette
+      flag: "--palette"
+      optional: true
+    - input: max_colors
+      flag: "--max-colors"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.pixel.executors.snap.run
+  output_result_manifest: true

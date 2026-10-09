@@ -25,6 +25,7 @@ _FIRST_PARTY_PACK_IDS = (
     "iteration",
     "media",
     "moirae",
+    "pixel",
     "rendering",
     "runpod",
     "stream_content",

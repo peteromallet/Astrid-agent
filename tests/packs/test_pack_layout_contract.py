@@ -55,6 +55,7 @@ _SHIPPED_PACK_IDS = frozenset({
     "iteration",
     "media",
     "moirae",
+    "pixel",
     "rendering",
     "runpod",
     "stream_content",

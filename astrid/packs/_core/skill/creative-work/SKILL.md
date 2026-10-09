@@ -37,6 +37,7 @@ keeping the low-resolution badge readable.
 | User intent | Read and use | Typical entrypoints |
 | --- | --- | --- |
 | Generate an image, video, or audio asset from a prompt | [generation](../../../generation/skill/SKILL.md) | `generation.generate_image`, `generation.generate_video`, `generation.generate_audio` |
+| Make true pixel art from a generated image, or cut it out with transparency | [pixel](../../../pixel/skill/SKILL.md) | `pixel.snap`, `pixel.cutout` |
 | Speech / voiceover: narration from exact words, with word timing | [generation](../../../generation/skill/SKILL.md), then [rendering placeholder voiceover](../../../rendering/skill/references/placeholder-voiceover.md) to place it | `generation.generate_speech` (also `generation.generate_audio` with `mode="tts"`); returns `speech`, `speech_manifest`, `speech_words` |
 | Inspect, edit, validate, or run a ComfyUI/VibeComfy graph | [vibecomfy](../../../vibecomfy/skill/SKILL.md) | `vibecomfy.inspect`, `vibecomfy.edit`, `vibecomfy.validate`, `vibecomfy.run` |
 | Understand or describe an image, audio clip, or video | [understanding](../../../understanding/skill/SKILL.md) | `understanding.understand`, `understanding.scene_describe` |

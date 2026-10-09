@@ -1,0 +1,23 @@
+schema_version: 2
+id: pixel
+name: Pixel
+version: 1.0.0
+status: active
+visibility: visible
+domain: media
+stability: experimental
+support: core
+description: True pixel-art and cutout tools for generated images. Snaps a generated image onto a logical pixel grid with mode-based downsampling and optional palette, and removes a flat or chroma-key background into hard-alpha PNGs.
+keywords: [pixel, pixel-art, sprite, grid, palette, quantize, background-removal, cutout, transparency, chroma-key, alpha, codex, gpt-image]
+permissions:
+  - id: project_files
+    reason: Reads the managed source image and writes native, preview, cutout and report outputs.
+content:
+  executors: executors
+agent:
+  purpose: "Use to turn a generated image (for example Codex gpt-image output at 1536x1024 with soft edges and an opaque background) into true pixel art on a logical grid, or into an RGBA cutout with hard alpha."
+  do_not_use_for: "Generating new images (use the generation pack), upscaling with smoothing (generation.generate_image_upscale smooths edges), or editing timelines and video."
+  normal_entrypoints: [pixel.snap, pixel.cutout]
+documentation:
+  kind: skill
+  path: skill/SKILL.md
