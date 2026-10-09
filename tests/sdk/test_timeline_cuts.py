@@ -246,7 +246,7 @@ def test_script_view_interleaves_words_cuts_layers_and_keyframes():
         '0.10 │ "One year ago."  [0.10–1.60]',
         "2.00 ┃ CUT 2  c02-plate · P-02  Δ-0.20s to 'I'",
         '2.20 │ "I invited"  [2.20–3.10]',
-        "2.50 + am-sprite C-02",
+        "2.50 + am-sprite C-02 [c02-sprite]",
         "2.50 ◆ am-flap values[1] → ERR 4 (f15)",
     ]
     positions = [lines.index(item) for item in order]

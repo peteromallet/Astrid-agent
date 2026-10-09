@@ -1200,7 +1200,7 @@ def _cmd_recover(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
-def _working_copy(parsed: argparse.Namespace) -> dict[str, Any] | None:
+def _working_copy_view(parsed: argparse.Namespace) -> dict[str, Any] | None:
     """The unpublished working copy of this timeline (its document and edits), or None."""
     from astrid.sdk.timeline_checkout import Checkout, find_draft
 
@@ -1242,7 +1242,7 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     # The working copy (unpublished draft) is what show reads unless --published or an exact revision is asked for.
     working = None
     if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
-        working = _working_copy(parsed)
+        working = _working_copy_view(parsed)
     bundle = working["bundle"] if working else data["bundle"]
     table = build_cut_table(bundle)
     changes = working["changes"] if working else []

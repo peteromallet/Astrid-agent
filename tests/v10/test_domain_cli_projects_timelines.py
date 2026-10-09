@@ -638,6 +638,14 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "lint",
         "inspect",
         "render",
+        "checkout",
+        "edit",
+        "words",
+        "status",
+        "check",
+        "publish",
+        "discard",
+        "duplicate",
     )
     assert all(spec.aliases == () for spec in COMMANDS)
     # The parser registers the timeline verbs plus the
@@ -655,6 +663,14 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "lint",
         "inspect",
         "render",
+        "checkout",
+        "edit",
+        "words",
+        "status",
+        "check",
+        "publish",
+        "discard",
+        "duplicate",
         "shots",
     }
 
