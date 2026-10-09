@@ -27,7 +27,7 @@ defaults:
   pan: {dx: 0, dy: 0}
   stepFrames: 2
   enter: cut
-  exit: cut
+  exitWipe: cut
   enterFrames: 6
   exitFrames: 6
   pattern: diagonal
@@ -87,7 +87,7 @@ schema:
     enter:
       type: string
       enum: [cut, blockWipe]
-    exit:
+    exitWipe:
       type: string
       enum: [cut, blockWipe]
     enterFrames: {type: integer, minimum: 1}

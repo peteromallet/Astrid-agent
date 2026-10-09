@@ -56,7 +56,8 @@ type Params = {
   seed?: number;
   tint?: {color?: string; opacity?: number};
   enter?: 'cut' | 'blockWipe';
-  exit?: 'cut' | 'blockWipe';
+  /** Not `exit`: the timeline reads params.exit as an animation phase. */
+  exitWipe?: 'cut' | 'blockWipe';
   enterFrames?: number;
   exitFrames?: number;
   pattern?: WipePattern;
@@ -104,7 +105,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
 
   const total = clipFrames(props.clip, fps);
   const enter = oneOf(params.enter, ENTER_EXIT, 'cut');
-  const exit = oneOf(params.exit, ENTER_EXIT, 'cut');
+  const exitWipe = oneOf(params.exitWipe, ENTER_EXIT, 'cut');
   const enterFrames = integerIn(params.enterFrames, 1, 60, 6);
   const exitFrames = integerIn(params.exitFrames, 1, 60, 6);
   const pattern = oneOf<WipePattern>(params.pattern, PATTERNS, 'diagonal');
@@ -122,7 +123,7 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
         paint={{mode: 'reveal', progress: (frame + 1) / enterFrames, color: wipeColor, pattern, seed}}
       />
     );
-  } else if (exit === 'blockWipe' && frame >= exitStart) {
+  } else if (exitWipe === 'blockWipe' && frame >= exitStart) {
     wipe = (
       <BlockWipe
         width={width}

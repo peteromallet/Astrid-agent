@@ -6,7 +6,7 @@
    "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
    "layers": [{"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
      "params": {"zoom": 3, "focus": {"x": 120, "y": 60}, "pan": {"dx": 8, "dy": 0}, "stepFrames": 2,
-                "enter": "blockWipe", "enterFrames": 6, "exit": "blockWipe", "exitFrames": 6, "pattern": "diagonal"}}]},
+                "enter": "blockWipe", "enterFrames": 6, "exitWipe": "blockWipe", "exitFrames": 6, "pattern": "diagonal"}}]},
   {"name": "control-plain", "frames": [0], "mp4": false,
    "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
    "layers": [{"element": "control-plain", "at": 0, "hold": 1, "asset": "plate"}]},
