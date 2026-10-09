@@ -253,8 +253,9 @@ Departure Mono. Palette values come from the lore notes (04-lore.md B3) and are
   `onMessage` is given. Each one steps on whole frames:
   - `underline` [{color}]: draws in over 6 frames, one step per frame.
   - `strike`: rust bar on frame `at`, orange bar one frame later, offset 3 px.
-  - `highlight` [{color: '#ED6B23', alpha: 0.45}]: a Vox-style swipe behind the
-    word, wiping across in 4 stepped frames.
+  - `highlight` [{color: '#ED6B23', alpha: 0.45}]: a Vox-style marker bar behind
+    the word. It is cap height plus about 3 px either side, with 2 px stepped
+    ragged ends, and wipes across in 4 stepped frames. `underline` stays separate.
   - `circle`: a rust (#A94714) hand-drawn ellipse, drawn in 6 stepped segments.
     The shape is seeded from the word, so it is repeatable.
   - `annotation` [{text}]: a Departure Mono callout card above the word, with an

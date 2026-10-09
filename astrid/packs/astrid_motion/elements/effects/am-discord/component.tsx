@@ -322,6 +322,10 @@ const wrapCount = (text: string, width: number): number => {
   return lines;
 };
 
+// Marker bar outline in a 20 px box: body rows 1 to 19, ragged left end (top
+// edge 1 px down over 2 px) and ragged right end (bottom edge 1 px up over 2 px).
+const MARKER_ENDS = 'polygon(0px 2px, 2px 2px, 2px 1px, 100% 1px, 100% 18px, calc(100% - 2px) 18px, calc(100% - 2px) 19px, 0px 19px)';
+
 const PixelArrow = ({color}: {color: string}): ReactElement => (
   <svg width={16} height={12} viewBox="0 0 16 12" shapeRendering="crispEdges" style={{display: 'block'}}>
     <rect x={0} y={5} width={10} height={2} fill={color} />
@@ -435,14 +439,18 @@ const TokenNode = ({
 
   // Stacking: highlighter (0) sits behind the text (1); the marks, circle and
   // annotation draw over it (2 to 4).
+  // Marker swipe: a bar the height of cap height plus about 3 px either side,
+  // behind the glyphs. Both ends are ragged in 2 px steps, with a 1 px vertical
+  // offset per end (the left end sits 1 px low, the right end 1 px high).
   const hl = decor.highlight;
   const highlight = hl && frame >= hl.at ? (
     <span
       key="hl"
       style={{
-        position: 'absolute', left: 0, top: 11, height: 12, zIndex: 0,
-        width: `${highlightProgress(frame, hl.at) * 100}%`,
+        position: 'absolute', left: -3, top: 2, height: 20, zIndex: 0,
+        width: `calc((100% + 6px) * ${highlightProgress(frame, hl.at)})`,
         background: hexAlpha(hl.color, hl.alpha),
+        clipPath: MARKER_ENDS,
       }}
     />
   ) : null;

@@ -150,7 +150,7 @@ schema:
           onMessage: {type: integer, minimum: 0}
     highlight:
       type: array
-      description: Vox-style highlighter swipe behind the word, wiping across in 4 stepped frames.
+      description: Vox-style marker swipe behind the word. A bar the height of cap height plus about 3 px either side, with 2 px stepped ragged ends, wipes across in 4 stepped frames.
       items:
         type: object
         required: [word, at]
