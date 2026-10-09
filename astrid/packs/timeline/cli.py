@@ -154,9 +154,12 @@ def _cmd_create(parsed: argparse.Namespace) -> int:
             "visual": {"canvas": {"width": width, "height": height, "fps": parsed.fps}}
         },
     }
+    if parsed.slug and parsed.timeline_id and parsed.slug != parsed.timeline_id:
+        print("give the id once: a positional timeline_id or --slug, not both", file=sys.stderr)
+        return 2
     result = parsed.client.timelines.create_empty(
         project=parsed.project,
-        timeline_id=parsed.timeline_id,
+        timeline_id=parsed.slug or parsed.timeline_id,
         config=config,
         idempotency_key=parsed.idempotency_key,
     )
@@ -2500,6 +2503,11 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     )
     _add_project_arg(subparser)
     subparser.add_argument(
+        "--slug",
+        default=None,
+        help="Slug for the new timeline (passed as timeline_id); an alternative to the positional id.",
+    )
+    subparser.add_argument(
         "--canvas",
         type=_parse_canvas,
         default=(1920, 1080),
@@ -2944,6 +2952,496 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_render)
 
 
+# -- timelines working copy: checkout / edit / words / status / check / publish / discard ----------
+# One SDK call per verb; the logic is in astrid.sdk.timeline_checkout (drafts) and timeline_duplicate.
+
+
+class _VerbError(Exception):
+    """A user-facing failure: the message is printed to stderr and the verb exits with ``code``."""
+
+    def __init__(self, message: str, code: int = 1):
+        super().__init__(message)
+        self.code = code
+
+
+def _guard(default_code: int):
+    """Turn a _VerbError or a TimelineEditError into one stderr line and an exit code."""
+
+    def wrap(fn):
+        def run(parsed: argparse.Namespace) -> int:
+            from astrid.sdk.timeline_checkout import TimelineEditError
+
+            try:
+                return fn(parsed)
+            except _VerbError as exc:
+                print(str(exc), file=sys.stderr)
+                return exc.code
+            except TimelineEditError as exc:
+                print(str(exc), file=sys.stderr)
+                return default_code
+
+        run.__name__ = fn.__name__
+        return run
+
+    return wrap
+
+
+def _is_file_ref(ref: str | None) -> bool:
+    return bool(ref) and (str(ref).endswith(".json") or Path(str(ref)).is_file())
+
+
+def _draft_name(parsed: argparse.Namespace) -> str:
+    return getattr(parsed, "draft", None) or "main"
+
+
+def _need_project(parsed: argparse.Namespace) -> str:
+    if not parsed.project:
+        raise _VerbError("--project P is required (the timeline is named inside its project)", 2)
+    return parsed.project
+
+
+def _cuts_summary(tl: Any) -> str:
+    return f"{len(tl.cuts)} cuts · {len(tl.clips())} clips · {len(tl.words())} words"
+
+
+def _working_copy(parsed: argparse.Namespace, *, create: bool) -> tuple[Any, bool]:
+    """(checkout, existed). Create=True makes the working copy from the head when there is none."""
+    from astrid.sdk.timeline_checkout import Checkout, find_draft
+
+    project = _need_project(parsed)
+    timeline = parsed.timeline
+    name = _draft_name(parsed)
+    existed = find_draft(project, timeline, name, client=parsed.client) is not None
+    if not existed and not create:
+        return None, False
+    fresh = bool(getattr(parsed, "fresh", False))
+    return Checkout.draft(project, timeline, name, client=parsed.client, fresh=fresh), existed
+
+
+def _describe_edit(before: Mapping[str, Any], after: Mapping[str, Any], tl: Any) -> list[str]:
+    """Plain-words lines for the changes between two documents (timeline seconds)."""
+    from astrid.sdk.timeline_cuts import diff_bundles
+
+    clips = {c.id: c for c in tl.clips()}
+    lines = []
+    for ch in diff_bundles(before, after)["changes"]:
+        clip = clips.get(ch["clip_id"])
+        label = f"{ch['clip_id']} ({(clip.asset if clip and clip.asset else (clip.element if clip else ch.get('track')))})"
+        if ch["kind"] in ("added", "removed"):
+            lines.append(f"{label}: {ch['kind']}")
+            continue
+        if ch["before"] and ch["after"] and "start" in ch["fields"]:
+            text = f"{label}: {ch['before'][0]:.3f} → {ch['after'][0]:.3f} s"
+        else:
+            text = f"{label}: changed {', '.join(ch['fields'])}"
+        anchor = clip.anchor if clip else None
+        if anchor and "start" in ch["fields"]:
+            text += f', anchored to "{anchor.get("text")}" [{anchor.get("word")}]'
+        lines.append(text)
+    return lines
+
+
+def _check_lines(report: Any) -> list[str]:
+    """The first line of the report, then the problems and lint lines (the full report is `check`)."""
+    lines = str(report).splitlines()
+    return [lines[0]] + [ln for ln in lines[1:] if ln.startswith(("!", "  ", "lint"))]
+
+
+def _edit_range(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
+    from astrid.sdk.timeline_cuts import diff_bundles
+
+    spans = [c for ch in diff_bundles(before, after)["changes"]
+             for c in (ch["before"], ch["after"]) if c]
+    if not spans:
+        return "0..10"
+    lo = max(0.0, min(s[0] for s in spans) - 1.0)
+    hi = max(s[1] for s in spans) + 1.0
+    return f"{lo:.1f}..{hi:.1f}"
+
+
+@_guard(1)
+def _cmd_checkout(parsed: argparse.Namespace) -> int:
+    tl, existed = _working_copy(parsed, create=True)
+    name = _draft_name(parsed)
+    head = tl.base_revision
+    print(f'working copy "{name}" of {parsed.timeline} · base {head} · {_cuts_summary(tl)}'
+          + ("" if existed and not parsed.fresh else " (new, from the published head)"))
+    print("show, visualize, lint and diff now show this working copy (--published for the live version)")
+    print(f"next: timelines edit {parsed.timeline} --project {parsed.project} --clip ROCKET --at-word viral   ·   "
+          f'or Python: tl = Checkout.draft("{parsed.project}", "{parsed.timeline}")   ·   '
+          f"timelines status {parsed.timeline} --project {parsed.project}")
+    return 0
+
+
+@_guard(2)
+def _cmd_edit(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import Checkout
+
+    timeline_level = parsed.retime or parsed.close_gap_before or parsed.insert
+    selector = parsed.clip is not None or parsed.cut is not None
+    if selector and timeline_level:
+        raise _VerbError("a clip edit and a timeline-level edit (--retime, --close-gap-before, --insert) "
+                         "are separate: run one per command", 2)
+    if not selector and not timeline_level:
+        raise _VerbError("name a clip (--clip QUERY or --cut N) or a timeline-level edit "
+                         "(--retime, --close-gap-before WORD, --insert TIME:SECONDS)", 2)
+    if selector and not any(v is not None for v in (parsed.at_word, parsed.at, parsed.nudge, parsed.nudge_frames,
+                                                    parsed.extend, parsed.duration, parsed.swap_asset)) and not parsed.set:
+        raise _VerbError("say what to do to the clip: --at-word, --at, --nudge, --nudge-frames, --extend, "
+                         "--duration, --set or --swap-asset", 2)
+    parsed.set = _parse_set(parsed.set)
+    if parsed.duration is not None and parsed.extend is not None:
+        raise _VerbError("--duration and --extend both set a length; pick one", 2)
+    if parsed.at_word is not None and parsed.at is not None:
+        raise _VerbError("--at-word and --at both set a position; pick one", 2)
+
+    if parsed.file:
+        tl = Checkout.load(parsed.file)
+        target = parsed.file
+    else:
+        if not parsed.timeline:
+            raise _VerbError("name a timeline (timelines edit <timeline> --project P) or pass --file F", 2)
+        tl, existed = _working_copy(parsed, create=True)
+        if not existed:
+            print(f"no working copy yet: checked out {parsed.timeline} from its published head")
+        target = None
+
+    before = tl.document()
+    _apply_edit(tl, parsed)
+    report = tl.check()
+    changes = _describe_edit(before, tl.document(), tl)
+    for line in changes:
+        print(line)
+    if not changes:
+        print("no change")
+    for line in _check_lines(report):
+        print(line)
+    tl.save(target)
+    if target is not None:
+        print(f'next: timelines check {target}   ·   timelines publish {target} -m "…"')
+    else:
+        print(f'next: timelines show {parsed.timeline} --project {parsed.project} --range '
+              f'{_edit_range(before, tl.document())} (your change)   ·   '
+              f'timelines publish {parsed.timeline} --project {parsed.project} -m "…"')
+    return 0 if report.valid else 1
+
+
+def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
+    """Apply the operations in order: retime, move, nudge, extend, set, swap (timeline-level ops first)."""
+    from astrid.sdk.timeline_checkout import TimelineEditError
+
+    if parsed.retime:
+        tl.retime()
+    if parsed.close_gap_before:
+        tl.close_gap(before=parsed.close_gap_before)
+    if parsed.insert:
+        at, seconds = parsed.insert
+        tl.insert_time(at, seconds)
+    if parsed.clip is None and parsed.cut is None:
+        return
+    if parsed.clip is not None:
+        clip = tl.clip(parsed.clip, near=parsed.near, cut=parsed.cut)
+    else:
+        cut_ref = int(parsed.cut) if str(parsed.cut).isdigit() else parsed.cut
+        clip = tl.cut(cut_ref).picture
+        if clip is None:
+            raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
+    if parsed.at_word is not None:
+        clip.enter_at(tl.word(parsed.at_word, n=parsed.n), offset=parsed.offset or 0.0)
+    elif parsed.at is not None:
+        clip.enter_at(parsed.at, offset=parsed.offset or 0.0)
+    if parsed.nudge is not None or parsed.nudge_frames is not None:
+        clip.nudge(parsed.nudge or 0.0, frames=parsed.nudge_frames or 0)
+    if parsed.extend is not None:
+        clip.extend(parsed.extend)
+    if parsed.duration is not None:
+        clip.set_duration(parsed.duration)
+    if parsed.set:
+        clip.set(**parsed.set)
+    if parsed.swap_asset is not None:
+        clip.swap_asset(parsed.swap_asset)
+
+
+@_guard(2)
+def _cmd_words(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import Checkout
+
+    if parsed.file:
+        tl = Checkout.load(parsed.file)
+    elif parsed.published:
+        tl = Checkout.open(_need_project(parsed), parsed.timeline, client=parsed.client)
+    else:
+        tl, _existed = _working_copy(parsed, create=True)
+    between = None
+    if parsed.range:
+        lo, hi = _parse_range(parsed.range)
+        between = (tl.time(lo), tl.time(hi))
+    words = tl.words(between=between)
+    if parsed.find:
+        needle = parsed.find.strip().lower()
+        words = [w for w in words if needle in w.text.lower()]
+    cuts = tl.cuts
+    for w in words:
+        cut = next((c.n for c in cuts if c.start - 1e-6 <= w.start < c.end - 1e-6), "-")
+        print(f"  {w.start:.3f}  {w.text}  [{w.id}]  cut {cut}")
+    print(f'next: timelines edit {parsed.timeline or "<timeline>"} --project {parsed.project or "<project>"} '
+          f"--clip QUERY --at-word WORD")
+    return 0
+
+
+def _parse_range(value: str) -> tuple[str, str]:
+    lo, sep, hi = value.partition("..")
+    if not sep or not lo or not hi:
+        raise _VerbError("--range takes START..END (seconds or m:ss)", 2)
+    return lo, hi
+
+
+@_guard(1)
+def _cmd_status(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import resolve_ids
+
+    tl, _ = _working_copy(parsed, create=False)
+    name = _draft_name(parsed)
+    if tl is None:
+        print(f"no working copy · next: timelines checkout {parsed.timeline} --project {parsed.project}")
+        return 0
+    edits = tl.edits()
+    print(f'WORKING COPY "{name}" · {len(edits["changes"])} unpublished edit(s) vs published {tl.base_revision}')
+    for line in _edit_lines_from(edits, tl):
+        print(f"  {line}")
+    report = tl.check()
+    for line in _check_lines(report):
+        print(line)
+    head = resolve_ids(parsed.project, parsed.timeline, client=parsed.client)[2]
+    if head != tl.base_revision:
+        print(f"the published head moved to {head}; publish will merge (three-way) or report conflicts")
+    print(f'next: timelines publish {parsed.timeline} --project {parsed.project} -m "…"' if edits["changes"]
+          else f"next: timelines edit {parsed.timeline} --project {parsed.project} --clip ROCKET --at-word viral")
+    return 0 if report.valid else 1
+
+
+def _edit_lines_from(edits: Mapping[str, Any], tl: Any) -> list[str]:
+    """Plain-words lines for a working copy's full edit list (against its published base)."""
+    clips = {c.id: c for c in tl.clips()}
+    out = []
+    for ch in edits["changes"]:
+        clip = clips.get(ch["clip_id"])
+        label = f"{ch['clip_id']} ({clip.asset if clip and clip.asset else ch.get('track')})"
+        if ch["before"] and ch["after"] and "start" in ch["fields"]:
+            text = f"{label}: {ch['before'][0]:.3f} → {ch['after'][0]:.3f} s"
+        else:
+            text = f"{label}: {ch['kind']} {', '.join(ch['fields'])}".rstrip()
+        anchor = clip.anchor if clip else None
+        if anchor and "start" in ch["fields"]:
+            text += f', anchored to "{anchor.get("text")}" [{anchor.get("word")}]'
+        out.append(text)
+    return out
+
+
+@_guard(1)
+def _cmd_check(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import Checkout
+
+    if _is_file_ref(parsed.ref):
+        report = Checkout.load(parsed.ref).check()
+        print(str(report))
+        print(f'next: timelines publish {parsed.ref} -m "what changed"')
+        return 0 if report.valid else 1
+    parsed.timeline = parsed.ref
+    tl, _ = _working_copy(parsed, create=False)
+    if tl is None:
+        print(f"no working copy · next: timelines checkout {parsed.ref} --project {parsed.project}")
+        return 0
+    report = tl.check()
+    print(str(report))
+    print(f'next: timelines publish {parsed.ref} --project {parsed.project} -m "what changed"')
+    return 0 if report.valid else 1
+
+
+@_guard(1)
+def _cmd_publish(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import Checkout
+
+    if _is_file_ref(parsed.ref):
+        tl = Checkout.load(parsed.ref)
+        receipt = tl.publish(parsed.message, idempotency_key=parsed.idempotency_key,
+                             client=parsed.client, force=parsed.force)
+        return _print_published(receipt, f"timelines diff {tl.bundle.get('timeline_id')} --project "
+                                f"{tl.bundle.get('project_id')} --from {receipt.get('old_head')}")
+    parsed.timeline = parsed.ref
+    tl, _ = _working_copy(parsed, create=False)
+    if tl is None or not tl.edits()["changes"]:
+        raise _VerbError(f"no unpublished edits to publish · next: timelines checkout {parsed.ref} --project {parsed.project}")
+    receipt = tl.publish(parsed.message, idempotency_key=parsed.idempotency_key,
+                         client=parsed.client, force=parsed.force)
+    tl.discard()
+    return _print_published(receipt, f"timelines diff {parsed.ref} --project {parsed.project} --from {receipt.get('old_head')}")
+
+
+def _print_published(receipt: Mapping[str, Any], next_line: str) -> int:
+    print(f"published {receipt.get('new_head')} (was {receipt.get('old_head')})")
+    if receipt.get("merged"):
+        print(f"merged: {receipt['merged']}")
+    print(f"next: {next_line}")
+    return 0
+
+
+@_guard(1)
+def _cmd_discard(parsed: argparse.Namespace) -> int:
+    tl, _ = _working_copy(parsed, create=False)
+    name = _draft_name(parsed)
+    if tl is None:
+        print(f"no working copy \"{name}\" to discard · next: timelines checkout {parsed.timeline} --project {parsed.project}")
+        return 0
+    dropped = len(tl.edits()["changes"])
+    tl.discard()
+    print(f'discarded working copy "{name}" of {parsed.timeline} ({dropped} unpublished edit(s) dropped)')
+    print(f"next: timelines checkout {parsed.timeline} --project {parsed.project}")
+    return 0
+
+
+@_guard(1)
+def _cmd_duplicate(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+
+    if parsed.name:
+        print("notice: --name not applied: the runtime's create_empty takes no display name, "
+              "so the new timeline is named by its id or --slug")
+    result = duplicate_timeline(parsed.project, parsed.timeline, slug=parsed.slug, client=parsed.client)
+    print(f"duplicated {parsed.timeline} → {result['timeline_id']} ({result['shots']} shots) · head {result['new_head']}")
+    for note in result["notes"]:
+        print(f"note: {note}")
+    print(f"next: timelines show {result['timeline_id']} --project {parsed.project}")
+    return 0
+
+
+def _parse_set(items: list[str] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for item in items or []:
+        key, sep, raw = item.partition("=")
+        if not sep or not key.strip():
+            raise _VerbError(f"--set takes key=value, got {item!r}", 2)
+        try:
+            out[key.strip()] = json.loads(raw)
+        except json.JSONDecodeError:
+            out[key.strip()] = raw
+    return out
+
+
+def _parse_insert(value: str) -> tuple[str, float]:
+    at, sep, seconds = value.rpartition(":")
+    if not sep or not at:
+        raise argparse.ArgumentTypeError("--insert takes TIME:SECONDS, e.g. 1:02:0.5")
+    try:
+        return at, float(seconds)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"--insert seconds must be a number: {seconds!r}") from exc
+
+
+
+def _add_timeline_args(subparser: argparse.ArgumentParser, *, required_timeline: bool = True) -> None:
+    if required_timeline:
+        subparser.add_argument("timeline", help="Timeline UUID, ULID, or slug.")
+    else:
+        subparser.add_argument("timeline", nargs="?", default=None, help="Timeline UUID, ULID, or slug (or use --file).")
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+
+
+def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Start (or open) the working copy of a timeline: a draft checked out from its published head, kept in "
+        "Astrid's data root. Edits go to the working copy; publish sends them to the timeline."
+    )
+    _add_timeline_args(subparser)
+    subparser.add_argument("--fresh", action="store_true", help="Replace the working copy with the current head (drops its edits).")
+    subparser.set_defaults(handler=_cmd_checkout)
+
+
+def _configure_edit(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Edit a clip (or the timeline) in the working copy, in timeline seconds. Operations apply in order: "
+        "retime, move (--at-word/--at), nudge, extend/duration, set, swap."
+    )
+    _add_timeline_args(subparser, required_timeline=False)
+    subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
+    selector = subparser.add_argument_group("clip selector (one)")
+    selector.add_argument("--clip", default=None, help="Clip by asset key, id or prefix, element, or on-screen text.")
+    selector.add_argument("--near", default=None, help="With --clip: the match nearest this word or time.")
+    selector.add_argument("--cut", default=None, help="Cut number (show's numbering); alone, the cut's picture clip.")
+    move = subparser.add_argument_group("move")
+    move.add_argument("--at-word", dest="at_word", default=None, help="Start the clip at this word.")
+    move.add_argument("--n", type=int, default=None, help="Which occurrence of --at-word (1-based).")
+    move.add_argument("--at", default=None, help="Start the clip at this time (seconds or m:ss).")
+    move.add_argument("--offset", type=float, default=None, help="Seconds after the word or time.")
+    nudge = subparser.add_argument_group("nudge and length")
+    nudge.add_argument("--nudge", type=float, default=None, help="Move by seconds.")
+    nudge.add_argument("--nudge-frames", dest="nudge_frames", type=int, default=None, help="Move by frames.")
+    nudge.add_argument("--extend", type=float, default=None, help="Lengthen (or, negative, shorten) at the end.")
+    nudge.add_argument("--duration", type=float, default=None, help="Set the clip's length in seconds.")
+    subparser.add_argument("--set", action="append", default=None, metavar="KEY=VALUE",
+                           help="Set an element param (repeatable; JSON values parsed, else a string).")
+    subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE",
+                           help="Point the clip at another asset key or a local file.")
+    timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")
+    timeline_ops.add_argument("--retime", action="store_true", help="Move every anchored clip back onto its word.")
+    timeline_ops.add_argument("--close-gap-before", dest="close_gap_before", default=None, metavar="WORD",
+                              help="Close the silence before this word and ripple.")
+    timeline_ops.add_argument("--insert", type=_parse_insert, default=None, metavar="TIME:SECONDS",
+                              help="Open SECONDS of time at TIME and ripple.")
+    subparser.set_defaults(handler=_cmd_edit)
+
+
+def _configure_words(subparser: argparse.ArgumentParser) -> None:
+    _add_timeline_args(subparser, required_timeline=False)
+    subparser.add_argument("--file", default=None, help="Read a local checkout file instead.")
+    subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
+    subparser.add_argument("--find", default=None, help="Only words containing this text.")
+    subparser.add_argument("--range", default=None, metavar="A..B", help="Only words between two times (seconds or m:ss).")
+    subparser.set_defaults(handler=_cmd_words)
+
+
+def _configure_status(subparser: argparse.ArgumentParser) -> None:
+    _add_timeline_args(subparser)
+    subparser.set_defaults(handler=_cmd_status)
+
+
+def _configure_check(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("ref", help="Timeline (UUID, ULID or slug) or a checkout file.")
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+    subparser.set_defaults(handler=_cmd_check)
+
+
+def _configure_publish(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = "Publish the working copy (or a checkout file) as one revision; the working copy is then discarded."
+    subparser.add_argument("ref", help="Timeline (UUID, ULID or slug) or a checkout file.")
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+    subparser.add_argument("-m", "--message", dest="message", required=True, help="What changed (the revision message).")
+    subparser.add_argument("--force", action="store_true", help="Overwrite a conflicting change on the head.")
+    _add_idempotency_key(subparser)
+    subparser.set_defaults(handler=_cmd_publish)
+
+
+def _configure_discard(subparser: argparse.ArgumentParser) -> None:
+    _add_timeline_args(subparser)
+    subparser.set_defaults(handler=_cmd_discard)
+
+
+def _configure_duplicate(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Create a new timeline holding a copy of this timeline's published head, with new shot ids "
+        "(shot ids are global per project). Narration text bindings are not copied (reported)."
+    )
+    subparser.add_argument("timeline", help="Source timeline (UUID, ULID or slug); read only.")
+    _add_project_arg(subparser)
+    subparser.add_argument("--slug", default=None, help="Slug for the new timeline (default: its generated id).")
+    subparser.add_argument("--name", default=None, help="Display name (the runtime cannot store one yet: notice only).")
+    subparser.set_defaults(handler=_cmd_duplicate)
+
+
+
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "create",
@@ -3006,6 +3504,46 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Render a canonical kernel timeline with optional version pinning.",
         configure=_configure_render,
         requires_pack_host=True,
+    ),
+    CommandSpec(
+        "checkout",
+        help="Start or open the working copy of a timeline (a draft from its published head).",
+        configure=_configure_checkout,
+    ),
+    CommandSpec(
+        "edit",
+        help="Edit a clip or the timeline in the working copy, in timeline seconds, then check and save.",
+        configure=_configure_edit,
+    ),
+    CommandSpec(
+        "words",
+        help="Spoken words with their timeline seconds, ids and cuts (--find, --range).",
+        configure=_configure_words,
+    ),
+    CommandSpec(
+        "status",
+        help="The working copy's unpublished edits, its check state and whether the head moved.",
+        configure=_configure_status,
+    ),
+    CommandSpec(
+        "check",
+        help="Validate a working copy (or a checkout file) and show the full report.",
+        configure=_configure_check,
+    ),
+    CommandSpec(
+        "publish",
+        help="Publish the working copy (or a checkout file) as one revision, then discard the working copy.",
+        configure=_configure_publish,
+    ),
+    CommandSpec(
+        "discard",
+        help="Delete the working copy (published work is untouched).",
+        configure=_configure_discard,
+    ),
+    CommandSpec(
+        "duplicate",
+        help="Create a new timeline with a copy of a timeline's head (new shot ids).",
+        configure=_configure_duplicate,
     ),
 )
 
