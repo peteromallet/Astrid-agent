@@ -1,0 +1,82 @@
+schema_version: 1
+id: chiptune.sfx
+name: Chiptune SFX
+kind: built_in
+version: 1.0.0
+short_description: "Render a retro one-shot sound effect (WAV plus JSON), or a batch of kinds as one zip."
+description: >-
+  Synthesises a mono 48 kHz 16-bit one-shot from numpy alone: stamp, flip, blip, whoosh, chime, error, coin,
+  typewriter_tick, wipe and thud. The same kind, variant and pitch give identical bytes. Duration is exact
+  (round(duration_s * 48000) samples) and every one-shot starts and ends on a 10 ms ramp. Pass kinds (comma
+  list) to render a batch into one zip of WAVs and JSON sidecars.
+keywords: [chiptune, sfx, sound-effects, 8-bit, retro, ui-sound, procedural-audio, one-shot]
+inputs:
+  - name: kind
+    type: string
+    required: false
+    default: blip
+    description: "One of stamp, flip, blip, whoosh, chime, error, coin, typewriter_tick, wipe, thud. Ignored in batch mode."
+  - name: kinds
+    type: string
+    required: false
+    description: "Batch mode: comma-separated kinds, for example stamp,flip,coin. Returns one zip (sfx_batch)."
+  - name: variant
+    type: integer
+    required: false
+    default: 1
+    description: Variant seed. Different variants give slightly different takes of the same kind.
+  - name: pitch
+    type: number
+    required: false
+    default: 0
+    description: Pitch shift in semitones relative to A4.
+  - name: duration_s
+    type: number
+    required: false
+    description: Exact length in seconds (0.01 to 10). Default is per kind, 0.03 to 1.4 s.
+outputs:
+  - name: sfx
+    type: file
+    path_template: "{out}/sfx.wav"
+    artifact_type: audio
+    description: Mono 48 kHz 16-bit one-shot peak-normalised to -3.1 dBFS (single mode).
+  - name: sfx_meta
+    type: file
+    path_template: "{out}/sfx.json"
+    artifact_type: null
+    description: JSON with kind, variant, pitch, exact duration, peak and RMS (sidecar in batch mode too).
+  - name: sfx_batch
+    type: file
+    path_template: "{out}/sfx-batch.zip"
+    artifact_type: null
+    description: Batch mode only. Zip of NN-kind-vN.wav files with JSON sidecars.
+command:
+  argv:
+    - "{python_exec}"
+    - "-m"
+    - astrid.packs.chiptune.executors.sfx.run
+    - "--kind"
+    - "{kind}"
+    - "--variant"
+    - "{variant}"
+    - "--pitch"
+    - "{pitch}"
+    - "--out"
+    - "{out}"
+  input_args:
+    - input: kinds
+      flag: "--kinds"
+      optional: true
+    - input: duration_s
+      flag: "--duration-s"
+      optional: true
+cache:
+  mode: none
+isolation:
+  mode: subprocess
+  network: false
+metadata:
+  runtime_entrypoint: main
+  runtime_file: run.py
+  runtime_module: astrid.packs.chiptune.executors.sfx.run
+  output_result_manifest: true

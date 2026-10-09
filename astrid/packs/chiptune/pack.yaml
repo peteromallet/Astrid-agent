@@ -1,0 +1,23 @@
+schema_version: 2
+id: chiptune
+name: Chiptune
+version: 1.0.0
+status: active
+visibility: visible
+domain: media
+stability: experimental
+support: core
+description: "Procedural NES-style music and retro sound effects. Tempo-locked cues with beat-grid JSON for cutting, and one-shot SFX. Pure numpy synthesis: no samples, no network, no models."
+keywords: [chiptune, 8-bit, nes, music, soundtrack, sfx, sound-effects, procedural-audio, retro]
+permissions:
+  - id: project_files
+    reason: Writes the rendered music WAV, beat JSON, sfx WAV and sfx batch archives as managed outputs.
+content:
+  executors: executors
+agent:
+  purpose: "Use to make original retro music beds with exact duration and beat grid, or retro sound effects (stamp, flip, blip, whoosh, chime, error, coin, typewriter_tick, wipe, thud)."
+  do_not_use_for: "Speech or voiceover (use generation.generate_speech), AI-generated audio (use generation.generate_audio or fal foley), or sampled or licensed music."
+  normal_entrypoints: [chiptune.compose, chiptune.sfx]
+documentation:
+  kind: skill
+  path: skill/SKILL.md

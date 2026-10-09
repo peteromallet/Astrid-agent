@@ -38,6 +38,7 @@ keeping the low-resolution badge readable.
 | --- | --- | --- |
 | Generate an image, video, or audio asset from a prompt | [generation](../../../generation/skill/SKILL.md) | `generation.generate_image`, `generation.generate_video`, `generation.generate_audio` |
 | Make true pixel art from a generated image, or cut it out with transparency | [pixel](../../../pixel/skill/SKILL.md) | `pixel.snap`, `pixel.cutout` |
+| Generate chiptune music or retro sound effects | [chiptune](../../../chiptune/skill/SKILL.md) | `chiptune.compose` (music WAV plus beat grid JSON), `chiptune.sfx` (one-shot WAV or batch zip) |
 | Speech / voiceover: narration from exact words, with word timing | [generation](../../../generation/skill/SKILL.md), then [rendering placeholder voiceover](../../../rendering/skill/references/placeholder-voiceover.md) to place it | `generation.generate_speech` (also `generation.generate_audio` with `mode="tts"`); returns `speech`, `speech_manifest`, `speech_words` |
 | Inspect, edit, validate, or run a ComfyUI/VibeComfy graph | [vibecomfy](../../../vibecomfy/skill/SKILL.md) | `vibecomfy.inspect`, `vibecomfy.edit`, `vibecomfy.validate`, `vibecomfy.run` |
 | Understand or describe an image, audio clip, or video | [understanding](../../../understanding/skill/SKILL.md) | `understanding.understand`, `understanding.scene_describe` |

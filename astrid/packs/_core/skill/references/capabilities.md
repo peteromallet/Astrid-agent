@@ -7,6 +7,8 @@
 | id | short_description |
 | --- | --- |
 | `blender.render` | Render a Blender scene (declarative spec or .blend file) to a still or animation, locally or on a cloud render host. |
+| `chiptune.compose` | Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking. |
+| `chiptune.sfx` | Render a retro one-shot sound effect (WAV plus JSON), or a batch of kinds as one zip. |
 | `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
 | `discord_local.command` | Preview, submit once, or recover one Discord generation as an experiment-ready run. |
 | `editorial.arrange` | Compose a brief-specific shot arrangement from runtime-materialized inputs. |

@@ -1103,6 +1103,26 @@
    "required_env": [],
    "required_binaries": [],
    "required_packages": ["PIL", "numpy"]
+  },
+  {
+   "id": "chiptune.compose",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy NES-style chiptune synthesis with bar-snapped sections and a beat grid; no network, no samples, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": ["numpy"]
+  },
+  {
+   "id": "chiptune.sfx",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy chiptune one-shot synthesis (single and zip batch); no network, no samples, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": ["numpy"]
   }
  ]
 }
