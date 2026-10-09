@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
 from astrid.packs.h3_av.src.compose import compose_candidate
@@ -24,6 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    result_manifest_path = args.out / "manifest.json"
+    # A reused receipt cannot certify this attempt, even if domain work fails.
+    # Preserve stale bytes and require a fresh assigned output root.
+    if result_manifest_path.exists() or result_manifest_path.is_symlink():
+        raise FileExistsError(f"result receipt already exists: {result_manifest_path}; use a fresh output root")
     preparation = json.loads(args.preparation.read_text(encoding="utf-8"))
     evidence = None
     if args.preservation_evidence:
@@ -44,6 +51,23 @@ def main(argv: list[str] | None = None) -> int:
     composition["candidate"]["path"] = str(candidate.resolve())
     (args.out / "composition-manifest.json").write_text(
         json.dumps(composition, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    write_manifest(
+        result_manifest_path,
+        build_manifest(
+            kind="h3_av.compose",
+            inputs={
+                "preparation": str(args.preparation),
+                "generated": str(args.generated),
+                "source": str(args.source) if args.source is not None else None,
+                "preservation_evidence": str(args.preservation_evidence) if args.preservation_evidence is not None else None,
+            },
+            outputs=[
+                {"name": "candidate", "path": "candidate.media", "ordinal": 0},
+                {"name": "composition", "path": "composition-manifest.json", "ordinal": 1},
+            ],
+            created=datetime.now(timezone.utc).isoformat(),
+        ),
     )
     print(f"h3_av.compose: wrote {args.out / 'composition-manifest.json'}")
     return 0

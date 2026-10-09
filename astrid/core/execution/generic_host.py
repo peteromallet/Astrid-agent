@@ -2554,6 +2554,19 @@ class GenericPackHost:
         self._registration_refresh_deadline = float("inf")
         self._cleanup_uncertain = False
         self._last_cleanup_receipt: dict[str, Any] | None = None
+        # Handoff observes the real claim/registration/attempt/settlement path.
+        # The condition is held only while checking the gate and publishing
+        # counters; Runtime and provider RPCs always happen after it is released.
+        self._handoff_condition = threading.Condition(threading.RLock())
+        self._handoff_claim_gate_closed = False
+        self._handoff_claim_rpc_in_flight = 0
+        self._handoff_active_attempts = 0
+        self._handoff_pending_settlements = 0
+        self._handoff_registration_rpc_in_flight = 0
+        self._handoff_registration_authorized_thread: int | None = None
+        self._handoff_registration_authorized_id: str | None = None
+        self._handoff_attempt_threads: set[int] = set()
+        self._handoff_observation_known = True
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
         # verified session/model hint in the host; it is revalidated by the
@@ -2580,6 +2593,154 @@ class GenericPackHost:
     @property
     def last_cleanup_receipt(self) -> dict[str, Any] | None:
         return dict(self._last_cleanup_receipt) if self._last_cleanup_receipt is not None else None
+
+    def _handoff_quiescence_locked(self) -> dict[str, Any]:
+        known = bool(self._handoff_observation_known)
+        return {
+            "claim_gate_closed": self._handoff_claim_gate_closed if known else None,
+            "claim_rpc_in_flight": self._handoff_claim_rpc_in_flight if known else None,
+            "active_attempts": self._handoff_active_attempts if known else None,
+            "pending_settlements": self._handoff_pending_settlements if known else None,
+            "registration_rpc_in_flight": self._handoff_registration_rpc_in_flight if known else None,
+            "observation_status": "known" if known else "unknown",
+        }
+
+    def handoff_quiescence(self) -> dict[str, Any]:
+        with self._handoff_condition:
+            return self._handoff_quiescence_locked()
+
+    def pause_claim_admission(self) -> tuple[str, dict[str, Any]]:
+        """Close claim admission and return measured host-side quiescence."""
+        with self._handoff_condition:
+            if self._handoff_claim_gate_closed:
+                return "conflict", self._handoff_quiescence_locked()
+            self._handoff_claim_gate_closed = True
+            snapshot = self._handoff_quiescence_locked()
+            counters = tuple(snapshot[key] for key in (
+                "claim_rpc_in_flight", "active_attempts", "pending_settlements",
+                "registration_rpc_in_flight",
+            ))
+            if snapshot["observation_status"] != "known" or any(value is None for value in counters):
+                return "unresolved", snapshot
+            if any(value != 0 for value in counters):
+                # The known prior gate was open. Reopen only this exact state;
+                # the real in-flight work remains counted until it settles.
+                self._handoff_claim_gate_closed = False
+                return "active_work", self._handoff_quiescence_locked()
+            return "paused", self._handoff_quiescence_locked()
+
+    def restore_claim_admission(self) -> tuple[bool, dict[str, Any]]:
+        """Rollback a pre-export pause only from an observed zero-work state."""
+        with self._handoff_condition:
+            snapshot = self._handoff_quiescence_locked()
+            if (snapshot["observation_status"] != "known" or not self._handoff_claim_gate_closed
+                    or any(snapshot[key] != 0 for key in (
+                        "claim_rpc_in_flight", "active_attempts", "pending_settlements",
+                        "registration_rpc_in_flight",
+                    ))):
+                return False, snapshot
+            self._handoff_claim_gate_closed = False
+            return True, self._handoff_quiescence_locked()
+
+    def _handoff_enter_claim_rpc(self) -> bool:
+        with self._handoff_condition:
+            if self._handoff_claim_gate_closed or not self._handoff_observation_known:
+                return False
+            self._handoff_claim_rpc_in_flight += 1
+            return True
+
+    def _handoff_leave_claim_rpc(self, thread_id: int, *, claimed: bool) -> None:
+        with self._handoff_condition:
+            self._handoff_claim_rpc_in_flight -= 1
+            if self._handoff_claim_rpc_in_flight < 0:
+                self._handoff_observation_known = False
+                self._handoff_claim_rpc_in_flight = 0
+            if claimed:
+                self._handoff_active_attempts += 1
+                self._handoff_attempt_threads.add(thread_id)
+            self._handoff_condition.notify_all()
+
+    def _handoff_leave_attempt(self, thread_id: int) -> None:
+        with self._handoff_condition:
+            if thread_id in self._handoff_attempt_threads:
+                self._handoff_attempt_threads.remove(thread_id)
+                self._handoff_active_attempts -= 1
+                if self._handoff_active_attempts < 0:
+                    self._handoff_observation_known = False
+                    self._handoff_active_attempts = 0
+                self._handoff_condition.notify_all()
+
+    def _handoff_begin_direct_attempt(self) -> bool:
+        thread_id = threading.get_ident()
+        with self._handoff_condition:
+            if thread_id in self._handoff_attempt_threads:
+                return False
+            if self._handoff_claim_gate_closed or not self._handoff_observation_known:
+                raise HostError("generic host claim gate is closed or unresolved")
+            self._handoff_active_attempts += 1
+            self._handoff_attempt_threads.add(thread_id)
+            return True
+
+    def _handoff_begin_registration(self) -> None:
+        with self._handoff_condition:
+            authorized_fenced = (
+                self._handoff_claim_gate_closed
+                and self._handoff_registration_authorized_thread == threading.get_ident()
+                and bool(self._handoff_registration_authorized_id)
+            )
+            if ((self._handoff_claim_gate_closed and not authorized_fenced)
+                    or not self._handoff_observation_known):
+                raise HostError("generic host registration is blocked by the handoff claim gate")
+            self._handoff_registration_rpc_in_flight += 1
+
+    def _handoff_authorize_registration(self, handoff_id: str) -> None:
+        """Authorize one real registration RPC on this thread while fenced."""
+        with self._handoff_condition:
+            snapshot = self._handoff_quiescence_locked()
+            if (not self._handoff_claim_gate_closed or not self._handoff_observation_known
+                    or self._handoff_registration_rpc_in_flight != 0
+                    or self._handoff_registration_authorized_thread is not None
+                    or not handoff_id):
+                raise HostError("fenced handoff registration preconditions are unresolved")
+            if any(snapshot[key] != 0 for key in (
+                "claim_rpc_in_flight", "active_attempts", "pending_settlements",
+                "registration_rpc_in_flight",
+            )):
+                raise HostError("fenced handoff registration requires measured quiescence")
+            self._handoff_registration_authorized_thread = threading.get_ident()
+            self._handoff_registration_authorized_id = handoff_id
+
+    def _handoff_revoke_registration(self, handoff_id: str) -> None:
+        with self._handoff_condition:
+            if (self._handoff_registration_authorized_thread == threading.get_ident()
+                    and self._handoff_registration_authorized_id == handoff_id):
+                self._handoff_registration_authorized_thread = None
+                self._handoff_registration_authorized_id = None
+
+    def _handoff_end_registration(self) -> None:
+        with self._handoff_condition:
+            self._handoff_registration_rpc_in_flight -= 1
+            if self._handoff_registration_rpc_in_flight < 0:
+                self._handoff_observation_known = False
+                self._handoff_registration_rpc_in_flight = 0
+            self._handoff_condition.notify_all()
+
+    def _handoff_settlement_call(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        with self._handoff_condition:
+            if not self._handoff_observation_known or (
+                self._handoff_claim_gate_closed and self._handoff_active_attempts == 0
+            ):
+                raise HostError("settlement is blocked by unresolved handoff quiescence")
+            self._handoff_pending_settlements += 1
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            with self._handoff_condition:
+                self._handoff_pending_settlements -= 1
+                if self._handoff_pending_settlements < 0:
+                    self._handoff_observation_known = False
+                    self._handoff_pending_settlements = 0
+                self._handoff_condition.notify_all()
 
     def _cleanup_ephemeral_attempt_or_latch(self, root: Path) -> None:
         """Delete one owned root, latching uncertainty if observation fails."""
@@ -2909,6 +3070,17 @@ class GenericPackHost:
         return tuple(updated[key] for key in sorted(updated) if capability_id is None or key == capability_id)
 
     def register(self, *, deliberate: bool = False) -> dict[str, Any]:
+        # Cover discovery, preflight, the Runtime transaction, and local state
+        # publication as one registration operation. In particular, a fenced
+        # handoff cannot observe an old registration while refresh work is in
+        # progress or briefly mistake an unpublished success for quiescence.
+        self._handoff_begin_registration()
+        try:
+            return self._register_impl(deliberate=deliberate)
+        finally:
+            self._handoff_end_registration()
+
+    def _register_impl(self, *, deliberate: bool = False) -> dict[str, Any]:
         if not self.capabilities:
             self.discover()
         self.preflight()
@@ -2942,9 +3114,10 @@ class GenericPackHost:
             raise HostError("registration invalidated; " + "; ".join(invalidations) + "; deliberate re-registration required")
         verified_facts = _registration_verified_facts()
         if self.client is None:
-            self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
-            self._registered_state = state
-            self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
+            with self._handoff_condition:
+                self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
+                self._registered_state = state
+                self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
             return {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed}
         # Publish capability admission metadata before advertising the executor.
         # A real runtime must be able to validate a task against the exact
@@ -3006,6 +3179,13 @@ class GenericPackHost:
             # fail-closed rather than exposing a partial new registration.
             if removed:
                 self._withdraw_removed_capabilities(removed)
+            # Keep the host registration counted until the exact state that
+            # Runtime accepted is published under the same claim condition.
+            with self._handoff_condition:
+                self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
+                self._registered_state = state
+                self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
+                self._registration_refresh_deadline = time.monotonic() + _EXECUTOR_REFRESH_SECONDS
         except HostRegistrationError:
             raise
         except Exception as exc:
@@ -3024,17 +3204,17 @@ class GenericPackHost:
                 status=int(getattr(exc, "status", 0) or 0),
                 details=details,
             ) from exc
-        self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
-        self._registered_state = state
-        self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
-        self._registration_refresh_deadline = time.monotonic() + _EXECUTOR_REFRESH_SECONDS
         return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
 
     def _renew_executor_registration(self) -> None:
         """Refresh runtime executor liveness without replaying a receipt."""
         renew = getattr(self.client, "renew_registration_session", None)
         if callable(renew):
-            renew()
+            self._handoff_begin_registration()
+            try:
+                renew()
+            finally:
+                self._handoff_end_registration()
         self.register()
 
     def _withdraw_removed_capabilities(self, capability_ids: list[str]) -> None:
@@ -3092,6 +3272,9 @@ class GenericPackHost:
             "schema_digest": getattr(health, "schema_digest", None),
             "runtime_epoch": getattr(health, "runtime_epoch", None),
             "runtime_session_id": getattr(health, "runtime_session_id", None),
+            "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+            "instance_id": getattr(health, "instance_id", None),
+            "coordinator_epoch": getattr(health, "coordinator_epoch", None),
         }
         actual_protocol = str(value.get("protocol", ""))
         actual_schema = str(value.get("schema_digest", ""))
@@ -3108,6 +3291,14 @@ class GenericPackHost:
         runtime_epoch = value.get("runtime_epoch")
         if isinstance(runtime_epoch, bool) or not isinstance(runtime_epoch, int) or runtime_epoch < 1:
             mismatches.append("runtime_epoch must be a positive integer")
+        instance_id = value.get("instance_id")
+        runtime_instance_id = value.get("runtime_instance_id") or instance_id
+        coordinator_epoch = value.get("coordinator_epoch") or runtime_instance_id
+        if (not isinstance(runtime_instance_id, str) or not runtime_instance_id
+                or (instance_id is not None and instance_id != runtime_instance_id)
+                or (value.get("coordinator_epoch") is not None
+                    and value.get("coordinator_epoch") != runtime_instance_id)):
+            mismatches.append("Runtime instance fields disagree")
         if mismatches:
             raise HostError("runtime compatibility blocked: " + "; ".join(mismatches))
         return {
@@ -3115,8 +3306,8 @@ class GenericPackHost:
             "schema_digest": actual_schema,
             "runtime_epoch": runtime_epoch,
             "runtime_session_id": value.get("runtime_session_id"),
-            "runtime_instance_id": value.get("runtime_instance_id") or value.get("instance_id"),
-            "coordinator_epoch": value.get("coordinator_epoch"),
+            "runtime_instance_id": runtime_instance_id,
+            "coordinator_epoch": coordinator_epoch,
         }
 
     def _materialize_inputs(
@@ -4866,6 +5057,27 @@ class GenericPackHost:
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
     ) -> Mapping[str, Any]:
+        owns_attempt = self._handoff_begin_direct_attempt()
+        thread_id = threading.get_ident()
+        try:
+            return self._run_task_impl(
+                task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+            )
+        finally:
+            if owns_attempt:
+                self._handoff_leave_attempt(thread_id)
+
+    def _run_task_impl(
+        self,
+        task: Mapping[str, Any],
+        *,
+        lease_token: str,
+        attempt_id: str | None = None,
+        fence: int | None = None,
+        keep_attempt: bool = False,
+        provider_route_grant: str | None = None,
+    ) -> Mapping[str, Any]:
         if self._cleanup_uncertain:
             raise HostError("generic host admissions are blocked by cleanup uncertainty")
         if self.client is None:
@@ -4912,7 +5124,7 @@ class GenericPackHost:
         def fail_admission(error: Exception) -> None:
             """Fence deterministic admission failures as terminal attempts."""
             try:
-                self.client.fail(
+                self._handoff_settlement_call(self.client.fail,
                     task_id,
                     lease_token,
                     str(error),
@@ -4976,7 +5188,7 @@ class GenericPackHost:
         try:
             self.execution_policy.assert_budget_available()
         except ExecutionGuardError as exc:
-            self.client.fail(
+            self._handoff_settlement_call(self.client.fail,
                 task_id,
                 lease_token,
                 str(exc),
@@ -5129,7 +5341,7 @@ class GenericPackHost:
             """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
             try:
-                self.client.fail(
+                self._handoff_settlement_call(self.client.fail,
                     task_id,
                     lease_token,
                     "execution deadline exceeded",
@@ -5151,7 +5363,7 @@ class GenericPackHost:
 
         def handle_guard_abort() -> None:
             if evidence_cap_exceeded:
-                self.client.fail(
+                self._handoff_settlement_call(self.client.fail,
                     task_id,
                     lease_token,
                     "generated evidence cap exceeded",
@@ -5839,7 +6051,7 @@ class GenericPackHost:
             )
             managed_settled = True
             payload["managed_tool_session"] = managed_envelope.to_dict()
-            settlement = self.client.settle(
+            settlement = self._handoff_settlement_call(self.client.settle,
                 task_id,
                 lease_token,
                 result=payload,
@@ -5871,7 +6083,7 @@ class GenericPackHost:
                 return {"task_id": task_id, "status": "cancelled", "cancelled": True}
             if isinstance(exc, StorageEnvelopeError):
                 storage_failure_receipt = dict(exc.diagnostic)
-            self.client.fail(
+            self._handoff_settlement_call(self.client.fail,
                 task_id,
                 lease_token,
                 str(exc),
@@ -6033,6 +6245,17 @@ class GenericPackHost:
             return operation(task_id)
 
     def claim_once(self) -> Mapping[str, Any] | None:
+        """Run one claim cycle while publishing host-side quiescence counters."""
+        thread_id = threading.get_ident()
+        try:
+            with self._handoff_condition:
+                if self._handoff_claim_gate_closed or not self._handoff_observation_known:
+                    return None
+            return self._claim_once_impl(thread_id)
+        finally:
+            self._handoff_leave_attempt(thread_id)
+
+    def _claim_once_impl(self, handoff_thread_id: int) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._cleanup_uncertain:
             raise HostError("generic host admissions are blocked by cleanup uncertainty")
@@ -6061,12 +6284,25 @@ class GenericPackHost:
         if not capability_ids:
             return None
         claim_target = _configured_claim_target()
-        claim = claim_next(
-            executor_id=self.executor_id,
-            capability_ids=capability_ids,
-            idempotency_key=f"claim-{self.executor_id}-{time.time_ns()}",
-            target=claim_target,
-        )
+        if not self._handoff_enter_claim_rpc():
+            return None
+        claim = None
+        claimed_attempt = False
+        try:
+            claim = claim_next(
+                executor_id=self.executor_id,
+                capability_ids=capability_ids,
+                idempotency_key=f"claim-{self.executor_id}-{time.time_ns()}",
+                target=claim_target,
+            )
+            claimed_attempt = claim is not None and not (
+                getattr(claim, "waiting_reason", None)
+                and not self._claim_attempt_id(claim)
+            )
+        finally:
+            # Publish active_attempts in the same critical section as removing
+            # claim_rpc_in_flight, so a pause can never observe a false zero.
+            self._handoff_leave_claim_rpc(handoff_thread_id, claimed=claimed_attempt)
         if claim is None:
             return None
         if getattr(claim, "waiting_reason", None) and not getattr(claim, "attempt_id", None):
@@ -6131,7 +6367,7 @@ class GenericPackHost:
             }
         def fail_claim_handoff(reason: str) -> None:
             try:
-                self.client.fail(
+                self._handoff_settlement_call(self.client.fail,
                     task_id, lease_id, reason, retryable=False,
                     attempt_id=attempt_id, fence=int(fence),
                 )
@@ -6217,7 +6453,7 @@ class GenericPackHost:
                 provider_route_grant = self.request_provider_route_grant({"task": task_data})
             except Exception as exc:
                 try:
-                    self.client.fail(
+                    self._handoff_settlement_call(self.client.fail,
                         task_id,
                         lease_id,
                         str(exc),
@@ -6379,6 +6615,413 @@ def _write_ready_marker(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 _LOCAL_PREPARATION_VERSION = "runtime.local-execution-host/v1"
+_HANDOFF_VERSION = "runtime.local-execution-handoff/v1"
+_HANDOFF_BINDING_FIELDS = {
+    "operation_id", "channel_id", "handoff_id", "nonce_digest", "deadline_unix_ms",
+    "workspace_uuid", "profile_binding_digest", "launch_evidence_digest",
+    "activation_record_digest", "executor_incarnation", "custody_scope",
+    "original_owner_epoch", "new_owner_epoch", "new_owner",
+    "credential_generation_digest", "original_roles", "intent_digest",
+    "source_owner", "source_owner_epoch", "source_relay_reference", "current_roles",
+}
+_HANDOFF_ROLE_NAMES = {"relay", "host", "engine", "engine_listener"}
+_HANDOFF_COMMAND_PAYLOADS = {
+    "handoff_prepare": set(),
+    "handoff_export_sealed": {"export_metadata", "seal_record", "sealed_record_digest"},
+    "handoff_adopt": {"export_digest", "sealed_record_digest", "task_fence_digest", "relay_transfer_ack", "successor_authentication_digest"},
+    "handoff_commit": {"new_runtime", "task_fence_digest", "relay_reference"},
+    "resume_prepare": {"new_runtime", "task_fence_digest", "registered_state_digest"},
+    "resume_commit": {"new_runtime", "task_fence_digest", "registered_state_digest"},
+    "handoff_finalize": {"registered_state_digest", "task_fence_digest"},
+    "handoff_abort": {"reason_code"},
+    "handoff_report": set(),
+}
+
+
+def _handoff_canonical(value: Any) -> bytes:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise HostError("handoff value is not canonical JSON") from exc
+
+
+def _handoff_digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(_handoff_canonical(value)).hexdigest()
+
+
+def _handoff_reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate object key")
+        result[key] = value
+    return result
+
+
+def _handoff_reject_constant(_value):
+    raise ValueError("non-finite JSON number")
+
+
+def _handoff_actor_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "pid", "uid", "birth_id", "audit_token_sha256", "audit_token_pidversion",
+    }:
+        return False
+    return (
+        isinstance(value.get("pid"), int) and not isinstance(value.get("pid"), bool) and value["pid"] > 0
+        and isinstance(value.get("uid"), int) and not isinstance(value.get("uid"), bool) and value["uid"] >= 0
+        and isinstance(value.get("birth_id"), str) and bool(value["birth_id"]) and len(value["birth_id"]) <= 256
+        and isinstance(value.get("audit_token_sha256"), str) and bool(re.fullmatch(r"sha256:[0-9a-f]{64}", value["audit_token_sha256"]))
+        and isinstance(value.get("audit_token_pidversion"), int) and not isinstance(value.get("audit_token_pidversion"), bool) and value["audit_token_pidversion"] > 0
+    )
+
+
+def _handoff_role_valid(value: Any, role: str | None = None) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {"version", "scope_root", "role", "generation", "target"}:
+        return False
+    return (
+        value.get("version") == "runtime.role-custody-reference/v1"
+        and isinstance(value.get("scope_root"), str) and Path(value["scope_root"]).is_absolute()
+        and value.get("role") in _HANDOFF_ROLE_NAMES and (role is None or value.get("role") == role)
+        and isinstance(value.get("generation"), int) and not isinstance(value.get("generation"), bool) and value["generation"] > 0
+        and _handoff_actor_valid(value.get("target"))
+    )
+
+
+def _handoff_sha256(value: Any, *, prefixed: bool = True) -> bool:
+    pattern = r"sha256:[0-9a-f]{64}" if prefixed else r"[0-9a-f]{64}"
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def _handoff_runtime_binding_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "endpoint", "protocol", "schema_digest", "runtime_epoch", "runtime_session_id",
+        "runtime_instance_id", "coordinator_epoch",
+    }:
+        return False
+    endpoint = value.get("endpoint")
+    parsed = urlsplit(endpoint) if isinstance(endpoint, str) else None
+    return (
+        parsed is not None and parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None and not parsed.username and not parsed.password
+        and isinstance(value.get("protocol"), str) and 0 < len(value["protocol"]) <= 256
+        and _handoff_sha256(value.get("schema_digest"))
+        and isinstance(value.get("runtime_epoch"), int) and not isinstance(value.get("runtime_epoch"), bool)
+        and value["runtime_epoch"] > 0
+        and all(isinstance(value.get(key), str) and 0 < len(value[key]) <= 256 for key in (
+            "runtime_session_id", "runtime_instance_id", "coordinator_epoch",
+        ))
+    )
+
+
+def _handoff_live_runtime_binding(owner: "GenericPackHost", *, client: Any = None,
+                                 expected_endpoint: str | None = None) -> dict[str, Any] | None:
+    client = owner.client if client is None else client
+    if client is None:
+        return None
+    try:
+        from banodoco_workspace_client.contract_metadata import PROTOCOL
+
+        schema = getattr(client, "schema_digest", None)
+        health_operation = getattr(client, "health", None)
+        if not isinstance(schema, str) or not schema or not callable(health_operation):
+            return None
+        health = health_operation()
+        if health is None:
+            return None
+        value = dict(health) if isinstance(health, Mapping) else {
+            "status": getattr(health, "status", None), "protocol": getattr(health, "protocol", None),
+            "schema_digest": getattr(health, "schema_digest", None),
+            "runtime_epoch": getattr(health, "runtime_epoch", None),
+            "runtime_session_id": getattr(health, "runtime_session_id", None),
+            "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+            "instance_id": getattr(health, "instance_id", None),
+            "coordinator_epoch": getattr(health, "coordinator_epoch", None),
+        }
+        if (value.get("status") != "ok" or value.get("protocol") != PROTOCOL
+                or value.get("schema_digest") != schema):
+            return None
+        epoch = value.get("runtime_epoch")
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
+            return None
+        instance_id = value.get("instance_id")
+        runtime_instance_id = value.get("runtime_instance_id") or instance_id
+        coordinator_epoch = value.get("coordinator_epoch") or runtime_instance_id
+        if (not isinstance(runtime_instance_id, str) or not runtime_instance_id
+                or (instance_id is not None and instance_id != runtime_instance_id)
+                or (value.get("coordinator_epoch") is not None
+                    and value.get("coordinator_epoch") != runtime_instance_id)):
+            return None
+        live = {"protocol": value.get("protocol"), "schema_digest": value.get("schema_digest"),
+                "runtime_epoch": epoch, "runtime_session_id": value.get("runtime_session_id"),
+                "runtime_instance_id": runtime_instance_id,
+                "coordinator_epoch": coordinator_epoch}
+    except Exception:
+        return None
+    endpoint = getattr(client, "endpoint", None)
+    if (not isinstance(endpoint, str) or not endpoint
+            or (expected_endpoint is not None and endpoint != expected_endpoint)):
+        return None
+    runtime = {
+        "endpoint": endpoint.rstrip("/"), "protocol": live.get("protocol"),
+        "schema_digest": live.get("schema_digest"), "runtime_epoch": live.get("runtime_epoch"),
+        "runtime_session_id": live.get("runtime_session_id"),
+        "runtime_instance_id": live.get("runtime_instance_id"),
+        "coordinator_epoch": live.get("coordinator_epoch"),
+    }
+    return runtime if _handoff_runtime_binding_valid(runtime) else None
+
+
+def _handoff_registered_state(owner: "GenericPackHost", activation: Mapping[str, Any], *, client: Any = None,
+                              expected_endpoint: str | None = None) -> dict[str, Any] | None:
+    """Snapshot the real, currently registered host state without coercion."""
+    client = owner.client if client is None else client
+    if (not isinstance(activation.get("executor_incarnation"), str)
+            or not activation["executor_incarnation"] or len(activation["executor_incarnation"]) > 256
+            or client is None or not owner._registered_state or not owner._registered_runtime_state):
+        return None
+    with owner._handoff_condition:
+        if (not owner._handoff_observation_known or owner._handoff_registration_rpc_in_flight
+                or owner._handoff_claim_rpc_in_flight or owner._handoff_active_attempts
+                or owner._handoff_pending_settlements):
+            return None
+        registered = {key: dict(value) for key, value in owner._registered_state.items()}
+        current = {
+            key: {
+                "capability_digest": record.capability_digest,
+                "source_digest": record.source_digest,
+                "dependency_digest": record.dependency_digest,
+            }
+            for key, record in owner.capabilities.items()
+        }
+        if registered != current:
+            return None
+        registered_runtime = dict(owner._registered_runtime_state)
+        source_epoch = owner.source_epoch
+    runtime = _handoff_live_runtime_binding(owner, client=client, expected_endpoint=expected_endpoint)
+    if (runtime is None
+            or any(registered_runtime.get(key) != runtime[key] for key in (
+                "protocol", "schema_digest", "runtime_epoch", "runtime_session_id",
+                "runtime_instance_id", "coordinator_epoch",
+            ))
+            or registered_runtime.get("source_epoch") != source_epoch
+            or not isinstance(source_epoch, str) or not source_epoch or len(source_epoch) > 256):
+        return None
+    capabilities = {}
+    for capability_id, values in registered.items():
+        if (not isinstance(capability_id, str) or not capability_id
+                or set(values) != {"capability_digest", "source_digest", "dependency_digest"}):
+            return None
+        cap_digest = values["capability_digest"]
+        source_digest = values["source_digest"]
+        dependency_digest = values["dependency_digest"]
+        if (not _handoff_sha256(cap_digest)
+                or not _handoff_sha256(source_digest, prefixed=False)
+                or not _handoff_sha256(dependency_digest, prefixed=False)):
+            return None
+        capabilities[capability_id] = {
+            "capability_digest": cap_digest,
+            # Typed evidence carries algorithm labels; host storage and the
+            # existing registration API retain their original raw hex form.
+            "source_digest": "sha256:" + source_digest,
+            "dependency_digest": "sha256:" + dependency_digest,
+        }
+    return {
+        "executor_incarnation": activation["executor_incarnation"],
+        "source_epoch": source_epoch,
+        "capabilities": capabilities,
+        "runtime": runtime,
+    }
+
+
+def _handoff_historical_registration(owner: "GenericPackHost", activation: Mapping[str, Any],
+                                     sealed_state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate unchanged local A registration against its verified sealed ACK.
+
+    The live endpoint may already advertise B. Its Health is checked when B
+    deliberately registers at commit, rather than being confused with A's
+    historical registration during adoption. Callers hold the claim condition
+    again through durable adoption publication.
+    """
+    if (not isinstance(sealed_state, Mapping)
+            or set(sealed_state) != {"executor_incarnation", "source_epoch", "capabilities", "runtime"}
+            or not _handoff_runtime_binding_valid(sealed_state.get("runtime"))):
+        return None
+    runtime = sealed_state["runtime"]
+    with owner._handoff_condition:
+        endpoint = getattr(owner.client, "endpoint", None)
+        snapshot = owner._handoff_quiescence_locked()
+        if (snapshot["observation_status"] != "known" or snapshot["claim_gate_closed"] is not True
+                or any(snapshot[key] != 0 for key in ("claim_rpc_in_flight", "active_attempts",
+                                                       "pending_settlements", "registration_rpc_in_flight"))
+                or owner._handoff_registration_authorized_thread is not None
+                or owner._handoff_registration_authorized_id is not None
+                or owner.client is None or not owner._registered_state or not owner._registered_runtime_state
+                or not isinstance(endpoint, str) or endpoint.rstrip("/") != runtime["endpoint"]
+                or getattr(owner.client, "schema_digest", None) != runtime["schema_digest"]
+                or sealed_state["executor_incarnation"] != activation.get("executor_incarnation")
+                or any(owner._registered_runtime_state.get(key) != runtime[key] for key in (
+                    "protocol", "schema_digest", "runtime_epoch", "runtime_session_id",
+                    "runtime_instance_id", "coordinator_epoch"))
+                or owner._registered_runtime_state.get("source_epoch") != owner.source_epoch
+                or sealed_state["source_epoch"] != owner.source_epoch
+                or not isinstance(owner.source_epoch, str) or not 0 < len(owner.source_epoch) <= 256):
+            return None
+        current = {key: {"capability_digest": record.capability_digest,
+                         "source_digest": record.source_digest,
+                         "dependency_digest": record.dependency_digest}
+                   for key, record in owner.capabilities.items()}
+        if current != owner._registered_state:
+            return None
+        capabilities = {}
+        for key, values in current.items():
+            if (not isinstance(key, str) or not key
+                    or not _handoff_sha256(values["capability_digest"])
+                    or not _handoff_sha256(values["source_digest"], prefixed=False)
+                    or not _handoff_sha256(values["dependency_digest"], prefixed=False)):
+                return None
+            capabilities[key] = {"capability_digest": values["capability_digest"],
+                                 "source_digest": "sha256:" + values["source_digest"],
+                                 "dependency_digest": "sha256:" + values["dependency_digest"]}
+        expected = {"executor_incarnation": activation.get("executor_incarnation"),
+                    "source_epoch": owner.source_epoch, "capabilities": capabilities, "runtime": dict(runtime)}
+        return expected if expected == sealed_state else None
+
+
+def _handoff_read_protected_json(scope: Path, name: str, *, limit: int = 1_048_576) -> dict[str, Any]:
+    if (not scope.is_absolute() or scope.is_symlink() or Path(name).name != name
+            or any(parent.is_symlink() for parent in scope.parents)):
+        raise HostError("handoff evidence scope or filename is unsafe")
+    scope_info = scope.stat(follow_symlinks=False)
+    if (not scope.is_dir() or scope_info.st_uid != os.getuid() or scope_info.st_mode & 0o077):
+        raise HostError("handoff evidence scope is not owner-only")
+    path = scope / name
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size <= 0 or info.st_size > limit):
+            raise HostError("handoff evidence file is not bounded owner-only state")
+        chunks = bytearray()
+        while len(chunks) <= limit:
+            part = os.read(descriptor, min(65536, limit + 1 - len(chunks)))
+            if not part:
+                break
+            chunks.extend(part)
+        if len(chunks) > limit:
+            raise HostError("handoff evidence file exceeds its bound")
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(
+            bytes(chunks).decode("utf-8"),
+            object_pairs_hook=_handoff_reject_duplicate_pairs,
+            parse_constant=_handoff_reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HostError("handoff evidence file is malformed") from exc
+    if not isinstance(value, dict):
+        raise HostError("handoff evidence record must be an object")
+    _handoff_canonical(value)
+    return value
+
+
+def _handoff_read_private_bytes(path: Path, *, limit: int) -> bytes:
+    if not path.is_absolute() or path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise HostError("handoff protected file path is unsafe")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size <= 0 or info.st_size > limit):
+            raise HostError("handoff protected file is not bounded owner-only state")
+        chunks = bytearray()
+        while len(chunks) <= limit:
+            part = os.read(descriptor, min(65536, limit + 1 - len(chunks)))
+            if not part:
+                break
+            chunks.extend(part)
+        if len(chunks) > limit:
+            raise HostError("handoff protected file exceeds its bound")
+        return bytes(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _handoff_journal_base(value: Any, binding: Mapping[str, Any], binding_digest: str) -> bool:
+    base = {"version", "writer_incarnation", "writer_owner_epoch", "writer_generation",
+            "phase", "binding_digest", "binding", "entries"}
+    optional = {"writer_transfer", "ownership", "sealed_export"}
+    return (
+        isinstance(value, Mapping)
+        and base <= set(value) <= base | optional
+        and value.get("version") == _HANDOFF_VERSION
+        and _handoff_actor_valid(value.get("writer_incarnation"))
+        and isinstance(value.get("writer_owner_epoch"), str) and bool(value["writer_owner_epoch"])
+        and isinstance(value.get("writer_generation"), int) and not isinstance(value.get("writer_generation"), bool)
+        and value["writer_generation"] > 0
+        and value.get("binding_digest") == binding_digest and value.get("binding") == dict(binding)
+        and isinstance(value.get("entries"), Mapping)
+    )
+
+
+def _handoff_journal_entry(value: Mapping[str, Any], handoff_id: str, command: str,
+                           request_digest: str, binding_digest: str, *, pending: bool = False) -> bool:
+    entries = value.get("entries")
+    key = f"{handoff_id}:{command}"
+    entry = entries.get(key) if isinstance(entries, Mapping) else None
+    return (
+        isinstance(entry, Mapping) and set(entry) == {"request_digest", "binding_digest", "reply"}
+        and entry.get("request_digest") == request_digest and entry.get("binding_digest") == binding_digest
+        and ((entry.get("reply") is None) if pending else isinstance(entry.get("reply"), Mapping))
+    )
+
+
+def _handoff_ownership_matches(value: Any, roles: Mapping[str, Any], relay_reference: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and value.get("relay_reference") == dict(relay_reference)
+        and value.get("current_roles") == dict(roles)
+    )
+
+
+def _handoff_runtime_writer_matches(value: Any, binding: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and value.get("writer_incarnation") == binding.get("new_owner")
+        and value.get("writer_owner_epoch") == binding.get("new_owner_epoch")
+    )
+
+
+def _handoff_transfer_writers_match(value: Any, binding: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and value.get("from_writer") == binding.get("source_owner")
+        and value.get("to_writer") == binding.get("new_owner")
+    )
+
+
+def _handoff_designation(scope: Path, role: str, expected: Mapping[str, Any]) -> dict[str, Any] | None:
+    try:
+        record = _handoff_read_protected_json(scope, f"designation-{role}.json", limit=262144)
+    except (OSError, HostError, ValueError):
+        return None
+    if (set(record) != {"version", "role", "generation", "owner_epoch", "state", "actor", "target", "transitions", "digest"}
+            or record.get("version") != "runtime.role-custody-designation/v1"
+            or record.get("role") != role or record.get("state") != "active"
+            or not isinstance(record.get("generation"), int) or isinstance(record.get("generation"), bool)
+            or not isinstance(record.get("actor"), Mapping) or not isinstance(record.get("target"), Mapping)
+            or not isinstance(record.get("transitions"), list)
+            or record.get("digest") != _handoff_digest({key: value for key, value in record.items() if key != "digest"})):
+        return None
+    reference = {
+        "version": "runtime.role-custody-reference/v1", "scope_root": str(scope), "role": role,
+        "generation": record["generation"],
+        "target": {key: value for key, value in record["target"].items() if key != "audit_token_words"},
+    }
+    if reference != dict(expected):
+        return None
+    return record
 _LOCAL_PROFILE_REQUIRED = {
     "profile_id", "workspace_uuid", "realm_root", "support_root", "machine_id",
     "worker_executable", "host_executable", "engine_executable", "engine_listener_executable",
@@ -6448,6 +7091,992 @@ class LocalExecutionPreparation:
         self._lock = threading.RLock()
         self._prepare_done = threading.Event()
         self._prepare_done.set()
+        self._claim_host: GenericPackHost | None = None
+        self._activation_grant: dict[str, Any] | None = None
+        self._retained_relay_actor: Any | None = None
+        self._handoff_binding: dict[str, Any] | None = None
+        self._handoff_binding_digest: str | None = None
+        self._handoff_phase = "owned"
+        self._handoff_replies: dict[str, dict[str, Any]] = {}
+        self._handoff_registered_state: dict[str, Any] | None = None
+        self._handoff_runtime_binding: dict[str, Any] | None = None
+        self._handoff_registered_state_digest: str | None = None
+        self._handoff_current_roles: dict[str, Any] | None = None
+        self._handoff_rebind_count = 0
+        self._handoff_registration_attempted = False
+        self._handoff_finalize_persistence_failed = False
+        self._handoff_sealed_export: dict[str, Any] | None = None
+        self._handoff_authority_snapshot: dict[str, Any] | None = None
+        self._handoff_journal_path: Path | None = None
+        self._handoff_lock_fd: int | None = None
+        self._handoff_journal_ready = False
+
+    def _acquire_handoff_journal(self, scope: Path) -> bool:
+        if self._handoff_lock_fd is not None:
+            return self._handoff_journal_ready
+        lock_fd = None
+        try:
+            from fcntl import LOCK_EX, LOCK_NB, flock
+
+            if not scope.is_absolute() or any(parent.is_symlink() for parent in scope.parents):
+                raise HostError("host handoff custody scope contains a symlink")
+            if not scope.exists():
+                os.mkdir(scope, 0o700)
+            scope_stat = scope.stat(follow_symlinks=False)
+            if (not scope.is_dir() or scope.is_symlink() or scope_stat.st_uid != os.getuid()
+                    or scope_stat.st_mode & 0o077):
+                raise HostError("host handoff custody scope is not owner-only")
+            journal = scope / "host-handoff-state.json"
+            lock_path = scope / "host-handoff-state.lock"
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            lock_stat = os.fstat(lock_fd)
+            if (not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1
+                    or lock_stat.st_uid != os.getuid() or lock_stat.st_mode & 0o077):
+                raise HostError("host handoff lock file is not owner-only")
+            flock(lock_fd, LOCK_EX | LOCK_NB)
+            if journal.exists() or journal.is_symlink():
+                raise HostError("retained host handoff journal requires authenticated reconciliation")
+            self._handoff_journal_path = journal
+            self._handoff_lock_fd = lock_fd
+            self._handoff_journal_ready = True
+            return True
+        except (OSError, HostError, ImportError):
+            if lock_fd is not None:
+                os.close(lock_fd)
+            return False
+
+    def attach_claim_host(self, host: "GenericPackHost") -> None:
+        """Bind the private control receiver to the process's actual claim owner."""
+        journal_ready = False
+        if self._request is not None:
+            journal_ready = self._acquire_handoff_journal(Path(str(self._request["custody_scope"])))
+        with self._lock:
+            if self._claim_host is not None and self._claim_host is not host:
+                raise HostError("local execution control already has a claim owner")
+            self._claim_host = host
+            if not journal_ready:
+                with host._handoff_condition:
+                    host._handoff_claim_gate_closed = True
+                    host._handoff_observation_known = False
+
+    def retain_activation_grant(self, grant: Mapping[str, Any]) -> None:
+        """Retain the activation accepted over the private Runtime channel."""
+        if (not isinstance(grant, Mapping) or grant.get("version") != _ACTIVATION_VERSION
+                or grant.get("operation_id") != self.operation_id
+                or grant.get("channel_id") != self.channel_id
+                or not isinstance(grant.get("executor_incarnation"), str)
+                or not isinstance(grant.get("evidence_digest"), str)
+                or not _ACTIVATION_DIGEST.fullmatch(grant["evidence_digest"])):
+            raise HostError("accepted activation grant cannot be retained for handoff")
+        accepted = json.loads(json.dumps(dict(grant), sort_keys=True, allow_nan=False))
+        with self._lock:
+            if self._activation_grant is not None and self._activation_grant != accepted:
+                raise HostError("retained activation grant changed")
+            self._activation_grant = accepted
+
+    def _validate_retained_binding(self, binding: Mapping[str, Any]) -> bool:
+        request = self._request
+        grant = self._activation_grant
+        if not isinstance(request, Mapping) or not isinstance(grant, Mapping):
+            return False
+        profile = request.get("profile")
+        owner = request.get("runtime_owner")
+        if not isinstance(profile, Mapping) or not isinstance(owner, Mapping):
+            return False
+        return (
+            request.get("operation_id") == binding.get("operation_id") == self.operation_id
+            and request.get("channel_id") == binding.get("channel_id") == self.channel_id
+            and request.get("owner_epoch") == binding.get("original_owner_epoch")
+            and request.get("custody_scope") == binding.get("custody_scope")
+            and profile.get("workspace_uuid") == binding.get("workspace_uuid")
+            and _handoff_digest(dict(profile)) == binding.get("profile_binding_digest")
+            and grant.get("operation_id") == self.operation_id
+            and grant.get("channel_id") == self.channel_id
+            and grant.get("executor_incarnation") == binding.get("executor_incarnation")
+            and grant.get("evidence_digest") == binding.get("launch_evidence_digest")
+            and grant.get("host") == {"pid": os.getpid(), "birth_id": process_birth_identity()}
+            and owner.get("runtime_instance_id") == binding.get("original_owner_epoch")
+            and owner.get("coordinator_epoch") == binding.get("original_owner_epoch")
+        )
+
+    def _validated_pause_roles(self, binding: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Compile handoff custody without expanding the graph's cleanup scope."""
+        from astrid.core.execution.custody_broker import AuthenticatedCleanupActor
+
+        if not self._validate_retained_binding(binding) or self._retained_relay_actor is None:
+            return None
+        try:
+            scope = Path(self._request["custody_scope"])
+            delegated = self.known_custody_capabilities()
+            requested = binding["current_roles"]
+            if (set(delegated) != {"engine", "engine_listener"}
+                    or requested != binding["original_roles"]
+                    or binding["source_relay_reference"] != requested["relay"]
+                    or binding["source_owner_epoch"] != self._request["owner_epoch"]):
+                return None
+            host_actor = AuthenticatedCleanupActor.current().verify()
+            relay_actor = self._retained_relay_actor.verify()
+            runtime_owner = self._request["runtime_owner"]
+            source_owner = binding["source_owner"]
+            if (any(runtime_owner.get(key) != source_owner.get(key) for key in ("pid", "uid", "birth_id"))
+                    or {key: host_actor[key] for key in ("pid", "birth_id")} != self._activation_grant["host"]):
+                return None
+            compiled = {}
+            for role in _HANDOFF_ROLE_NAMES:
+                reference = delegated.get(role) if role in delegated else requested[role]
+                if (not _handoff_role_valid(reference, role) or reference["scope_root"] != str(scope)
+                        or reference != requested[role]):
+                    return None
+                designation = _handoff_designation(scope, role, reference)
+                expected_actor = (source_owner if role == "relay" else
+                                  relay_actor if role == "host" else host_actor)
+                if (designation is None or designation["actor"] != expected_actor
+                        or designation["owner_epoch"] != self._request["owner_epoch"]
+                        or (role == "relay" and reference["target"] != relay_actor)
+                        or (role == "host" and reference["target"] != host_actor)):
+                    return None
+                # Host/relay refs come from protected designation contents;
+                # engine refs remain the exact graph-delegated references.
+                compiled[role] = (dict(reference) if role in delegated else {
+                    "version": "runtime.role-custody-reference/v1", "scope_root": str(scope),
+                    "role": role, "generation": designation["generation"],
+                    "target": {key: value for key, value in designation["target"].items()
+                               if key != "audit_token_words"},
+                })
+            return json.loads(json.dumps(compiled, sort_keys=True, allow_nan=False))
+        except (OSError, HostError, ValueError, KeyError, TypeError, RuntimeError):
+            return None
+
+    def _read_task_fence(self, binding: Mapping[str, Any], digest: str) -> dict[str, Any] | None:
+        request, grant = self._request, self._activation_grant
+        profile = request.get("profile") if isinstance(request, Mapping) else None
+        if not isinstance(profile, Mapping) or not isinstance(grant, Mapping):
+            return None
+        support_root = profile.get("support_root")
+        if not isinstance(support_root, str) or not Path(support_root).is_absolute():
+            return None
+        try:
+            fence = _handoff_read_protected_json(Path(support_root), "local-execution-claim-fence.json")
+            credential_file = Path(str(grant.get("credential_file", ""))).expanduser()
+            commit_path = credential_file.with_suffix(".commit")
+            commit = _handoff_read_private_bytes(commit_path, limit=65536)
+        except (OSError, HostError, ValueError):
+            return None
+        expected_keys = {
+            "version", "state", "workspace_uuid", "executor_incarnation", "credential_generation_digest",
+            "operation_id", "handoff_id", "intent_digest", "source_owner_epoch", "target_owner_epoch",
+            "fence_generation", "release_ack_digest",
+        }
+        commit_digest = "sha256:" + hashlib.sha256(commit).hexdigest()
+        if (
+            set(fence) != expected_keys or fence.get("version") != "runtime.local-execution-claim-fence/v1"
+            or fence.get("state") != "held" or fence.get("workspace_uuid") != binding.get("workspace_uuid")
+            or fence.get("executor_incarnation") != binding.get("executor_incarnation")
+            or fence.get("credential_generation_digest") != binding.get("credential_generation_digest")
+            or binding.get("credential_generation_digest") != commit_digest
+            or fence.get("operation_id") != binding.get("operation_id")
+            or fence.get("handoff_id") != binding.get("handoff_id")
+            or fence.get("intent_digest") != binding.get("intent_digest")
+            or fence.get("source_owner_epoch") != binding.get("source_owner_epoch")
+            or fence.get("target_owner_epoch") != binding.get("new_owner_epoch")
+            or not isinstance(fence.get("fence_generation"), int)
+            or isinstance(fence.get("fence_generation"), bool) or fence["fence_generation"] < 1
+            or fence.get("release_ack_digest") is not None or _handoff_digest(fence) != digest
+        ):
+            return None
+        return fence
+
+    def _verify_adoption_evidence(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        binding, payload = request["binding"], request["payload"]
+        if (not self._validate_retained_binding(binding) or self._claim_host is None
+                or self._retained_relay_actor is None):
+            return None
+        scope = Path(binding["custody_scope"])
+        profile = self._request["profile"]
+        if not isinstance(profile, Mapping):
+            return None
+        try:
+            runtime = _handoff_read_protected_json(scope, "runtime-handoff-state.json")
+            relay = _handoff_read_protected_json(scope, "relay-handoff-state.json")
+            peer = self._retained_relay_actor.verify()
+            fence = self._read_task_fence(binding, payload["task_fence_digest"])
+        except Exception:
+            return None
+        binding_digest = _handoff_digest(binding)
+        request_digest = _handoff_digest(request)
+        handoff_id = binding["handoff_id"]
+        source_relay = binding["source_relay_reference"]
+        if (not _handoff_journal_base(runtime, binding, binding_digest)
+                or not _handoff_journal_base(relay, binding, binding_digest)
+                or runtime.get("phase") != "export_sealed" or relay.get("phase") != "export_sealed"
+                or not isinstance(fence, Mapping) or not _handoff_journal_entry(
+                    relay, handoff_id, "handoff_adopt", request_digest, binding_digest, pending=True)
+                or peer != relay.get("writer_incarnation")
+                or relay.get("writer_owner_epoch") != binding.get("original_owner_epoch")
+                or peer != source_relay.get("target")):
+            return None
+        # Runtime starts its own adopt entry only after the host has returned;
+        # an absent entry is the required pre-forward state.
+        runtime_entries = runtime["entries"]
+        if f"{handoff_id}:handoff_adopt" in runtime_entries:
+            return None
+        sealed = runtime.get("sealed_export")
+        if not isinstance(sealed, Mapping) or set(sealed) != {"export_metadata", "seal_record", "sealed_record_digest"}:
+            return None
+        export_metadata, seal_record = sealed.get("export_metadata"), sealed.get("seal_record")
+        if (not isinstance(export_metadata, Mapping) or not isinstance(seal_record, Mapping)
+                or _handoff_digest(export_metadata) != payload.get("export_digest")
+                or _handoff_digest(seal_record) != payload.get("sealed_record_digest")
+                or sealed.get("sealed_record_digest") != payload.get("sealed_record_digest")
+                or seal_record.get("export_digest") != payload.get("export_digest")
+                or export_metadata.get("task_fence_digest") != payload.get("task_fence_digest")
+                or seal_record.get("task_fence_digest") != payload.get("task_fence_digest")
+                or export_metadata.get("handoff_id") != handoff_id
+                or seal_record.get("handoff_id") != handoff_id
+                or export_metadata.get("intent_digest") != binding.get("intent_digest")
+                or seal_record.get("intent_digest") != binding.get("intent_digest")
+                or export_metadata.get("credential_generation_digest") != binding.get("credential_generation_digest")
+                or seal_record.get("credential_generation_digest") != binding.get("credential_generation_digest")
+                or export_metadata.get("source_owner_epoch") != binding.get("source_owner_epoch")
+                or seal_record.get("source_owner_epoch") != binding.get("source_owner_epoch")
+                or seal_record.get("target_owner_epoch") != binding.get("new_owner_epoch")
+                or export_metadata.get("source_relay_reference") != source_relay
+                or seal_record.get("source_relay_reference") != source_relay
+                or fence.get("fence_generation") < 1):
+            return None
+        pause_key = f"{handoff_id}:handoff_prepare"
+        pause_entry = runtime_entries.get(pause_key)
+        if (not isinstance(pause_entry, Mapping) or set(pause_entry) != {"request_digest", "binding_digest", "reply"}
+                or pause_entry.get("binding_digest") != binding_digest or not isinstance(pause_entry.get("reply"), Mapping)
+                or export_metadata.get("host_pause_ack_digest") != _handoff_digest(pause_entry["reply"])
+                or seal_record.get("host_pause_ack_digest") != _handoff_digest(pause_entry["reply"])):
+            return None
+        export_entry = relay["entries"].get(f"{handoff_id}:handoff_export_sealed")
+        try:
+            host_record = _handoff_read_protected_json(scope, "host-handoff-state.json")
+        except Exception:
+            return None
+        host_fields = {"version", "writer_incarnation", "writer_owner_epoch", "handoff_id", "command", "request_digest", "reply"}
+        if (not isinstance(export_entry, Mapping) or set(export_entry) != {"request_digest", "binding_digest", "reply"}
+                or not isinstance(export_entry.get("reply"), Mapping)
+                or set(host_record) != host_fields
+                or host_record.get("version") != "runtime.local-execution-handoff-journal/v1"
+                or host_record.get("handoff_id") != handoff_id
+                or host_record.get("command") != "handoff_export_sealed"
+                or host_record.get("request_digest") != export_entry.get("request_digest")
+                or host_record.get("reply") != export_entry.get("reply")
+                or host_record.get("writer_owner_epoch") != binding.get("original_owner_epoch")):
+            return None
+        transfer, ownership = runtime.get("writer_transfer"), runtime.get("ownership")
+        if (not isinstance(transfer, Mapping) or set(transfer) != {"state", "intent", "relay_ack"}
+                or transfer.get("state") != "committed" or not isinstance(transfer.get("intent"), Mapping)
+                or not isinstance(ownership, Mapping)
+                or set(ownership) != {"owner", "owner_epoch", "relay_reference", "current_roles", "previous_projection_digest"}):
+            return None
+        intent = transfer["intent"]
+        transition_id = "relay-transfer:" + _handoff_digest({
+            "handoff_id": handoff_id, "intent_digest": binding["intent_digest"],
+            "source_relay_reference": source_relay,
+        })
+        if (set(intent) != {"transition_id", "binding_digest", "from_writer", "from_epoch", "from_generation",
+                            "to_writer", "to_epoch", "source_relay_reference"}
+                or intent.get("transition_id") != transition_id or intent.get("binding_digest") != binding_digest
+                or not _handoff_transfer_writers_match(intent, binding)
+                or intent.get("from_epoch") != binding.get("source_owner_epoch")
+                or not isinstance(intent.get("from_generation"), int) or isinstance(intent.get("from_generation"), bool)
+                or intent["from_generation"] < 1
+                or intent.get("to_epoch") != binding.get("new_owner_epoch")
+                or intent.get("source_relay_reference") != source_relay
+                or not _handoff_runtime_writer_matches(runtime, binding)
+                or runtime.get("writer_owner_epoch") != intent.get("to_epoch")
+                or runtime.get("writer_generation") != intent.get("from_generation") + 1
+                or ownership.get("owner") != binding.get("new_owner")
+                or ownership.get("owner_epoch") != binding.get("new_owner_epoch")
+                or not _handoff_sha256(ownership.get("previous_projection_digest"))):
+            return None
+        relay_ack = transfer.get("relay_ack")
+        if (not isinstance(relay_ack, Mapping) or set(relay_ack) != {"version", "transition_id", "role", "generation",
+                                                                       "owner_epoch", "actor", "target"}
+                or relay_ack.get("version") != "runtime.role-custody-designation/v1"
+                or relay_ack.get("transition_id") != transition_id or relay_ack.get("role") != "relay"
+                or relay_ack.get("generation") != source_relay.get("generation") + 1
+                or relay_ack.get("owner_epoch") != binding.get("new_owner_epoch")
+                or relay_ack.get("actor") != binding.get("new_owner")
+                or relay_ack.get("target") != source_relay.get("target")
+                or payload.get("relay_transfer_ack") != relay_ack):
+            return None
+        relay_scope = Path(source_relay["scope_root"])
+        if relay_scope != scope:
+            return None
+        designation = _handoff_designation(relay_scope, "relay", {
+            **dict(source_relay), "generation": source_relay["generation"] + 1,
+        })
+        if (designation is None or designation.get("owner_epoch") != binding.get("new_owner_epoch")
+                or designation.get("actor") != binding.get("new_owner")
+                or designation.get("target", {}).get("pid") != peer.get("pid")
+                or designation.get("target", {}).get("birth_id") != peer.get("birth_id")):
+            return None
+        transitions = [entry for entry in designation["transitions"]
+                       if isinstance(entry, Mapping) and entry.get("transition_id") == transition_id]
+        expected_role_intent = {
+            "transition_id": transition_id,
+            "from_generation": source_relay["generation"],
+            "requester": binding["source_owner"],
+            "next_actor": binding["new_owner"],
+            "owner_epoch": binding["new_owner_epoch"],
+        }
+        if (len(transitions) != 1 or set(transitions[0]) != {"transition_id", "intent", "ack"}
+                or transitions[0].get("intent") != expected_role_intent
+                or transitions[0].get("ack") != relay_ack):
+            return None
+        expected_auth_digest = _handoff_digest({
+            "version": "runtime.local-execution-successor-auth/v1",
+            "binding_digest": binding_digest,
+            "successor_peer": binding["new_owner"],
+            "relay_peer": source_relay["target"],
+        })
+        if payload.get("successor_authentication_digest") != expected_auth_digest:
+            return None
+        host_owner = self._claim_host
+        sealed_registered = export_entry["reply"].get("registered_state")
+        if (not isinstance(sealed_registered, Mapping)
+                or pause_entry["reply"].get("registered_state") != sealed_registered
+                or self._handoff_registered_state != sealed_registered
+                or self._handoff_registered_state_digest != _handoff_digest(sealed_registered)
+                or sealed_registered.get("executor_incarnation") != binding.get("executor_incarnation")
+                or sealed_registered.get("runtime", {}).get("coordinator_epoch") != binding.get("source_owner_epoch")):
+            return None
+        with host_owner._handoff_condition:
+            registered_client = host_owner.client
+            activation_snapshot = json.loads(json.dumps(self._activation_grant))
+            current_registered = _handoff_historical_registration(host_owner, activation_snapshot, sealed_registered)
+        if current_registered is None:
+            return None
+        current_roles = dict(binding["current_roles"])
+        current_roles["relay"] = {**dict(source_relay), "generation": source_relay["generation"] + 1}
+        if not _handoff_ownership_matches(ownership, current_roles, current_roles["relay"]):
+            return None
+        for role, reference in current_roles.items():
+            role_scope = Path(reference["scope_root"])
+            if _handoff_designation(role_scope, role, reference) is None:
+                return None
+        return {"runtime": runtime, "relay": relay, "fence": fence, "registered_state": current_registered,
+                "registered_state_digest": _handoff_digest(current_registered), "relay_ack": dict(relay_ack),
+                "relay_reference": current_roles["relay"], "current_roles": current_roles,
+                "authority_snapshot": {"writer_transfer": dict(transfer), "ownership": dict(ownership)},
+                "sealed_export": dict(sealed),
+                "registered_client": registered_client, "activation_snapshot": activation_snapshot}
+
+    def _verify_export_evidence(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        binding, payload = request["binding"], request["payload"]
+        if not self._validate_retained_binding(binding) or self._claim_host is None:
+            return None
+        registered = _handoff_registered_state(self._claim_host, self._activation_grant)
+        if registered is None:
+            return None
+        try:
+            scope = Path(binding["custody_scope"])
+            runtime = _handoff_read_protected_json(scope, "runtime-handoff-state.json")
+            relay = _handoff_read_protected_json(scope, "relay-handoff-state.json")
+            fence = self._read_task_fence(binding, payload["seal_record"].get("task_fence_digest"))
+            retained_relay = self._retained_relay_actor
+            peer = retained_relay.verify() if retained_relay is not None else None
+        except Exception:
+            return None
+        binding_digest = _handoff_digest(binding)
+        request_digest = _handoff_digest(request)
+        sealed = {key: payload[key] for key in ("export_metadata", "seal_record", "sealed_record_digest")}
+        metadata, seal = sealed["export_metadata"], sealed["seal_record"]
+        if (not _handoff_journal_base(runtime, binding, binding_digest)
+                or not _handoff_journal_base(relay, binding, binding_digest)
+                or not isinstance(metadata, Mapping) or not isinstance(seal, Mapping)
+                or _handoff_digest(seal) != payload.get("sealed_record_digest")
+                or _handoff_digest(metadata) != seal.get("export_digest")
+                or payload.get("sealed_record_digest") != seal.get("sealed_record_digest", payload.get("sealed_record_digest"))
+                or not isinstance(fence, Mapping)
+                or runtime.get("phase") != "host_paused"
+                or relay.get("phase") != "host_paused"
+                or not _handoff_journal_entry(relay, binding["handoff_id"], "handoff_export_sealed",
+                                              request_digest, binding_digest, pending=True)
+                or not _handoff_journal_entry(runtime, binding["handoff_id"], "handoff_export_sealed",
+                                              request_digest, binding_digest, pending=True)
+                or peer is None or peer != relay.get("writer_incarnation")
+                or relay.get("writer_owner_epoch") != binding.get("original_owner_epoch")):
+            return None
+        if (set(metadata) != {"version", "handoff_id", "intent_digest", "nonce_digest", "host_pause_ack_digest",
+                              "task_fence_digest", "credential_generation_digest", "source_owner_epoch",
+                              "source_relay_reference", "descriptor_identity_digest", "launch_evidence_digest"}
+                or set(seal) != {"version", "handoff_id", "intent_digest", "nonce_digest", "export_digest",
+                                 "host_pause_ack_digest", "task_fence_digest", "credential_generation_digest",
+                                 "source_owner_epoch", "target_owner_epoch", "source_relay_reference",
+                                 "successor_incarnation"}
+                or metadata.get("version") != "runtime.local-execution-handoff-export/v1"
+                or metadata.get("handoff_id") != binding.get("handoff_id")
+                or metadata.get("intent_digest") != binding.get("intent_digest")
+                or metadata.get("nonce_digest") != binding.get("nonce_digest")
+                or metadata.get("credential_generation_digest") != binding.get("credential_generation_digest")
+                or metadata.get("source_owner_epoch") != binding.get("source_owner_epoch")
+                or metadata.get("source_relay_reference") != binding.get("source_relay_reference")
+                or not _handoff_sha256(metadata.get("descriptor_identity_digest"))
+                or metadata.get("launch_evidence_digest") != binding.get("launch_evidence_digest")
+                or seal.get("version") != "runtime.local-execution-handoff-seal/v1"
+                or seal.get("handoff_id") != binding.get("handoff_id")
+                or seal.get("intent_digest") != binding.get("intent_digest")
+                or seal.get("nonce_digest") != binding.get("nonce_digest")
+                or seal.get("credential_generation_digest") != binding.get("credential_generation_digest")
+                or seal.get("source_owner_epoch") != binding.get("source_owner_epoch")
+                or seal.get("target_owner_epoch") != binding.get("new_owner_epoch")
+                or seal.get("source_relay_reference") != binding.get("source_relay_reference")
+                or seal.get("successor_incarnation") != binding.get("new_owner")
+                or metadata.get("task_fence_digest") != _handoff_digest(fence)
+                or seal.get("task_fence_digest") != _handoff_digest(fence)):
+            return None
+        pause_entry = runtime["entries"].get(f"{binding['handoff_id']}:handoff_prepare")
+        if (not isinstance(pause_entry, Mapping) or not isinstance(pause_entry.get("reply"), Mapping)
+                or not isinstance(pause_entry.get("request_digest"), str)
+                or metadata.get("host_pause_ack_digest") != _handoff_digest(pause_entry["reply"])
+                or seal.get("host_pause_ack_digest") != _handoff_digest(pause_entry["reply"])):
+            return None
+        try:
+            host_record = _handoff_read_protected_json(scope, "host-handoff-state.json")
+        except Exception:
+            return None
+        host_fields = {"version", "writer_incarnation", "writer_owner_epoch", "handoff_id", "command", "request_digest", "reply"}
+        if (set(host_record) != host_fields
+                or host_record.get("version") != "runtime.local-execution-handoff-journal/v1"
+                or host_record.get("handoff_id") != binding.get("handoff_id")
+                or host_record.get("command") != "handoff_prepare"
+                or host_record.get("reply") != pause_entry.get("reply")
+                or host_record.get("request_digest") != pause_entry.get("request_digest")
+                or host_record.get("writer_owner_epoch") != binding.get("original_owner_epoch")
+                or metadata.get("host_pause_ack_digest") != _handoff_digest(host_record["reply"])):
+            return None
+        if registered != host_record["reply"].get("registered_state"):
+            return None
+        return {"sealed_export": sealed, "registered_state": registered, "registered_state_digest": _handoff_digest(registered)}
+
+    def _verify_finalization_context(self, request: Mapping[str, Any], *, require_registration: bool,
+                                    observed_registration: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+        binding, payload = request["binding"], request["payload"]
+        if (not self._validate_retained_binding(binding) or self._claim_host is None
+                or self._handoff_authority_snapshot is None or self._handoff_current_roles is None):
+            return None
+        fence_digest = payload.get("task_fence_digest")
+        if fence_digest != self._handoff_sealed_export.get("seal_record", {}).get("task_fence_digest"):
+            return None
+        try:
+            scope = Path(binding["custody_scope"])
+            runtime = _handoff_read_protected_json(scope, "runtime-handoff-state.json")
+            relay = _handoff_read_protected_json(scope, "relay-handoff-state.json")
+            fence = self._read_task_fence(binding, fence_digest)
+            peer = self._retained_relay_actor.verify() if self._retained_relay_actor is not None else None
+        except Exception:
+            return None
+        binding_digest = _handoff_digest(binding)
+        if (not _handoff_journal_base(runtime, binding, binding_digest)
+                or not _handoff_journal_base(relay, binding, binding_digest)
+                or runtime.get("writer_transfer") != self._handoff_authority_snapshot["writer_transfer"]
+                or runtime.get("ownership") != self._handoff_authority_snapshot["ownership"]
+                or not _handoff_runtime_writer_matches(runtime, binding)
+                or runtime.get("phase") not in {"adopt_prepared", "rebind_committed", "resume_armed", "resumed"}
+                or relay.get("phase") not in {"adopt_prepared", "rebind_committed", "resume_armed", "resumed"}
+                or not isinstance(fence, Mapping) or peer is None
+                or peer != relay.get("writer_incarnation")
+                or relay.get("writer_owner_epoch") != binding.get("original_owner_epoch")):
+            return None
+        relay_ack = self._handoff_authority_snapshot["writer_transfer"]["relay_ack"]
+        for role, reference in self._handoff_current_roles.items():
+            if role == "relay":
+                record = _handoff_designation(Path(reference["scope_root"]), role, reference)
+                if (record is None or record.get("actor") != binding.get("new_owner")
+                        or record.get("owner_epoch") != binding.get("new_owner_epoch")
+                        or not any(isinstance(row, Mapping) and row.get("ack") == relay_ack
+                                   for row in record.get("transitions", []))):
+                    return None
+            elif _handoff_designation(Path(reference["scope_root"]), role, reference) is None:
+                return None
+        current = (dict(observed_registration) if observed_registration is not None
+                   else _handoff_registered_state(self._claim_host, self._activation_grant))
+        if require_registration and (current is None or current != self._handoff_registered_state
+                                     or _handoff_digest(current) != self._handoff_registered_state_digest):
+            return None
+        if self._handoff_phase in {"rebind_committed", "resume_armed", "resumed"}:
+            if current is None or current != self._handoff_registered_state:
+                return None
+            if payload.get("registered_state_digest") != self._handoff_registered_state_digest:
+                return None
+            if (request["command"] != "handoff_finalize"
+                    and payload.get("new_runtime") != self._handoff_runtime_binding):
+                return None
+        return {"runtime": runtime, "relay": relay, "fence": fence, "registered_state": current}
+
+    def _persist_successful_phase(self, request: Mapping[str, Any], phase: str,
+                                  evidence: Mapping[str, Any] | None) -> dict[str, Any]:
+        if evidence is None or not isinstance(evidence.get("registered_state"), Mapping):
+            error = "fence_unresolved" if request["command"] == "handoff_export_sealed" else "identity_unresolved"
+            return self._handoff_reply(request, status="unresolved", error_code=error)
+        previous = self._handoff_phase
+        self._handoff_phase = phase
+        candidate = self._handoff_reply(request, status="ok")
+        if (candidate.get("registered_state") != evidence.get("registered_state")
+                or not self._persist_handoff_reply(request, candidate)):
+            self._handoff_phase = previous
+            if self._claim_host is not None:
+                with self._claim_host._handoff_condition:
+                    self._claim_host._handoff_claim_gate_closed = True
+                    self._claim_host._handoff_observation_known = False
+            return self._handoff_reply(request, status="unresolved", error_code="custody_unresolved")
+        self._handoff_registered_state = dict(evidence["registered_state"])
+        self._handoff_registered_state_digest = _handoff_digest(self._handoff_registered_state)
+        if isinstance(evidence.get("sealed_export"), Mapping):
+            self._handoff_sealed_export = dict(evidence["sealed_export"])
+        return candidate
+
+    def _persist_adoption_phase(self, request: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+        owner = self._claim_host
+        if owner is None:
+            return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved",
+                                       observe_registered_state=False)
+        with owner._handoff_condition:
+            registered = _handoff_historical_registration(owner, self._activation_grant, evidence["registered_state"])
+            if (registered is None or owner.client is not evidence["registered_client"]
+                    or self._activation_grant != evidence["activation_snapshot"]
+                    or self._handoff_phase != "export_sealed"
+                    or self._handoff_registered_state != registered
+                    or self._handoff_registered_state_digest != _handoff_digest(registered)
+                    or self._aborted):
+                return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved",
+                                           observe_registered_state=False)
+            candidate = self._handoff_reply(request, status="ok", registered_state=registered,
+                                            phase="adopt_prepared", observe_registered_state=False)
+            # These four references come from the complete validated transfer
+            # evidence, including the current relay generation, not the request.
+            candidate["custody_capabilities"] = {role: dict(reference)
+                                                  for role, reference in evidence["current_roles"].items()}
+            if not self._persist_handoff_reply(request, candidate):
+                owner._handoff_claim_gate_closed = True
+                owner._handoff_observation_known = False
+                return self._handoff_reply(request, status="unresolved", error_code="custody_unresolved",
+                                           observe_registered_state=False)
+            self._handoff_phase = "adopt_prepared"
+            self._handoff_sealed_export = dict(evidence["sealed_export"])
+            self._handoff_runtime_binding = dict(registered["runtime"])
+            self._handoff_registered_state = registered
+            self._handoff_registered_state_digest = evidence["registered_state_digest"]
+            self._handoff_current_roles = dict(evidence["current_roles"])
+            self._handoff_authority_snapshot = dict(evidence["authority_snapshot"])
+            return candidate
+
+    def _commit_rebind(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if self._handoff_phase != "adopt_prepared" or self._claim_host is None:
+            return self._handoff_reply(request, status="conflict", error_code="phase_conflict")
+        if self._handoff_registration_attempted or self._handoff_rebind_count:
+            return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved")
+        context = self._verify_finalization_context(request, require_registration=False)
+        runtime = request["payload"].get("new_runtime")
+        live = _handoff_live_runtime_binding(self._claim_host)
+        binding = request["binding"]
+        if (context is None or not _handoff_runtime_binding_valid(runtime) or runtime != live
+                or runtime.get("coordinator_epoch") != binding.get("new_owner_epoch")
+                or request["payload"].get("task_fence_digest")
+                    != self._handoff_sealed_export.get("seal_record", {}).get("task_fence_digest")
+                or request["payload"].get("relay_reference") != self._handoff_current_roles.get("relay")):
+            return self._handoff_reply(request, status="unresolved", error_code="fence_unresolved")
+        self._handoff_registration_attempted = True
+        owner = self._claim_host
+        try:
+            owner._handoff_authorize_registration(binding["handoff_id"])
+            owner.register(deliberate=True)
+        except Exception:
+            return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved")
+        finally:
+            owner._handoff_revoke_registration(binding["handoff_id"])
+        registered = _handoff_registered_state(owner, self._activation_grant)
+        if registered is None or registered.get("runtime") != runtime:
+            return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved")
+        self._handoff_rebind_count += 1
+        self._handoff_runtime_binding = dict(runtime)
+        self._handoff_registered_state = registered
+        self._handoff_registered_state_digest = _handoff_digest(registered)
+        return self._persist_successful_phase(request, "rebind_committed", {"registered_state": registered})
+
+    def _resume_phase(self, request: Mapping[str, Any], *, expected_phase: str, next_phase: str) -> dict[str, Any]:
+        if self._handoff_phase != expected_phase:
+            return self._handoff_reply(request, status="conflict", error_code="phase_conflict")
+        context = self._verify_finalization_context(request, require_registration=True)
+        if context is None:
+            return self._handoff_reply(request, status="unresolved", error_code="fence_unresolved")
+        return self._persist_successful_phase(request, next_phase, {"registered_state": context["registered_state"]})
+
+    def _finalize_handoff(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if (self._handoff_phase != "resumed" or self._claim_host is None
+                or self._handoff_finalize_persistence_failed or self._aborted):
+            return self._handoff_reply(request, status="unresolved", error_code="phase_conflict",
+                                       observe_registered_state=False)
+        owner = self._claim_host
+        activation = self._activation_grant
+        # Capture the exact local registration and owner identities under the
+        # claim condition. Health and protected-file checks run after release.
+        with owner._handoff_condition:
+            initial = owner._handoff_quiescence_locked()
+            if (initial["observation_status"] != "known" or initial["claim_gate_closed"] is not True
+                    or any(initial[key] != 0 for key in ("claim_rpc_in_flight", "active_attempts",
+                                                         "pending_settlements", "registration_rpc_in_flight"))
+                    or owner._handoff_registration_authorized_thread is not None
+                    or owner._handoff_registration_authorized_id is not None):
+                failed = dict(initial)
+                client = None
+                registered_before = runtime_before = capabilities_before = None
+                source_epoch_before = None
+            else:
+                failed = None
+                client = owner.client
+                captured_endpoint = getattr(client, "endpoint", None)
+                registered_before = {key: dict(value) for key, value in owner._registered_state.items()}
+                runtime_before = dict(owner._registered_runtime_state)
+                capabilities_before = {
+                    key: {"capability_digest": record.capability_digest,
+                          "source_digest": record.source_digest,
+                          "dependency_digest": record.dependency_digest}
+                    for key, record in owner.capabilities.items()
+                }
+                source_epoch_before = owner.source_epoch
+                captured_phase = self._handoff_phase
+                captured_binding_digest = self._handoff_binding_digest
+                captured_authority_digest = _handoff_digest(self._handoff_authority_snapshot)
+                captured_state_digest = self._handoff_registered_state_digest
+                captured_aborted = self._aborted
+                captured_persist_failed = self._handoff_finalize_persistence_failed
+        if failed is not None or client is None or activation is None or not isinstance(captured_endpoint, str):
+            return self._handoff_reply(request, status="unresolved", error_code="quiescence_unresolved",
+                                       registered_state=None, quiescence=failed,
+                                       observe_registered_state=False)
+        observed = _handoff_registered_state(owner, activation, client=client,
+                                             expected_endpoint=captured_endpoint)
+        if observed is None:
+            return self._handoff_reply(request, status="unresolved", error_code="registration_unresolved",
+                                       registered_state=None, quiescence=initial,
+                                       observe_registered_state=False)
+        context = self._verify_finalization_context(request, require_registration=True,
+                                                    observed_registration=observed)
+        if context is None:
+            return self._handoff_reply(request, status="unresolved", error_code="fence_unresolved",
+                                       registered_state=None, quiescence=initial,
+                                       observe_registered_state=False)
+        failed_snapshot = None
+        candidate = None
+        with owner._handoff_condition:
+            snapshot = owner._handoff_quiescence_locked()
+            if (snapshot["observation_status"] != "known" or snapshot["claim_gate_closed"] is not True
+                    or any(snapshot[key] != 0 for key in ("claim_rpc_in_flight", "active_attempts",
+                                                          "pending_settlements", "registration_rpc_in_flight"))
+                    or owner._handoff_registration_authorized_thread is not None
+                    or owner._handoff_registration_authorized_id is not None):
+                failed_snapshot = snapshot
+            elif (owner.client is not client or getattr(client, "endpoint", None) != captured_endpoint
+                  or self._handoff_phase != captured_phase
+                  or captured_phase != "resumed"
+                  or self._handoff_binding_digest != captured_binding_digest
+                  or captured_binding_digest != _handoff_digest(request["binding"])
+                  or self._activation_grant != activation
+                  or self._aborted != captured_aborted or captured_aborted
+                  or self._handoff_finalize_persistence_failed != captured_persist_failed
+                  or captured_persist_failed
+                  or _handoff_digest(self._handoff_authority_snapshot) != captured_authority_digest
+                  or self._handoff_registered_state_digest != captured_state_digest
+                  or owner._registered_state != registered_before
+                  or owner._registered_runtime_state != runtime_before
+                  or owner.source_epoch != source_epoch_before
+                  or {key: {"capability_digest": record.capability_digest,
+                            "source_digest": record.source_digest,
+                            "dependency_digest": record.dependency_digest}
+                      for key, record in owner.capabilities.items()} != capabilities_before
+                  or self._handoff_registered_state != context.get("registered_state")
+                  or context.get("registered_state") != observed
+                  or _handoff_digest(context.get("registered_state")) != self._handoff_registered_state_digest):
+                failed_snapshot = snapshot
+            else:
+                candidate = self._handoff_reply(
+                    request, status="ok", registered_state=context["registered_state"],
+                    quiescence={**snapshot, "claim_gate_closed": False}, phase="finalized",
+                )
+                if not self._persist_handoff_reply(request, candidate):
+                    self._handoff_finalize_persistence_failed = True
+                    owner._handoff_claim_gate_closed = True
+                    failed_snapshot = snapshot
+                    candidate = None
+                else:
+                    self._handoff_phase = "finalized"
+                    owner._handoff_claim_gate_closed = False
+                    owner._handoff_condition.notify_all()
+        if candidate is None:
+            if failed_snapshot is not None and failed_snapshot.get("observation_status") == "known":
+                code = "custody_unresolved" if self._handoff_finalize_persistence_failed else "quiescence_unresolved"
+            else:
+                code = "quiescence_unresolved"
+            return self._handoff_reply(request, status="unresolved", error_code=code,
+                                       registered_state=None, quiescence=failed_snapshot,
+                                       observe_registered_state=False)
+        return candidate
+
+    def _verify_authenticated_replay(self, request: Mapping[str, Any], cached: Mapping[str, Any]) -> bool:
+        if self._retained_relay_actor is None:
+            return False
+        try:
+            binding = request["binding"]
+            peer = self._retained_relay_actor.verify()
+            scope = Path(binding["custody_scope"])
+            relay = _handoff_read_protected_json(scope, "relay-handoff-state.json")
+            runtime = _handoff_read_protected_json(scope, "runtime-handoff-state.json")
+        except Exception:
+            return False
+        digest, request_digest = _handoff_digest(binding), _handoff_digest(request)
+        if (not _handoff_journal_base(relay, binding, digest)
+                or not _handoff_journal_base(runtime, binding, digest)
+                or peer != relay.get("writer_incarnation")
+                or relay.get("writer_owner_epoch") != binding.get("original_owner_epoch")):
+            return False
+        for journal in (relay, runtime):
+            entry = journal["entries"].get(f"{binding['handoff_id']}:{request['command']}")
+            if (not isinstance(entry, Mapping) or set(entry) != {"request_digest", "binding_digest", "reply"}
+                    or entry.get("request_digest") != request_digest or entry.get("binding_digest") != digest
+                    or entry.get("reply") != dict(cached)):
+                return False
+        return True
+
+    def _persist_handoff_reply(self, request: Mapping[str, Any], reply: Mapping[str, Any]) -> bool:
+        """Durably retain one pause receipt before exposing its successful ACK."""
+        path = self._handoff_journal_path
+        if not self._handoff_journal_ready or path is None:
+            return False
+        parent = path.parent
+        temporary = parent / f".host-handoff-state.{os.getpid()}.{secrets_module.token_hex(8)}.tmp"
+        record = {
+            "version": "runtime.local-execution-handoff-journal/v1",
+            "writer_incarnation": f"{reply['host']['pid']}:{reply['host']['birth_id']}",
+            "writer_owner_epoch": request["binding"]["original_owner_epoch"],
+            "handoff_id": request["binding"]["handoff_id"],
+            "command": request["command"],
+            "request_digest": reply["request_digest"],
+            "reply": dict(reply),
+        }
+        encoded = _handoff_canonical(record)
+        descriptor = None
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short host handoff journal write")
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            os.replace(temporary, path)
+            directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            return True
+        except OSError:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            return False
+
+    def _handoff_reply(self, request: Mapping[str, Any], *, status: str,
+                       error_code: str | None = None,
+                       registered_state: Mapping[str, Any] | None = None,
+                       quiescence: Mapping[str, Any] | None = None,
+                       phase: str | None = None,
+                       observe_registered_state: bool = True) -> dict[str, Any]:
+        from astrid.core.execution.custody_broker import default_process_identity
+
+        binding = request["binding"]
+        identity = default_process_identity(os.getpid())
+        if identity is None:
+            raise HostError("handoff host process identity is unavailable")
+        host = {key: identity[key] for key in ("pid", "birth_id", "uid")}
+        owner = self._claim_host
+        if owner is None:
+            quiescence = {"claim_gate_closed": None, "claim_rpc_in_flight": None,
+                          "active_attempts": None, "pending_settlements": None,
+                          "registration_rpc_in_flight": None, "observation_status": "unknown"}
+        elif quiescence is not None:
+            quiescence = dict(quiescence)
+        else:
+            quiescence = owner.handoff_quiescence()
+        activation = self._activation_grant
+        if registered_state is None and observe_registered_state:
+            registered_state = (
+                _handoff_registered_state(owner, activation)
+                if owner is not None and activation is not None else None
+            )
+        elif registered_state is not None:
+            registered_state = dict(registered_state)
+        capabilities = (dict(self._handoff_current_roles) if self._handoff_current_roles is not None
+                       else self.known_custody_capabilities())
+        capabilities = {role: ref for role, ref in capabilities.items()
+                        if role in _HANDOFF_ROLE_NAMES and _handoff_role_valid(ref, role)}
+        return {"version": _HANDOFF_VERSION, "command": request["command"],
+                "binding_digest": _handoff_digest(binding),
+                "request_digest": _handoff_digest(request), "status": status,
+                "phase": phase or self._handoff_phase, "host": host,
+                "registered_state": registered_state, "quiescence": quiescence,
+                "custody_capabilities": capabilities, "error_code": error_code}
+
+    def _dispatch_handoff(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if set(request) != {"version", "command", "binding", "payload"} or request.get("version") != _HANDOFF_VERSION:
+            raise HostError("handoff request envelope is invalid")
+        command, binding, payload = request["command"], request["binding"], request["payload"]
+        if command not in _HANDOFF_COMMAND_PAYLOADS or not isinstance(binding, Mapping) or set(binding) != _HANDOFF_BINDING_FIELDS:
+            raise HostError("handoff command or binding is invalid")
+        if not isinstance(payload, Mapping) or set(payload) != _HANDOFF_COMMAND_PAYLOADS[command]:
+            raise HostError("handoff command payload is invalid")
+        for name in ("operation_id", "channel_id", "handoff_id", "workspace_uuid", "executor_incarnation",
+                     "custody_scope", "original_owner_epoch", "new_owner_epoch", "intent_digest", "source_owner_epoch"):
+            value = binding.get(name)
+            if not isinstance(value, str) or not value or len(value) > 4096:
+                raise HostError("handoff binding identity is invalid")
+        if (binding["operation_id"] != self.operation_id or binding["channel_id"] != self.channel_id
+                or not Path(binding["custody_scope"]).is_absolute()
+                or binding["new_owner_epoch"] == binding["original_owner_epoch"]
+                or not isinstance(binding["deadline_unix_ms"], int)
+                or isinstance(binding["deadline_unix_ms"], bool)
+                or not 0 < binding["deadline_unix_ms"] <= 2**63 - 1):
+            raise HostError("handoff binding conflicts with the selected launch")
+        for key in ("nonce_digest", "profile_binding_digest", "launch_evidence_digest", "activation_record_digest",
+                    "credential_generation_digest", "intent_digest"):
+            if not isinstance(binding.get(key), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", binding[key]):
+                raise HostError("handoff binding digest is invalid")
+        if not isinstance(binding["original_roles"], Mapping) or not isinstance(binding["current_roles"], Mapping):
+            raise HostError("handoff role bindings are invalid")
+        if (not _handoff_actor_valid(binding["new_owner"])
+                or not _handoff_actor_valid(binding["source_owner"])
+                or not _handoff_role_valid(binding["source_relay_reference"], "relay")
+                or set(binding["original_roles"]) != _HANDOFF_ROLE_NAMES
+                or any(not _handoff_role_valid(ref, role) for role, ref in binding["original_roles"].items())
+                or set(binding["current_roles"]) != _HANDOFF_ROLE_NAMES
+                or any(not _handoff_role_valid(ref, role) for role, ref in binding["current_roles"].items())):
+            raise HostError("handoff role references are invalid")
+        intent_binding = dict(binding)
+        supplied_intent = intent_binding.pop("intent_digest")
+        expected_intent = _handoff_digest({"version": _HANDOFF_VERSION, "binding": intent_binding})
+        if supplied_intent != expected_intent:
+            raise HostError("handoff intent digest differs")
+        request_digest = _handoff_digest(request)
+        binding_digest = _handoff_digest(binding)
+        with self._lock:
+            if self._handoff_binding_digest not in (None, binding_digest):
+                return self._handoff_reply(request, status="conflict", error_code="binding_conflict")
+            now_ms = int(time.time() * 1000)
+            if binding["deadline_unix_ms"] <= now_ms:
+                # Expiry is not a state transition. In particular, an
+                # unauthenticated direct-dispatch caller cannot pin a binder,
+                # overwrite a saved receipt, or change claim admission by
+                # presenting an expired request.
+                return self._handoff_reply(request, status="unresolved", error_code="deadline_expired")
+            if binding["deadline_unix_ms"] > now_ms + 86_400_000:
+                raise HostError("handoff binding deadline exceeds the local horizon")
+            self._handoff_binding = dict(binding)
+            self._handoff_binding_digest = binding_digest
+        if request_digest in self._handoff_replies:
+            cached = self._handoff_replies[request_digest]
+            if binding["deadline_unix_ms"] <= now_ms:
+                if not self._verify_authenticated_replay(request, cached):
+                    return self._handoff_reply(request, status="unresolved", error_code="deadline_expired")
+            return json.loads(json.dumps(cached))
+        if binding["deadline_unix_ms"] <= now_ms:
+            return self._handoff_reply(request, status="unresolved", error_code="deadline_expired")
+
+        if command == "handoff_report":
+            reply = self._handoff_reply(request, status="ok" if self._claim_host else "unresolved",
+                                        error_code=None if self._claim_host else "quiescence_unresolved")
+        elif command == "handoff_abort":
+            reply = self._handoff_reply(request, status="unresolved" if self._handoff_phase == "host_paused"
+                                        else "conflict",
+                                        error_code="custody_unresolved" if self._handoff_phase == "host_paused"
+                                        else "phase_conflict")
+        elif not self._validate_retained_binding(binding) or self._claim_host is None:
+            reply = self._handoff_reply(request, status="unresolved", error_code="identity_unresolved")
+        elif command == "handoff_prepare":
+            if self._handoff_phase != "owned":
+                reply = self._handoff_reply(request, status="conflict", error_code="phase_conflict")
+            else:
+                disposition, _snapshot = self._claim_host.pause_claim_admission()
+                if disposition == "active_work":
+                    reply = self._handoff_reply(request, status="active_work", error_code="active_work",
+                                                registered_state=None, quiescence=_snapshot,
+                                                observe_registered_state=False)
+                elif disposition == "paused":
+                    registered_state = _handoff_registered_state(self._claim_host, self._activation_grant)
+                    if registered_state is None:
+                        reply = self._handoff_reply(request, status="unresolved",
+                                                    error_code="registration_unresolved",
+                                                    registered_state=None, quiescence=_snapshot,
+                                                    observe_registered_state=False)
+                    else:
+                        roles = self._validated_pause_roles(binding)
+                        if roles is None:
+                            with self._claim_host._handoff_condition:
+                                self._claim_host._handoff_observation_known = False
+                                self._claim_host._handoff_claim_gate_closed = True
+                            reply = self._handoff_reply(request, status="unresolved", error_code="custody_unresolved",
+                                                        registered_state=None, observe_registered_state=False)
+                        else:
+                            prior_phase = self._handoff_phase
+                            prior_roles = self._handoff_current_roles
+                            self._handoff_current_roles = roles
+                            self._handoff_phase = "host_paused"
+                            candidate = self._handoff_reply(request, status="ok",
+                                                            registered_state=registered_state,
+                                                            quiescence=_snapshot)
+                            if candidate["registered_state"] is not None and self._persist_handoff_reply(request, candidate):
+                                reply = candidate
+                            else:
+                                self._handoff_phase = prior_phase
+                                self._handoff_current_roles = prior_roles
+                                with self._claim_host._handoff_condition:
+                                    self._claim_host._handoff_observation_known = False
+                                    self._claim_host._handoff_claim_gate_closed = True
+                                reply = self._handoff_reply(request, status="unresolved", error_code="custody_unresolved",
+                                                            registered_state=None, observe_registered_state=False)
+                else:
+                    reply = self._handoff_reply(request, status="unresolved", error_code="quiescence_unresolved",
+                                                registered_state=None, quiescence=_snapshot,
+                                                observe_registered_state=False)
+        elif command == "handoff_export_sealed":
+            if self._handoff_phase != "host_paused":
+                reply = self._handoff_reply(request, status="conflict", error_code="phase_conflict")
+            else:
+                exported = self._verify_export_evidence(request)
+                reply = self._persist_successful_phase(request, "export_sealed", exported)
+        elif command == "handoff_adopt":
+            if self._handoff_phase != "export_sealed":
+                reply = self._handoff_reply(request, status="conflict", error_code="phase_conflict")
+            else:
+                adopted = self._verify_adoption_evidence(request)
+                if adopted is None:
+                    reply = self._handoff_reply(request, status="unresolved", error_code="identity_unresolved")
+                else:
+                    reply = self._persist_adoption_phase(request, adopted)
+        elif command == "handoff_commit":
+            reply = self._commit_rebind(request)
+        elif command == "resume_prepare":
+            reply = self._resume_phase(request, expected_phase="rebind_committed", next_phase="resume_armed")
+        elif command == "resume_commit":
+            reply = self._resume_phase(request, expected_phase="resume_armed", next_phase="resumed")
+        elif command == "handoff_finalize":
+            reply = self._finalize_handoff(request)
+        else:
+            reply = self._handoff_reply(request, status="unresolved", error_code="identity_unresolved")
+        self._handoff_replies[request_digest] = reply
+        return json.loads(json.dumps(reply))
 
     def prepare_local_execution(self, request: Mapping[str, Any]) -> dict[str, Any]:
         required = {"version", "command", "operation_id", "channel_id", "owner_epoch", "runtime_owner", "profile", "custody_scope"}
@@ -6469,6 +8098,8 @@ class LocalExecutionPreparation:
         scope = Path(str(request["custody_scope"]))
         if not scope.is_absolute() or scope.is_symlink():
             raise HostError("local preparation custody scope is invalid")
+        if not self._acquire_handoff_journal(scope):
+            raise CleanupUncertainError("host handoff journal ownership or retained state is unresolved")
         intent = _canonical_digest(dict(request))
         with self._lock:
             if self._aborted:
@@ -6525,6 +8156,8 @@ class LocalExecutionPreparation:
         return dict((self.result or {}).get("custody_capabilities") or {})
 
     def dispatch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if request.get("version") == _HANDOFF_VERSION:
+            return self._dispatch_handoff(request)
         from astrid.core.execution.custody_broker import _canonical, _digest_bytes
         command = request.get("command")
         if command == "prepare_local_execution":
@@ -6587,6 +8220,12 @@ class LocalExecutionPreparation:
         def serve():
             control = socket.socket(fileno=descriptor)
             try:
+                from astrid.core.execution import custody_broker as custody_module
+
+                # This is the retained Runtime relay -> host channel. It does
+                # not authenticate B; it pins the real relay peer so protected
+                # relay designation/transition evidence can be checked later.
+                self._retained_relay_actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
                 while True:
                     frame = _read_activation_frame(control, limit=1024 * 1024)
                     try:
@@ -6921,8 +8560,10 @@ def _read_activation_frame(control: socket.socket, *, limit: int = _ACTIVATION_F
     if remainder:
         raise HostError("parked activation channel carried multiple frames")
     try:
-        value = json.loads(encoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        value = json.loads(encoded.decode("utf-8"),
+                           object_pairs_hook=_handoff_reject_duplicate_pairs,
+                           parse_constant=_handoff_reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise HostError("parked activation frame is malformed") from exc
     if not isinstance(value, dict):
         raise HostError("parked activation frame must be an object")
@@ -7239,6 +8880,8 @@ def _cli() -> int:
                 )
             if preparation is not None and (preparation.result is None or preparation._aborted):
                 raise HostError("local activation arrived before verified preparation")
+            if preparation is not None:
+                preparation.retain_activation_grant(activation)
         except (HostError, json.JSONDecodeError) as exc:
             if preparation is not None:
                 try:
@@ -7402,6 +9045,8 @@ def _cli() -> int:
         boot_manifest_hash=boot_manifest_hash,
     )
     host._native_engine_graph = preparation.graph if preparation is not None else None
+    if preparation is not None:
+        preparation.attach_claim_host(host)
     host.discover()
     host.preflight()
 

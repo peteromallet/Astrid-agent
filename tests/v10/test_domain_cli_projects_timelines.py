@@ -624,6 +624,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     assert tuple(spec.name for spec in COMMANDS) == (
         "list",
         "show",
+        "script",
         "replace-parent-media",
         "archive",
         "recover",
@@ -639,6 +640,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     assert _subparser_choices(build_parser(_FakeClient())) == {
         "list",
         "show",
+        "script",
         "replace-parent-media",
         "archive",
         "recover",

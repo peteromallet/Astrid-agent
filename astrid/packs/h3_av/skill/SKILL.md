@@ -76,6 +76,15 @@ recorded as raw internal lineage until the publication finalizer verifies and
 publishes the composed candidate; candidate verification alone does not claim
 that final publication occurred.
 
+## Character Swap recommendations (held advisory candidate)
+
+The approved source tuple does not include an accepted Character Swap implementation.
+[RECOMMENDATIONS.md](../RECOMMENDATIONS.md) is bound only as a non-active T2
+documentation candidate. Its implementation-specific execution descriptions do not
+establish supported requests, defaults, verified model assets, or inference results
+for this source. Treat creator suggestions as advisory and opt-in; do not infer a
+Character Swap capability from this candidate.
+
 ## Request shape
 
 Start with `schemas/request.v1.json` or the following compact shape:

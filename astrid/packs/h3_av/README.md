@@ -6,6 +6,15 @@ public request uses `changes.video` and `changes.audio` schedules. The active
 H3 pack contract supports source-backed edits, native continuation, reference-guided generation,
 and explicit mask assets without creating a second project or task database.
 
+## Character Swap recommendations (held advisory candidate)
+
+The approved source tuple does not include an accepted Character Swap implementation.
+[RECOMMENDATIONS.md](RECOMMENDATIONS.md) is preserved here only as a non-active T2
+documentation candidate. Its implementation-specific descriptions do not establish
+supported requests, defaults, verified model assets, or inference results for this
+source. The creator suggestions are advisory and opt-in; no workflow settings change
+automatically.
+
 `operation: generate` accepts no source and one to nine ordered still-image
 references, a prompt, output duration, and the normal settings overrides.
 `src/generation.py` builds one sampling graph from the existing H3 reference

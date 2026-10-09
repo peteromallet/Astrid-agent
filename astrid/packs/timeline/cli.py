@@ -869,6 +869,23 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_show)
 
 
+def _cmd_script(parsed: argparse.Namespace) -> int:
+    return print_result(parsed.client.timelines.script(
+        parsed.project, parsed.ref, revision_id=parsed.revision,
+        occurrence=parsed.occurrence, kind=parsed.kind,
+    ), as_json=parsed.json)
+
+
+def _configure_script(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("ref", nargs="?", default=None)
+    subparser.add_argument("--revision", default=None, help="Exact immutable parent revision; defaults to the current head.")
+    subparser.add_argument("--occurrence", default=None, help="Read one exact placed occurrence.")
+    subparser.add_argument("--kind", default="voiceover_script")
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_script)
+
+
 def _configure_replace_parent_media(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
@@ -1106,6 +1123,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         configure=_configure_show,
     ),
     CommandSpec(
+        "script",
+        help="Read placed narration in timeline order from pinned shot text revisions.",
+        configure=_configure_script,
+    ),
+    CommandSpec(
         "replace-parent-media",
         help="Atomically replace one clip in an exact canonical parent-composition closure.",
         configure=_configure_replace_parent_media,
@@ -1168,7 +1190,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines",
         description=(
-            "Timeline list/show/replace-parent-media/archive/recover/history/diff/visualize/render "
+            "Timeline list/show/script/replace-parent-media/archive/recover/history/diff/visualize/render "
             "(product family); nested shots beneath 'timelines shots'."
         ),
     )

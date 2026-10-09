@@ -998,6 +998,19 @@ class RemoteTimelines(_RemoteFamily):
             idempotency_key=inspected.idempotency_key,
         )
 
+    def script(self, project, ref, *, revision_id=None, occurrence=None, kind="voiceover_script"):
+        """Read selected placed narration from one immutable composition closure.
+
+        Text is resolved from each pinned shot revision, never the mutable
+        binding head. Missing bindings and deliberately empty text differ.
+        """
+        from astrid.sdk.timeline_script import read_composition_script
+
+        return read_composition_script(
+            self, self._client, project, ref, revision_id=revision_id,
+            occurrence=occurrence, kind=kind,
+        )
+
     def save(self, project, ref, *, config: Mapping[str, Any], registry: Mapping[str, Any], expected_version=1, slug=None, name=None, idempotency_key=None):
         return self._retired_document_route("save", idempotency_key=idempotency_key)
     def replace_clip(

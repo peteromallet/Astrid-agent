@@ -6,8 +6,10 @@ import argparse
 import hashlib
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 from astrid.packs.h3_av.src.compile import compile_preparation
 from astrid.packs.h3_av.src.input_bundle import resolve_preparation_assets
@@ -23,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    result_manifest_path = args.out / "manifest.json"
+    # A reused receipt cannot certify this attempt, even if domain work fails.
+    # Preserve stale bytes and require a fresh assigned output root.
+    if result_manifest_path.exists() or result_manifest_path.is_symlink():
+        raise FileExistsError(f"result receipt already exists: {result_manifest_path}; use a fresh output root")
     preparation = json.loads(args.preparation.read_text(encoding="utf-8"))
     if not isinstance(preparation, dict):
         raise ValueError("preparation must be a JSON object")
@@ -50,6 +57,24 @@ def main(argv: list[str] | None = None) -> int:
         if actual != expected:
             raise RuntimeError(f"published workflow member {filename!r} failed hash verification")
         published[output_name] = str(destination)
+    write_manifest(
+        result_manifest_path,
+        build_manifest(
+            kind="h3_av.compile",
+            inputs={
+                "preparation": str(args.preparation),
+                "input_bundle": str(args.input_bundle),
+            },
+            outputs=[
+                {"name": "compilation", "path": "compilation.json", "ordinal": 0},
+                {"name": "managed_assets", "path": "managed-assets.zip", "ordinal": 1},
+                {"name": "python", "path": "workflow.py", "ordinal": 2},
+                {"name": "companion", "path": "workflow.vibe.json", "ordinal": 3},
+                {"name": "source", "path": "source.json", "ordinal": 4},
+            ],
+            created=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
     print(json.dumps({
         "compilation": result["manifest_path"],
         "managed_assets": result["managed_assets"]["path"],

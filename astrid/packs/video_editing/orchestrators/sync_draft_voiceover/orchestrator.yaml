@@ -1,0 +1,31 @@
+schema_version: 1
+id: video_editing.sync_draft_voiceover
+name: Sync Draft Voiceover
+kind: built_in
+version: '1.0'
+short_description: Regenerate changed draft narration and publish one validated canonical timeline revision.
+description: Caller-authorized launcher comparing pinned scripts with managed draft audio provenance. Generates changed passages through generation.generate_speech, applies explicit timing policy, validates and diffs one candidate, and publishes with parent CAS. Never renders a video.
+keywords: [audio, narration, speech, draft, timeline, sync]
+runtime:
+  kind: python
+  module: astrid.packs.video_editing.orchestrators.sync_draft_voiceover.run
+  function: run_orchestrator
+child_executors: [generation.generate_speech]
+child_orchestrators: []
+cache: {mode: none}
+inputs:
+  - {name: timeline_ref, type: string, required: true, description: Connected Runtime timeline slug or id.}
+  - {name: timing_policy, type: string, required: true, description: preserve or ripple; unsafe retiming is rejected.}
+  - {name: settings, type: string, required: false, default: '{}', description: JSON speech settings object.}
+  - {name: occurrence_ids, type: string, required: false, default: 'null', description: JSON occurrence id array or null for all.}
+  - {name: adopt_clip_ids, type: string, required: false, default: '[]', description: JSON explicit legacy draft clip ids permitted for replacement.}
+  - {name: padding_seconds, type: number, required: false, default: 0.15, description: Nonnegative padding used by ripple.}
+  - {name: plan_only, type: boolean, required: false, default: false, description: Inspect comparison without generation or publication.}
+outputs:
+  - {name: report, type: file, mode: create_or_replace, path_template: '{out}/report.json', artifact_type: metadata/report}
+  - {name: receipt, type: file, mode: create_or_replace, path_template: '{out}/receipt.json', artifact_type: metadata/receipt}
+metadata:
+  runtime_entrypoint: run_orchestrator
+  runtime_file: run.py
+  runtime_module: astrid.packs.video_editing.orchestrators.sync_draft_voiceover.run
+  authority: caller_bound_canonical_publication

@@ -57,5 +57,6 @@ isolation:
   mode: subprocess
   network: false
 metadata:
+  output_result_manifest: true
   runtime_module: astrid.packs.h3_av.executors.compose.run
   runtime_file: run.py

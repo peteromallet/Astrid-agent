@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 
+from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
 from astrid.packs.h3_av.src.prepare import prepare_request, write_preparation
@@ -26,6 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    result_manifest_path = args.out.parent / "manifest.json"
+    if args.out.is_symlink():
+        raise ValueError("--out must not be a symbolic link")
+    if args.out.name.casefold() == "manifest.json":
+        raise ValueError("--out must not use the reserved result receipt filename manifest.json")
+    # A reused receipt cannot certify this attempt, even if domain work fails.
+    # Preserve stale bytes and require a fresh assigned output root.
+    if result_manifest_path.exists() or result_manifest_path.is_symlink():
+        raise FileExistsError(f"result receipt already exists: {result_manifest_path}; use a fresh output root")
     request = load_request(args.request)
     asset_map, identities = materialize_input_bundle(
         request, args.input_bundle, args.out.parent / "request-assets"
@@ -41,6 +52,24 @@ def main(argv: list[str] | None = None) -> int:
     manifest["assets"] = identities
     manifest["input_bundle_sha256"] = bundle_digest(args.input_bundle)
     write_preparation(args.out, manifest)
+    write_manifest(
+        result_manifest_path,
+        build_manifest(
+            kind="h3_av.prepare",
+            inputs={
+                "request": str(args.request),
+                "input_bundle": str(args.input_bundle),
+                "fps": args.fps,
+                "width": args.width,
+                "height": args.height,
+                "sample_rate": args.sample_rate,
+            },
+            outputs=[
+                {"name": "preparation", "path": args.out.name, "ordinal": 0},
+            ],
+            created=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
     print(f"h3_av.prepare: wrote {args.out}")
     return 0
 
