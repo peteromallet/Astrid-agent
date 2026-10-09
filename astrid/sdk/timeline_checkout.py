@@ -71,6 +71,10 @@ CANVAS = (1920, 1080)
 SAFE_MARGIN = (96, 54)        # title-safe at 1920x1080 (90%)
 
 
+LOGICAL_PX = 6  # canvas px per logical px (the 320×180 grid of 1920×1080)
+LOGICAL_GRID_ELEMENTS = frozenset({"am-sprite"})  # elements whose x/y are logical px
+
+
 class TimelineEditError(ValueError):
     """An edit that cannot be applied; the message says what to do instead."""
 
@@ -228,7 +232,14 @@ class Clip:
         return self.set_duration(self._tl.quantize(self._tl.time(when) + offset) - self.start)
 
     def set(self, **params: Any) -> "Clip":
-        """Update element params (``x``, ``size``, ``text`` …)."""
+        """Update element params (``x``, ``size``, ``text`` …).
+
+        A position may be given in canvas pixels as a string, ``x="1290px"``: elements on the
+        320×180 logical grid (``am-sprite``) store it as logical px (÷6, rounded), others as px."""
+        for key, value in params.items():
+            if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?px", value.strip()):
+                px = float(value.strip()[:-2])
+                params[key] = round(px / LOGICAL_PX) if self.element in LOGICAL_GRID_ELEMENTS else round(px)
         self.params.update(copy.deepcopy(params))
         return self
 

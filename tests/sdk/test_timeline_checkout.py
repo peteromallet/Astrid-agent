@@ -309,3 +309,9 @@ def test_a_sequence_fit_races_through_its_steps_and_lands_on_the_word():
     assert landing.start == pytest.approx(1.3) and landing.end == pytest.approx(4.0)
     assert len(tl.cuts) == 2  # still one cut per shot: the steps are one sequence
     assert tl.resolve() == []  # resolving again changes nothing
+
+
+def test_canvas_pixels_convert_to_the_elements_unit():
+    tl = Checkout(bundle())
+    assert tl.clip("R").set(x="1290px", y="-12px").params["x"] == 215  # am-sprite: logical px
+    assert tl.clip("b-type").set(x="144px").params["x"] == 144
