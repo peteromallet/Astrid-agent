@@ -1,0 +1,75 @@
+schema_version: 1
+id: am-ui-sketch
+kind: effect
+pack_id: astrid_motion
+short_description: "Animated app window whose interface, behaviour and data layers swap in stepped pixel flickers with orange sparks."
+description: "A ruled app window drawn only with shapes. Three layers swap while it is in use: INTERFACE (sidebar left or right, big button, slider, tabs), BEHAVIOUR (linear, routed or looped node graph) and DATA (table, reshuffled table, cards). states is keyframed and missing layers carry forward. A change flickers the region in 6 px blocks for two frames and throws orange sparks. prompt types a chat line in. allAt mutates all layers every two frames for twelve frames."
+keywords:
+  - ui
+  - sketch
+  - interface
+  - window
+  - layers
+  - stepped
+  - pixel
+  - sparks
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: UI sketch overlay.
+metadata:
+  label: AM UI Sketch
+  description: Swappable interface, behaviour and data layers in a pixel app window, with stepped flicker and sparks.
+  whenToUse: Use to show that the tool changes while it is being used, such as the vision snaps. Keep layer swaps at least six frames apart so each flicker reads. Use allAt for a one-beat mutate-everything moment.
+dependencies:
+  js_packages: []
+  python_requirements: []
+defaults:
+  x: 0
+  y: 0
+  width: 960
+  height: 720
+  title: untitled app
+  states:
+    - {at: 0, interface: A, behaviour: A, data: A}
+    - {at: 48, interface: B}
+    - {at: 96, behaviour: B}
+    - {at: 144, data: B}
+    - {at: 204, interface: C}
+    - {at: 240, behaviour: C}
+    - {at: 288, data: C}
+  prompt: null
+  allAt: null
+  seed: 1
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    x: {type: number}
+    y: {type: number}
+    width: {type: number}
+    height: {type: number}
+    title: {type: string, description: Window title bar text.}
+    states:
+      type: array
+      description: Keyframes. Each names the layers it changes; missing layers carry forward from the previous state.
+      items:
+        type: object
+        required: [at]
+        properties:
+          at: {type: integer, minimum: 0}
+          interface: {type: string, enum: [A, B, C]}
+          behaviour: {type: string, enum: [A, B, C]}
+          data: {type: string, enum: [A, B, C]}
+    prompt:
+      type: object
+      description: Chat bubble below the window that types in from at. Null or omitted for none.
+      properties:
+        text: {type: string}
+        at: {type: integer, minimum: 0}
+    allAt:
+      type: integer
+      minimum: 0
+      description: Frame where every layer mutates every two frames for twelve frames.
+    seed: {type: integer, minimum: 0}

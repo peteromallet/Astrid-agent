@@ -258,3 +258,117 @@ top fades out. Keep the joins and reactions labelled illustrative (the badge).
 
 The element validates against the 500-char description limit and keywords with
 no spaces, so write multi-word keywords with hyphens.
+
+## am-flap: split-flap readout
+
+Dark split-flap tiles (`#25241F`) with a 1 px split line and Departure Mono
+glyphs. Each tile flips through the drum on two-frame steps (`stepFrames`), and
+tiles start one `stagger` apart, left to right. Digit-to-digit flips run round
+the digit ring (at most nine steps), so counters stay readable.
+
+- `values` [{text, at}]: keyframed targets. `at` is the clip frame when the flip
+  toward `text` begins. Texts are upper-cased and padded to the longest one.
+  The first flip starts from blank tiles.
+- `tileW`, `tileH` (snap to 6, default 60x84), `gap` (6), `color`, `tileColor`,
+  `accentColor` (`#ED6B23`), `accentIndex` (0-based character positions painted
+  orange).
+- `x`, `y` (top-left of the strip, default 96, 96), `align` (`left`, `center`,
+  `right`: which edge or centre sits at x), `label` (mono caption above),
+  `labelColor`.
+- `stagger` (frames, default 2), `stepFrames` (default 2).
+
+Example: `{"values": [{"text": "26.10.25", "at": 0}, {"text": "09.10.26", "at": 90}], "label": "DAYS SINCE 'TOMORROW'", "accentIndex": [0, 1]}`.
+
+The drum logic is exported from `am-flap/flap.tsx` (`flapChars`, `flapGlyph`,
+`FlapStrip`) and is reused by `am-churn`.
+
+## am-churn: the ledger of obsession (data-driven)
+
+A full-frame data passage on the editorial grid (12 columns, 96 px margins).
+Paper by default, `variant: "dark"` for night frames. Everything comes from
+params. Build them with `production/scripts/churn_params.py`:
+
+```bash
+python3 production/scripts/churn_params.py --out <params.json> \
+  [--timeline timeline.json] [--freeze freeze.json|none] [--variant dark] [--max-highlights 40]
+```
+
+The adapter reads `production/research/03-git-history.json`, takes the daily
+hand-ish rows across the window (zero-filled, 374 days), keeps about 40
+highlights (protected rows first, then the largest changes), and asserts that
+the rows sum exactly to `totals`. It is stdlib-only and deterministic.
+
+- `rows` [{date (ISO), added, deleted, commits?}]: one row per calendar day,
+  ascending, contiguous. Cumulative sums are computed inside the element.
+- `highlights` [{date, repo, sha (7 chars), subject, added, deleted}]:
+  chronological. `subject` is the real commit subject. Rows on the same day
+  stamp together.
+- `totals` {commits, added, deleted}: the last row's cumulative values are forced
+  to these, so the counters end exactly on them at `endDate`.
+- `startDate`, `endDate` (informational; the last `timeline` key must be
+  `endDate`).
+- `timeline` [{atFrame, date}]: keyframes, linear between keys, dates floored for
+  display. Repeat a date to hold, and bunch frames to accelerate. The default
+  crawls Oct to Dec, accelerates through spring, then runs to 09.10.26 at clip
+  frame 480 (plus any freeze hold).
+- `freezeAt` {atFrame, highlight (sha prefix), holdFrames (default 90),
+  cardDelay (default 8), label (default `THE RENAME`), date?}: the timeline
+  holds on the highlight's day while a spotlight card (`#FFFEFA`, 2 px ink
+  outline, orange connector with dot ends) draws in next to its row. The
+  timeline resumes after the hold. `null` disables it.
+- `footnote` (mono, bottom-left). `binDays` (days per heartbeat bar, default 11,
+  giving 34 bars). `scrollFrames` (stamp list scroll, default 14).
+
+What is drawn: a split-flap date readout (`ENTRY DATE`, with `DAY n OF N`), a
+timeline track with month ticks, the two counters (`LINES WRITTEN` in ink,
+`LINES DELETED` in rust, a pixel sign, and the digits that changed in the last
+frame tick orange, limited to the three least significant cells), the commit
+count, the stamp column (date, subject, `repo · sha · +N −M`), and the
+heartbeat (added up in ink, deleted down in rust, a common sqrt scale in 6 px
+cells, the current bin marked orange).
+
+## am-ui-sketch: a window that changes while you use it
+
+A ruled app window drawn only with shapes (2 px ink outline, sand title bar,
+three pixel dots). Three layers swap independently. Missing layer values carry
+forward.
+
+- `states` [{at, interface?, behaviour?, data?}] with values `A`, `B` or `C`.
+  - INTERFACE: A is a left sidebar with a big `RUN` button, B a right sidebar
+    with a slider, C top tabs with toggles.
+  - BEHAVIOUR: A a linear node chain, B a routed graph (router and two paths),
+    C a loop (check feeds back to the model).
+  - DATA: A a table, B the same table with its columns reshuffled, C three cards
+    with a bar each.
+- A change flickers the changed region in 6 px blocks (density 35% then 20%) on
+  two frames, then swaps in. A burst of orange 6 px sparks steps out from the
+  region centre over three steps.
+- `prompt` {text, at}: a chat bubble below the window types in at two frames a
+  character with a caret, then a `LLM` chip follows. `null` or omitted hides it.
+- `allAt`: at that frame every layer mutates once every two frames for twelve
+  frames, with a spark each step. Then the states resume.
+- `title` (default `untitled app`), `x`, `y`, `width` (960 window), `height`
+  (720 includes the bubble), `seed`.
+
+Keep layer changes at least six frames apart so each flicker reads.
+
+## am-burst: pop-up burst
+
+Items stamp in on an arc around `center` (`x`, `y`). Each item appears with a
+two-frame flicker (hidden, shown, then solid), holds with a one-logical-px bob
+on threes (`bob`, default 6 px), and throws a ring of 6 px squares that expands
+in three steps behind it (radius 2, 4 and 6 cells, drawn as dots on a 12 px
+pitch). Positions snap to the 6 px grid.
+
+- `items` [{src | glyph, label?, angle (degrees, 0 right, -90 up), distance (px),
+  at (frame, default index times `stepFrames`), size (multiple of 6, default 96)}].
+  `src` is a pixel cutout (static URL, public path, or data URI) drawn with
+  pixelated scaling. `glyph` is short text in Departure Mono. Without either, an
+  ink placeholder square is drawn. `label` is a mono caption under the item.
+- `stepFrames` (default 4), `ring` (default true), `color` (ink default).
+- `confetti` {at, count (default 48), seed, spread, life (default 48), colors?}
+  or `null`: seeded 6 px squares in palette colours, fanning out and falling in
+  steps of two frames.
+- `seed`, `x`, `y`, `width` (1920), `height` (1080).
+
+Use it for the Lindgren aside (book icons on an arc) and celebration beats.
