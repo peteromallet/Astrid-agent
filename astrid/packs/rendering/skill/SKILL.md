@@ -719,13 +719,16 @@ still use their current path. Stream copy is disabled for this overlay path.
 
 ## Render and open
 
-Before starting or repeating a preview render, ask whether the user is reviewing
-the timeline in the live interface, unless that is already established in the
-conversation. Remember their answer for the session. If they are using the live
-interface, save and validate edits for live review; do not render previews unless
-they explicitly request an export or rendered preview. Only use preview renders
-for the feedback cycle when they are not using the live interface. A previous
-render does not by itself authorize re-rendering after subsequent edits.
+Render whenever you need to: renders are an ordinary part of the editing loop,
+and you don't need to ask first. But look before you spend: run
+`timelines visualize --view contact` on the timeline you're about to render (one
+page, one frame per cut, shot names and words) and fix anything that's clearly
+wrong. A render should confirm motion, timing and sound, not reveal a missing
+plate. Render `--review` while iterating, and a clean render for the final
+export. Admit long renders with `--detach` and follow them with the printed
+`tasks follow <task-id>`. If a render fails, fix the cause and use
+`tasks retry <task-id>`, because re-running the identical command replays the
+failed result.
 
 When a preview render is needed (including reference-frame and storyboard
 previews), use `--review` by default. Deliver and open that review render so the user can identify frames
