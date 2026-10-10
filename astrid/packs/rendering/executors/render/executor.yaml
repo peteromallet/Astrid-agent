@@ -87,6 +87,11 @@
         "input": "review_context",
         "flag": "--review-context",
         "optional": true
+      },
+      {
+        "input": "delivery_audio",
+        "flag": "--delivery-audio",
+        "optional": true
       }
     ]
   },
@@ -218,6 +223,13 @@
       "required": false,
       "artifact_type": null,
       "description": "Admission-owned snapshot of registered shot names and timeline ranges."
+    },
+    {
+      "name": "delivery_audio",
+      "type": "json",
+      "required": false,
+      "artifact_type": null,
+      "description": "Opt-in delivery audio master, e.g. {\"lufs\": -14, \"true_peak\": -1}: loudnorm to the LUFS target with a true-peak ceiling on the final mix; video is stream-copied. Omit for no mastering."
     },
     {
       "name": "speech_annotations",

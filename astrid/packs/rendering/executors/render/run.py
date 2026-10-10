@@ -26,6 +26,8 @@ from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering.errors import RendererException
 from astrid.core.rendering.contracts import RenderRequest, SCHEMA_VERSION
+from astrid.core.rendering.delivery_audio import METADATA_KEY as DELIVERY_AUDIO_KEY
+from astrid.core.rendering.delivery_audio import DeliveryAudioTarget
 from astrid.core.rendering.output_policy import (
     DEFAULT_RENDER_OUTPUT_NAME,
     validate_output_basename,
@@ -337,6 +339,7 @@ def render(
     timeline_authority: Mapping[str, Any] | None = None,
     materialized_root: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    delivery_audio: Mapping[str, Any] | None = None,
 ) -> Path:
     """Render through :class:`RenderService` and publish one locked pair.
 
@@ -352,6 +355,11 @@ def render(
         if keep_previous_renders
         else _previous_render_outputs_for_timeline(out_path, timeline_path)
     )
+    delivery_metadata: dict[str, str] = {}
+    if delivery_audio is not None:
+        # Validate before admission; the service re-validates the same JSON.
+        target = DeliveryAudioTarget.from_mapping(delivery_audio)
+        delivery_metadata[DELIVERY_AUDIO_KEY] = json.dumps(target.to_dict(), sort_keys=True)
     config = _backend_config(
         project_dir=project_dir,
         composition_id=composition_id,
@@ -380,7 +388,10 @@ def render(
             "audio": None,
             "profile": profile,
             "backend_config": config,
-            "metadata": {"review": json.dumps(dict(review_context or {"shots": []}), sort_keys=True)} if review else {},
+            "metadata": {
+                **({"review": json.dumps(dict(review_context or {"shots": []}), sort_keys=True)} if review else {}),
+                **delivery_metadata,
+            },
             "materialized_root": (
                 None
                 if materialized_root is None
@@ -405,6 +416,24 @@ def render(
     _write_render_manifest(Path(output), timeline_path=timeline_path, selector=selector)
     _report_progress("complete", 100)
     return output
+
+
+def _delivery_audio_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Combine --delivery-audio JSON with the --audio-target/--true-peak shorthand."""
+    if args.delivery_audio is None and args.audio_target is None and args.true_peak is None:
+        return None
+    target: dict[str, Any] = {}
+    if args.delivery_audio is not None:
+        parsed = _parse_profile(args.delivery_audio)
+        if not isinstance(parsed, Mapping):
+            raise ValueError("--delivery-audio must be a JSON object")
+        target.update(parsed)
+    if args.audio_target is not None:
+        target["lufs"] = args.audio_target
+    if args.true_peak is not None:
+        target["true_peak"] = args.true_peak
+    DeliveryAudioTarget.from_mapping(target)  # reject bad values before admission
+    return target
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -473,6 +502,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--review", nargs="?", const=True, default=False, type=_parse_bool_arg)
     parser.add_argument("--review-context", default=None)
+    parser.add_argument(
+        "--delivery-audio",
+        default=None,
+        help='Opt-in audio master as JSON, e.g. {"lufs": -14, "true_peak": -1}. Omit for no mastering.',
+    )
+    parser.add_argument(
+        "--audio-target",
+        type=float,
+        default=None,
+        help="Opt-in audio master: integrated loudness target in LUFS (sets --delivery-audio lufs).",
+    )
+    parser.add_argument(
+        "--true-peak",
+        type=float,
+        default=None,
+        help="Opt-in audio master: true-peak ceiling in dBTP (default -1 when a target is set).",
+    )
     args = parser.parse_args(argv)
     try:
         if args.output_name is not None:
@@ -491,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         materialized_objects = _parse_profile(args.materialized_objects)
         if materialized_objects is not None and not isinstance(materialized_objects, Mapping):
             raise ValueError("--materialized-objects must be a JSON object")
+        delivery_audio = _delivery_audio_from_args(args)
         if args.assets is None:
             with TemporaryDirectory(prefix="astrid-render-assets-") as tmp_text:
                 assets_path = Path(tmp_text) / "hype.assets.json"
@@ -512,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     timeline_authority=timeline_authority,
                     materialized_root=args.materialized_root,
                     materialized_objects=materialized_objects,
+                    delivery_audio=delivery_audio,
                 )
         else:
             output = render(
@@ -531,6 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeline_authority=timeline_authority,
                 materialized_root=args.materialized_root,
                 materialized_objects=materialized_objects,
+                delivery_audio=delivery_audio,
             )
     except RendererException as exc:  # pragma: no cover - CLI path
         print(_renderer_cli_error(exc), file=sys.stderr)
