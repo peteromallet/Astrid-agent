@@ -924,6 +924,9 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         or (values.get("detail") and not getattr(parsed, "at", None) and (getattr(parsed, "as_view", None) or "cuts") == "cuts")
     )
     bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if not getattr(parsed, "address", None) and getattr(parsed, "clip", None) and "." in str(parsed.clip) \
+            and not getattr(parsed, "layers", False):
+        parsed.address, parsed.clip = parsed.clip, None  # show --clip c21.claw is the layer's record
     if getattr(parsed, "address", None):
         return _print_address(parsed, bundle_opener)
     if getattr(parsed, "as_view", None) == "sheet":
@@ -2116,7 +2119,8 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
         return isinstance(value, str) and bool(value.strip()) and not re.fullmatch(plain, value)
 
     if not (needs("at", r"\s*@?[\d.:]+s?\s*") or needs("range", r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*")
-            or needs("highlight", r"") or (needs("cut", r"\s*\d+\s*") and re.fullmatch(r"\s*c\d+[a-z]?\s*", str(parsed.cut).lower()))):
+            or needs("highlight", r"") or needs("clip", r"[^.]*-\d\d-am-[a-z-]+")
+            or (needs("cut", r"\s*\d+\s*") and re.fullmatch(r"\s*c\d+[a-z]?\s*", str(parsed.cut).lower()))):
         return None  # plain seconds and cut numbers need no lookup
     ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
     tl = None
@@ -2137,6 +2141,12 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
     parsed._named = tl  # findings name layers by address (c30b.icon, not "ICON")
     notes = []
     try:
+        if getattr(parsed, "clip", None) and not any(c.id == parsed.clip for c in tl.clips()):
+            target = resolve(tl, parsed.clip, prefer="thing")
+            if target.kind != "clip":
+                raise ValueError(f"--clip names a layer (c15.robot); {parsed.clip!r} is a {target.kind}")
+            notes.append(f"--clip {target.address}")
+            parsed.clip = target.clip.id
         if getattr(parsed, "highlight", None):
             target = resolve(tl, parsed.highlight, prefer="thing")
             if target.kind != "clip":
@@ -3794,7 +3804,9 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         print(f'next: timelines show {parsed.timeline} --project {parsed.project} --range '
               f'{_edit_range(before, tl.document())} (your change)   ·   '
               f'timelines publish {parsed.timeline} --project {parsed.project} -m "…"')
-    return 0 if report.valid else 1
+    # the edit was applied: exit 0 even when orphans still block publishing (check/publish say so)
+    broken = [p for p in report.problems if p.startswith("invalid")]
+    return 1 if broken else 0
 
 
 def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
@@ -3936,10 +3948,13 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     edits = {"changes": changes}
     print(f'WORKING COPY "{name}" · {len(changes)} unpublished change{"s" if len(changes) != 1 else ""} '
           f"vs published {_short_rev(tl.base_revision)}")
-    for line in changes:
+    shown = changes if getattr(parsed, "all", False) or len(changes) <= 25 else changes[:25]
+    for line in shown:
         print(f"  {line}")
+    if len(shown) < len(changes):
+        print(f"  … {len(changes) - len(shown)} more (timelines status TL --project P --all)")
     report = tl.check()
-    for line in _check_lines(report):
+    for line in (report.brief(full=True) if getattr(parsed, "all", False) else _check_lines(report)):
         print(line)
     project_id, timeline_id, head = resolve_ids(parsed.project, parsed.timeline, client=parsed.client)
     if head != tl.base_revision:
@@ -4169,7 +4184,9 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                        help="Bring the voice track in line with a VO script ({segments: [{id, text, gap_after_s}]}): "
                             "lines not in it are removed (their cuts' clips are KEPT as orphans to re-home or remove), "
                             "new ones inserted after the line before them, changed takes swapped; then one re-flow. "
-                            "The music bed stays whole. check/publish block until every orphan is handled.")
+                            "The music bed stays whole. check/publish block until every orphan is handled. Re-flow reads "
+                            "each segment's id, text and gap_after_s (default_gap_after_s, else 0.3 s, for new lines); "
+                            "the script's voice/rate are TTS settings for making takes and are ignored here.")
     voice.add_argument("--takes", default=None, metavar="DIR",
                        help="With --from-script: the folder of <id>.wav + <id>.words.json (default: a vo/ folder "
                             "next to the script's folder, else the script's folder).")
@@ -4236,6 +4253,36 @@ def _configure_words(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--find", default=None, help="Only words containing this text.")
     subparser.add_argument("--range", default=None, metavar="A..B", help="Only words between two times (seconds or m:ss).")
     subparser.set_defaults(handler=_cmd_words)
+
+
+def _configure_lines(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = "The narration line by line: id, when it is spoken, the silence after it, its text and take."
+    _add_timeline_args(subparser)
+    subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
+    subparser.set_defaults(handler=_cmd_lines)
+
+
+@_guard(2)
+def _cmd_lines(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_checkout import Checkout
+
+    if parsed.published:
+        tl = Checkout.open(_need_project(parsed), parsed.timeline, client=parsed.client)
+    else:
+        tl, _existed = _working_copy(parsed, create=True)
+    lines = tl.lines()
+    width = max([len(v.segment) for v in lines] + [4])
+    print(f"{len(lines)} lines · film {tl.duration:.2f} s" + (" · working copy" if not parsed.published else " · published"))
+    for v in lines:
+        words = v.words
+        start, end = (words[0].start, words[-1].end) if words else (v.clips[0].start, v.clips[-1].end)
+        gap = v.gap_after
+        text = v.text if len(v.text) <= 70 else v.text[:69] + "…"
+        print(f"  {v.segment:<{width}}  {start:7.2f}–{end:7.2f} s  gap {('%.2f' % gap) if gap is not None else '  - '}  "
+              f"take {v.clips[0].asset or '?':<12} \"{text}\"")
+    print(f"next: timelines words {parsed.timeline} --project {parsed.project} WORD   ·   "
+          f"timelines edit {parsed.timeline} --project {parsed.project} --line ID --take WAV --words WORDS.json")
+    return 0
 
 
 def _configure_undo(subparser: argparse.ArgumentParser) -> None:
@@ -4416,6 +4463,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "apply",
         help="Apply an edited cut sheet (show --as sheet) to the working copy.",
         configure=_configure_apply,
+    ),
+    CommandSpec(
+        "lines",
+        help="The narration line by line: id, spoken span, gap after, text, take.",
+        configure=_configure_lines,
     ),
     CommandSpec(
         "undo",

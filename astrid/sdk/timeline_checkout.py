@@ -1251,14 +1251,20 @@ class Checkout:
 
         A line whose words changed gets its new take; a new line is inserted after the one
         before it; a line no longer in the script is removed; then the film re-flows once.
-        Declared gaps are kept unless ``gaps=True`` (then the script's ``gap_after_s`` wins).
+        Declared gaps are kept unless ``gaps=True`` (then the script's ``gap_after_s`` wins). A new
+        line without ``gap_after_s`` gets the script's ``default_gap_after_s`` (else 0.3 s), and the
+        report names every such line. The script's ``voice``/``rate`` are TTS settings: re-flow reads
+        only ``id``, ``text`` and ``gap_after_s`` (and the takes' words).
         """
         path = Path(spec).expanduser() if isinstance(spec, (str, Path)) else None
         data = json.loads(path.read_text(encoding="utf-8")) if path else dict(spec)
         folder = Path(takes).expanduser() if takes else (path.parent.parent / "vo" if path and (path.parent.parent / "vo").is_dir() else (path.parent if path else Path.cwd()))
         segments = [s for s in data.get("segments") or [] if s.get("id")]
         wanted = [str(s["id"]) for s in segments]
+        default_gap = float(data.get("default_gap_after_s", 0.3))
+        film_before = self.duration
         report: list[str] = []
+        no_gap: list[str] = []
         have = {v.segment for v in self.lines()}
         for seg in sorted(have - set(wanted)):
             report += self.remove_line(seg)
@@ -1272,8 +1278,12 @@ class Checkout:
                 if not new_words or not take.is_file() or previous is None:
                     report.append(f"line {seg}: not added (needs {take.name}, {words_path.name} and a line before it)")
                 else:
+                    gap = item.get("gap_after_s")
+                    if gap is None:
+                        no_gap.append(seg)
+                        gap = default_gap
                     report += self.insert_line(seg, take, words=new_words, after=previous, text=item.get("text"),
-                                               gap_after=item.get("gap_after_s"))
+                                               gap_after=float(gap))
             else:
                 line = Voice(self, seg)
                 current = [(round(w.end - w.start, 3), _norm(w.text)) for w in line.words]
@@ -1284,11 +1294,18 @@ class Checkout:
                 elif item.get("text") and intent.line_text(line.clips[0].data) != item["text"]:
                     intent.set_line_text(line.clips[0].data, item["text"])
                     report.append(f"line {seg}: script text updated (narration re-pins on publish)")
+                if gaps and item.get("gap_after_s") is None:
+                    no_gap.append(f"{seg} (kept {line.gap_after if line.gap_after is not None else '?'} s)")
                 if gaps and item.get("gap_after_s") is not None and line.gap_after != item["gap_after_s"]:
                     line.set_gap_after(float(item["gap_after_s"]), reflow=False)
                     report.append(f"line {seg}: gap after {item['gap_after_s']} s")
             previous = seg
         report += self.reflow()
+        head = [f"film {_clock(film_before)} → {_clock(self.duration)} ({self.duration - film_before:+.1f} s)"]
+        if no_gap:
+            head.append(f"{len(no_gap)} line(s) had no gap_after_s: new ones got {default_gap:g} s "
+                        f"(the script's default_gap_after_s): {', '.join(no_gap)}")
+        report = head + report
         self.report = report
         return report
 
@@ -1488,7 +1505,9 @@ class Checkout:
                 try:
                     mo.resolve(mo.parse(text), _MomentContext(self, clip))
                 except mo.MomentError as exc:
-                    out.append(f"{clip.address:<16} {field} {text}: {exc} (its word is gone: re-home it or remove the clip)")
+                    why = ("the music has no beat there (the bed ends before it)" if "there is no beat" in str(exc)
+                           or "there is no downbeat" in str(exc) else "its word is gone")
+                    out.append(f"{clip.address:<16} {field} {text}: {exc} ({why}: re-home it or remove the clip)")
             for path, expr in intent.formulas(clip.data).items():
                 if isinstance(expr, Mapping) and expr.get("moment"):
                     try:
@@ -1857,6 +1876,10 @@ class Checkout:
                      for c in self.clips() if not c.is_audio and c.duration < 0.5 / self.fps]
         if blocking:
             valid = False
+        music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
+        if music_end is not None and music_end < self.duration - 0.5:
+            problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
+                            f"({self.duration - music_end:.1f} s without music)")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
                            problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
                            diff=diff, cut_names=names, blocking=blocking)
@@ -2310,16 +2333,30 @@ class CheckReport:
     cut_names: list[str] = dataclasses.field(default_factory=list)
     blocking: list[str] = dataclasses.field(default_factory=list)
 
-    def brief(self) -> list[str]:
-        """Calm lines for after an edit: valid or not, what blocks publishing, and lint on the cuts it touched."""
+    def brief(self, *, full: bool = False) -> list[str]:
+        """Calm lines for after an edit: valid or not, what blocks publishing, and lint on the cuts it touched.
+        Many orphans are summed up by cut unless ``full`` (``status --all``)."""
         where = ", ".join(self.cut_names or [f"cut {n}" for n in self.changed_cuts])
         head = "check   " + ("valid" if self.valid else "NOT VALID")
         if self.blocking:
             head += f" · {len(self.blocking)} to fix before publishing (re-home each orphan with a new moment, or remove it)"
         if where:
-            head += f" · lint on {where}: " + ("clean" if not self.lint else f"{len(self.lint)} finding(s)")
+            shown = where if len(where) <= 80 else where[:77] + "…"
+            head += f" · lint on {shown}: " + ("clean" if not self.lint else f"{len(self.lint)} finding(s)")
         notes = [p for p in self.problems if p not in self.blocking and not p.startswith("resolved ")]
-        return [head] + [f"  ! {p}" for p in self.blocking] + [f"  · {p}" for p in notes] + [f"  {line}" for line in self.lint]
+        if full or len(self.blocking) <= 8:
+            blocking = [f"  ! {p}" for p in self.blocking]
+        else:
+            by_cut: dict[str, int] = {}
+            for line in self.blocking:
+                address = line.split()[1] if len(line.split()) > 1 else "?"
+                by_cut[address.split(".")[0]] = by_cut.get(address.split(".")[0], 0) + 1
+            blocking = [f"  ! {len(self.blocking)} orphan(s) in {len(by_cut)} cut(s): "
+                        + ", ".join(f"{cut} ({n})" for cut, n in by_cut.items()),
+                        "    each one: timelines status TL --project P --all   ·   the sheet's orphans section"]
+        lint = [f"  {line}" for line in self.lint] if full or len(self.lint) <= 12 else (
+            [f"  {line}" for line in self.lint[:12]] + [f"  … {len(self.lint) - 12} more lint finding(s) (timelines lint TL)"])
+        return [head] + blocking + [f"  · {p}" for p in notes[:12]] + lint
 
     def __str__(self) -> str:
         lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
@@ -2615,6 +2652,11 @@ def drafts_root() -> Path:
     """Where working copies live: Astrid's data root (``BANODOCO_LOCAL_DATA_ROOT``) / drafts."""
     base = os.environ.get("BANODOCO_LOCAL_DATA_ROOT")
     return (Path(base) if base else Path.home() / ".astrid") / "drafts"
+
+
+def _clock(seconds: float) -> str:
+    minutes, rest = divmod(max(0.0, float(seconds)), 60)
+    return f"{int(minutes)}:{rest:05.2f}"
 
 
 def _free_key(assets: Mapping[str, Any], key: str, entry: Mapping[str, Any]) -> str:
