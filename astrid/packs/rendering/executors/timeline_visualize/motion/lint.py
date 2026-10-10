@@ -217,7 +217,13 @@ def _accent_events(cut: Mapping[str, Any], elements: Sequence[model.Element], fp
     for element in elements:
         if element.audio or element.type in model.PLATE_TYPES or element.sequence:
             continue  # the picture and a sequence's steps are the cut itself, not accents on it
+        # a chained segment (the same layer continuing after a blink or a split) has no entrance of its own
+        chained = any(other is not element and other.type == element.type and other.track == element.track
+                      and other.asset == element.asset and abs(other.end - element.start) <= frame + 1e-6
+                      for other in elements)
         for event in model.accents(element, fps):
+            if chained and event.kind != "key" and abs(event.t - element.start) <= frame + 1e-6:
+                continue
             if start + frame - 1e-6 < event.t < end - frame + 1e-6:
                 found.append(event)
     return sorted(found, key=lambda e: e.t)
