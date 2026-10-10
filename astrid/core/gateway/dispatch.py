@@ -297,6 +297,9 @@ def _dispatch_doctor(args: list[str]) -> int:
     from astrid.core.execution.guards import EVIDENCE_STATUS_NAME, read_evidence_status
 
     report["evidence_budget"] = read_evidence_status(Path(support_root) / EVIDENCE_STATUS_NAME)
+    from astrid.core.execution.host_log import host_log_section
+
+    report["host_log"] = host_log_section(support_root)
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
