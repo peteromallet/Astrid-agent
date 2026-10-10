@@ -122,3 +122,13 @@ def test_an_orphan_can_be_kept_or_rehomed_on_a_new_word():
     tl.clip("c3.card").set(delay=0.2)
     assert tl.orphans() == []
     assert tl.clip("c2.live").start == pytest.approx(tl.word("back").start, abs=1 / FPS)
+
+
+def test_rehoming_an_orphaned_cut_brings_its_layers():
+    tl = Checkout(film())
+    tl.remove_line("s2")
+    picture = tl.cut_picture("c2")
+    picture.on('"back"')  # the whole "Live." cut moves onto a word of the next line
+    assert tl.clip("c2.live").start == pytest.approx(picture.start, abs=1 / FPS)  # it entered with its cut
+    assert tl.clip("c2.dot").start == pytest.approx(picture.start + 0.5, abs=1 / FPS)  # +0.5s after the cut
+    assert not any(line.startswith(("c2.field", "c2.live", "c2.dot")) for line in tl.orphans())

@@ -315,8 +315,21 @@ class Clip:
 
         Stored as written (seconds are only the cache), then resolved now. A plain number
         is a time: it becomes an offset from the clip's cut (or a fixed time without a cut)."""
+        orphan_cut = intent.cut_of(self.data) if intent.orphan(self.data) and self.track == "plate" else None
+        old_start = self.start
         for clip in self._sequence_mates():  # a new moment re-homes an orphan (a whole sequence)
             intent.set_orphan(clip.data, None)
+        if orphan_cut:
+            # re-homing a cut's picture brings the whole cut: its other orphans move by the same amount
+            text = self._tl._moment_text(moment)
+            t = self._tl._moment_time(text, self, in_point=True)
+            delta = t - old_start
+            for clip in self._tl._cut_clips(orphan_cut):
+                if clip.data is not self.data and intent.orphan(clip.data):
+                    clip._set_start(self._tl._frame(clip.start + delta + 1e-6))
+                    if intent.sequence(clip.data) or not intent.on(clip.data) or intent.on(clip.data).startswith(("+", "-")):
+                        intent.set_orphan(clip.data, None)  # its place is relative to the cut: home again
+            self._tl._mcache = None
         self._tl._place_on(self, moment)
         self._tl.retime()  # its end follows its rule (until / for / its cut) right away
         return self
@@ -1193,7 +1206,13 @@ class Checkout:
         new["asset"] = self._register_asset(sid, media)
         self._internal(sid)["clips"].append(new)
         before[new["id"]] = gap_new
-        return [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"] + self.reflow(gaps=before)
+        out = [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"]
+        out += self.reflow(gaps=before)
+        holding = next((g["id"] for g in reversed(self._cut_groups()) if g["start"] <= first + 1e-6), None)
+        if holding:
+            out.append(f"  {segment} has no cut of its own yet: {holding}'s picture holds over it "
+                       f"(re-home an orphan cut onto it: --cut cNN --on '\"{new_words[0][2]}\" in {segment}')")
+        return out
 
     def remove_line(self, segment: str) -> list[str]:
         """Remove a VO line, what is on screen only for it, and its silence; everything after moves up."""
@@ -1476,6 +1495,15 @@ class Checkout:
                 except mo.MomentError as exc:
                     out.append(f"{clip.address:<16} fit until {fit['land']}: {exc}")
         return out
+
+    def _cut_clips(self, cut_id: str) -> list[Clip]:
+        """Every clip of a cut, orphans included (an orphaned cut is not in the cut list until re-homed)."""
+        return [c for c in self.clips() if intent.cut_of(c.data) == cut_id]
+
+    def cut_picture(self, cut_id: str) -> Clip | None:
+        """A cut's picture (its first bed clip), for live and orphaned cuts alike."""
+        beds = sorted((c for c in self._cut_clips(cut_id) if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
+        return beds[0] if beds else None
 
     def _cut_spans(self, skip: Iterable[str] = ()) -> dict[str, tuple[float, float | None]]:
         """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last).

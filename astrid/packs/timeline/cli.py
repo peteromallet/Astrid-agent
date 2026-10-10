@@ -3796,7 +3796,10 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip = tl.clip(parsed.clip, near=parsed.near, cut=parsed.cut)
     else:
         cut_ref = int(parsed.cut) if str(parsed.cut).isdigit() else parsed.cut
-        clip = tl.cut(cut_ref).picture
+        if isinstance(cut_ref, str) and re.fullmatch(r"c\d+[a-z]?", cut_ref.strip().lower()):
+            clip = tl.cut_picture(cut_ref.strip().lower())  # live or orphaned
+        else:
+            clip = tl.cut(cut_ref).picture
         if clip is None:
             raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
     if getattr(parsed, "remove", False):

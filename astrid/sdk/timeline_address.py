@@ -101,6 +101,10 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
     if mo.CUT_ID_RE.match(lowered):
         if lowered in tl._cut_spans():
             return [cut_target(tl, lowered)]
+        orphans = tl._cut_clips(lowered)
+        if orphans:  # an orphaned cut (its line was removed): still addressable, to re-home or remove
+            lo, hi = min(c.start for c in orphans), max(c.end for c in orphans)
+            return [Target("cut", lowered, lo, hi, cut=lowered, note="orphaned: re-home it with --cut %s --on MOMENT" % lowered)]
         ids = list(tl._cut_spans())
         plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
         extra = [c for c in ids if c not in plain]
