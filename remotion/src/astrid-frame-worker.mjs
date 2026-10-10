@@ -1,4 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import {
+  chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -54,7 +56,7 @@ async function warmBrowser(browserExecutable) {
   }
 }
 
-export const _test = { connectBrowser, takeNotes: () => notes.splice(0) };
+export const _test = { connectBrowser, takeNotes: () => notes.splice(0), linkOverlay, unlinkOverlay };
 
 function reply(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -113,20 +115,70 @@ async function bundleProject(request) {
   }
 }
 
+// A request may bring its effect assets as a private overlay: a directory that
+// mirrors public/ (astrid-effects/<hash>/...). The owner then keeps the bundle it
+// made once (an owner serves one renderer identity, so its sources are fixed) and
+// links the overlay into the bundle's public/ for this request only. A warm
+// capture then costs the render alone, and nothing is written to the shared
+// project, so a capture never has to wait for a full render's lock.
+export function linkOverlay(overlayDir, publicDir) {
+  const created = [];
+  const walk = (src, dst) => {
+    if (!existsSync(dst)) {
+      mkdirSync(dst, { recursive: true });
+      created.push(dst);
+    }
+    for (const entry of readdirSync(src, { withFileTypes: true })) {
+      const from = join(src, entry.name);
+      const to = join(dst, entry.name);
+      if (entry.isDirectory()) {
+        walk(from, to);
+      } else if (entry.isFile() && !existsSync(to)) {
+        try {
+          linkSync(from, to);
+        } catch {
+          copyFileSync(from, to);
+        }
+        created.push(to);
+      }
+    }
+  };
+  walk(overlayDir, publicDir);
+  return created;
+}
+
+export function unlinkOverlay(created) {
+  for (const path of [...created].reverse()) rmSync(path, { recursive: true, force: true });
+}
+
 async function renderRequest(request) {
+  const overlay = request.publicOverlay ? resolve(request.publicOverlay) : null;
+  const started = Date.now();
+  let bundled = false;
   if (!browser || projectDir !== resolve(request.projectDir)) {
     await startSession(request);
-  } else {
-    // Effect assets are staged under an invocation-specific public prefix.
-    // Rebundle the current public tree while retaining the Chromium browser;
-    // otherwise a warm owner serves the first request's static assets only.
+    bundled = true;
+  } else if (!overlay) {
+    // Older callers stage effect assets into the project's public/: rebundle
+    // so a warm owner does not serve the first request's static assets only.
     await bundleProject(request);
+    bundled = true;
   }
+  const linked = overlay && existsSync(overlay) ? linkOverlay(overlay, join(bundleDir, 'public')) : null;
+  try {
+    return await renderBundled(request, { bundled, setupMs: Date.now() - started });
+  } finally {
+    if (linked) unlinkOverlay(linked);
+  }
+}
+
+async function renderBundled(request, timing) {
   // TMPDIR and the optional schema path are invocation-scoped. The browser
   // and bundle persist, but Remotion's transient media cache must follow the
   // current request rather than the first request's deleted temp directory.
   Object.assign(process.env, request.environment ?? {});
   const props = JSON.parse(readFileSync(request.propsPath, 'utf8'));
+  const selected = Date.now();
   const composition = await selectComposition({
     serveUrl: bundleDir,
     id: request.compositionId,
@@ -151,6 +203,7 @@ async function renderRequest(request) {
     concurrency: 1,
     logLevel: 'error',
   });
+  return { ...timing, renderMs: Date.now() - selected };
 }
 
 async function handleRequest(request) {
@@ -163,8 +216,8 @@ async function handleRequest(request) {
     return { ok: true, shutdown: true, exit: true };
   }
   if (request.type !== 'render') throw new Error(`unknown request type: ${String(request.type)}`);
-  await renderRequest(request);
-  return { ok: true, notes: notes.splice(0) };
+  const timing = await renderRequest(request);
+  return { ok: true, notes: notes.splice(0), timing };
 }
 
 function idleSeconds() {

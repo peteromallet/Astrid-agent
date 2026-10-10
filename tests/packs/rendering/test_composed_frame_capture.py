@@ -342,3 +342,35 @@ def test_owner_notes_reach_the_findings(tmp_path, monkeypatch):
 
     result = build_filmstrip_pack(out_root=tmp_path / "view", snapshot=snapshot, options=options, frame_provider=Provider())
     assert result["findings"] == ["CAPTURE  cold browser: retried"]
+
+
+OVERLAY_DRIVER = """
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { _test } from './worker.mjs';
+const root = process.argv[2];
+const overlay = join(root, 'overlay', 'astrid-effects', 'h1', 'am-x');
+mkdirSync(overlay, { recursive: true });
+writeFileSync(join(overlay, 'sheet.png'), 'png');
+const pub = join(root, 'bundle', 'public');
+mkdirSync(join(pub, 'fonts'), { recursive: true });
+writeFileSync(join(pub, 'fonts', 'a.woff2'), 'font');
+const created = _test.linkOverlay(join(root, 'overlay'), pub);
+const during = readFileSync(join(pub, 'astrid-effects', 'h1', 'am-x', 'sheet.png'), 'utf8');
+_test.unlinkOverlay(created);
+console.log(JSON.stringify({ during, after: existsSync(join(pub, 'astrid-effects')), font: existsSync(join(pub, 'fonts', 'a.woff2')) }));
+"""
+
+
+def test_the_owner_serves_a_requests_assets_from_a_private_overlay(tmp_path):
+    node = os.environ.get("ASTRID_NODE_EXECUTABLE") or shutil.which("node")
+    if not node:
+        pytest.skip("no Node")
+    source = WORKER.read_text(encoding="utf-8")
+    (tmp_path / "worker.mjs").write_text(source.replace("from '@remotion/renderer';", "from './renderer.mjs';"))
+    (tmp_path / "renderer.mjs").write_text(STUB_RENDERER)
+    (tmp_path / "driver.mjs").write_text(OVERLAY_DRIVER)
+    done = subprocess.run([node, str(tmp_path / "driver.mjs"), str(tmp_path)], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=60, check=True)
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    assert result == {"during": "png", "after": False, "font": True}

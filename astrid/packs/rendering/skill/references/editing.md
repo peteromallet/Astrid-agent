@@ -11,6 +11,8 @@ timelines show TL c41.mink --project P                 # ONE thing's whole recor
                                                        #   formula, default, allowed keys), its moments in seconds
 timelines show TL --project P --as sheet --range c30..c31 > cut.sheet   # several cuts as an editable sheet
 timelines apply TL --project P cut.sheet               # change a line of the sheet, then apply it
+timelines edit TL --project P --clip c30.cover --until '"Astrid"' --verify   # edit + published|working frames + new lint
+timelines check TL --project P --at '"Astrid"'          # the same before/after page at any moment (~5 s warm, no queue)
 timelines visualize TL --project P --preset motion --at '"Astrid" in n21'   # frames (every frame in a 1 s window)
 timelines status TL --project P   ·   timelines undo TL --project P   ·   timelines publish TL --project P -m "…"
 ```
