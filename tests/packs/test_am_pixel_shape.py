@@ -11,10 +11,10 @@ ELEMENT = ROOT / "astrid" / "packs" / "astrid_motion" / "elements" / "effects" /
 CELLS = ELEMENT / "shape-cells.ts"
 
 
-def _cells(shape: str, w: int, h: int, stroke: int) -> list[list[int]]:
+def _cells(shape: str, w: int, h: int, stroke: int, radius: int = 0) -> list[list[int]]:
     script = (
         f"const m = await import({json.dumps(CELLS.as_uri())});"
-        f"console.log(JSON.stringify(m.shapeCells({json.dumps(shape)}, {w}, {h}, {stroke})));"
+        f"console.log(JSON.stringify(m.shapeCells({json.dumps(shape)}, {w}, {h}, {stroke}, {radius})));"
     )
     out = subprocess.run(
         ["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True
@@ -49,6 +49,58 @@ class AmPixelShapeGeometryTest(unittest.TestCase):
         self.assertNotIn([0, 0], cells)
 
 
+def _rect(w: int, h: int, stroke: int, radius: int) -> dict[str, list[list[int]]]:
+    script = (
+        f"const m = await import({json.dumps(CELLS.as_uri())});"
+        f"console.log(JSON.stringify(m.rectCells({w}, {h}, {stroke}, {radius})));"
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True
+    ).stdout
+    return json.loads(out)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the shape geometry")
+class AmPixelShapeRectTest(unittest.TestCase):
+    def test_rounded_tile_has_expected_cell_counts(self) -> None:
+        # 16x16 r2: the silhouette loses one cell per corner (256 - 4 = 252).
+        # A 1-cell outline is the 56-cell border; the interior is the other 196.
+        rect = _rect(16, 16, 1, 2)
+        self.assertEqual(len(rect["fill"]), 252)
+        self.assertEqual(len(rect["outline"]), 56)
+        outline = {tuple(c) for c in rect["outline"]}
+        fill = {tuple(c) for c in rect["fill"]}
+        self.assertEqual(len(fill - outline), 196)
+        self.assertTrue(outline <= fill)
+
+    def test_corners_are_stepped(self) -> None:
+        rect = _rect(16, 16, 1, 2)
+        fill = {tuple(c) for c in rect["fill"]}
+        self.assertNotIn((0, 0), fill)  # corner cell is cut
+        self.assertIn((1, 0), fill)  # the step beside it stays
+        self.assertIn((0, 1), fill)
+        # A larger radius cuts a bigger, still stepped, corner: (1, 0) goes, (5, 0) stays.
+        wide = {tuple(c) for c in _rect(16, 16, 1, 6)["fill"]}
+        self.assertNotIn((1, 0), wide)
+        self.assertIn((5, 0), wide)
+        self.assertNotIn((15, 15), wide)
+
+    def test_square_rect_is_the_full_box_and_outline_is_the_border(self) -> None:
+        rect = _rect(10, 6, 1, 0)
+        self.assertEqual(len(rect["fill"]), 60)
+        self.assertEqual(len(rect["outline"]), 2 * 10 + 2 * 4)
+        self.assertNotIn([5, 3], rect["outline"])  # interior is not outlined
+
+    def test_radius_is_clamped_and_stroke_thicker_than_half_is_safe(self) -> None:
+        clamped = _rect(8, 4, 1, 99)
+        self.assertTrue(all(0 <= c < 8 and 0 <= r < 4 for c, r in clamped["fill"]))
+        thick = _rect(6, 6, 9, 0)
+        self.assertEqual(len(thick["outline"]), len(thick["fill"]))
+
+    def test_shape_rect_returns_the_silhouette(self) -> None:
+        self.assertEqual(sorted(_cells("rect", 16, 16, 1, 2)), sorted(_rect(16, 16, 1, 2)["fill"]))
+
+
 def _blinking(frame: int, blink_at) -> bool:
     script = (
         f"const m = await import({json.dumps(CELLS.as_uri())});"
@@ -80,8 +132,10 @@ class AmPixelShapeElementTest(unittest.TestCase):
         self.assertEqual(definition.id, "am-pixel-shape")
         self.assertEqual(definition.defaults["px_scale"], 6)
         self.assertEqual(
-            definition.schema["properties"]["shape"]["enum"], ["ring", "dot", "underline", "arrow"]
+            definition.schema["properties"]["shape"]["enum"], ["ring", "dot", "underline", "arrow", "rect"]
         )
+        for key in ("fill", "outline", "radius"):
+            self.assertIn(key, definition.schema["properties"])
 
     def test_component_uses_the_shared_logical_grid(self) -> None:
         source = (ELEMENT / "component.tsx").read_text(encoding="utf-8")
