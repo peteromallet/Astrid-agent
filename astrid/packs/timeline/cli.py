@@ -2210,6 +2210,11 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
             else:
                 parsed.at = f"{target.start:.3f}"
                 notes.append(f"--at {at!r}: {target.address} = {target.start:.2f} s")
+                entering = [c.address for c in tl.clips() if not c.is_audio and abs(c.start - target.start) < 0.5 / tl.fps
+                            and not tl._is_picture(c)]
+                if entering:  # its first frame can be blank (a stamp flickers in, a slide starts off its mask)
+                    notes.append(f"{', '.join(entering[:3])} enter{'s' if len(entering) == 1 else ''} on this frame "
+                                 f"(an entrance can start invisible; --at '{at} +2f' shows it in)")
         rng = getattr(parsed, "range", None)
         if isinstance(rng, str) and rng.strip() and not re.fullmatch(r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*", rng):
             target = resolve(tl, rng, prefer="time")
