@@ -338,10 +338,14 @@ def test_protocol_render_returns_explicit_rendered_audio_result(
     seen: dict[str, list[str]] = {}
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        seen["argv"] = argv
-        output = Path(argv[-1])
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"ffmpeg-video")
+        # Only the ffmpeg call writes its output. Other subprocess calls (e.g. a
+        # `git … HEAD` provenance check) used to write "ffmpeg-video" to a file
+        # named HEAD in the working directory, which broke `git … HEAD` there.
+        if Path(str(argv[0])).name.startswith("ffmpeg"):
+            seen["argv"] = argv
+            output = Path(argv[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"ffmpeg-video")
         return subprocess.CompletedProcess(argv, 0)
 
     probe = MediaProbe(

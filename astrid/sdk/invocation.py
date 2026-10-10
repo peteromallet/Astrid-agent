@@ -2074,6 +2074,53 @@ def _validate_variant_controls(
         raise CapabilityValidationError("primary='promote' requires variant_of")
 
 
+_AUTHORITY_SNAPSHOT_KEYS = frozenset({"filmstrip_snapshot", "input_snapshot", "capture_snapshot"})
+_AUTHORITY_FILENAME = "filmstrip-authority.json"
+
+
+def _import_json_object(importer: Any, project: str, data: bytes, filename: str) -> dict[str, Any]:
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    result = importer(
+        project=project, data=data, filename=filename, media_type="application/json",
+        idempotency_key="visualize-object-" + digest[7:39],
+    )
+    stored = getattr(result, "data", None) if getattr(result, "ok", False) else None
+    if not isinstance(stored, Mapping):
+        error = getattr(result, "error", None)
+        raise CapabilityInvocationError(
+            f"could not store {filename} for timeline visualization as a managed object: "
+            f"{getattr(error, 'message', None) or error or 'no result'}"
+        )
+    if (stored.get("digest") or stored.get("object_id")) != digest:
+        raise CapabilityInvocationError(f"stored {filename} does not match its digest")
+    return {"digest": digest, "filename": filename, "media_type": "application/json", "size_bytes": len(data)}
+
+
+def _store_visualize_objects(
+    client: Any, project: str | None, authority_json: str, snapshot: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Store a visualize task's large host-owned documents as managed objects.
+
+    Returns file-input descriptors: ``filmstrip_authority`` (the whole
+    authority the executor reads), and, when the snapshot has them,
+    ``timeline`` and ``assets_registry`` (the files the host used to derive
+    from the inlined snapshot, with the same bytes). ``None`` means the
+    client cannot import bytes and the caller keeps the inline form.
+    """
+    if client is None:
+        client = _default_client()
+    importer = getattr(getattr(client, "media", None), "import_bytes", None)
+    if not callable(importer) or not project:
+        return None
+    stored = {"filmstrip_authority": _import_json_object(importer, str(project), authority_json.encode("utf-8"), _AUTHORITY_FILENAME)}
+    for key, port, filename in (("config", "timeline", "visualize-timeline.json"),
+                                ("registry", "assets_registry", "visualize-assets.json")):
+        value = snapshot.get(key) if isinstance(snapshot, Mapping) else None
+        if isinstance(value, Mapping):
+            stored[port] = _import_json_object(importer, str(project), json.dumps(value, sort_keys=True).encode("utf-8"), filename)
+    return stored
+
+
 _DEFAULT_CLIENT: Any | None = None
 
 
@@ -2227,7 +2274,12 @@ def _kernel_invoke(
         # authority, including the ordered CAS descriptors.
         spec["params"] = spec.pop("inputs")
     if idempotency_context:
-        spec["authority_context"] = _json_safe_mapping(dict(idempotency_context))
+        authority = dict(idempotency_context)
+        if authority.get("authority_object"):
+            # The full authority (with its snapshot) is a managed object; the
+            # spec keeps the small fields and the object's digest.
+            authority = {key: value for key, value in authority.items() if key not in _AUTHORITY_SNAPSHOT_KEYS}
+        spec["authority_context"] = _json_safe_mapping(authority)
     if admission_metadata:
         # Keep the transparent estimate out of capability inputs: it is task
         # admission evidence, not an executor-authored input.
@@ -2416,6 +2468,12 @@ def _kernel_invoke(
         input_manifest.append(video_id)
 
     if str(capability.id) == "rendering.timeline_visualize":
+        authority_input = request_inputs.get("filmstrip_authority")
+        if isinstance(authority_input, Mapping):
+            authority_digest = authority_input.get("digest")
+            if not isinstance(authority_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", authority_digest):
+                raise CapabilityValidationError("filmstrip authority object must be a sha256 managed digest")
+            input_manifest.append(authority_digest)
         transcript_input = request_inputs.get("transcript.json")
         if transcript_input is not None:
             if (
@@ -2887,6 +2945,16 @@ def invoke(
             raise CapabilityValidationError("idempotency_context must be an object")
         invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
     if capability.id == "generation.generate_image_codex":
+        # Catch undeclared inputs (e.g. n=, num_images=) before admission, so
+        # dry_run reports them; the host would otherwise refuse after a ledger row.
+        declared_inputs = tuple(str(port.name) for port in (getattr(capability, "inputs", ()) or ()))
+        undeclared = sorted(str(key) for key in request_inputs if str(key) not in declared_inputs)
+        if undeclared:
+            hint = "; use count (not n/num_images) for the image count" if set(undeclared) & {"n", "num_images"} else ""
+            raise CapabilityValidationError(
+                f"undeclared parameter(s): {', '.join(undeclared)}. "
+                f"Declared inputs: {', '.join(declared_inputs)}{hint}"
+            )
         count = request_inputs.get("count", 1)
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:
             raise CapabilityValidationError("Codex count must be an integer between 1 and 4")
@@ -2930,10 +2998,26 @@ def invoke(
                         "digest": invocation_authority_context["video_digest"],
                         "object_id": invocation_authority_context["video_object_id"],
                     }
-                inputs["filmstrip_authority"] = json.dumps(
+                authority_json = json.dumps(
                     invocation_authority_context, sort_keys=True, separators=(",", ":"),
                     ensure_ascii=False,
                 )
+                # The authority embeds the whole frozen timeline snapshot (1-2 MB),
+                # which used to be inlined twice per task and copied into the run
+                # and the admission receipt. Store the authority and the
+                # snapshot's timeline and registry as managed objects instead;
+                # the host materializes them as the executor's input files.
+                stored = _store_visualize_objects(
+                    _client, project, authority_json, authority_snapshot,
+                )
+                if stored is None:
+                    inputs["filmstrip_authority"] = authority_json  # a client without import_bytes
+                else:
+                    inputs.update(stored)
+                    invocation_authority_context = {
+                        **invocation_authority_context,
+                        "authority_object": stored["filmstrip_authority"]["digest"],
+                    }
             # Preflight may add host-owned transcript/video bindings. Forward
             # those enriched inputs to kernel admission; retaining the initial
             # caller mapping would desynchronize the filmstrip identity guard.

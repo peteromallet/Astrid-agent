@@ -217,9 +217,50 @@ def _cmd_set_primary(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _list_rows(data: Any) -> list[dict[str, Any]]:
+    """Return the reference rows of a list envelope (``(rows, cursor)`` pages)."""
+    if isinstance(data, (list, tuple)) and data and isinstance(data[0], list):
+        data = data[0]
+    return [row for row in data or [] if isinstance(row, dict)] if isinstance(data, list) else []
+
+
+def _render_reference_list(result: Any) -> str:
+    """One short line per reference: name, kind, id, canonical media, counts."""
+    if not getattr(result, "ok", False):
+        error = getattr(result, "error", None)
+        code = getattr(error, "code", "error")
+        message = getattr(error, "message", "")
+        return f"error {code}: {message}"
+    rows = _list_rows(getattr(result, "data", None))
+    if not rows:
+        return "no references (archived ones need --include-archived)"
+    lines = []
+    for row in rows:
+        media = row.get("media_references") or []
+        canonical = next((m.get("media_id") for m in media if m.get("is_primary")), None)
+        canonical_text = f"{str(canonical)[:19]}..." if canonical else "none"
+        tag = " [archived]" if row.get("archived") else ""
+        links = len(row.get("links") or [])
+        lines.append(
+            f"{row.get('name', '?')}{tag}  {row.get('kind', '?')}  {row.get('reference_id', '?')}  "
+            f"canonical={canonical_text}  media={len(media)} links={links}"
+        )
+    return "\n".join(lines)
+
+
 def _cmd_list(parsed: argparse.Namespace) -> int:
-    result = parsed.client.references.list(parsed.project)
-    return print_result(result, as_json=parsed.json)
+    from astrid.sdk.contracts import DomainResult
+
+    kwargs = {"include_archived": True} if parsed.include_archived else {}
+    result = parsed.client.references.list(parsed.project, **kwargs)
+    if parsed.name is not None and getattr(result, "ok", False):
+        rows = [row for row in _list_rows(result.data) if row.get("name") == parsed.name]
+        result = DomainResult.success([rows, None])
+    return print_result(
+        result,
+        as_json=parsed.json,
+        human_renderer=_render_reference_list,
+    )
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
@@ -397,7 +438,17 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Include archived references in the list.",
     )
-    _add_json_flag(subparser)
+    subparser.add_argument(
+        "--name",
+        default=None,
+        help="Only the reference with this exact project-local name.",
+    )
+    subparser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the full SDK envelope with every reference record (default: short listing).",
+    )
     subparser.set_defaults(handler=_cmd_list)
 
 

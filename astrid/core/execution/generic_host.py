@@ -3449,7 +3449,11 @@ class GenericPackHost:
             declared_set = set(declared)
             unknown = sorted(str(name) for name in params if str(name) not in declared_set)
             if unknown:
-                raise HostError("HC-04 task spec contains undeclared parameter(s): " + ", ".join(unknown))
+                raise HostError(
+                    "HC-04 task spec contains undeclared parameter(s): " + ", ".join(unknown)
+                    + f". Declared inputs: {', '.join(declared)}"
+                    + ("; use count (not n/num_images) for the image count" if set(unknown) & {"n", "num_images"} else "")
+                )
             for name in declared:
                 if name not in params:
                     continue

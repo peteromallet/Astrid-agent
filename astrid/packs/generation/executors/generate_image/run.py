@@ -193,6 +193,48 @@ def _parse_loras_arg(raw: str | None) -> list[str | dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _png_size(path: str | None) -> tuple[int, int] | None:
+    """Return ``(width, height)`` from a PNG header, or ``None`` for other files."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(24)
+    except OSError:
+        return None
+    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+
+
+def _edit_size_orientation_warning(
+    mode_name: str | None, size: str | None, image_ref_resolved: str | None
+) -> dict[str, str] | None:
+    """Warn when an edit's ``size`` flips the source's orientation.
+
+    An edit's output follows the ``size`` input, not the source image, so a
+    portrait ``size`` on a landscape source returns a portrait image silently.
+    """
+    if mode_name != "edit" or not size:
+        return None
+    source = _png_size(image_ref_resolved)
+    try:
+        width, height = (int(part) for part in str(size).lower().split("x", 1))
+    except ValueError:
+        return None
+    if source is None or width == height or source[0] == source[1]:
+        return None
+    if (width > height) == (source[0] > source[1]):
+        return None
+    return {
+        "code": "edit_size_orientation",
+        "message": (
+            f"edit output follows size={size} ({width}x{height}), not the source "
+            f"({source[0]}x{source[1]}); pass the source's size to keep its orientation"
+        ),
+    }
+
+
 def _resolve_execution_with_codex_fallback(
     args: argparse.Namespace,
     mode_spec: Any,
@@ -566,6 +608,10 @@ def generate_core(
             image_ref_resolved = str(ref_path.resolve())
         else:
             image_ref_resolved = ref
+
+    edit_size_warning = _edit_size_orientation_warning(mode_name, args.size, image_ref_resolved)
+    if edit_size_warning is not None:
+        warnings.append(edit_size_warning)
 
     # --- sequential N=1 generation loop -------------------------------------
     loras_parsed = _parse_loras_arg(args.loras)
