@@ -1251,22 +1251,25 @@ def _discover_invocation_manifest_path(
     return None
 
 
+def _visualize_cache_base(cache_root: Path | str | None = None) -> Path:
+    """Return the root that holds every project's visualize captures."""
+    if cache_root is not None:
+        return Path(cache_root).expanduser().resolve()
+    if (runtime_data_root := _runtime_data_root()) is not None:
+        return runtime_data_root / "timeline-visualize"
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Caches" / "Astrid" / "timeline-visualize"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid" / "timeline-visualize"
+
+
 def _filmstrip_cache_parent(
     *,
     project: str | None,
     cache_root: Path | str | None = None,
 ) -> Path:
     """Return the durable, project-namespaced filmstrip cache parent."""
-    if cache_root is not None:
-        base = Path(cache_root).expanduser().resolve()
-    elif (runtime_data_root := _runtime_data_root()) is not None:
-        base = runtime_data_root / "timeline-visualize"
-    elif platform.system() == "Darwin":
-        base = Path.home() / "Library" / "Caches" / "Astrid" / "timeline-visualize"
-    else:
-        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid" / "timeline-visualize"
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(project or "unscoped")).strip("._") or "unscoped"
-    return base / slug
+    return _visualize_cache_base(cache_root) / slug
 
 
 def _runtime_data_root() -> Path | None:
@@ -1473,6 +1476,27 @@ def _materialize_filmstrip_outputs(
         import shutil
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _cap_filmstrip_cache(raw_result: Mapping[str, Any], *, project: str | None) -> None:
+    """Evict least-recently-used visualize captures above the cache cap.
+
+    The capture just produced is protected, and the cap never fails the
+    capture itself: a read-only or racing cache directory is left alone.
+    """
+    from . import visualize_cache
+
+    outputs = raw_result.get("outputs")
+    pack_root = outputs.get("pack_root") if isinstance(outputs, Mapping) else None
+    if not isinstance(pack_root, str) or not pack_root:
+        return
+    produced = Path(pack_root)
+    base = produced.parent.parent
+    try:
+        visualize_cache.touch_capture(produced)
+        visualize_cache.prune_visualize_cache(base, protect=[produced])
+    except (OSError, ValueError):
+        return
 
 
 def _invocation_outputs(
@@ -3164,6 +3188,7 @@ def invoke(
                 _client,
                 project=project,
             )
+            _cap_filmstrip_cache(raw_result, project=project)
         return InvocationResult(
             capability_id=capability.id,
             capability_type=capability.capability_type,
