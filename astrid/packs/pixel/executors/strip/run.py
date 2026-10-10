@@ -38,7 +38,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--palette", default=None, help="Preset (astrid) or comma-separated hex colours.")
     parser.add_argument("--max-colors", type=int, default=0, help="Quantise all frames to N colours when no palette.")
     parser.add_argument("--fps", type=float, default=8.0, help="Playback rate for am-sprite.")
+    parser.add_argument("--align", choices=ALIGNS, default="bottom",
+                        help="Anchor for frames of different sizes inside the common cell (default: bottom).")
     return parser
+
+
+ALIGNS = ("bottom", "center", "top")
+
+
+def align_frames(frames: list[np.ndarray], *, align: str = "bottom") -> tuple[list[np.ndarray], list[dict]]:
+    """Pad frames of different sizes onto one common cell, transparent outside.
+
+    Trimmed cutouts (pixel.cutout's default) come out at different sizes; a
+    strip must keep one scale and one ground line, so every frame is placed in
+    the largest width x height, centred horizontally and anchored at the
+    bottom (feet), centre or top. Returns the frames and each one's placement.
+    """
+    if align not in ALIGNS:
+        raise AstridError(f"align must be one of {', '.join(ALIGNS)}", recovery_command="use --align bottom")
+    cell_h = max(frame.shape[0] for frame in frames)
+    cell_w = max(frame.shape[1] for frame in frames)
+    placed, placements = [], []
+    for frame in frames:
+        height, width = frame.shape[:2]
+        dx = (cell_w - width) // 2
+        dy = {"bottom": cell_h - height, "center": (cell_h - height) // 2, "top": 0}[align]
+        placements.append({"width": width, "height": height, "x": dx, "y": dy})
+        if (height, width) == (cell_h, cell_w):
+            placed.append(frame)
+            continue
+        canvas = np.zeros((cell_h, cell_w, 4), dtype=np.uint8)
+        canvas[dy:dy + height, dx:dx + width] = frame
+        placed.append(canvas)
+    return placed, placements
 
 
 def build_strip(
@@ -49,21 +81,19 @@ def build_strip(
     fit: str = "cover",
     palette: str | None = None,
     max_colors: int = 0,
+    align: str = "bottom",
 ) -> np.ndarray:
-    """Snap every frame to one grid and join them left to right (RGBA)."""
-    if not frames:
-        raise AstridError("pixel.strip needs at least one frame", recovery_command="pass one --frame per pose")
+    """Align frames on one cell, snap them to one grid and join them left to right (RGBA)."""
+    if len(frames) < 2:
+        raise AstridError(
+            f"pixel.strip needs at least 2 frames (got {len(frames)})",
+            recovery_command='pass a list of handles: inputs={"frame": [handle_a, handle_b]}',
+        )
     if (grid_width > 0) != (grid_height > 0):
         raise AstridError("grid_width and grid_height must be set together", recovery_command="set both, or neither")
+    frames, _placements = align_frames(frames, align=align)
     if grid_width <= 0:
-        sizes = {frame.shape[:2] for frame in frames}
-        if len(sizes) > 1:
-            listed = ", ".join(f"{w}x{h}" for h, w in sorted(sizes))
-            raise AstridError(
-                f"frames are not the same size ({listed})",
-                recovery_command="set grid_width and grid_height so every frame snaps to one grid",
-            )
-        grid_height, grid_width = next(iter(sizes))
+        grid_height, grid_width = frames[0].shape[:2]
     natives = []
     for frame in frames:
         native, _preview, _report = px.snap_image(
@@ -80,8 +110,12 @@ def build_strip(
     return np.concatenate(natives, axis=1)
 
 
-def build_metadata(*, frame_w: int, frame_h: int, count: int, fps: float, sources: list[str], grid: tuple[int, int], fit: str) -> dict:
+def build_metadata(*, frame_w: int, frame_h: int, count: int, fps: float, sources: list[str], grid: tuple[int, int], fit: str,
+                   placements: list[dict] | None = None, align: str = "bottom") -> dict:
     sprite = {"frameWidth": frame_w, "frameHeight": frame_h, "count": count, "fps": fps}
+    frames = [{"index": i, "source": name, "x": i * frame_w} for i, name in enumerate(sources)]
+    for entry, placement in zip(frames, placements or []):
+        entry["placed"] = placement  # source size and offset inside the common cell, before snapping
     return {
         "frameWidth": frame_w,
         "frameHeight": frame_h,
@@ -89,7 +123,8 @@ def build_metadata(*, frame_w: int, frame_h: int, count: int, fps: float, source
         "fps": fps,
         "grid": {"width": grid[0], "height": grid[1]},
         "fit": fit,
-        "frames": [{"index": i, "source": name, "x": i * frame_w} for i, name in enumerate(sources)],
+        "align": align,
+        "frames": frames,
         "am_sprite_frames": sprite,
     }
 
@@ -106,12 +141,13 @@ def main(argv: list[str] | None = None) -> int:
             if not source.is_file():
                 raise AstridError(
                     f"frame not found: {source}",
-                    recovery_command="import each frame with python -m astrid media import and pass its managed digest",
+                    recovery_command='pass frames as media handles: inputs={"frame": ["run:<run_id>/<port>#0", "sha256:<digest>"]}',
                 )
         out_dir = args.out.expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
         frames = [px.load_rgba(str(source)) for source in sources]
+        _aligned, placements = align_frames(frames, align=args.align) if len(frames) > 1 else (frames, [])
         strip = build_strip(
             frames,
             grid_width=int(args.grid_width),
@@ -119,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             fit=args.fit,
             palette=args.palette,
             max_colors=int(args.max_colors or 0),
+            align=args.align,
         )
         frame_h, total_w = strip.shape[:2]
         frame_w = total_w // len(sources)
@@ -130,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
             sources=[source.name for source in sources],
             grid=(frame_w, frame_h),
             fit=args.fit,
+            placements=placements,
+            align=args.align,
         )
         px.save_rgba(strip, str(out_dir / "strip.png"))
         (out_dir / "strip.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -143,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                 "palette": args.palette,
                 "max_colors": int(args.max_colors or 0),
                 "fps": float(args.fps),
+                "align": args.align,
             },
             outputs=[
                 {"name": "strip", "path": "strip.png", "type": "file", "artifact_type": "image", "role": "result", "is_primary": True},

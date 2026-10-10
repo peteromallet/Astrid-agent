@@ -3669,6 +3669,41 @@ class GenericPackHost:
             "hype_assets",
         }
         for name, value in list(values.items()):
+            if name in file_input_names and isinstance(value, (list, tuple)):
+                # A repeatable file input (pixel.strip frames): materialize
+                # every authorized item, in order, under inputs/<name>/.
+                if self.client is None or not callable(getattr(self.client, "get_object", None)):
+                    raise HostError(f"runtime client is required to materialize list input {name}")
+                list_root = (attempt / "inputs" / Path(str(name)).name).resolve()
+                paths: list[str] = []
+                for index, item in enumerate(value):
+                    item_digest = (
+                        (item.get("digest") or item.get("object_id"))
+                        if isinstance(item, Mapping)
+                        else (item if isinstance(item, str) else None)
+                    )
+                    if not item_digest:
+                        raise HostError(f"{name}[{index}] is not a managed object")
+                    normalized_item = require_authorized(str(item_digest), f"{name}[{index}]")
+                    raw_filename = item.get("filename") if isinstance(item, Mapping) else None
+                    safe = (
+                        raw_filename
+                        if isinstance(raw_filename, str) and raw_filename
+                        and Path(raw_filename).name == raw_filename and ".." not in Path(raw_filename).parts
+                        else "item"
+                    )
+                    item_path = (list_root / f"{index:03d}-{safe}").resolve()
+                    if not item_path.is_relative_to(list_root):
+                        raise HostError(f"input name escapes the attempt directory: {name!r}")
+                    data = self.client.get_object(normalized_item)
+                    if not isinstance(data, (bytes, bytearray)):
+                        data = getattr(data, "data", None)
+                    if not isinstance(data, (bytes, bytearray)) or hashlib.sha256(bytes(data)).hexdigest() != normalized_item:
+                        raise HostError(f"input object hash mismatch for {name}[{index}]")
+                    write_scratch(item_path, bytes(data), name=str(name))
+                    paths.append(str(item_path))
+                values[name] = paths
+                continue
             digest = (
                 (value.get("digest") or value.get("object_id"))
                 if isinstance(value, Mapping)

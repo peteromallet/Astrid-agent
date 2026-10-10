@@ -238,22 +238,25 @@ def collect_diagnostic(runtime: Any, *, support_root: str, mode: str = "local", 
         return remaining
 
     try:
-        if command == "status":
-            workspace_result = _call_with_remaining(runtime.inspect, support_root=support_root, timeout=remaining_seconds())
-            if getattr(workspace_result, "ok", False):
-                facts["workspace"] = _fact(observed=True, value="selected", observed_at=observed_at)
-            else:
-                problem_code, failure_boundary = _failure_from(None, getattr(workspace_result, "data", {}))
-                facts["workspace"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
+        # Observe the runtime first: it is the fast, decisive fact.  The
+        # workspace inspection can be slow, and when it used to run first a
+        # timeout left both facts unobserved.
         runtime_result = _call_with_remaining(runtime.observe, command, support_root=support_root, timeout=remaining_seconds())
         if getattr(runtime_result, "ok", False):
             facts["runtime"] = _fact(observed=True, value="ready", observed_at=observed_at)
             facts["contact"] = _fact(observed=True, value="fresh", observed_at=observed_at)
         else:
-            if problem_code is None:
-                problem_code, failure_boundary = _failure_from(None, getattr(runtime_result, "data", {}))
+            problem_code, failure_boundary = _failure_from(None, getattr(runtime_result, "data", {}))
             facts["runtime"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
             facts["contact"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
+        if command == "status":
+            workspace_result = _call_with_remaining(runtime.inspect, support_root=support_root, timeout=remaining_seconds())
+            if getattr(workspace_result, "ok", False):
+                facts["workspace"] = _fact(observed=True, value="selected", observed_at=observed_at)
+            else:
+                if problem_code is None:
+                    problem_code, failure_boundary = _failure_from(None, getattr(workspace_result, "data", {}))
+                facts["workspace"] = _fact(observed=True, value="unavailable", observed_at=observed_at)
     except BaseException as exc:  # boundary adapter must turn failures into bounded evidence
         problem_code, failure_boundary = _failure_from(exc, getattr(exc, "result", None))
         if isinstance(exc, TimeoutError) or problem_code == "observation_timeout":

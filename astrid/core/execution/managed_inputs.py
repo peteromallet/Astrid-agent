@@ -20,9 +20,9 @@ def managed_file_digest(value: Any, name: str) -> str:
         if len(digests) == 1:
             return digests.pop()
     raise ValueError(
-        f"file input {name!r} requires a managed Runtime object with a valid SHA-256 digest; "
-        "caller-local paths are not available to executor workers. Import the file with "
-        "client.media.import_file(project=..., path=..., idempotency_key=...) and pass "
-        "its digest/object_id descriptor. Package declared dependencies inside JSON "
-        "explicitly (h3_av.transform does this automatically)."
+        f"file input {name!r} needs a media handle, got {value!r:.80}: pass result.output(\"<port>\"), "
+        "\"run:<run_id>/<port>#n\", \"ref:<reference name>\" or \"sha256:<digest>\" (a list of them for a "
+        "repeatable input). Local paths don't reach executor workers: import a file first with "
+        "`python -m astrid media import <file> --project <slug>` (SDK: client.media.import_file) "
+        "and pass its sha256 digest."
     )

@@ -35,10 +35,15 @@ from .pagination import page_pair
 __all__ = [
     "REFERENCE_ROLES",
     "MediaHandleError",
+    "annotate_output_rows",
     "apply_media_handles",
+    "has_media_handles",
     "is_media_handle",
     "link_outputs_to_references",
+    "output_handle",
     "resolve_media_handle",
+    "resolve_timeline_asset",
+    "save_media",
 ]
 
 # Generation input roles -> the existing port that carries them, in the order
@@ -82,6 +87,20 @@ def is_media_handle(value: Any) -> bool:
         return value.startswith(("ref:", "run:", "task:")) or bool(_DIGEST.fullmatch(value))
     if isinstance(value, Mapping):
         return "ref" in value or ("output_port" in value and ("digest" in value or "object_id" in value))
+    return False
+
+
+def has_media_handles(capability: Any, inputs: Mapping[str, Any]) -> bool:
+    """True when admission must resolve something (handles or ``references``)."""
+    if inputs.get("references") is not None:
+        return True
+    for port in getattr(capability, "inputs", ()) or ():
+        if str(getattr(port, "type", "")).lower() != "file":
+            continue
+        value = inputs.get(str(port.name))
+        items = value if isinstance(value, (list, tuple)) else [value]
+        if any(is_media_handle(item) for item in items):
+            return True
     return False
 
 
@@ -300,6 +319,19 @@ def apply_media_handles(
     seen: dict[str, str] = {}
     for port in file_ports:
         value = values.get(port)
+        if isinstance(value, (list, tuple)):
+            # Repeatable inputs (pixel.strip frames): each item is a handle or
+            # a descriptor; order is kept and repeats are allowed.
+            resolved_items = []
+            for index, item in enumerate(value):
+                if not is_media_handle(item):
+                    resolved_items.append(item)
+                    continue
+                descriptor, record = resolve_media_handle(client, str(project or ""), item)
+                resolved_items.append(descriptor)
+                lineage.append({"port": port, "index": index, **record})
+            values[port] = resolved_items
+            continue
         if value is None or not is_media_handle(value):
             continue
         descriptor, record = resolve_media_handle(client, str(project or ""), value)
@@ -389,3 +421,107 @@ def link_outputs_to_references(
                     f"depicts-{task_id}-{link['reference_id']}-{row.get('output_port')}-{row.get('ordinal')}",
                 )
     return results
+
+
+# -- results: every output row carries its handle and a viewable local path --
+
+VIEW_MAX_BYTES = 64 * 1024 * 1024
+
+
+def output_handle(row: Mapping[str, Any]) -> str | None:
+    """The ``run:<run_id>/<port>#<ordinal>`` handle of one managed output row."""
+    run_id, port = row.get("run_id"), row.get("output_port")
+    if not run_id or not port:
+        return None
+    return f"run:{run_id}/{port}#{int(row.get('ordinal') or 0)}"
+
+
+def _view_root(project: str) -> Path:
+    from .invocation import _runtime_data_root
+
+    base = _runtime_data_root()
+    base = (base / "media-view") if base is not None else Path.home() / ".cache" / "astrid" / "media-view"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(project or "unscoped")).strip("._") or "unscoped"
+    return base / slug
+
+
+def save_media(client: Any, digest: str, to: str | Path, *, overwrite: bool = False) -> Path:
+    """Write one project object's verified bytes to ``to`` (never a CAS link)."""
+    import hashlib
+    import os
+
+    target = Path(to).expanduser()
+    if target.exists() and not overwrite:
+        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest.removeprefix("sha256:"):
+            return target  # already the same bytes
+        raise MediaHandleError(f"{target} exists; choose another path or pass overwrite")
+    data = client.media.read_bytes(digest)
+    if hashlib.sha256(data).hexdigest() != digest.removeprefix("sha256:"):
+        raise MediaHandleError(f"bytes read for {digest} do not match its digest")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_bytes(data)
+    os.replace(temporary, target)
+    return target
+
+
+def annotate_output_rows(client: Any, project: str | None, rows: list[Any]) -> list[Any]:
+    """Add ``handle`` to every row and ``path`` (a viewable copy) to result media.
+
+    The copy lives in a deterministic project cache named by digest, so
+    re-reading a result never duplicates bytes. Thumbnails, auxiliary files
+    and media over 64 MiB get a handle only (``media open <handle> --to``).
+    """
+    annotated = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            annotated.append(row)
+            continue
+        row = dict(row)
+        handle = output_handle(row)
+        if handle:
+            row["handle"] = handle
+        digest = str(row.get("digest") or row.get("object_id") or "")
+        size = int(row.get("size") or row.get("size_bytes") or 0)
+        if (client is not None and project and _DIGEST.fullmatch(digest) and row.get("role") == "result"
+                and 0 < size <= VIEW_MAX_BYTES):
+            name = _safe_filename(str(row.get("filename") or ""), str(row.get("media_type") or ""), "output")
+            try:
+                row["path"] = str(save_media(client, digest, _view_root(project) / f"{digest[7:19]}-{name}"))
+            except Exception:  # noqa: BLE001 - a view copy is a convenience, never a failure
+                pass
+        annotated.append(row)
+    return annotated
+
+
+def resolve_timeline_asset(client: Any, project: str, handle: Any) -> dict[str, Any]:
+    """Resolve a media handle to a timeline registry entry.
+
+    Returns ``{"key", "media_id", "content_sha256", "type", "resolution"?,
+    "handle", "filename"}``; pass it to ``Clip.swap_asset`` (the ``key`` names
+    the registry entry, the other fields are what the registry stores).
+    """
+    descriptor, lineage = resolve_media_handle(client, project, handle)
+    digest = descriptor["digest"]
+    reference = lineage.get("reference") if isinstance(lineage.get("reference"), Mapping) else None
+    stem = Path(descriptor["filename"]).stem
+    key = re.sub(r"[^A-Za-z0-9_-]+", "-", str(reference.get("name") if reference else stem)).strip("-") or digest[7:19]
+    entry: dict[str, Any] = {
+        "key": key,
+        "media_id": digest,
+        "content_sha256": digest,
+        "type": descriptor["media_type"],
+        "handle": lineage.get("handle"),
+        "filename": descriptor["filename"],
+    }
+    if descriptor["media_type"].startswith("image/") and descriptor["size_bytes"] <= VIEW_MAX_BYTES:
+        try:
+            import io
+
+            from PIL import Image
+
+            with Image.open(io.BytesIO(client.media.read_bytes(digest))) as image:
+                entry["resolution"] = f"{image.width}x{image.height}"
+        except Exception:  # noqa: BLE001 - resolution is optional registry metadata
+            pass
+    return entry

@@ -67,8 +67,10 @@ project. Use the exact qualified capability id, required `kind`, inputs, and
 project binding from the selected skill and its `STAGE.md`. Inspect the
 returned result, run evidence, and artifacts through the runtime; do not read a
 local task store or call a pack's `run.py` directly.
-Chain steps by handle, not by file: any file input accepts `result.output("<port>")` (with `wait=True`),
-`"run:<run_id>/<port>#n"`, `"ref:<reference name>"` or `"sha256:<digest>"`, resolved in the project and receipted.
+Chain steps by handle, not by file: any file input (a list for repeatable ones) accepts `result.output("<port>")`
+(with `wait=True`), `"run:<run_id>/<port>#n"`, `"ref:<reference name>"` or `"sha256:<digest>"`, resolved in the project
+and receipted. `sdk.invoke` opens the runtime client itself (pass `client=` to reuse one); `print(result)` lists each
+output's handle and a viewable local path; `python -m astrid media open <handle> --project <slug> --to out.png` saves one.
 The runtime supplies the selected pack's temporary output workspace and owns
 publication of the resulting assets. Use Astrid's configured storage for
 durable outputs, independent of the shell's current directory. Do not create

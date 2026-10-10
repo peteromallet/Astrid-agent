@@ -5,10 +5,10 @@ kind: built_in
 version: 1.0.0
 short_description: Pack same-grid pixel frames into one horizontal sprite strip with am-sprite frame metadata.
 description: >-
-  Joins an ordered list of managed frame images on one shared logical grid into one
-  horizontal RGBA strip, snapping each frame as pixel.snap does. Frames with no grid
-  set must share one size. Outputs the strip and a metadata JSON whose am_sprite_frames
-  block is the am-sprite frames param, so the loop stays editable by handle.
+  Joins an ordered list of at least two frame handles into one horizontal RGBA strip.
+  Frames of different sizes are first padded onto one common cell (align bottom, center
+  or top), then each is snapped as pixel.snap does onto the shared grid. Outputs the strip
+  and a metadata JSON whose am_sprite_frames block is the am-sprite frames param.
 keywords: [pixel, sprite, strip, frames, animation, loop, grid, sprite-sheet, run-cycle]
 inputs:
   - name: frame
@@ -16,7 +16,7 @@ inputs:
     required: true
     repeatable: true
     artifact_type: image
-    description: Ordered managed image handles, one per frame. Repeat the input or pass a list. Order is playback order.
+    description: "Ordered list of at least 2 media handles, one per frame (sha256:..., ref:<name>, run:<run_id>/<port>#n or result rows). Order is playback order."
   - name: grid_width
     type: integer
     required: false
@@ -45,6 +45,11 @@ inputs:
     required: false
     default: 8
     description: Playback rate written to the metadata. am-sprite frames advance at this rate.
+  - name: align
+    type: string
+    required: false
+    default: bottom
+    description: "Frames of different sizes (trimmed cutouts) are padded onto one common cell first: bottom (shared ground line), center or top; always centred horizontally."
 outputs:
   - name: strip
     type: file
@@ -71,6 +76,8 @@ command:
     - "{fit}"
     - "--fps"
     - "{fps}"
+    - "--align"
+    - "{align}"
   input_args:
     - input: frame
       flag: "--frame"

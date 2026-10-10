@@ -287,10 +287,19 @@ def test_kernel_invoke_authorizes_digest_when_media_id_is_not_an_object_id() -> 
     assert client.tasks.kwargs["input_manifest"] == [f"sha256:{digest}"]
 
 
-def test_kernel_invoke_requires_explicit_runtime_client() -> None:
+def test_kernel_invoke_without_a_client_opens_one_or_fails_with_one_clear_error(monkeypatch) -> None:
+    # sdk.invoke opens the launcher's runtime client when none is passed (S17);
+    # when that fails there is exactly one precondition error naming the fix.
     import pytest
 
-    with pytest.raises(invocation.CapabilityInvocationError, match="explicit generated"):
+    from astrid.sdk.client import AstridClient
+
+    def unavailable(cls, *args, **kwargs):
+        raise RuntimeError("runtime is down")
+
+    monkeypatch.setattr(invocation, "_DEFAULT_CLIENT", None)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", classmethod(unavailable))
+    with pytest.raises(invocation.CapabilityPreconditionError, match=r"pass client=AstridClient\.open_from_launcher"):
         invocation._kernel_invoke(
             _Capability(),
             kind="executor",

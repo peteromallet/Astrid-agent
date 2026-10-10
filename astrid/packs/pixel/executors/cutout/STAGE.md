@@ -34,10 +34,11 @@ interior, and the dark 1 px outline are kept.
 
 ```python
 import astrid.sdk as sdk
-result = sdk.invoke(
+result = sdk.invoke(  # opens the runtime client itself; pass client= to reuse one
     "pixel.cutout",
     kind="executor",
     project="almost-ready",
+    wait=True,
     inputs={
         "image": "run:<run_id>/generated_images#0",  # any media handle: output row, run:, sha256:
         "mode": "flat",
@@ -45,6 +46,7 @@ result = sdk.invoke(
         "trim": True,
     },
 )
+print(result)  # each output: its handle and a viewable local path
 ```
 
 For full-resolution soft-edged art, prefer `grid` so the alpha is per logical pixel. Without

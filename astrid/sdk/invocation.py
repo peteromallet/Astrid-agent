@@ -2074,6 +2074,27 @@ def _validate_variant_controls(
         raise CapabilityValidationError("primary='promote' requires variant_of")
 
 
+_DEFAULT_CLIENT: Any | None = None
+
+
+def _default_client() -> Any:
+    """The process-wide runtime client ``sdk.invoke`` opens when none is passed."""
+    global _DEFAULT_CLIENT
+    if _DEFAULT_CLIENT is None:
+        try:
+            from .client import AstridClient
+
+            _DEFAULT_CLIENT = AstridClient.open_from_launcher()
+        except Exception as exc:  # noqa: BLE001 - one clear precondition for every cause
+            raise CapabilityPreconditionError(
+                "sdk.invoke needs the Astrid runtime and could not open it automatically "
+                f"({type(exc).__name__}: {_redact_message(str(exc))[:300]}). Set "
+                "BANODOCO_LOCAL_DATA_ROOT and pass client=AstridClient.open_from_launcher(), "
+                "or check the runtime with `python -m astrid doctor`."
+            ) from exc
+    return _DEFAULT_CLIENT
+
+
 def _kernel_invoke(
     capability: Any,
     *,
@@ -2233,13 +2254,18 @@ def _kernel_invoke(
             continue
         from astrid.core.execution.managed_inputs import managed_file_digest
 
-        try:
-            canonical = managed_file_digest(value, name)
-        except ValueError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-        if canonical not in input_manifest:
-            input_manifest.append(canonical)
-        input_digests.append({"name": name, "digest": canonical})
+        # A repeatable file input (``pixel.strip`` frames) carries a list:
+        # authorize every item, in order.
+        items = list(value) if isinstance(value, (list, tuple)) else [value]
+        for index, item in enumerate(items):
+            label = f"{name}[{index}]" if isinstance(value, (list, tuple)) else name
+            try:
+                canonical = managed_file_digest(item, label)
+            except ValueError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+            if canonical not in input_manifest:
+                input_manifest.append(canonical)
+            input_digests.append({"name": name, "digest": canonical})
     if input_digests:
         spec["input_digests"] = input_digests
     if variant_context is not None:
@@ -2430,9 +2456,7 @@ def _kernel_invoke(
         raise CapabilityValidationError(str(exc)) from exc
 
     if _client is None:
-        raise CapabilityInvocationError(
-            "explicit generated runtime client is required for task admission"
-        )
+        _client = _default_client()
 
     tasks = getattr(_client, "tasks", None)
     create_task = getattr(tasks, "create", None)
@@ -2839,8 +2863,10 @@ def invoke(
     # Media handles (reference names, prior outputs, digests) and the
     # generation ``references=[{ref, role}]`` sugar resolve here, inside the
     # project, to the same managed descriptors callers used to hand-build.
-    from .media_handles import apply_media_handles
+    from .media_handles import apply_media_handles, has_media_handles
 
+    if _client is None and not dry_run and has_media_handles(capability, request_inputs):
+        _client = _default_client()
     request_inputs, media_lineage, reference_links = apply_media_handles(
         _client,
         project,
@@ -3136,6 +3162,8 @@ def invoke(
             _client=_client,
         )
         if wait and ok:
+            if _client is None:
+                _client = _default_client()
             raw_result, ok, waited_attempt_id = _wait_for_kernel_task(
                 _client,
                 task_id=kt,
@@ -3155,6 +3183,14 @@ def invoke(
                 rows, read_error = _read_task_managed_outputs(_client, kt)
                 if read_error is None:
                     raw_result["managed_outputs"] = rows or []
+            if ok and isinstance(raw_result.get("managed_outputs"), list):
+                # Each row carries its handle and, for result media, a
+                # viewable local copy (deterministic per digest).
+                from .media_handles import annotate_output_rows
+
+                raw_result["managed_outputs"] = annotate_output_rows(
+                    _client, project, raw_result["managed_outputs"]
+                )
             if ok and reference_links:
                 from .media_handles import link_outputs_to_references
 

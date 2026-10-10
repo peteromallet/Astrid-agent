@@ -33,10 +33,11 @@ the modal colour of its source region, not a bilinear average.
 
 ```python
 import astrid.sdk as sdk
-result = sdk.invoke(
+result = sdk.invoke(  # opens the runtime client itself; pass client= to reuse one
     "pixel.snap",
     kind="executor",
     project="almost-ready",
+    wait=True,
     inputs={
         "image": "run:<run_id>/generated_images#0",  # any media handle: output row, run:, sha256:
         "crop": {"x": 60, "y": 190, "width": 460, "height": 210},
@@ -45,6 +46,7 @@ result = sdk.invoke(
         "fit": "none",
     },
 )
+print(result)  # each output: its handle and a viewable local path
 ```
 
 Use `auto_grid: true` for an already-pixelated sprite such as the mink site
