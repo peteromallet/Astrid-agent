@@ -674,3 +674,23 @@ def test_python_setters_are_discoverable_and_refuse_what_is_not_a_param():
         card.holdfor(0.6)
     card.set(brand_new=1, _allow_new=True)
     assert card.params["brand_new"] == 1
+
+
+def test_verify_in_python_uses_the_fast_lane_at_what_changed(monkeypatch):
+    """Script-mode parity with edit --verify: tl.verify() picks the changed moments, or at=."""
+    from astrid.packs.rendering.executors.timeline_visualize import fast_lane
+
+    seen = {}
+
+    def fake(client, project, timeline, moments, *, draft=None, footer=()):
+        seen.update(project=project, timeline=timeline, moments=[(round(m.t, 2), m.label) for m in moments], draft=draft)
+        return {"lines": ["verify ok"], "rows": [], "page": "p.png"}
+
+    monkeypatch.setattr(fast_lane, "verify", fake)
+    tl = Checkout(bundle())
+    before = tl.document()
+    tl.clip("a-rocket").nudge(0.5)
+    assert tl.verify(since=before, client=object())["lines"] == ["verify ok"]
+    assert seen["project"] == "p" and seen["draft"] is tl and seen["moments"]
+    tl.verify(at=["viral", 6.0], client=object())
+    assert [label for _t, label in seen["moments"]] == ["viral", "6.0"]

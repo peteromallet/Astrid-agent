@@ -80,6 +80,7 @@ clip.on(MOMENT)  clip.until(MOMENT) / clip.until("for 0.6s")  clip.hold_for(0.6)
 clip.set(text="Now.", x=1200, **{"states[3].at": '"adapt" in w05c'})  clip.get("x")  clip.swap_asset(KEY|FILE|HANDLE)
 clip.set_beats("run:<id>/beats")  clip.remove()  clip.keep()   clip.start .end .duration .address .text .params
 voice.replace(take, words=…)  voice.set_gap_after(1.2)  tl.apply_script("vo.json")  tl.remove_line("w05")
+print("\n".join(tl.verify()["lines"]))   # published vs yours at what changed (or at=['"Astrid" in n21', "c30"])
 ```
 `on`/`until` a word mean its START (`after "word"` = its end); `until end of c30` ends with that cut. A moment
 lands on the frame it falls in (148.13 s → frame 4443 = 148.10 s at 30 fps), so a clip on it starts there.

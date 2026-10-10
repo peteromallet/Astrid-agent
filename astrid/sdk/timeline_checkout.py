@@ -1576,6 +1576,32 @@ class Checkout(_Suggest):
             self.notes.append(f"{clip.address}: {name} is read as the spoken word \"{name}\" (there is also a layer "
                               f"{', '.join(layers[:3])}; for where it ends write until end of its cut, or quote the word)")
 
+    def verify(self, at: Any = None, *, since: Mapping[str, Any] | None = None, client: Any = None) -> dict[str, Any]:
+        """One-shot verify (the CLI's ``edit --verify`` / ``check --at``): the published head and this working copy
+        at the moments, on one page, with what differs and the new lint. ``at``: a moment, an address or a list
+        of them; by default the frames that show what changed (since ``since``, a document, else since checkout).
+        Returns the fast lane's result (``page``, ``rows`` with a verdict per moment, ``lines`` to print)."""
+        from astrid.packs.rendering.executors.timeline_visualize import fast_lane
+        from astrid.sdk.timeline_cuts import base_bundle, diff_bundles
+
+        if at is not None:
+            items = at if isinstance(at, (list, tuple)) else [at]
+            moments = [fast_lane.Moment(self.time(m), str(m)) for m in items]
+        else:
+            before = dict(since) if since is not None else base_bundle(self.document())
+            diff = diff_bundles(before, self.document())
+            names = {c.id: c.address for c in self.clips()}
+            moments = fast_lane.moments_from_changes(diff["changes"], float(diff.get("fps") or self.fps), names=names)
+            if not moments:
+                raise TimelineEditError("nothing on screen changed: no frame to compare (pass at=…)")
+        footer = self.check().brief()
+        project, timeline = str(self.bundle.get("project_id")), str(self.bundle.get("timeline_id"))
+
+        def run(c: Any) -> dict[str, Any]:
+            return fast_lane.verify(c, project, timeline, moments, draft=self, footer=footer)
+
+        return _with_client(client, run)
+
     def find(self, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Any]:
         """What you hear or see → addresses and times (``timelines find``): ``tl.find("the conclusion")``."""
         from astrid.sdk.timeline_address import find
