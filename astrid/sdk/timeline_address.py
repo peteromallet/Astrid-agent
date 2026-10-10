@@ -384,6 +384,13 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         on, until, length = intent.on(clip.data), intent.until(clip.data), intent.for_s(clip.data)
         span = tl._own_cut_span(clip) if cut else None
         start_rule = f"on {on}" if on else ("with its cut" if span else "a fixed time")
+        if on:
+            try:
+                exact = mo.resolve(mo.parse(on), _ctx(tl).__class__(tl, clip), in_point=tl._is_picture(clip))
+                if abs(exact - clip.start) > 1e-4 and abs(exact - clip.start) < 1.0 / tl.fps:
+                    start_rule += f" (at {exact:.3f} s, snapped to its frame {clip.start_frame})"
+            except Exception:  # noqa: BLE001 - a note only
+                pass
         out.append(f"  starts  {clip.start:8.3f} s   {start_rule}" + (f"   (cut {cut} starts {span[0]:.3f} s)" if span else ""))
         if until:
             end_rule = f"until {until}"

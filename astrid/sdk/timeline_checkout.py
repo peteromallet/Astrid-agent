@@ -953,7 +953,9 @@ class Checkout(_Suggest):
 
     HISTORY = 60  # edits of a working copy kept for undo
 
-    def save(self, path: str | Path | None = None, *, force: bool = False) -> Path:
+    SAY_SAVED = True  # a script's tl.save() prints one line (the CLI verbs print their own report)
+
+    def save(self, path: str | Path | None = None, *, force: bool = False, quiet: bool | None = None) -> Path:
         """Write the checkout: content pretty-printed, provenance compact, both clocks on every clip.
 
         A working copy keeps one undo step per EDIT made since the last save (each verb, each
@@ -965,7 +967,13 @@ class Checkout(_Suggest):
         what came in); the same clip changed by both refuses, unless ``force`` (yours wins)."""
         target = Path(path or self.path or "timeline.checkout.json")
         with _file_lock(target):
-            return self._save_locked(target, force=force)
+            saved = self._save_locked(target, force=force)
+        if (self.SAY_SAVED if quiet is None else not quiet) and not _cli_running():
+            name = getattr(self, "draft_name", None)
+            changed = len(self.edits().get("changes") or [])
+            print(f"saved {'working copy ' + repr(name) if name else saved} · {changed} clip(s) changed vs published"
+                  + (f" · {self.merged[0]}" if self.merged else "") + " · tl.check().brief() says what blocks publishing")
+        return saved
 
     def _save_locked(self, target: Path, *, force: bool) -> Path:
         self.merged = []
@@ -1571,8 +1579,29 @@ class Checkout(_Suggest):
         return out
 
     def _stale_whys(self) -> list[str]:
-        """Cuts whose why was written when they had other layers (it may no longer say what is there)."""
+        """Cuts whose why may no longer say what is there: written when the cut had other layers, or its
+        layers changed (a swap, a replace) since checkout while the why stayed the same. Info, never a block."""
+        from astrid.sdk.timeline_cuts import base_bundle
+
         out = []
+        try:
+            base = Checkout(base_bundle(self.document()))
+            then_groups = {g["id"]: g for g in base._cut_groups()}
+        except Exception:  # noqa: BLE001
+            then_groups = {}
+
+        def signature(clips: Iterable[Clip]) -> list[str]:
+            return sorted(f"{intent.layer_of(c.data) or c.id}:{c.element}:{c.asset or ''}" for c in clips)
+
+        for g in self._cut_groups():
+            pic = g["picture"]
+            why = intent.why(pic.data) if pic is not None else None
+            old = then_groups.get(g["id"])
+            old_pic = old["picture"] if old else None
+            if why and old and old_pic is not None and intent.why(old_pic.data) == why \
+                    and intent.why_layers(pic.data) is None and signature(old["clips"]) != signature(g["clips"]):
+                out.append(f"{g['id']}: its why was written before this change; still true? \"{why}\" "
+                           f"(edit --cut {g['id']} --why …)")
         for g in self._cut_groups():
             pic = g["picture"]
             then = intent.why_layers(pic.data) if pic is not None else None
@@ -3306,6 +3335,8 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
             moved_end = False
         if (clip.asset or None) != (prev.asset or None):
             said.append(f"asset {prev.asset} → {clip.asset}")
+        if clip.track != prev.track:
+            said.append(f"track {prev.track} → {clip.track} (stacking: chrome > type > fx > sprite > plate)")
         if clip.element != prev.element:
             said.append(f"element {prev.element} → {clip.element}")
         fa, fb = intent.formulas(prev.data), intent.formulas(clip.data)
@@ -3585,6 +3616,13 @@ def resolve_handle_entry(project: str, handle: str, *, client: Any = None) -> di
         return run(client)
     with AstridClient.open_from_launcher(start_pack_host=False) as c:
         return run(c)
+
+
+def _cli_running() -> bool:
+    """True inside a `timelines` verb (it prints its own report after saving)."""
+    import sys as _sys
+
+    return bool(getattr(_sys.modules.get("astrid.packs.timeline.cli"), "_IN_VERB", False))
 
 
 def _with_client(client: Any, fn: Any) -> Any:

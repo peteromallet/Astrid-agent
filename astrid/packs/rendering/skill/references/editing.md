@@ -13,11 +13,15 @@ timelines show TL --project P --as sheet --range c30..c31 > cut.sheet   # severa
 timelines apply TL --project P cut.sheet               # change a line of the sheet, then apply it
 timelines edit TL --project P --clip c30.cover --until '"Astrid"' --verify   # edit + published|working frames + new lint
 timelines check TL --project P --at '"Astrid"'          # the same before/after page at any moment (~5 s warm, no queue)
-timelines visualize TL --project P --preset motion --at '"Astrid" in n21'   # frames (every frame in a 1 s window)
+timelines edit TL --project P --clip c30.cover --until Astrid --verify    # edit, then published vs yours, one page
+timelines check TL --project P --at '"Astrid" in n21'                      # look at any moment (fast; no queue)
 timelines status TL --project P   ·   timelines undo TL --project P   ·   timelines publish TL --project P -m "…"
 ```
 `show`/`visualize`/`lint`/`diff` read the working copy (line 1 says so; `--published` for the live one).
 `timelines find TL "the conclusion"` (also `--text "Astrid."`, `--asset ROCKET`, a layer name) → addresses and times.
+`timelines lines TL` (`--line w23c`: one in full) · `timelines words TL Astrid --beats` · `show --as sheet --detail`
+prints long values (`inset=`, `lines=`) as editable JSON instead of `…`. The sheet's element column drops `am-`
+(`footage` = `am-footage`; both are accepted).
 **Make one timeline equal another** (a finished duplicate → the film): `timelines checkout FILM --project P --from
 round2[@rev]`, then publish. Narration, cuts, clips and intent, assets and beats, chapters and slots all come along.
 
@@ -82,7 +86,12 @@ clip.set_beats("run:<id>/beats")  clip.remove()  clip.keep()   clip.start .end .
 voice.replace(take, words=…)  voice.set_gap_after(1.2)  tl.apply_script("vo.json")  tl.remove_line("w05")
 print("\n".join(tl.verify()["lines"]))   # published vs yours at what changed (or at=['"Astrid" in n21', "c30"])
 ```
-`on`/`until` a word mean its START (`after "word"` = its end); `until end of c30` ends with that cut. A moment
+`on`/`until` a word mean its START (`after "word"` = its end); `until c30b` = when c30b STARTS; `until end of c30`
+ends with that cut. Clip methods return the clip, so they chain: `tl.clip("c30.cover").on('"x"').hold_for(1.2)`.
+`Checkout.draft(P, TL)` makes the working copy from the published head if there is none; `tl.save()` prints one
+line. `--verify`/`check --at` write only their page and frames, under the data root's fast-lane cache. In check,
+"intent" (was "app") is a clip's moments, cut and words; "shot" is the film's one authoring shot; a layer that
+carries over later cuts counts as a change in each of them. A moment
 lands on the frame it falls in (148.13 s → frame 4443 = 148.10 s at 30 fps), so a clip on it starts there.
 
 ## The narration (re-flow)

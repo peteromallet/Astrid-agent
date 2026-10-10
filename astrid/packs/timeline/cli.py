@@ -1304,13 +1304,18 @@ def _print_address(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     if isinstance(got, int):
         return got
     tl, banner = got
-    try:
-        target = resolve(tl, parsed.address, prefer="thing")
-    except AddressError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    addresses = [parsed.address] + list(getattr(parsed, "more_addresses", None) or [])
+    targets = []
+    for address in addresses:
+        try:
+            targets.append(resolve(tl, address, prefer="thing"))
+        except AddressError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     print(banner)
-    print(describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project)))
+    for k, target in enumerate(targets):
+        text = describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project))
+        print(text if k == len(targets) - 1 else text.split("\nnext:")[0])
     return 0
 
 
@@ -4203,6 +4208,8 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
         return 0
     report = tl.check()
     text = report.full_text() if getattr(parsed, "all", False) else str(report)
+    if at and not getattr(parsed, "all", False):  # the look, not the report again: one line, then the frames
+        text = report.brief()[0] + f"   (the full report: timelines check {parsed.ref} --project {parsed.project})"
     print(text)
     if at:
         from astrid.packs.rendering.executors.timeline_visualize.fast_lane import Moment
@@ -4851,17 +4858,24 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 
+_IN_VERB = False  # a `timelines` verb is running: Checkout.save() leaves the report to the verb
+
+
 class _TimelinesParser(argparse.ArgumentParser):
     """``show TL --project P c41.mink``: a positional after the flags fills the verb's open positional
     (address, word, query, sheet) instead of failing with "unrecognized arguments"."""
 
     def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        global _IN_VERB
+        _IN_VERB = True
         parsed, extras = self.parse_known_args(args, namespace)
         loose = [e for e in extras if not e.startswith("-")]
         if extras and len(loose) == len(extras):
             for dest in ("address", "word", "query", "sheet"):
                 if loose and getattr(parsed, dest, "absent") is None:
                     setattr(parsed, dest, loose.pop(0))
+            if loose and getattr(parsed, "address", None) and getattr(parsed, "command", None) == "show":
+                parsed.more_addresses, loose = list(loose), []  # show TL a b c: one record each
         if loose or len(extras) != len([e for e in extras if not e.startswith("-")]):
             self.error(f"unrecognized arguments: {' '.join(extras)}")
         return parsed
