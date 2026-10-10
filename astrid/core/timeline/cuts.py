@@ -202,6 +202,7 @@ def picture_cuts(occurrences: Iterable[Mapping[str, Any]], *, fps: float = 30.0)
                 "layers": layers,
                 "deliberate_hold": is_deliberate(clip),
                 "sequence": sequence,
+                "cut_id": (str(_map(_map(clip).get("app")).get("cut") or "") or None) if clip else None,
             })
     cuts.sort(key=lambda cut: (cut["start"], cut["end"]))
     for index, cut in enumerate(cuts, start=1):
