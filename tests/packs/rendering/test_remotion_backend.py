@@ -128,6 +128,27 @@ def _request(
     )
 
 
+def _execute_render(
+    timeline_path: Path,
+    assets_path: Path,
+    out_path: Path,
+    project_dir: Path,
+) -> Path:
+    """Drive the Remotion render itself (no provenance/pack-order lookup)."""
+
+    render_remotion._execute_remotion(
+        timeline_path,
+        assets_path,
+        out_path,
+        provenance_out_path=out_path,
+        project_dir=project_dir,
+        composition_id="TimelineComposition",
+        theme_path=None,
+        min_free_gb=None,
+    )
+    return out_path
+
+
 def _execute_direct(
     timeline_path: Path,
     assets_path: Path,
@@ -1026,6 +1047,67 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
         )
         self.assertEqual(provenance["registry_hash"], render_remotion._effective_registry_state(None)["hash"])
         self.assertEqual(provenance["resolved_effect_ids"], [])
+
+    def _run_render_with_fake_bundle(self, *, returncode: int) -> tuple[list[Path], list[Path]]:
+        """Run one render whose child mimics Remotion's default bundler.
+
+        Remotion's ``bundle()`` without an outDir mkdtemps
+        ``remotion-webpack-bundle-*`` under ``os.tmpdir()``, which honors the
+        child's TMPDIR. The render path must therefore keep that bundle inside
+        the attempt-scoped temp root and remove it on success and on failure.
+        """
+        with tempfile.TemporaryDirectory(prefix="render-bundle-") as tmp_text:
+            tmp = Path(tmp_text)
+            project_dir, _composition_src = self._write_fake_remotion_project(tmp)
+            timeline_path, assets_path, out_path = self._write_empty_render_inputs(tmp)
+            temp_roots: list[Path] = []
+            bundles: list[Path] = []
+
+            def fake_run(cmd, **kwargs):
+                command = [str(part) for part in cmd]
+                if _is_remotion_render_command(command):
+                    child_env = kwargs["env"]
+                    temp_root = Path(child_env["TMPDIR"])
+                    temp_roots.append(temp_root)
+                    bundle = Path(tempfile.mkdtemp(prefix="remotion-webpack-bundle-", dir=temp_root))
+                    (bundle / "index.html").write_text("<html></html>", encoding="utf-8")
+                    bundles.append(bundle)
+                    if returncode != 0:
+                        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="boom")
+                    _write_fake_remotion_output(command)
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with (
+                mock.patch.dict(
+                    render_remotion.os.environ,
+                    {"ASTRID_NODE_EXECUTABLE": os.environ["ASTRID_NODE_EXECUTABLE"]},
+                    clear=True,
+                ),
+                mock.patch.object(render_remotion.subprocess, "run", side_effect=fake_run),
+            ):
+                if returncode == 0:
+                    _execute_render(timeline_path, assets_path, out_path, project_dir)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "Remotion render failed"):
+                        _execute_render(timeline_path, assets_path, out_path, project_dir)
+        return temp_roots, bundles
+
+    def test_render_bundle_is_removed_after_successful_render(self) -> None:
+        temp_roots, bundles = self._run_render_with_fake_bundle(returncode=0)
+
+        self.assertEqual(len(bundles), 1)
+        self.assertEqual(bundles[0].parent, temp_roots[0])
+        self.assertFalse(bundles[0].exists(), "successful render must delete its Remotion bundle")
+        self.assertFalse(temp_roots[0].exists(), "successful render must delete its attempt temp root")
+
+    def test_render_bundle_is_removed_after_failed_render(self) -> None:
+        temp_roots, bundles = self._run_render_with_fake_bundle(returncode=1)
+
+        self.assertEqual(len(bundles), 1)
+        self.assertEqual(bundles[0].parent, temp_roots[0])
+        self.assertFalse(bundles[0].exists(), "failed render must delete its Remotion bundle")
+        self.assertFalse(temp_roots[0].exists(), "failed render must delete its attempt temp root")
 
     def test_render_stages_only_used_effect_assets_and_removes_them_after_success(self) -> None:
         with tempfile.TemporaryDirectory(prefix="render-effect-assets-") as tmp_text:

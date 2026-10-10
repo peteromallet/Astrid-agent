@@ -144,13 +144,25 @@ def _dispatch_status(args: list[str]) -> int:
     from astrid.core.gateway.diagnostics import redact_for_shared
     workspace_data = redact_for_shared(dict(workspace.data)) if parsed.shared and workspace else (dict(workspace.data) if workspace else {})
     status_data = redact_for_shared(dict(status.data)) if parsed.shared and status else (dict(status.data) if status else {})
+    def readiness(result: Any) -> str:
+        # An observation can time out before it returns (status has a 5 s
+        # budget): say "not checked" with the reason instead of crashing.
+        if result is None:
+            reason = diagnostic.get("problemCode") if isinstance(diagnostic, dict) else None
+            return f"not checked ({reason or 'no result'})"
+        if getattr(result, "ok", False):
+            return "ready"
+        data = getattr(result, "data", None)
+        error = data.get("error") if isinstance(data, dict) else None
+        return f"unavailable ({error})" if error else "unavailable"
+
     payload = {
         "ok": bool(workspace and workspace.ok and status and status.ok),
         "workspace": workspace_data,
         "runtime": status_data,
         "readiness": {
-            "workspace": "ready" if workspace.ok else "unavailable",
-            "runtime": "ready" if status.ok else "unavailable",
+            "workspace": readiness(workspace),
+            "runtime": readiness(status),
             "compute_worker": "unavailable",
             "optional_contribution_auth": "local-present-unverified" if contributor_key_present() else "no-local-key",
         },
@@ -165,7 +177,12 @@ def _dispatch_status(args: list[str]) -> int:
         for key, value in payload["readiness"].items():
             print(f"{key.replace('_', ' ')}: {value}")
         if not payload["ok"]:
-            print("next action: astrid setup")
+            if status is not None and getattr(status, "ok", False):
+                # The runtime answers; only the workspace check failed or ran out of time.
+                print("next action: python -m astrid doctor (runtime is up; the workspace check "
+                      + ("timed out" if workspace is None else "failed") + ")")
+            else:
+                print("next action: astrid setup")
     return 0 if payload["ok"] else 1
 
 

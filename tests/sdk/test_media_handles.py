@@ -87,6 +87,9 @@ class FakeRuntime:
                 row = rt.media_rows.get(digest)
                 return ok(row) if row else fail("media object is not in the selected project")
 
+            def read_bytes(self, digest):
+                return rt.objects[digest]
+
         class Runs:
             def show(self, run_id):
                 return ok({"task_ids": ["t-00"]}) if run_id == "r-00" else fail("run not found")
@@ -108,6 +111,14 @@ class FakeRuntime:
 @pytest.fixture()
 def runtime():
     return FakeRuntime()
+
+
+@pytest.fixture()
+def view_root(tmp_path, monkeypatch):
+    import astrid.sdk.media_handles as handles
+
+    monkeypatch.setattr(handles, "_view_root", lambda project: tmp_path / "media-view" / project)
+    return tmp_path / "media-view"
 
 
 def test_reference_name_resolves_to_its_primary_image_with_a_usable_filename(runtime):
@@ -168,7 +179,7 @@ def test_plain_descriptors_pass_through_and_bare_digests_become_descriptors(runt
                                "media_type": "image/png", "size_bytes": len(BASE)}
 
 
-def test_invoke_admits_resolved_descriptors_links_outputs_and_host_materializes(runtime, tmp_path):
+def test_invoke_admits_resolved_descriptors_links_outputs_and_host_materializes(runtime, tmp_path, view_root):
     runtime.outputs["t-01"] = [
         _row(NEW[0], port="generated_images", role="result", ordinal=0, filename="codex_000.png", media_type="image/png", task="t-01", run="r-01"),
         _row(NEW[1], port="generated_images", role="result", ordinal=1, filename="codex_001.png", media_type="image/png", task="t-01", run="r-01"),
@@ -300,3 +311,128 @@ def test_import_of_an_existing_object_reports_the_imported_filename(tmp_path):
     result = RemoteMedia(FakeTransport()).import_file(project="demo", path=source)
     assert result.ok
     assert result.data["filename"] == "P-01-v1.png" and result.data["stored_filename"] == "generated_images"
+
+
+
+# -- BIG #2: one handle everywhere (lists, no client, results print handle + path) --
+
+def _strip_outputs(task="t-01", run="r-01"):
+    strip, meta = b"strip-png", b'{"count": 2}'
+    return strip, [
+        _row(strip, port="strip", role="result", ordinal=0, filename="strip.png", media_type="image/png", task=task, run=run),
+        _row(meta, port="metadata", role="auxiliary", ordinal=0, filename="strip.json", media_type="application/json", task=task, run=run),
+    ]
+
+
+def test_a_list_of_handles_feeds_a_repeatable_input_end_to_end(runtime, view_root, tmp_path):
+    # S16: pixel.strip's repeatable frame input rejected every list form
+    strip, rows = _strip_outputs()
+    runtime.objects[_digest(strip)] = strip
+    runtime.outputs["t-01"] = rows
+    result = sdk.invoke("pixel.strip", kind="executor", project="demo", client=runtime, wait=True,
+                        inputs={"frame": ["run:r-00/generated_images#1", "ref:Astrid presenter", _digest(BASE)]})
+    assert result.ok, result.error
+    admitted = runtime.created[0]
+    frames = admitted["spec"]["inputs"]["frame"]
+    assert [f["digest"] for f in frames] == [_digest(BASE), _digest(PRESENTER), _digest(BASE)]  # order kept, repeats allowed
+    assert admitted["input_manifest"] == [_digest(BASE), _digest(PRESENTER)]
+    assert [h["index"] for h in admitted["spec"]["authority_context"]["media_handles"]] == [0, 1, 2]
+    # the host materializes every frame in order and binds one --frame per item
+    from astrid.core.contracts.binding import expand_command
+
+    host = GenericPackHost(pack_roots=[Path("astrid/packs")], client=SimpleNamespace(get_object=lambda d: runtime.objects["sha256:" + d]))
+    host.discover()
+    record = host.capabilities["pixel.strip"]
+    task = {"spec": {"spec": admitted["spec"], "input_object_ids": admitted["input_manifest"]}}
+    values = host._materialize_inputs(task["spec"], tmp_path / "attempt", file_input_names=frozenset({"frame"}))
+    assert [Path(v).read_bytes() for v in values["frame"]] == [BASE, PRESENTER, BASE]
+    values.update(out=str(tmp_path / "out"), python_exec="python")
+    for port in record.definition.inputs:
+        if port.name not in values and port.default is not None:
+            values[port.name] = port.default
+    argv = expand_command(record.definition.command, record.definition.inputs, values, record.definition.metadata).argv
+    assert argv.count("--frame") == 3
+    # S18: every result row carries its handle and a viewable local path
+    row = result.output("strip")
+    assert row["handle"] == "run:r-01/strip#0"
+    assert Path(row["path"]).read_bytes() == strip and Path(row["path"]).suffix == ".png"
+    assert "path" not in result.output("metadata")  # auxiliary JSON: handle only
+    assert "strip[0]" in str(result) and row["path"] in str(result)
+
+
+def test_invoke_without_client_opens_one_or_fails_with_one_clear_error(runtime, view_root, monkeypatch):
+    # S17: no client= used to fail twice ("requires a managed Runtime object", then "client is required")
+    import astrid.sdk.invocation as invocation
+    from astrid.sdk.client import AstridClient
+    from astrid.sdk.exceptions import CapabilityPreconditionError
+
+    strip, rows = _strip_outputs()
+    runtime.objects[_digest(strip)] = strip
+    runtime.outputs["t-01"] = rows
+    monkeypatch.setattr(invocation, "_DEFAULT_CLIENT", None)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", classmethod(lambda cls, *a, **k: runtime))
+    result = sdk.invoke("pixel.strip", kind="executor", project="demo", wait=True,
+                        inputs={"frame": ["run:r-00/generated_images#1", "ref:Astrid presenter"]})
+    assert result.ok and result.output("strip")["handle"] == "run:r-01/strip#0"
+
+    def unavailable(cls, *a, **k):
+        raise RuntimeError("runtime is not running")
+
+    monkeypatch.setattr(invocation, "_DEFAULT_CLIENT", None)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", classmethod(unavailable))
+    with pytest.raises(CapabilityPreconditionError, match=r"pass client=AstridClient\.open_from_launcher\(\)") as caught:
+        sdk.invoke("pixel.strip", kind="executor", project="demo", wait=True,
+                   inputs={"frame": ["run:r-00/generated_images#1", "ref:Astrid presenter"]})
+    assert "runtime is not running" in str(caught.value)
+
+
+def test_timeline_asset_resolver_returns_a_registry_entry(runtime):
+    from astrid.sdk.media_handles import resolve_timeline_asset
+
+    entry = resolve_timeline_asset(runtime, "demo", "ref:Astrid presenter")
+    assert entry == {"key": "Astrid-presenter", "media_id": _digest(PRESENTER), "content_sha256": _digest(PRESENTER),
+                     "type": "image/png", "handle": "ref:Astrid presenter", "filename": "Astrid-presenter.png"}
+    assert resolve_timeline_asset(runtime, "demo", "run:r-00/generated_images#1")["key"] == "codex_001"
+
+
+def test_media_open_writes_a_handle_to_a_file_and_states_the_preview_range(runtime, tmp_path, capsys):
+    import argparse
+    import json as _json
+
+    from astrid.core.cli.domain_media import _cmd_open
+    from astrid.sdk.media_open import open_reference
+
+    target = tmp_path / "T-00.png"
+    parsed = argparse.Namespace(client=runtime, project="demo", ref="run:r-00/generated_images#1", to=str(target),
+                                force=False, materialize=False, cache_root=None, preview_bytes=None,
+                                max_bytes=10 * 1024 * 1024, json=True)
+    assert _cmd_open(parsed) == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert out["data"]["local_path"] == str(target) and target.read_bytes() == BASE
+    assert out["data"]["handle"] == "run:r-00/generated_images#1"
+    # same bytes again: fine; different bytes: refused unless --force
+    assert _cmd_open(parsed) == 0
+    capsys.readouterr()
+    target.write_bytes(b"other")
+    assert _cmd_open(parsed) != 0
+    assert "exists" in capsys.readouterr().out
+    bad = open_reference(SimpleNamespace(), "demo", "sha256:" + "a" * 64, preview_bytes=-1, max_bytes=100)
+    assert not bad.ok and "between 0 (no inline preview) and max_bytes (100)" in bad.error.message
+
+
+def test_status_reports_an_unchecked_workspace_instead_of_crashing(monkeypatch, capsys):
+    # S23: `astrid status` crashed with "'NoneType' object has no attribute 'ok'"
+    import astrid.core.gateway.diagnostics as diagnostics
+    import astrid.runtime_cli as runtime_cli
+    import astrid.sdk.storage_root as storage_root
+    from astrid.core.gateway.dispatch import _dispatch_status
+
+    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", lambda: "/tmp/astrid-data")
+    monkeypatch.setattr(runtime_cli, "RuntimeCLI", lambda: object())
+    observed = SimpleNamespace(ok=True, data={"status": "ready"})
+    monkeypatch.setattr(diagnostics, "collect_diagnostic",
+                        lambda *a, **k: ({"problemCode": "observation_timeout"}, None, observed))
+    assert _dispatch_status([]) == 1
+    printed = capsys.readouterr().out
+    assert "workspace: not checked (observation_timeout)" in printed and "runtime: ready" in printed
+    assert "python -m astrid doctor" in printed

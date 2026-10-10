@@ -20,12 +20,14 @@ Both executors take a media handle as `image`: a generation output row
 import astrid.sdk as sdk
 from astrid.sdk import AstridClient
 
-with AstridClient.open_from_launcher() as client:  # sdk.invoke needs an explicit client
+with AstridClient.open_from_launcher() as client:  # optional: sdk.invoke opens one itself
     snapped = sdk.invoke("pixel.snap", kind="executor", project="almost-ready", client=client, wait=True,
                          inputs={"image": "run:<run_id>/generated_images#0", "grid_width": 48, "grid_height": 48, "fit": "none"})
     cutout = sdk.invoke("pixel.cutout", kind="executor", project="almost-ready", client=client, wait=True,
                         inputs={"image": "run:<run_id>/generated_images#0", "mode": "flat", "grid": "48x48", "fit": "none"})
-    native = snapped.output("native")  # a handle: pass it on, or client.media.read_bytes(native["digest"])
+    print(snapped)  # native[0]  run:<run_id>/native#0  <viewable local path>
+    loop = sdk.invoke("pixel.strip", kind="executor", project="almost-ready", client=client, wait=True,
+                      inputs={"frame": [snapped.output("native"), "run:<other_run_id>/native#0"]})  # 2+ handles
 ```
 
 Invocations are admitted as tasks. Identical inputs reuse the existing task,

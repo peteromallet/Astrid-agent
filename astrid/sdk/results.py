@@ -144,6 +144,20 @@ class InvocationResult:
     kernel_task_id: str | None = None
     kernel_attempt_id: str | None = None
 
+    def __str__(self) -> str:
+        """One line per output: port[n], its handle, and a viewable local path."""
+        head = f"{self.capability_id} {'ok' if self.ok else 'FAILED'}" + (f"  run {self.run_id}" if self.run_id else "")
+        if not self.ok:
+            message = (self.error or {}).get("message") if isinstance(self.error, Mapping) else self.error
+            return f"{head}\n  error: {message}"
+        lines = [head]
+        for row in self.outputs.get("managed_outputs") or []:
+            if not isinstance(row, Mapping) or row.get("role") == "thumbnail":
+                continue
+            label = f"{row.get('output_port')}[{row.get('ordinal', 0)}]"
+            lines.append(f"  {label:<22} {row.get('handle') or row.get('digest')}  {row.get('path') or ''}".rstrip())
+        return "\n".join(lines)
+
     def output_rows(self, port: str | None = None) -> list[dict[str, Any]]:
         """Managed output rows of *port* by ordinal; thumbnails only when asked for.
 

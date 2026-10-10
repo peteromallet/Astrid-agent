@@ -34,10 +34,25 @@ def test_strip_joins_frames_left_to_right_on_their_own_grid() -> None:
     assert tuple(strip[0, 4, :3]) == (0, 0, 255)
 
 
-def test_strip_rejects_frames_of_different_size_without_a_grid() -> None:
-    with pytest.raises(AstridError) as caught:
-        strip_run.build_strip([_frame(4, 3, (0, 0, 0)), _frame(5, 3, (0, 0, 0))])
-    assert "not the same size" in str(caught.value)
+def test_strip_pads_trimmed_frames_onto_one_cell_on_a_shared_ground_line() -> None:
+    # pixel.cutout's default trim made a claw loop 31x64 and 51x65 (S24)
+    narrow, wide = _frame(31, 64, (255, 0, 0)), _frame(51, 65, (0, 0, 255))
+    strip = strip_run.build_strip([narrow, wide])
+    assert strip.shape == (65, 102, 4)  # one 51x65 cell per frame
+    # the narrow frame sits centred, its feet on the cell's bottom row, transparent around it
+    assert strip[64, 10, 3] == 255 and strip[0, 10, 3] == 0 and strip[64, 0, 3] == 0
+    aligned, placed = strip_run.align_frames([narrow, wide], align="bottom")
+    assert placed[0] == {"width": 31, "height": 64, "x": 10, "y": 1}
+    _, top = strip_run.align_frames([narrow, wide], align="top")
+    assert top[0]["y"] == 0
+
+
+def test_strip_keeps_one_scale_when_mismatched_frames_snap_to_a_grid() -> None:
+    small, big = _frame(4, 6, (10, 20, 30)), _frame(8, 6, (10, 20, 30))
+    strip = strip_run.build_strip([small, big], grid_width=4, grid_height=3, fit="contain")
+    assert strip.shape == (3, 8, 4)
+    # the small frame was padded to 8x6 first, so it covers half the cell width, not all of it
+    assert strip[1, 0, 3] == 0 and strip[1, 1, 3] == 255
 
 
 def test_strip_snaps_mismatched_frames_onto_one_explicit_grid() -> None:
@@ -49,12 +64,14 @@ def test_strip_snaps_mismatched_frames_onto_one_explicit_grid() -> None:
 
 def test_strip_requires_grid_width_and_height_together() -> None:
     with pytest.raises(AstridError):
-        strip_run.build_strip([_frame(4, 3, (0, 0, 0))], grid_width=4)
+        strip_run.build_strip([_frame(4, 3, (0, 0, 0)), _frame(4, 3, (0, 0, 0))], grid_width=4)
 
 
-def test_strip_needs_at_least_one_frame() -> None:
-    with pytest.raises(AstridError):
-        strip_run.build_strip([])
+def test_strip_needs_at_least_two_frames() -> None:
+    for frames in ([], [_frame(4, 3, (0, 0, 0))]):
+        with pytest.raises(AstridError) as caught:
+            strip_run.build_strip(frames)
+        assert "at least 2 frames" in str(caught.value)
 
 
 def test_metadata_carries_am_sprite_frames_block() -> None:
@@ -80,6 +97,17 @@ def test_strip_cli_writes_strip_metadata_and_manifest(tmp_path: Path, monkeypatc
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["kind"] == "pixel_strip"
     assert [entry["path"] for entry in manifest["outputs"]] == ["strip.png", "strip.json"]
+
+
+def test_strip_cli_records_each_frames_placement(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    first = _save(tmp_path / "a.png", _frame(31, 64, (255, 0, 0)))
+    second = _save(tmp_path / "b.png", _frame(51, 65, (0, 255, 0)))
+    out = tmp_path / "out"
+    assert strip_run.main(["--frame", str(first), "--frame", str(second), "--out", str(out), "--align", "center"]) == 0
+    meta = json.loads((out / "strip.json").read_text(encoding="utf-8"))
+    assert meta["align"] == "center" and meta["am_sprite_frames"]["frameWidth"] == 51
+    assert meta["frames"][0]["placed"] == {"width": 31, "height": 64, "x": 10, "y": 0}
 
 
 def test_strip_executor_declares_repeatable_frames_and_outputs() -> None:

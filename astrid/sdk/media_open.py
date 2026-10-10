@@ -104,7 +104,9 @@ def _find_project_object(client: Any, project: str, object_id: str) -> tuple[Map
     return match, None
 
 
-def _preview(data: bytes, *, media_type: str, limit: int) -> dict[str, Any]:
+def _preview(data: bytes, *, media_type: str, limit: int) -> dict[str, Any] | None:
+    if limit <= 0:
+        return None
     bounded = data[:limit]
     truncated = len(data) > len(bounded)
     if media_type.startswith("text/") or media_type in {"application/json", "application/markdown", "application/x-yaml"}:
@@ -237,10 +239,15 @@ def open_reference(
     """
     if not isinstance(project, str) or not project.strip():
         return _failure("validation_error", "opening requires an explicit project", field="project")
-    if not isinstance(preview_bytes, int) or isinstance(preview_bytes, bool) or preview_bytes < 1:
-        return _failure("validation_error", "preview_bytes must be a positive integer", field="preview_bytes")
-    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < preview_bytes:
-        return _failure("validation_error", "max_bytes must be at least preview_bytes", field="max_bytes")
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        return _failure("validation_error", "max_bytes must be a positive integer", field="max_bytes")
+    if (not isinstance(preview_bytes, int) or isinstance(preview_bytes, bool)
+            or not 0 <= preview_bytes <= max_bytes):
+        return _failure(
+            "validation_error",
+            f"preview_bytes must be between 0 (no inline preview) and max_bytes ({max_bytes})",
+            field="preview_bytes", allowed=[0, max_bytes],
+        )
     if isinstance(ref, str):
         ref = {"kind": "media", "object_id": ref}
     if not isinstance(ref, Mapping):

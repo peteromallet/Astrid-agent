@@ -42,9 +42,14 @@ if (!fs.existsSync(path.join(publicDir, 'am'))) {
 }
 
 const t0 = Date.now();
+// Bundle into OUT/.bundle (a sibling of the public dir, never inside it) and remove it when done:
+// Remotion's default bundle() leaves a ~24 MB remotion-webpack-bundle-* dir in the OS temp dir per run.
+const bundleDir = path.join(OUT, '.bundle');
+fs.rmSync(bundleDir, {recursive: true, force: true});
 const serveUrl = await bundle({
   entryPoint: path.join(here, 'src/index.ts'),
   publicDir,
+  outDir: bundleDir,
   webpackOverride: (config) => ({
     ...config,
     resolve: {...config.resolve, modules: [...(config.resolve?.modules ?? ['node_modules']), path.join(REM, 'node_modules')]},
@@ -52,6 +57,7 @@ const serveUrl = await bundle({
 });
 console.log(`bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
+try {
 for (const scene of scenes) {
   if (only && !only.includes(scene.name)) continue;
   const inputProps = {layers: scene.layers, assets: scene.assets ?? {}};
@@ -65,4 +71,7 @@ for (const scene of scenes) {
     await renderMedia({composition, serveUrl, codec: 'h264', outputLocation: path.join(OUT, `${scene.name}.mp4`), inputProps});
   }
   console.log(`scene ${scene.name}: ${((Date.now() - ts) / 1000).toFixed(1)}s`);
+}
+} finally {
+  fs.rmSync(bundleDir, {recursive: true, force: true});
 }

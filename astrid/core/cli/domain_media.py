@@ -180,9 +180,37 @@ def _open_ref(value: str) -> object:
 
 
 def _cmd_open(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.contracts import DomainResult, ErrorObject
+    from astrid.sdk.media_handles import MediaHandleError, is_media_handle, resolve_media_handle, save_media
+
+    ref = parsed.ref
+    handle = None
+    if isinstance(ref, str) and is_media_handle(ref):
+        # ref:/run:/task:/sha256: handles resolve inside the project first.
+        try:
+            descriptor, lineage = resolve_media_handle(parsed.client, parsed.project, ref)
+        except MediaHandleError as exc:
+            return print_result(DomainResult.failure(ErrorObject("not_found", str(exc), {"ref": ref})), as_json=parsed.json)
+        handle, ref = lineage.get("handle"), descriptor["digest"]
+    if parsed.to is not None:
+        if not isinstance(ref, str):
+            return print_result(DomainResult.failure(ErrorObject(
+                "validation_error", "--to takes a media handle or media id", {"field": "to"})), as_json=parsed.json)
+        shown = parsed.client.media.show(parsed.project, ref)
+        if not shown.ok:
+            return print_result(shown, as_json=parsed.json)
+        try:
+            path = save_media(parsed.client, str(shown.data.get("digest") or ref), parsed.to, overwrite=parsed.force)
+        except MediaHandleError as exc:
+            return print_result(DomainResult.failure(ErrorObject("conflict", str(exc), {"to": str(parsed.to)})), as_json=parsed.json)
+        return print_result(DomainResult.success({
+            "kind": "media", "handle": handle or ref, "content_identity": shown.data.get("digest"),
+            "mime_type": shown.data.get("media_type"), "size_bytes": shown.data.get("size"),
+            "local_path": str(path), "availability": "available",
+        }), as_json=parsed.json)
     result = parsed.client.media.open(
         parsed.project,
-        parsed.ref,
+        ref,
         materialize=parsed.materialize,
         cache_root=parsed.cache_root,
         preview_bytes=parsed.preview_bytes,
@@ -289,7 +317,19 @@ def _configure_open(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "ref",
         type=_open_ref,
-        help="Returned structured opening reference (JSON object) or exact project media id.",
+        help="A media handle (ref:<name>, run:<run_id>/<port>#n, sha256:<digest>), a returned "
+        "structured reference (JSON object), or a project media id.",
+    )
+    subparser.add_argument(
+        "--to",
+        default=None,
+        metavar="FILE",
+        help="Write the verified bytes to FILE (e.g. --to T-01.png) and print its path.",
+    )
+    subparser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --to, replace an existing different file.",
     )
     subparser.add_argument(
         "--materialize",
@@ -305,7 +345,7 @@ def _configure_open(subparser: argparse.ArgumentParser) -> None:
         "--preview-bytes",
         type=int,
         default=16 * 1024,
-        help="Maximum inline preview bytes (default: 16384).",
+        help="Inline preview bytes, from 0 (no preview) to --max-bytes (default: 16384).",
     )
     subparser.add_argument(
         "--max-bytes",
