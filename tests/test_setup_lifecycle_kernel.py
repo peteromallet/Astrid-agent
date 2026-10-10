@@ -353,7 +353,8 @@ def test_public_status_uses_only_runtime_observers(monkeypatch, tmp_path, capsys
 
     assert dispatch._dispatch_status(["--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
-    assert seen == ["inspect", "status"]
+    # Runtime (status) is observed before the workspace inspection (S23).
+    assert seen == ["status", "inspect"]
     assert payload["effects"] == ["observe"]
     assert payload["authorization_required"] is False
     assert payload["readiness"]["optional_contribution_auth"] == "no-local-key"

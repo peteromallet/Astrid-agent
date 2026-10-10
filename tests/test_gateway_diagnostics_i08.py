@@ -157,8 +157,10 @@ def test_total_deadline_stops_after_first_helper(monkeypatch: pytest.MonkeyPatch
     runtime = _Observer()
     report, _, _ = collect_diagnostic(runtime, support_root="/Users/private/support")
 
-    assert runtime.inspect_calls == 1
-    assert runtime.observe_calls == 0
+    # The runtime is observed first (S23): it is the first helper and spends the
+    # whole budget, so the workspace inspection must not start.
+    assert runtime.observe_calls == 1
+    assert runtime.inspect_calls == 0
     assert report["problemCode"] == "observation_timeout"
     assert report["failureBoundary"] == "diagnostic-observation"
 
