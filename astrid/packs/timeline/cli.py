@@ -1583,10 +1583,11 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     if working is not None:
         lines.insert(0, _working_banner(working))
     rank = {"error": 0, "warn": 1, "info": 2}
-    from astrid.sdk.timeline_address import name_things
+    from astrid.sdk.timeline_address import cut_ids_by_ordinal, name_things, ordinals_to_ids
     from astrid.sdk.timeline_checkout import Checkout
 
     named = Checkout(copy.deepcopy(dict(bundle)))
+    ordinals = cut_ids_by_ordinal(named)
     # With a working copy, lint shows what is NEW since your checkout; --all shows everything.
     known: set[str] = set()
     if working is not None and not parsed.all:
@@ -1611,7 +1612,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         bucket[finding.code] = bucket.get(finding.code, 0) + 1
         if finding.severity != "info" or parsed.all:
             prefix = "ERROR " if finding.severity == "error" else ""
-            lines.append(prefix + (name_things(text, named, start, end) if start is not None and end is not None else text))
+            shown = name_things(text, named, start, end) if start is not None and end is not None else text
+            lines.append(prefix + ordinals_to_ids(shown, named, ordinals))
 
     for finding in sorted(timeline_findings, key=lambda f: rank.get(f.severity, 3)):
         emit(finding)
@@ -1845,9 +1847,9 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     if getattr(parsed, "preset", None) == "compare" or getattr(parsed, "view", None) == "diff":
         return _cmd_visualize_diff(parsed)
     try:
-        at_note = _resolve_word_at(parsed)
+        at_note = _resolve_visualize_addresses(parsed)
     except ValueError as exc:
-        print(f"error validation_error: {exc}", file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     if at_note:
         print(at_note)
@@ -1887,6 +1889,17 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs["preset"] = parsed.preset
         if getattr(parsed, "window_s", None) is not None:
             inputs["window_s"] = parsed.window_s
+        # a short window shows EVERY frame (the motion preset samples every 2nd); say so in the skill
+        if inputs.get("every") is None and inputs.get("every_frames") is None and parsed.preset in (None, "motion"):
+            span = float(getattr(parsed, "window_s", None) or 1.0)
+            if inputs.get("range"):
+                lo, _, hi = str(inputs["range"]).partition("..")
+                try:
+                    span = float(hi) - float(lo)
+                except ValueError:
+                    pass
+            if span <= 1.0 + 1e-6:
+                inputs["every_frames"] = 1
     layers = [
         part.strip() for value in (getattr(parsed, "layers", None) or []) + (getattr(parsed, "overlay", None) or [])
         for part in str(value).split(",") if part.strip()
@@ -1897,6 +1910,8 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs["cut"] = str(parsed.cut)
     if getattr(parsed, "frame_budget", None) is not None:
         inputs["frame_budget"] = parsed.frame_budget
+    if getattr(parsed, "highlight", None):
+        inputs["highlight"] = parsed.highlight
     if getattr(parsed, "preview", False):
         inputs["preview"] = True
     if inputs.get("view") == "motion":
@@ -2087,6 +2102,77 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
 # Flags that only mean something to the paired filmstrip (input lanes, pages).
 _FILMSTRIP_ONLY = ("sample", "show", "hide", "track", "page_size", "include_media", "detail", "render_run",
                    "occurrence", "clip", "asset", "shot", "context", "neighbors", "include_cuts")
+
+
+def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
+    """``--at``, ``--range`` and ``--highlight`` take the same addresses as every other verb
+    (``'"Building" in v27'``, ``c30``, ``c41.mink``, ``93.5``), read from the working copy unless
+    ``--published``. Ambiguity lists the choices; the line printed says which one was used."""
+    from astrid.sdk.timeline_address import AddressError, resolve
+    from astrid.sdk.timeline_checkout import Checkout, find_draft
+
+    wanted = [getattr(parsed, name, None) for name in ("at", "range", "highlight", "cut")]
+    if not any(isinstance(v, str) and v.strip() for v in wanted):
+        return None
+    ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
+    tl = None
+    if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+        try:
+            path = find_draft(parsed.project, ref, client=parsed.client)
+        except Exception:  # noqa: BLE001 - fall back to the published head
+            path = None
+        tl = Checkout.load(path) if path is not None else None
+    if tl is None:
+        opener = getattr(parsed.client.timelines, "open_bundle", None)
+        if not callable(opener):
+            raise ValueError("an address needs a client that can open the timeline")
+        opened = opener(parsed.project, ref, revision_id=getattr(parsed, "revision_id", None))
+        if not opened.ok or not isinstance(opened.data, Mapping):
+            raise ValueError(f"cannot open the timeline to resolve the address: {opened.error}")
+        tl = Checkout(dict(opened.data["bundle"]))
+    parsed._named = tl  # findings name layers by address (c30b.icon, not "ICON")
+    notes = []
+    try:
+        if getattr(parsed, "highlight", None):
+            target = resolve(tl, parsed.highlight, prefer="thing")
+            if target.kind != "clip":
+                raise ValueError(f"--highlight names a layer (c41.tool-16); {parsed.highlight!r} is a {target.kind}")
+            parsed.highlight = target.clip.id
+            notes.append(f"--highlight {target.address}")
+            if not any(getattr(parsed, n, None) not in (None, "") for n in ("at", "range", "cut", "frame")):
+                parsed.at = f"{min(target.end - 1 / tl.fps, target.start + 0.25):.3f}"
+                notes.append(f"at {float(parsed.at):.2f} s (inside it)")
+        cut = getattr(parsed, "cut", None)
+        if isinstance(cut, str) and cut.strip().lower().startswith("c"):
+            from astrid.sdk.timeline_address import cut_ids_by_ordinal
+
+            by_id = {cid: n for n, cid in cut_ids_by_ordinal(tl).items()}
+            if cut.strip().lower() not in by_id:
+                raise ValueError(f"no cut {cut}; cuts are {_id_span(list(tl._cut_spans()))}")
+            parsed.cut = str(by_id[cut.strip().lower()])
+            notes.append(f"--cut {cut.strip().lower()}")
+        at = getattr(parsed, "at", None)
+        if isinstance(at, str) and at.strip() and not re.fullmatch(r"\s*@?[\d.:]+s?\s*", at):
+            target = resolve(tl, at, prefer="time")
+            parsed.at = f"{target.start:.3f}"
+            notes.append(f"--at {at!r}: {target.address} = {target.start:.2f} s")
+        rng = getattr(parsed, "range", None)
+        if isinstance(rng, str) and rng.strip() and not re.fullmatch(r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*", rng):
+            target = resolve(tl, rng, prefer="time")
+            end = target.end if target.end > target.start else target.start + 1.0 / tl.fps
+            parsed.range = f"{target.start:.3f}..{end:.3f}"
+            notes.append(f"--range {rng!r}: {target.address} = {target.start:.2f}–{end:.2f} s")
+    except AddressError as exc:
+        raise ValueError(str(exc)) from None
+    return " · ".join(notes) or None
+
+
+def _id_span(ids: list[str]) -> str:
+    """``c01…c42 (+ c30b)``: the valid cut ids in one short phrase."""
+    plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
+    extra = [c for c in ids if c not in plain]
+    head = f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)
+    return head + (f" (+ {', '.join(extra)})" if extra else "")
 
 
 def _resolve_word_at(parsed: argparse.Namespace) -> str | None:
@@ -2336,6 +2422,15 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     else:
         lines.append(f"  wall {_seconds(timing.get('wall_s'))} (executor timing unavailable: the host predates timing.json)")
     findings = [str(line) for line in outputs.get("findings") or []]
+    named = getattr(parsed, "_named", None)
+    if findings and named is not None:
+        from astrid.sdk.timeline_address import name_things
+
+        lo = float(window_info.get("start", 0) or 0)
+        hi = float(window_info.get("end", 0) or named.duration)
+        from astrid.sdk.timeline_address import ordinals_to_ids
+
+        findings = [ordinals_to_ids(name_things(line, named, lo, hi), named) for line in findings]
     if findings:
         lines.append("findings:")
         lines.extend(f"  {line}" for line in findings[:14])
@@ -3216,8 +3311,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
     subparser.add_argument("--at", default=None,
-                           help="A moment: seconds (7.2), or a spoken word or on-screen text in quotes (--at viral) "
-                                "resolved to its first onset. Alone: one frame; with --preset motion: 1 s around it.")
+                           help="Any address: seconds (7.2), a word ('\"Building\" in v27', viral), a cut (c30), a layer "
+                                "(c41.mink). Ambiguous words list their scoped forms. Alone: one frame; with --preset "
+                                "motion: 1 s around it, every frame.")
     subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
     subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
     subparser.add_argument(
@@ -3233,6 +3329,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         help="With a working copy: the published version and the working copy for the same cuts, labelled.",
     )
     subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
+    subparser.add_argument("--highlight", default=None, metavar="ADDRESS",
+                           help="Outline one layer over the frames (c41.tool-16; implies --layer bounds); "
+                                "with no window, the frames are taken inside it.")
     subparser.add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
     subparser.add_argument("--asset", default=None, help="Focus a canonical asset key.")
     subparser.add_argument(
@@ -3583,7 +3682,7 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
     named = len(tl._cut_groups())
     summary = f"{named} cuts · {len(tl.clips())} clips · {len(tl.words())} words" if named else _cuts_summary(tl)
     print(f'working copy "{name}" of {parsed.timeline} · from published {_short_rev(head)} · {summary}'
-          + ("" if existed and not parsed.fresh else " (new)"))
+          + ("" if existed and not parsed.fresh else " · a new working copy, made from the published head"))
     print("show, visualize, lint and diff now read this working copy (--published for the live version)")
     where = f"{parsed.timeline} --project {parsed.project}"
     print("next:")

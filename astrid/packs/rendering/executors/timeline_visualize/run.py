@@ -258,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preset", help="window preset: scan, motion, beat, frame or cut")
     parser.add_argument("--window", dest="window_s", type=float, help="window width in seconds around --at")
     parser.add_argument("--rules", help="project rules JSON resolved by the client (thresholds, severities)")
+    parser.add_argument("--highlight", help="a clip id to outline over the frames (implies the bounds layer)")
     parser.add_argument("--cuts", help="contact view: only these cut numbers (comma-separated)")
     parser.add_argument("--render-every", dest="render_every", type=float, default=None,
                         help="contact view with a render: seconds between sampled frames (default 5)")

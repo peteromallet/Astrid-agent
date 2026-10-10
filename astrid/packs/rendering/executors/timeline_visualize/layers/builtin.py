@@ -497,7 +497,8 @@ def render_strip(ctx: LayerContext) -> LayerResult:
             continue
         thumb = source.resize((thumb_w, thumb_h), Image.LANCZOS)
         if bounds:
-            thumb = overlay_bounds(thumb, ctx.elements, frame / ctx.fps, ctx.fps, labels=False)
+            thumb = overlay_bounds(thumb, ctx.elements, frame / ctx.fps, ctx.fps, labels=False,
+                                   highlight=ctx.shared.get("highlight"))
         image.paste(thumb, (x, y))
         t = frame / ctx.fps
         inside = float(ctx.cut["start"]) <= t < float(ctx.cut["end"])
@@ -767,8 +768,11 @@ FROZEN_CHECK = Check("frozen", "pixel holds longer than max_frozen_s in the capt
 BOUND_COLOURS = {"face": "#ef4444", "text": "#facc15", "card": "#38bdf8", "sprite": "#4ade80", "panel": "#c084fc"}
 
 
-def overlay_bounds(image: Image.Image, elements: Sequence[model.Element], t: float, fps: float, *, labels: bool = True) -> Image.Image:
-    """Declared element bounds plus title/action-safe margins, drawn on a frame of any size."""
+def overlay_bounds(image: Image.Image, elements: Sequence[model.Element], t: float, fps: float, *, labels: bool = True,
+                   highlight: str | None = None) -> Image.Image:
+    """Declared element bounds plus title/action-safe margins, drawn on a frame of any size.
+
+    ``highlight`` (a clip id) outlines that one layer thick and labelled; the others go thin and grey."""
     out = image.copy()
     draw = ImageDraw.Draw(out)
     sx, sy = out.size[0] / model.CANVAS[0], out.size[1] / model.CANVAS[1]
@@ -779,8 +783,17 @@ def overlay_bounds(image: Image.Image, elements: Sequence[model.Element], t: flo
     for fraction, colour in ((model.ACTION_SAFE, "#64748b"), (model.TITLE_SAFE, "#94a3b8")):
         draw.rectangle(scaled(model.safe_rect(fraction)), outline=colour, width=1)
     for element in elements:
+        chosen = bool(highlight) and (str(element.id) == highlight or str(element.id).endswith(":" + highlight)
+                                      or str(element.id).endswith(highlight))
         for box in model.boxes_at(element, t, fps):
             if box.kind == "plate":
+                continue
+            if highlight:
+                colour = "#ff7a2e" if chosen else "#64748b"
+                draw.rectangle(scaled(box.rect), outline=colour, width=3 if chosen else 1)
+                if chosen:
+                    x, y = max(0, box.rect[0] * sx + 2), max(0, box.rect[1] * sy - 12)
+                    draw_text(draw, (x, y), highlight[-24:], 11, colour)
                 continue
             colour = BOUND_COLOURS.get(box.kind, "#ffffff")
             draw.rectangle(scaled(box.rect), outline=colour, width=2 if box.kind == "face" else 1)

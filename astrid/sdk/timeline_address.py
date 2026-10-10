@@ -41,6 +41,7 @@ class Target:
     word: Any = None
     cut: str | None = None
     note: str | None = None         # e.g. how an alias was read
+    param: str | None = None        # kind param: c41.tool-16.x
 
     def __str__(self) -> str:
         span = f"{self.start:.2f} s" if abs(self.end - self.start) < 1e-6 else f"{self.start:.2f}–{self.end:.2f} s"
@@ -100,10 +101,20 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
     if mo.CUT_ID_RE.match(lowered):
         if lowered in tl._cut_spans():
             return [cut_target(tl, lowered)]
-        return []
+        ids = list(tl._cut_spans())
+        plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
+        extra = [c for c in ids if c not in plain]
+        span = (f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)) + (f" (+ {', '.join(extra)})" if extra else "")
+        raise AddressError(f"no cut {lowered}; cuts are {span}")
     m = CLIP_ADDR_RE.match(raw)
     if m:
-        return _clip_address(tl, m.group(1).lower(), m.group(2))
+        found = _clip_address(tl, m.group(1).lower(), m.group(2))
+        if not found and "." in m.group(2):  # params are part of the address: c41.tool-16.x
+            layer, _, param = m.group(2).rpartition(".")
+            clips = _clip_address(tl, m.group(1).lower(), layer)
+            return [Target("param", f"{c.address}.{param}", c.start, c.end, clip=c.clip, cut=c.cut, note=c.note, param=param)
+                    for c in clips]
+        return found
     if MOMENT_HINT.search(raw):
         words = _moment(tl, raw)
         if words:
@@ -311,20 +322,28 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
             out.append(f"  stand-in for {intent.standin(clip.data)[0]}")
         if intent.slot(clip.data):
             out.append(f"  slot    {intent.slot(clip.data)}")
+        from astrid.sdk.timeline_checkout import formula_short, to_canvas
+
         params = dict(clip.data.get("params") or {})
         formulas = intent.formulas(clip.data)
         schema = element_schema(clip.element)
         props = schema.get("properties") or {}
-        out.append("  params  (every one, typed; ƒ = computed by a formula from the moment or slot shown)")
+        defaults = schema.get("defaults") or {}
+        out.append("  params  (every one, as you write them: positions in canvas px; ƒ = computed by a formula; "
+                   "address one with " + f"{clip.address}.KEY)")
         width = max([len(k) for k in params] + [6])
         for key in sorted(params):
-            value = params[key]
-            shown = json.dumps(value, ensure_ascii=False)
-            kind = type(value).__name__.replace("str", "string").replace("dict", "object").replace("list", "array")
+            value = to_canvas(clip.element, key, params[key])
+            exact = formulas.get(f"params.{key}")
+            shown = (f"{formula_short(exact, clip.element)} = " if exact else "") + json.dumps(value, ensure_ascii=False)
+            kind = _type_of(props[key]) if key in props else type(value).__name__.replace("str", "string").replace("dict", "object").replace("list", "array")
+            unit = " canvas px" if key in ("x", "y") else ""
             flagged = [p for p in formulas if p == f"params.{key}" or p.startswith(f"params.{key}[") or p.startswith(f"params.{key}.")]
             mark = "ƒ " if flagged else "  "
             note = "" if key in props or not props else "   (not declared by the element)"
-            out.append(f"    {mark}{key:<{width}}  {shown}   [{kind}]{note}")
+            default = f"  default {json.dumps(to_canvas(clip.element, key, defaults[key]))}" if key in defaults else ""
+            out.append(f"    {mark}{key:<{width}}  {shown}   [{kind}{unit}]{default}{note}")
+            flagged = [p for p in flagged if p != f"params.{key}"]
             groups: dict[str, list[str]] = {}
             for path in flagged:
                 head, _, leaf = path.removeprefix("params.").rpartition(".")
@@ -334,12 +353,37 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         if props:
             missing = [k for k in props if k not in params]
             if missing:
-                out.append(f"  {clip.element} also takes: " + " · ".join(f"{k} ({_type_of(props[k])})" for k in missing))
+                out.append(f"  not set (the element's default applies): " + " · ".join(
+                    f"{k}={json.dumps(to_canvas(clip.element, k, defaults[k]))}" if k in defaults else f"{k} ({_type_of(props[k])})"
+                    for k in missing))
             out.append(f"  (from {schema.get('path', 'element.yaml').split('/packs/', 1)[-1]})")
         said = [w for w in tl.words() if w.start < clip.end and w.end > clip.start]
         if said:
             out.append(f'  while it is on: "{" ".join(w.text for w in said)}"')
         out.append(f"next: timelines edit {where} --clip {clip.address} --set KEY=VALUE  ·  --on MOMENT  ·  --until MOMENT")
+    elif target.kind == "param":
+        from astrid.sdk.timeline_checkout import formula_short, to_canvas
+
+        clip, key = target.clip, target.param
+        schema = element_schema(clip.element)
+        spec = (schema.get("properties") or {}).get(key) or {}
+        stored = (clip.data.get("params") or {}).get(key)
+        value = to_canvas(clip.element, key, stored)
+        expr = intent.formulas(clip.data).get(f"params.{key}")
+        unit = "canvas px" if key in ("x", "y") else (spec.get("type") or "value")
+        out.append(f"{target.address} · {clip.element} param · {unit}" + (f"  ({target.note})" if target.note else ""))
+        out.append(f"  value    {json.dumps(value, ensure_ascii=False) if stored is not None else '(not set: the default applies)'}"
+                   + (f"   (stored {stored} on the sprite's 320×180 grid)" if value != stored and stored is not None else ""))
+        if expr:
+            out.append(f"  formula  {formula_short(expr, clip.element)} = {formula_text(expr)} (re-computed on every check)")
+        if key in (schema.get("defaults") or {}):
+            out.append(f"  default  {json.dumps(to_canvas(clip.element, key, schema['defaults'][key]))}")
+        if spec:
+            out.append(f"  schema   {_type_of(spec)}" + (f" — {spec.get('description')}" if spec.get("description") else ""))
+        elif schema.get("properties"):
+            out.append(f"  schema   not declared by {clip.element} (it takes: {', '.join(sorted(schema['properties']))})")
+        hint = f"--set {key}=VALUE" + (" (replaces the formula)  ·  --set '" + key + "=ƒ(MARK ±px)' (keeps it computed)" if expr else "")
+        out.append(f"next: timelines edit {where} --clip {clip.address} {hint}")
     elif target.kind == "word":
         word = target.word
         try:
@@ -428,3 +472,29 @@ def name_things(text: str, tl: Any, lo: float, hi: float) -> str:
         return pick(f"bare {token}", by(lambda c: c.asset == token)) or token
 
     return re.sub(r"(?<![\w.-])[A-Z][A-Z0-9_-]{1,}(?![\w.-])", bare, out)
+
+
+def cut_ids_by_ordinal(tl: Any) -> dict[int, str]:
+    """``{picture-cut number: cut id}``: show/lint/visualize count picture cuts; the id is what you type."""
+    out = {}
+    for cut in tl.cuts:
+        pic = cut.picture
+        cid = intent.cut_of(pic.data) if pic is not None else None
+        if cid:
+            out[cut.n] = cid
+    return out
+
+
+def ordinals_to_ids(text: str, tl: Any, mapping: dict[int, str] | None = None) -> str:
+    """``cut 31`` → ``c30b``; ``cuts 30–31`` → ``c30–c30b`` (one numbering: cut ids)."""
+    ids = mapping if mapping is not None else cut_ids_by_ordinal(tl)
+    if not ids:
+        return text
+
+    def one(m: re.Match) -> str:
+        n = int(m.group(1))
+        return ids.get(n, m.group(0)) if m.group(0).startswith("cut ") is False else ids.get(n, m.group(0))
+
+    text = re.sub(r"\bcuts (\d+)[–-](\d+)\b",
+                  lambda m: f"cuts {ids.get(int(m.group(1)), m.group(1))}–{ids.get(int(m.group(2)), m.group(2))}", text)
+    return re.sub(r"\bcut #?(\d+)\b", lambda m: ids.get(int(m.group(1)), m.group(0)), text)

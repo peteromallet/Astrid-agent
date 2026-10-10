@@ -288,6 +288,11 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError('--preview applies to --view motion (an animated GIF of that cut for humans)')
     result['preview'] = preview
     result['layers'] = layer_names(values.get('layers'))
+    # one layer to outline over the frames (a clip id, from `--highlight c41.tool-16`); implies bounds
+    highlight = values.get('highlight')
+    result['highlight'] = str(highlight) if highlight not in (None, '') else None
+    if result['highlight'] and 'bounds' not in (result['layers'] or ()):
+        result['layers'] = tuple(result['layers'] or ()) + ('bounds',)
     result['rules'] = rules_value(values.get('rules'))
     result['cuts'] = cut_numbers(values.get('cuts'))
     if result['cuts'] and not contact:

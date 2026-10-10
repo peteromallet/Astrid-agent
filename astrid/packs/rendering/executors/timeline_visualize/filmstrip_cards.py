@@ -1776,6 +1776,7 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
                                                   context.plot_right - context.plot_left)
         context.shared['preview'] = bool(options.get('preview'))
         context.shared['rules'] = options.get('rules') or {}
+        context.shared['highlight'] = options.get('highlight')
         sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
         paths = {'png': sheet['png']}
         if sheet.get('preview'):
@@ -1794,7 +1795,8 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
             contact_fps = float(Fraction(*snapshot['fps_rational']))
 
             def overlay(image, seconds):
-                return overlay_bounds(image, contact_elements, seconds, contact_fps, labels=False)
+                return overlay_bounds(image, contact_elements, seconds, contact_fps, labels=False,
+                                      highlight=options.get('highlight'))
         from .contact_sheet import contact_band_width, contact_silence_findings
         audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns))
         paths = {'png': static_contact_png(
