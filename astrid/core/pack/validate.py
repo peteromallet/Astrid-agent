@@ -574,17 +574,20 @@ class PackValidator:
         except PackValidationError as exc:
             self.errors.append(f"pack.yaml: {exc}")
             return
-        for comp_dir in iter_executor_roots(pack):
+        # Iterate the declared roots once; the discovery pass reuses them.
+        executor_roots = list(iter_executor_roots(pack))
+        orchestrator_roots = list(iter_orchestrator_roots(pack))
+        for comp_dir in executor_roots:
             manifest_path = find_component_manifest(comp_dir, "executor")
             if manifest_path is not None:
                 self._validate_component_manifest_file(pack, comp_dir, manifest_path, "executor")
-        for comp_dir in iter_orchestrator_roots(pack):
+        for comp_dir in orchestrator_roots:
             manifest_path = find_component_manifest(comp_dir, "orchestrator")
             if manifest_path is not None:
                 self._validate_component_manifest_file(
                     pack, comp_dir, manifest_path, "orchestrator"
                 )
-        self._validate_discovery_folders(pack)
+        self._validate_discovery_folders(pack, executor_roots, orchestrator_roots)
         for kind, elem_dir in iter_element_roots(pack):
             manifest_path = find_component_manifest(elem_dir, "element")
             if manifest_path is not None:
@@ -674,7 +677,12 @@ class PackValidator:
         if not stage_path.is_file():
             self.warnings.append(f"{self._rel(stage_path)}: STAGE.md not found")
 
-    def _validate_discovery_folders(self, pack: PackDefinition) -> None:
+    def _validate_discovery_folders(
+        self,
+        pack: PackDefinition,
+        executor_roots: list[Path],
+        orchestrator_roots: list[Path],
+    ) -> None:
         """Load every executor/orchestrator folder discovery would find under this pack.
 
         Discovery scans the whole packs root for executor and orchestrator folders,
@@ -686,10 +694,10 @@ class PackValidator:
         from astrid.core.execution.orchestrator.folder import discover_folder_orchestrator_roots
 
         checked: set[Path] = set()
-        for comp_dir in iter_executor_roots(pack):
+        for comp_dir in executor_roots:
             if find_component_manifest(comp_dir, "executor") is not None:
                 checked.add(comp_dir.resolve())
-        for comp_dir in iter_orchestrator_roots(pack):
+        for comp_dir in orchestrator_roots:
             if find_component_manifest(comp_dir, "orchestrator") is not None:
                 checked.add(comp_dir.resolve())
         for folder in discover_folder_executor_roots(pack.root):
