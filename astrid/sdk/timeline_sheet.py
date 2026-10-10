@@ -41,8 +41,9 @@ class SheetError(ValueError):
 # ---------------------------------------------------------------- render
 
 def render_sheet(tl: Any, *, start: float | None = None, end: float | None = None, banner: str | None = None,
-                 film: str | None = None, cuts: Iterable[str] | None = None) -> str:
-    """The cut sheet for the cuts that overlap [start, end) (all cuts by default), or exactly ``cuts``."""
+                 film: str | None = None, cuts: Iterable[str] | None = None, detail: bool = False) -> str:
+    """The cut sheet for the cuts that overlap [start, end) (all cuts by default), or exactly ``cuts``.
+    ``detail``: long values (``lines=``, ``badges=``, ``inset=``) in full, as editable JSON, instead of ``…``."""
     groups = tl._cut_groups()
     if not groups:
         return "this timeline has no named cuts yet (import its intent first)\n"
@@ -115,7 +116,7 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         if said:
             out.append(f"       > {said}")
         layers = _ordered(g["clips"] + _loose_in(tl, lo, hi))
-        rows = [_layer_row(tl, c, lo, hi, is_picture=(pic is not None and c.data is pic.data)) for c in layers]
+        rows = [_layer_row(tl, c, lo, hi, is_picture=(pic is not None and c.data is pic.data), detail=detail) for c in layers]
         out += _align(rows)
         for clip in carried.get(g["id"], []):
             out.append(f"         ↳ {clip.address} carries on over this cut (until {clip.end:.2f} s)")
@@ -209,7 +210,7 @@ def _is_number(text: str) -> bool:
         return False
 
 
-def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool) -> list[str]:
+def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool, detail: bool = False) -> list[str]:
     gutter = f"{clip.start:6.2f}" if abs(clip.start - lo) > 0.5 / tl.fps else ""
     name = intent.layer_of(clip.data) or clip.id
     params = dict(clip.params)
@@ -234,9 +235,13 @@ def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool) ->
             bits.append(f"{key}={formula_short(exact, clip.element)}")
             continue
         if any(p.startswith((f"params.{key}[", f"params.{key}.")) for p in formulas):
-            bits.append(f"{key}=ƒ…")
+            bits.append(f"{key}=ƒ…")  # parts of it are computed: edit them by address (--set {key}[0].at=…)
             continue
         shown = _value(to_canvas(clip.element, key, value))
+        if detail and len(shown) > 28:
+            shown = json.dumps(to_canvas(clip.element, key, value), ensure_ascii=False, separators=(",", ":"))
+            bits.append(f"{key}={shown}")
+            continue
         bits.append(f"{key}={shown}" if len(shown) <= 28 else f"{key}=…")
     timing = []
     on = intent.on(clip.data)

@@ -648,6 +648,12 @@ def boxes_at(element: Element, t: float, fps: float) -> list[Box]:
         return [Box(element, "sprite", (props["x"], props["y"], props["x"] + size[0] * scale, props["y"] + size[1] * scale),
                     element.label)]
     if kind == "am-type":
+        from astrid.core.timeline import text_fit
+
+        measured = text_fit.type_box({**dict(params), "text": _text(params)})
+        if measured is not None:  # the fonts' own widths (the estimate below ran short: a box ending at "ADAP")
+            return [Box(element, "text", (measured["x0"], measured["y0"], measured["x1"], measured["y1"]), element.label,
+                        text_px=measured["size"])]
         size = _num(params.get("size"), 28 if params.get("font") == "label" else 96)
         width = _num(params.get("width"), 1200)
         x, y = _num(params.get("x"), 96), _num(params.get("y"), 96)

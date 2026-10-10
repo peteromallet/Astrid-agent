@@ -1549,6 +1549,27 @@ class Checkout(_Suggest):
             intent.set_deliberate(pic.data, hold in (True, "deliberate", "on", "yes"))
         return pic
 
+    def _text_overflow(self) -> list[str]:
+        """Type whose measured box leaves title-safe, or has a word wider than its width (the fonts' widths)."""
+        from astrid.core.timeline import text_fit
+        from astrid.sdk.timeline_address import _safe_note
+
+        out = []
+        for clip in self.clips(element="am-type"):
+            box = text_fit.type_box(dict(clip.params))
+            if box is None:
+                return []
+            note = _safe_note(box)
+            width = float(clip.params.get("width") or 1200)
+            font = "label" if clip.params.get("font") == "label" else "display"
+            if box["overflow"] > 1 or "outside" in note:
+                fits = text_fit.max_size(str(clip.params.get("text") or ""), font=font,
+                                         width=min(width, text_fit_safe_width(box, width)), lines=len(box["lines"]))
+                out.append(f"{clip.address}: \"{(clip.text or '')[:30]}\" measures {box['w']:.0f}×{box['h']:.0f} px at size "
+                           f"{box['size']:g}" + (f"; a word runs {box['overflow']:.0f} px past width {width:g}" if box["overflow"] > 1 else "")
+                           + (f"; {note}" if "outside" in note else "") + f" (size {fits:g} fits; or move x/width)")
+        return out
+
     def _stale_whys(self) -> list[str]:
         """Cuts whose why was written when they had other layers (it may no longer say what is there)."""
         out = []
@@ -2534,6 +2555,7 @@ class Checkout(_Suggest):
         if blocking:
             valid = False
         problems += [f"why     {line}" for line in self._stale_whys()]
+        problems += [f"text    {line}" for line in self._text_overflow()]
         music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
         if music_end is not None and music_end < self.duration - 0.5:
             problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
@@ -3210,6 +3232,11 @@ def _text_where_number(path: str, value: Any, spec: Mapping[str, Any]) -> list[t
             if isinstance(spec["properties"].get(key), Mapping):
                 out += _text_where_number(f"{path}.{key}", item, spec["properties"][key])
     return out
+
+
+def text_fit_safe_width(box: Mapping[str, Any], width: float) -> float:
+    """The width a type box can use from where it starts to the title-safe right edge (1824 px)."""
+    return max(1.0, 1824.0 - float(box["x0"]))
 
 
 def _lint_key(line: str) -> str:

@@ -247,3 +247,18 @@ def test_a_range_list_picks_exactly_those_cuts():
     sheet = render_sheet(tl, cuts=range_cuts(tl, "c1,c2"))
     assert "┃ c1 " in sheet and "┃ c2 " in sheet and "┃ c1a" not in sheet
     assert apply_sheet(tl, sheet) == []
+
+
+def test_detail_prints_long_values_as_editable_json_and_round_trips():
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    card = tl.clip("c2.card")
+    card.data["params"]["inset"] = {"top": 120, "left": 64, "right": 64, "bottom": 40}
+    assert "inset=…" in render_sheet(tl)
+    sheet = render_sheet(tl, detail=True)
+    assert 'inset={"top":120,"left":64,"right":64,"bottom":40}' in sheet and apply_sheet(tl, sheet) == []
+    apply_sheet(tl, sheet.replace('"top":120', '"top":90'))
+    assert card.params["inset"]["top"] == 90

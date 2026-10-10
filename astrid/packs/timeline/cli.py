@@ -1287,7 +1287,8 @@ def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     except (SheetError, AddressError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts), end="")
+    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts,
+                       detail=bool(getattr(parsed, "detail", False))), end="")
     where = f"{parsed.ref} --project {parsed.project}"
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
     if sys.stdout.isatty():

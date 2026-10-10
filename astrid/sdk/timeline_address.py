@@ -357,6 +357,16 @@ def _resolved(tl: Any, clip: Any, path: str, expr: Any) -> str:
     return f" → {value:g}"
 
 
+TITLE_SAFE = (96.0, 54.0, 1824.0, 1026.0)  # 90 % of 1920×1080, as lint's SAFE check
+
+
+def _safe_note(box: dict[str, Any]) -> str:
+    over = {"left": TITLE_SAFE[0] - box["x0"], "top": TITLE_SAFE[1] - box["y0"],
+            "right": box["x1"] - TITLE_SAFE[2], "bottom": box["y1"] - TITLE_SAFE[3]}
+    side = max(over, key=lambda k: over[k])
+    return "inside title-safe" if over[side] <= 2 else f"{over[side]:.0f} px outside title-safe ({side})"
+
+
 def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: str = "P") -> str:
     """The complete record of a target, as plain text: nothing truncated, every time resolved."""
     import json
@@ -439,6 +449,20 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
                     f"{k}={json.dumps(to_canvas(clip.element, k, defaults[k]))}" if k in defaults else f"{k} ({_type_of(props[k])})"
                     for k in missing))
             out.append(f"  (from {schema.get('path', 'element.yaml').split('/packs/', 1)[-1]})")
+        if clip.element == "am-type":
+            from astrid.core.timeline import text_fit
+
+            box = text_fit.type_box(dict(clip.params))
+            if box is not None:
+                font = "label" if clip.params.get("font") == "label" else "display"
+                width = float(clip.params.get("width") or 1200)
+                fits = text_fit.max_size(str(clip.params.get("text") or ""), font=font, width=width, lines=len(box["lines"]))
+                one = text_fit.max_size(str(clip.params.get("text") or ""), font=font, width=width, lines=1)
+                out.append(f"  text box {box['w']:.0f}×{box['h']:.0f} px at size {box['size']:g} ({len(box['lines'])} line(s); "
+                           f"x {box['x0']:.0f}–{box['x1']:.0f}, y {box['y0']:.0f}–{box['y1']:.0f}) · in width {width:g}: "
+                           f"one line up to size {one:g}, {len(box['lines'])} line(s) up to {fits:g}"
+                           + (f" · a word runs {box['overflow']:.0f} px past the width" if box["overflow"] else "")
+                           + f" · {_safe_note(box)}")
         said = [w for w in tl.words() if w.start < clip.end and w.end > clip.start]
         if said:
             out.append(f'  while it is on: "{" ".join(w.text for w in said)}"')
