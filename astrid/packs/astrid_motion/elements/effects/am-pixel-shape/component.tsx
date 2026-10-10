@@ -1,11 +1,12 @@
 import type {ReactElement} from 'react';
-import {AbsoluteFill} from 'remotion';
+import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import {COLOR, LOGICAL_PX, finiteNumber, integerIn, narrowParams, oneOf, type ElementComponentProps} from '../../_shared/am';
-import {PIXEL_SHAPES, shapeCells, type PixelShape} from './shape-cells';
+import {PIXEL_SHAPES, isBlinking, shapeCells, type PixelShape} from './shape-cells';
 
 // am-pixel-shape: a procedural pixel mark on the sticker grid. No asset, no
-// animation. Each cell is px_scale screen px; the shape's top-left sits at
-// (x, y) logical px, the same placement as am-sprite.
+// animation except blinkAt, which hides it for two frames as am-sprite does.
+// Each cell is px_scale screen px; the shape's top-left sits at (x, y) logical
+// px, the same placement as am-sprite.
 
 type Params = {
   shape?: PixelShape;
@@ -16,9 +17,11 @@ type Params = {
   w?: number;
   h?: number;
   stroke?: number;
+  blinkAt?: number | number[];
 };
 
 export default function AmPixelShape(props: ElementComponentProps): ReactElement | null {
+  const frame = useCurrentFrame();
   const params = narrowParams<Params>(props.params);
   const shape = oneOf<PixelShape>(params.shape, PIXEL_SHAPES, 'ring');
   const px = integerIn(params.px_scale, 1, 24, LOGICAL_PX);
@@ -28,6 +31,9 @@ export default function AmPixelShape(props: ElementComponentProps): ReactElement
   const color = typeof params.color === 'string' && params.color !== '' ? params.color : COLOR.charcoal;
   const x = finiteNumber(params.x, 0);
   const y = finiteNumber(params.y, 0);
+  if (isBlinking(frame, params.blinkAt)) {
+    return null;
+  }
 
   const cells = shapeCells(shape, w, h, stroke);
   // One path, one unit square per cell: hard edges, no anti-aliasing seams.

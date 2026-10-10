@@ -50,3 +50,10 @@ export const shapeCells = (shape: PixelShape, w: number, h: number, stroke: numb
   }
   return cells;
 };
+
+// Blink rule, the same as am-sprite's blinkAt: the shape hides for two frames
+// starting at each listed clip frame. A number or an array of numbers.
+export const isBlinking = (frame: number, blinkAt: number | number[] | null | undefined): boolean => {
+  const blinks: number[] = Array.isArray(blinkAt) ? blinkAt : typeof blinkAt === 'number' ? [blinkAt] : [];
+  return blinks.some((at) => frame >= at && frame < at + 2);
+};

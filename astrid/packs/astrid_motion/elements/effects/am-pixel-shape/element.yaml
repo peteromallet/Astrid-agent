@@ -3,7 +3,7 @@ id: am-pixel-shape
 kind: effect
 pack_id: astrid_motion
 short_description: Procedural pixel shape (ring, dot, underline or arrow) on the sticker pixel grid.
-description: Draws a small hard-edged pixel shape with no asset. Each cell is px_scale screen px (6 matches am-sprite at scale 6, so a ring or full stop sits on the same grid as the stickers). Shapes are ring (ellipse outline), dot (filled ellipse, a pixel full stop at 3x3), underline (bottom rows of the box) and arrow (a shaft with a right-pointing head). Position x and y are logical px on the 320x180 grid, like am-sprite. Static; it does not animate.
+description: Draws a small hard-edged pixel shape with no asset. Each cell is px_scale screen px (6 matches am-sprite at scale 6). Shapes are ring, dot (a 3x3 full stop), underline and arrow. x and y are logical px on the 320x180 grid, like am-sprite. Static, except blinkAt, which hides it for two frames at each listed clip frame, as am-sprite does.
 keywords:
   - pixel
   - shape
@@ -13,6 +13,7 @@ keywords:
   - arrow
   - sticker
   - procedural
+  - blink
 outputs:
   - name: clip
     type: clip
@@ -73,3 +74,12 @@ schema:
       minimum: 1
       maximum: 20
       description: Stroke thickness in cells (ring, underline, arrow shaft).
+    blinkAt:
+      description: Clip frame(s) where the shape hides for two frames, as am-sprite blinkAt. Without it the shape never hides.
+      oneOf:
+      - type: integer
+        minimum: 0
+      - type: array
+        items:
+          type: integer
+          minimum: 0

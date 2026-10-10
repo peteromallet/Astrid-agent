@@ -49,6 +49,29 @@ class AmPixelShapeGeometryTest(unittest.TestCase):
         self.assertNotIn([0, 0], cells)
 
 
+def _blinking(frame: int, blink_at) -> bool:
+    script = (
+        f"const m = await import({json.dumps(CELLS.as_uri())});"
+        f"console.log(JSON.stringify(m.isBlinking({frame}, {json.dumps(blink_at)})));"
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True
+    ).stdout
+    return json.loads(out)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the blink rule")
+class AmPixelShapeBlinkTest(unittest.TestCase):
+    def test_blink_hides_for_two_frames_at_each_listed_frame(self) -> None:
+        # Same rule as am-sprite blinkAt: frames 14, 28, 42 hide the shape for two frames each.
+        hidden = [f for f in range(48) if _blinking(f, [14, 28, 42])]
+        self.assertEqual(hidden, [14, 15, 28, 29, 42, 43])
+
+    def test_single_number_and_missing_blink_at(self) -> None:
+        self.assertEqual([f for f in range(6) if _blinking(f, 3)], [3, 4])
+        self.assertFalse(any(_blinking(f, None) for f in range(10)))
+
+
 class AmPixelShapeElementTest(unittest.TestCase):
     def test_element_loads_with_sticker_grid_defaults(self) -> None:
         definition = load_element_definition(
@@ -65,6 +88,14 @@ class AmPixelShapeElementTest(unittest.TestCase):
         self.assertIn("LOGICAL_PX", source)
         self.assertIn("shapeCells(shape, w, h, stroke)", source)
         self.assertIn('shapeRendering="crispEdges"', source)
+
+    def test_blink_at_is_declared_and_used(self) -> None:
+        definition = load_element_definition(
+            ELEMENT, kind="effects", source="pack:astrid_motion", editable=False, priority=30
+        )
+        self.assertIn("blinkAt", definition.schema["properties"])
+        source = (ELEMENT / "component.tsx").read_text(encoding="utf-8")
+        self.assertIn("isBlinking(frame, params.blinkAt)", source)
 
 
 if __name__ == "__main__":
