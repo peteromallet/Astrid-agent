@@ -223,6 +223,36 @@ def test_snap_rejects_grid_larger_than_source() -> None:
         px.snap_image(_sprite(), grid_width=400, grid_height=300, fit="none")
 
 
+def test_snap_grid_error_names_pixel_cutout_trim_when_source_is_a_trimmed_cutout() -> None:
+    # Two poses from pixel.cutout with the default trim: the trimmed frame is smaller than the grid we want.
+    rgba, report = px.cutout_image(_sprite(), mode="chroma", tolerance=48, trim=True, trim_padding=2)
+    trimmed_w, trimmed_h = report["output"]["width"], report["output"]["height"]
+    assert (trimmed_w, trimmed_h) == (28, 24)
+    with pytest.raises(AstridError) as excinfo:
+        px.snap_image(rgba, grid_width=trimmed_w + 10, grid_height=trimmed_h + 10, fit="none")
+    message = str(excinfo.value)
+    assert f"the source was trimmed to {trimmed_w}x{trimmed_h} by pixel.cutout" in message
+    assert "trim: false" in message
+    assert "pixel.strip" in message
+
+
+def test_snap_grid_error_without_transparent_margins_has_no_trim_hint() -> None:
+    with pytest.raises(AstridError) as excinfo:
+        px.snap_image(_sprite(), grid_width=400, grid_height=300, fit="none")
+    message = str(excinfo.value)
+    assert "larger than the 40x30 source" in message
+    assert "trimmed" not in message
+    assert "trim: false" not in message
+
+
+def test_snap_grid_error_trim_hint_needs_all_four_edges_transparent() -> None:
+    arr = _sprite()
+    arr[0, :, 3] = 0  # only the top row is transparent
+    with pytest.raises(AstridError) as excinfo:
+        px.snap_image(arr, grid_width=400, grid_height=300, fit="none")
+    assert "trimmed" not in str(excinfo.value)
+
+
 def test_snap_cli_writes_native_preview_report_and_manifest(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
     source = _save(tmp_path / "source.png", _jpeg_noisy(_upscale(_sprite(), 4)))

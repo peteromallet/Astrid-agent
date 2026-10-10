@@ -464,6 +464,16 @@ def snap_image(
     return native, preview, report
 
 
+def _has_transparent_margins(arr: np.ndarray) -> bool:
+    """True when every edge row and column is transparent (typical of a trimmed pixel.cutout output)."""
+    if arr.ndim != 3 or arr.shape[2] < 4 or arr.shape[0] < 1 or arr.shape[1] < 1:
+        return False
+    alpha = arr[..., 3]
+    return bool(
+        (alpha[0] < 128).all() and (alpha[-1] < 128).all() and (alpha[:, 0] < 128).all() and (alpha[:, -1] < 128).all()
+    )
+
+
 def _explicit_grid(
     arr: np.ndarray, grid_width: int, grid_height: int, fit: str
 ) -> tuple[np.ndarray, list[int], list[int], dict[str, Any]]:
@@ -499,9 +509,21 @@ def _explicit_grid(
             info["padded_x"] = left
     work_h, work_w = work.shape[:2]
     if grid_width > work_w or grid_height > work_h:
+        message = (
+            f"grid {grid_width}x{grid_height} is larger than the {work_w}x{work_h} source after fit "
+            "(pixel.snap only downsamples)"
+        )
+        height, width = arr.shape[:2]
+        if _has_transparent_margins(arr):
+            # A pixel.cutout output with trim on: its size is the subject's alpha box, not the generated frame.
+            message += (
+                f"; the source has transparent margins on all four edges, so it looks trimmed: "
+                f"the source was trimmed to {width}x{height} by pixel.cutout. Use trim: false for frames of one "
+                "strip, or let pixel.strip align them (it pads trimmed frames onto one common cell)"
+            )
         raise AstridError(
-            f"grid {grid_width}x{grid_height} is larger than the {work_w}x{work_h} source after fit",
-            recovery_command="request a smaller grid, or use auto_grid for an already pixelated image",
+            message,
+            recovery_command="request a grid no larger than the source, or use auto_grid for an already pixelated image",
         )
     xedges = _cell_edges(work_w, 0.0, work_w / grid_width)
     yedges = _cell_edges(work_h, 0.0, work_h / grid_height)
