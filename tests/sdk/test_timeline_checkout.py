@@ -616,3 +616,23 @@ def test_two_writers_on_one_working_copy_merge_and_never_drop_each_others_edits(
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.6)  # c's edit is there, d's was refused
     d.save(force=True)
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.4)
+
+
+def test_position_units_come_from_the_element_declaration_so_am_pixel_shape_takes_marks_and_canvas_px():
+    """Units are data: am-pixel-shape declares metadata.units in its element.yaml, so canvas px and ƒ(MARK) work."""
+    from astrid.sdk.timeline_checkout import element_units
+    from astrid.sdk.timeline_sheet import render_sheet
+
+    assert element_units("am-pixel-shape") == (6, frozenset({"x", "y"}))
+    assert element_units("am-type") == (1, frozenset())  # declares nothing: canvas px
+    tl = Checkout(_formula_bundle())
+    shape = tl.clip("c1.rocket")
+    shape.data["clipType"] = "am-pixel-shape"
+    shape.data["params"] = {"shape": "ring", "x": 10, "y": 20}
+    intent.set_formula(shape.data, "params.x", None)
+    assert shape.get("x") == 60  # stored on the 320×180 grid, shown in canvas px
+    shape.set(x="ƒ(HAND -42)", y=600)
+    tl.resolve()
+    assert shape.params["x"] == round((1200 - 42) / 6) and shape.get("x") == round((1200 - 42) / 6) * 6
+    assert shape.params["y"] == 100 and "x=ƒ(HAND -42)" in render_sheet(tl) and "y=600" in render_sheet(tl)
+    assert not tl.check().blocking

@@ -40,6 +40,9 @@ Beats come from the music clip's grid: `--swap-asset run:<id>/music` brings the 
 A layer line: `track name element [ASSET] ["text"] [on …] [until …|for …] [k=v …]`. A partial sheet is safe:
 apply changes ONLY the cuts in the file; a layer line deleted from one of those cuts removes that layer.
 A NEW cut: a header `┃ c05b on "word"` with a `plate` line (its picture) and any layers; the cut before ends there.
+Or `timelines edit TL --split c33 --on MOMENT` (`--add-cut --on M [--after c33]`; Python `tl.cut("c33").split(on=…)`,
+`tl.add_cut(…)`): later layers move with it, spanning ones carry over it. `…` values in a sheet are kept as they are.
+`tl.add("am-type", at='"Building" in v27', layer="title", hold=1.2)` joins the cut on screen as `cNN.title`.
 `x=ƒ(MARK ±px)` follows a slot's mark: a plain number replaces it (and says so). `k=…` is unchanged, `~k` is info.
 The `sound` section lists the music bed and other audio in no cut: edit its asset, `for`, `volume=` there.
 

@@ -74,20 +74,45 @@ CANVAS = (1920, 1080)
 SAFE_MARGIN = (96, 54)        # title-safe at 1920x1080 (90%)
 
 
-LOGICAL_PX = 6  # canvas px per logical px (the 320×180 grid of 1920×1080)
-LOGICAL_GRID_ELEMENTS = frozenset({"am-sprite"})  # elements whose x/y are STORED in logical px
+LOGICAL_PX = 6  # canvas px per logical px (the 320×180 grid of 1920×1080); older mark formulas use it
 POSITION_KEYS = frozenset({"x", "y"})
 
 
+def element_units(element: str) -> tuple[float, frozenset[str]]:
+    """``(canvas px per stored unit, the params stored in those units)`` as the element DECLARES it in its
+    element.yaml (``metadata.units: {scale: 6, logical: [x, y, keyframes[].x, keyframes[].y]}``). An element
+    that declares nothing stores canvas px. Every surface (show, the sheet, --set, formulas) reads this."""
+    from astrid.sdk.timeline_address import element_schema
+
+    units = element_schema(element).get("units") or {}
+    paths = frozenset(str(p) for p in units.get("logical") or [])
+    scale = float(units.get("scale") or LOGICAL_PX) if paths else 1.0
+    return (int(scale) if scale.is_integer() else scale), paths
+
+
+def _unit_path(path: str) -> str:
+    """``params.keyframes[2].x`` → ``keyframes[].x`` (how units name a param)."""
+    return re.sub(r"\[\d+\]", "[]", path.removeprefix("params."))
+
+
+def is_logical(element: str, path: str) -> bool:
+    return _unit_path(path) in element_units(element)[1]
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def to_canvas(element: str, key: str, value: Any) -> Any:
-    """Stored → canvas px (what every surface shows): am-sprite x/y and keyframe x/y ×6."""
-    if element not in LOGICAL_GRID_ELEMENTS:
+    """Stored → canvas px (what every surface shows), by the element's declared units (``element_units``)."""
+    scale, paths = element_units(element)
+    if not paths:
         return value
-    if key in POSITION_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return value * LOGICAL_PX
-    if key == "keyframes" and isinstance(value, list):
-        return [{**k, **{a: k[a] * LOGICAL_PX for a in POSITION_KEYS if isinstance(k.get(a), (int, float))}}
-                if isinstance(k, Mapping) else k for k in value]
+    if key in paths and _number(value):
+        return value * scale
+    subs = [p.split("[].", 1)[1] for p in paths if p.startswith(f"{key}[].")]
+    if subs and isinstance(value, list):
+        return [{**k, **{a: k[a] * scale for a in subs if _number(k.get(a))}} if isinstance(k, Mapping) else k for k in value]
     return value
 
 
@@ -95,13 +120,15 @@ def from_canvas(element: str, key: str, value: Any) -> Any:
     """Canvas px (what you write) → stored. ``"1290px"`` is accepted too. am-sprite snaps to its 6-px grid."""
     if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?px", value.strip()):
         value = float(value.strip()[:-2])
-    if element not in LOGICAL_GRID_ELEMENTS:
+    scale, paths = element_units(element)
+    if not paths:
         return round(value) if isinstance(value, float) and key in POSITION_KEYS and value.is_integer() else value
-    if key in POSITION_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return round(value / LOGICAL_PX)
-    if key == "keyframes" and isinstance(value, list):
-        return [{**k, **{a: round(k[a] / LOGICAL_PX) for a in POSITION_KEYS if isinstance(k.get(a), (int, float))}}
-                if isinstance(k, Mapping) else k for k in value]
+    if key in paths and _number(value):
+        return round(value / scale)
+    subs = [p.split("[].", 1)[1] for p in paths if p.startswith(f"{key}[].")]
+    if subs and isinstance(value, list):
+        return [{**k, **{a: round(k[a] / scale) for a in subs if _number(k.get(a))}} if isinstance(k, Mapping) else k
+                for k in value]
     return value
 
 
@@ -482,7 +509,7 @@ class Clip:
         if spec is not None:  # a slot mark: ƒ(B2-HAND -42)
             expr = formula_from_spec(spec, self.element, top if path == top else path.rsplit(".", 1)[-1], current_expr)
             intent.set_formula(self.data, full, expr)
-            _set_path(self.data, full, self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots))
+            _set_path(self.data, full, self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots, full))
             return self
         if moment is not None:  # a time-valued param on a moment
             current = _get_path(self.data, full)
@@ -611,6 +638,14 @@ class Cut:
 
     def layer(self, query: str) -> Clip:
         return self._tl._pick(self.clips, query, where=f"cut {self.n}")
+
+    def split(self, on: Any, *, id: str | None = None, picture: Any = None) -> "Cut":
+        """Split this cut at a moment (``'"Building" in v27'``, ``+1.2s`` into the cut): the new cut gets a
+        copy of the picture from that point (footage continues where it was; ``picture=`` another asset),
+        layers that start at or after it move with it, layers that span it carry over it (``until end of``
+        the new cut), and layers already carried stay carried. The new id is the next free one after this
+        cut's (c33 → c33a), or ``id=``. Returns the new cut."""
+        return self._tl._split_cut(self, on, new_id=id, picture=picture)
 
     @property
     def words(self) -> list[Word]:
@@ -1247,19 +1282,29 @@ class Checkout:
         return {"time": t, "cut": cut, "showing": showing, "speaking": speaking, "words_around": said}
 
     # ---- structural edits ---------------------------------------------------
-    def add(self, element: str, *, at: Any, hold: float = 1.0, asset: Any = None, params: Mapping[str, Any] | None = None,
+    def add(self, element: str, *, at: Any, hold: float | None = None, asset: Any = None, params: Mapping[str, Any] | None = None,
             track: str | None = None, corner: str | None = None, anchor: bool = True, clip_id: str | None = None,
-            standin: Any = None) -> Clip:
-        """Add an overlay at a word or time. ``corner`` (top-right …) places it inside title-safe, off a centred face.
+            standin: Any = None, layer: str | None = None, cut: str | None = None) -> Clip:
+        """Add a layer at a moment or a time: ``at='"Building" in v27'`` (any moment: it starts ON it and follows
+        it on re-flow), ``at=93.5``, or a Word. It joins the cut on screen then (or ``cut=``) under ``layer=``
+        (default: its asset or element name, made unique), so its address is ``c41.NAME`` and the sheet shows it.
+        ``hold=`` is a literal length (``for``); without it the layer ends with its cut.
+        ``corner`` (top-right …) places it inside title-safe, off a centred face.
 
         ``standin``: if ``asset`` is not available yet (a file still to be made), use this asset
         meanwhile and remember the real one; ``fill_standins()`` swaps it in once it exists."""
-        word = self._as_word(at)
-        start = self.quantize(word.start if word else self.time(at))
+        word = at if isinstance(at, Word) else None
+        moment = None
+        if word is None and isinstance(at, str) and not TIME_RE.match(at.strip()):
+            try:
+                moment = mo.format_moment(mo.parse(at))
+            except mo.MomentError as exc:
+                raise TimelineEditError(f"at={at!r}: {exc}") from None
+        start = self.quantize(word.start if word else self._moment_time(moment) if moment else self.time(at))
         sid = self._shot_at(start)
         internal = self._internal(sid)
         new = {"id": clip_id or self._new_id(element), "clipType": element, "track": track or ELEMENT_TRACK.get(element, "fx"),
-               "at": 0.0, "hold": self.quantize(hold), "params": copy.deepcopy(dict(params or {}))}
+               "at": 0.0, "hold": self.quantize(hold if hold is not None else 1.0), "params": copy.deepcopy(dict(params or {}))}
         if not any(str(t.get("id")) == new["track"] for t in internal.get("tracks") or []):
             raise TimelineEditError(f"shot {sid} has no track {new['track']!r}; tracks: {', '.join(str(t.get('id')) for t in internal.get('tracks') or [])}")
         if asset is not None:
@@ -1272,10 +1317,126 @@ class Checkout:
                 intent.set_standin(new, str(asset), {"element": element, "params": copy.deepcopy(dict(params or {}))})
         if corner:
             new["params"].update(self._corner(element, new["params"], new.get("asset"), sid, corner))
+        cut_id = (self._cut_id(cut) or cut) if cut else self._cut_on_screen(start)
+        name = layer
+        if cut_id:
+            taken = {intent.layer_of(c.data) for c in self.clips() if intent.cut_of(c.data) == cut_id}
+            if layer and layer in taken:
+                raise TimelineEditError(f"{cut_id} already has a layer named {layer!r}; give it another name")
+            base = layer or re.sub(r"[^a-z0-9]+", "-", str(new.get("asset") or element.removeprefix("am-")).lower()).strip("-") or "layer"
+            name, k = base, 2
+            while name in taken:
+                name, k = f"{base}-{k}", k + 1
         internal["clips"].append(new)
+        self._mcache = None
         clip = Clip(self, sid, new)
-        clip.enter_at(word if word and anchor else start)
+        if moment and anchor:  # placed first, then it joins its cut (a time is not read as an offset into it)
+            clip.on(moment)
+        else:
+            clip.enter_at(word if word and anchor else start)
+        if cut_id:
+            intent.set_cut(new, cut_id)
+            if hold is not None:
+                intent.set_for(new, self.quantize(hold))
+        if name:
+            intent.set_layer(new, name)
+        self._mcache = None
+        if layer and intent.layer_of(new) != layer:
+            self.notes.append(f"added as {clip.address} (not {layer!r})")
         return clip
+
+    def add_cut(self, on: Any, *, after: str | None = None, id: str | None = None, picture: Any = None) -> "Cut":
+        """A new cut on a moment: it splits the cut on screen there (see ``Cut.split``). ``after=`` names the
+        cut you expect it to follow (checked); ``picture=`` gives it its own picture asset."""
+        moment = self._split_moment(on, None)
+        t = self._moment_time(moment, None, in_point=True)
+        host = self._cut_on_screen(t)
+        if host is None:
+            raise TimelineEditError(f"no named cut is on screen at {t:.3f} s to split")
+        if after and (self._cut_id(after) or after) != host:
+            raise TimelineEditError(f"{moment} ({t:.3f} s) is inside {host}, not {after}: the new cut would follow {host}")
+        return self.cut(host).split(moment, id=id, picture=picture)
+
+    def _split_moment(self, on: Any, cut_id: str | None) -> str:
+        if isinstance(on, Word):
+            return mo.format_moment(mo.word_moment(on, self.words()))
+        if isinstance(on, (int, float)) or (isinstance(on, str) and TIME_RE.match(on.strip())):
+            t = self.time(on)  # a time: say it against the cut it splits, so it moves with it
+            host = cut_id or self._cut_on_screen(t)
+            if host is None:
+                raise TimelineEditError(f"no cut is on screen at {t:.3f} s")
+            lo = self._cut_spans()[host][0]
+            return f"{host} {mo.offset_text(t - lo, self.fps)}".strip()
+        try:
+            return mo.format_moment(mo.parse(on))
+        except mo.MomentError as exc:
+            raise TimelineEditError(f"{on!r}: {exc}") from None
+
+    def _next_cut_id(self, cut_id: str) -> str:
+        m = re.fullmatch(r"(c\d+)([a-z]?)", cut_id)
+        if not m:
+            raise TimelineEditError(f"{cut_id!r} is not a cut id like c33")
+        taken = {g["id"] for g in self._cut_groups()} | {intent.cut_of(c.data) for c in self.clips() if intent.cut_of(c.data)}
+        for code in range(ord(m.group(2)) + 1 if m.group(2) else ord("a"), ord("z") + 1):
+            if f"{m.group(1)}{chr(code)}" not in taken:
+                return f"{m.group(1)}{chr(code)}"
+        raise TimelineEditError(f"no free cut id after {cut_id}; name it with id=")
+
+    def _split_cut(self, cut: "Cut", on: Any, *, new_id: str | None, picture: Any) -> "Cut":
+        pic = cut.picture
+        cid = intent.cut_of(pic.data) if pic is not None else None
+        if pic is None or not cid:
+            raise TimelineEditError(f"cut {cut.n} has no named picture to split (import its intent first)")
+        if intent.sequence(pic.data):
+            raise TimelineEditError(f"{cid} is a sequence (a time-lapse): split one of its steps' cuts instead")
+        moment = self._split_moment(on, cid)
+        t = self._frame(self._moment_time(moment, None, in_point=True))
+        lo, hi = self._cut_spans()[cid]
+        hi = hi if hi is not None else self.duration
+        if not lo + 1.0 / self.fps <= t <= hi - 1.0 / self.fps:
+            raise TimelineEditError(f"{moment} is at {t:.3f} s, not inside {cid} ({lo:.3f}–{hi:.3f} s): a split needs a "
+                                    "moment inside the cut")
+        new_id = new_id or self._next_cut_id(cid)
+        if new_id in {g["id"] for g in self._cut_groups()}:
+            raise TimelineEditError(f"there is already a cut {new_id}")
+        data = copy.deepcopy(pic.data)
+        data["id"] = self._new_id(f"{new_id}-00-{pic.element}")
+        for setter in (intent.set_until, intent.set_why, intent.set_orphan):
+            setter(data, None)
+        intent.set_for(data, None)
+        intent.set_cut(data, new_id)
+        if "from" in data or "to" in data:  # footage continues where it was at the split
+            speed = _num(data.get("speed"), 1.0) or 1.0
+            data["from"] = _r(_num(data.get("from")) + (t - pic.start) * speed)
+        if picture is not None:
+            data["asset"] = self._register_asset(pic.shot_id, picture)
+        data["at"] = _r(t - self._shot_start(pic.shot_id))
+        self._internal(pic.shot_id)["clips"].append(data)
+        self._mcache = None
+        new_pic = Clip(self, pic.shot_id, data)
+        moved, carried = [], []
+        for clip in self.clips():
+            if clip.data is pic.data or clip.data is data or intent.cut_of(clip.data) != cid or intent.orphan(clip.data):
+                continue
+            if clip.start >= t - 0.5 / self.fps:
+                intent.set_cut(clip.data, new_id)
+                moved.append(clip.address)
+            elif clip.end > t + 0.5 / self.fps and not intent.until(clip.data) and intent.for_s(clip.data) is None \
+                    and not clip.is_audio:
+                intent.set_until(clip.data, f"end of {new_id}")  # it spans the split: carried over the new cut
+                carried.append(clip.address)
+        intent.set_on(data, moment)
+        self._mcache = None
+        self.retime()
+        self.notes.append(f"split {cid} at {moment} ({t:.3f} s): new cut {new_id} ({new_pic.address})"
+                          + (f"; moved {', '.join(moved)}" if moved else "")
+                          + (f"; carried over it: {', '.join(carried)}" if carried else ""))
+        return self.cut(new_id)
+
+    def _cut_on_screen(self, t: float) -> str | None:
+        """The cut id on screen at ``t`` (None when the timeline names no cuts)."""
+        spans = sorted(((lo, hi if hi is not None else self.duration, cid) for cid, (lo, hi) in self._cut_spans().items()))
+        return next((cid for lo, hi, cid in reversed(spans) if lo - 1e-6 <= t < hi - 1e-6), None)
 
     def ripple_delete(self, start: Any, end: Any, *, skip: Sequence[Mapping[str, Any]] = (), keep_inside: bool = False) -> float:
         """Remove the window [start, end) from the whole timeline and close it up.
@@ -1953,7 +2114,7 @@ class Checkout:
                 continue
             for path, expr in formulas.items():
                 try:
-                    value = self._evaluate(clip, expr, by_id, words, slots)
+                    value = self._evaluate(clip, expr, by_id, words, slots, path)
                 except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
                     previous_at = None  # a param's moment: pin to the occurrence nearest where the param was
                     current = _get_path(clip.data, path)
@@ -1968,7 +2129,7 @@ class Checkout:
                         intent.set_formula(clip.data, path, expr)
                         self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: now pinned to {pinned}, the one nearest it")
                         try:
-                            value = self._evaluate(clip, expr, by_id, words, slots)
+                            value = self._evaluate(clip, expr, by_id, words, slots, path)
                         except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as again:
                             self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {again} (kept its last value)")
                             continue
@@ -1986,7 +2147,8 @@ class Checkout:
                     changes.append(f"{clip.id}.{path} = {json.dumps(value)[:60]}")
         return changes
 
-    def _evaluate(self, clip: Clip, expr: Any, by_id: Mapping[str, Word], words: Sequence[Word], slots: Mapping[str, Any]) -> Any:
+    def _evaluate(self, clip: Clip, expr: Any, by_id: Mapping[str, Word], words: Sequence[Word], slots: Mapping[str, Any],
+                  path: str = "") -> Any:
         if not isinstance(expr, Mapping):
             raise TimelineEditError(f"a formula must be an object, got {expr!r}")
         if "moment" in expr:  # a moment in the grammar: "lifetime" -50f, beat 2 after "Astrid", c26 …
@@ -2030,9 +2192,12 @@ class Checkout:
             axis = str(expr.get("axis", "x"))
             if axis not in mark:
                 raise TimelineEditError(f"slot {expr['mark']!r} has no hand_mark.{axis}")
-            # one arithmetic for every unit: canvas px (the mark + the offset), then the element's grid
+            # one arithmetic for every unit: canvas px (the mark + the offset), then the element's declared grid
             canvas = _num(mark[axis]) + mark_offset_canvas(expr)
-            if clip.element in LOGICAL_GRID_ELEMENTS or expr.get("unit", "logical") == "logical":
+            scale, paths = element_units(clip.element)
+            if (_unit_path(path) if path else axis) in paths:
+                return round(canvas / scale)
+            if expr.get("unit") == "logical":  # an old logical formula on an element that declares no grid
                 return round(canvas / LOGICAL_PX)
             return round(canvas)
         raise TimelineEditError(f"unknown formula {expr!r}")
@@ -3624,8 +3789,9 @@ for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "e
               "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep"):
     setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
 for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
-              "fill_slot", "fill_standins", "declare_gaps", "adopt"):
+              "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut"):
     setattr(Checkout, _name, _journaled(getattr(Checkout, _name), "checkout"))
+Cut.split = _journaled(Cut.split, "cut")
 for _name in ("replace", "set_gap_after"):
     setattr(Voice, _name, _journaled(getattr(Voice, _name), "voice"))
 

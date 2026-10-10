@@ -456,3 +456,21 @@ def test_two_draft_handles_saving_at_once_keep_both_edits(draft_with_edit, capsy
     three.clip("a-rocket").nudge(0.5)
     with pytest.raises(tc.TimelineEditError, match="another writer"):
         three.save()
+
+
+def test_edit_split_and_add_cut_from_the_cli(tmp_path, capsys):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
+    path = tmp_path / "tiny.checkout.json"
+    Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8"))).save(path)
+    assert _run("edit", "--file", str(path), "--split", "c1", "--on", '"viral"') == 0
+    out = capsys.readouterr().out
+    assert "c1a" in out
+    tl = Checkout.load(path)
+    assert "c1a" in tl._cut_spans()
+    assert _run("edit", "--file", str(path), "--add-cut", "--on", "c2 +1s", "--after", "c2", "--cut-id", "c2x") == 0
+    assert "c2x" in Checkout.load(path)._cut_spans()
+    assert _run("edit", "--file", str(path), "--split", "c1") == 2  # needs --on
+    help_text = cli.build_parser(object())._subparsers._group_actions[0].choices["edit"].format_help()
+    assert help_text.index("--split c33 --on MOMENT") < help_text.index("clip selector (one)")  # the common five first

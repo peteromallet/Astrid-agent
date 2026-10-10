@@ -5,6 +5,7 @@ import copy
 
 import pytest
 
+from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline_checkout import Checkout
 from astrid.sdk.timeline_sheet import SheetError, apply_sheet, moment_range, parse_sheet, render_sheet
 
@@ -144,3 +145,71 @@ def test_a_new_cut_header_with_a_plate_line_adds_the_cut():
     assert "┃ c1b   on \"viral\"" in render_sheet(tl)
     with pytest.raises(SheetError, match="needs a plate line"):
         apply_sheet(tl, '  1.30 ┃ c1c on "went"\n         type  t  type  "x"  for 1s\n')
+
+
+def test_a_layer_added_in_python_takes_a_moment_and_its_name_and_shows_in_the_sheet():
+    """T04d (1)(3)(4): tl.add(at=MOMENT, layer=NAME) joins the cut on screen, keeps its name, shows in the sheet."""
+    import json
+    from pathlib import Path
+
+    from astrid.sdk.timeline_address import resolve
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    clip = tl.add("am-type", at='"Live" +2f', layer="tile-16-outline", params={"text": "LIVE"}, hold=0.5)
+    assert clip.address == "c2.tile-16-outline" and intent.on(clip.data) == '"Live" +2f'
+    assert clip.start == pytest.approx(tl.word("Live").start + 2 / 30, abs=1 / 30)
+    assert resolve(tl, "c2.tile-16-outline").clip.data is clip.data
+    assert "tile-16-outline" in render_sheet(tl) and "for 0.5s" in render_sheet(tl)
+    assert apply_sheet(tl, render_sheet(tl)) == []  # the sheet round-trips it: never a second copy
+    assert len([c for c in tl.clips() if intent.layer_of(c.data) == "tile-16-outline"]) == 1
+    with pytest.raises(Exception, match="already has a layer named"):
+        tl.add("am-type", at=6.5, layer="tile-16-outline", params={"text": "again"})
+
+
+def test_split_a_cut_and_add_a_cut_in_python_then_the_sheet_round_trips():
+    """T13: tl.cut("c1").split(on=…): the new cut takes the picture, later layers move, spanning ones carry."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    new = tl.cut("c1").split('"viral"')
+    spans = tl._cut_spans()
+    assert intent.cut_of(new.picture.data) == "c1a" and spans["c1"][1] == pytest.approx(spans["c1a"][0])
+    assert spans["c1a"][0] == pytest.approx(tl.word("viral").start, abs=1 / 30)
+    assert tl.clip("c1a.rocket").start == pytest.approx(spans["c1a"][0], abs=1 / 30)  # it starts on "viral": moved
+    sheet = render_sheet(tl)
+    assert "┃ c1a   on \"viral\"" in sheet and apply_sheet(tl, sheet) == []  # round-trips
+    third = tl.add_cut("c2 +1s", after="c2", picture="P")
+    assert intent.cut_of(third.picture.data) == "c2a" and third.picture.asset == "P"
+    with pytest.raises(Exception, match="is inside c2a, not c1"):
+        tl.add_cut("c2 +2s", after="c1")
+    tl2 = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    with tl2.step("x"):
+        pass
+    tl2.cut("c1").split(1.0)  # a time: written against its cut
+    assert intent.on(tl2.cut("c1a").picture.data) == "c1 +1s"
+
+
+def test_a_clip_in_no_cut_shows_in_the_sheet_and_applying_never_duplicates_it():
+    """T04d (2): a clip added without a cut used to be invisible; writing it into the sheet made a second copy."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    loose = tl.clip("c2.card")
+    intent.set_cut(loose.data, None)
+    intent.set_layer(loose.data, None)
+    tl._mcache = None
+    sheet = render_sheet(tl)
+    assert loose.id in sheet  # shown, by its clip id, in the cut on screen
+    before = len(tl.clips())
+    assert apply_sheet(tl, sheet) == [] and not intent.cut_of(loose.data)  # unchanged: left as it was
+    apply_sheet(tl, sheet.replace('"Live."', '"Live!"'))
+    assert len(tl.clips()) == before and intent.cut_of(loose.data) == "c2"  # edited: it joins the cut, one clip
+    assert loose.duration == pytest.approx(1.0) and loose.text == "Live!"  # with its own length
+    with pytest.raises(SheetError):
+        apply_sheet(tl, sheet.replace('on "viral"', 'on "virl"'))
+    assert len(tl.clips()) == before  # a refused apply changes nothing

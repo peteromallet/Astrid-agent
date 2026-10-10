@@ -102,7 +102,7 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         said = " ".join(w.text for w in tl.words(between=(lo, hi)))
         if said:
             out.append(f"       > {said}")
-        layers = _ordered(g["clips"])
+        layers = _ordered(g["clips"] + _loose_in(tl, lo, hi))
         rows = [_layer_row(tl, c, lo, hi, is_picture=(pic is not None and c.data is pic.data)) for c in layers]
         out += _align(rows)
         for clip in carried.get(g["id"], []):
@@ -111,6 +111,12 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         if why:
             out.append(f"         why: {why}")
     return "\n".join(out) + "\n"
+
+
+def _loose_in(tl: Any, lo: float, hi: float) -> list[Any]:
+    """Picture-side clips in no cut that start in [lo, hi): shown (by clip id) in the cut on screen, so the
+    sheet never hides them and applying it never adds a second copy; an applied line puts them in the cut."""
+    return [c for c in tl.clips() if not c.is_audio and not intent.cut_of(c.data) and lo - 1e-6 <= c.start < hi - 1e-6]
 
 
 def sound_clips(tl: Any) -> list[Any]:
@@ -497,7 +503,9 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
             pic.on(cut["on"])
         if cut["why"] is not None and pic is not None and cut["why"] != intent.why(pic.data):
             intent.set_why(pic.data, cut["why"])
-        existing = {(intent.layer_of(c.data) or c.id): c for c in _ordered(group["clips"])}
+        lo, hi = tl._cut_spans()[cut["id"]]
+        loose = _loose_in(tl, lo, hi if hi is not None else tl.duration)
+        existing = {(intent.layer_of(c.data) or c.id): c for c in _ordered(group["clips"] + loose)}
         named: dict[str, int] = {}
         for layer in cut["layers"]:  # one name, one layer: never merge two lines into one clip
             if layer["name"] in named:
@@ -514,13 +522,22 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
                 if clip is None:
                     _add_layer(tl, cut["id"], group, layer)
                 else:
+                    loose = not intent.cut_of(clip.data)
+                    was = json.dumps(clip.data, sort_keys=True, default=str) if loose else None
                     _update_layer(tl, clip, layer, is_picture=pic is not None and clip.data is pic.data)
+                    if loose and json.dumps(clip.data, sort_keys=True, default=str) != was:
+                        # a clip in no cut that this sheet edits joins the cut, keeping its length
+                        if not intent.until(clip.data) and intent.for_s(clip.data) is None:
+                            intent.set_for(clip.data, tl.quantize(clip.duration))
+                        intent.set_cut(clip.data, cut["id"])
+                        if name != clip.id:
+                            intent.set_layer(clip.data, name)
             except (TimelineEditError, mo.MomentError) as exc:
                 said = str(exc)
                 said = said if said.startswith(f"{cut['id']}.{name}") else f"{cut['id']}.{name}: {said}"
                 raise SheetError(_with_text(f"line {layer['line']}: {said}", layer["line"], layer.get("text_line", ""))) from None
         for name, clip in existing.items():
-            if name not in seen:
+            if name not in seen and intent.cut_of(clip.data) == cut["id"]:  # a loose clip is never removed by omission
                 clip.remove()
     tl._mcache = None
     tl.resolve()
@@ -530,8 +547,9 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
 
 
 def _add_cut(tl: Any, cut: dict[str, Any]) -> None:
-    """A cut the timeline does not have yet: ``┃ c05b on "word"`` plus a ``plate`` line (the picture) and
-    any other layers. The cut before it now ends where it starts; it runs to the next cut."""
+    """A cut the timeline does not have yet: ``┃ c05b on "word"`` plus a ``plate`` line (the picture) and any
+    other layers. It is a split of the cut on screen there (``Checkout.add_cut``): layers starting after it
+    move into it, layers spanning it carry over it; then the sheet's lines for it are applied."""
     from astrid.sdk.timeline_checkout import TimelineEditError
 
     line = cut["line"]
@@ -544,22 +562,26 @@ def _add_cut(tl: Any, cut: dict[str, Any]) -> None:
     if len(set(names)) != len(names):
         raise SheetError(f"line {line}: {cut['id']} names a layer twice; give each its own name")
     try:
-        t = tl._moment_time(cut["on"], None, in_point=True)
-    except Exception as exc:  # noqa: BLE001 - the moment's own message
+        new = tl.add_cut(cut["on"], id=cut["id"], picture=plates[0]["asset"] or None)
+    except (TimelineEditError, mo.MomentError) as exc:
         raise SheetError(_with_text(f"line {line}: {cut['id']}: {exc}", line, f"┃ {cut['id']} on {cut['on']}")) from None
-    group = {"id": cut["id"], "clips": [], "picture": None, "start": tl.quantize(t)}
-    for layer in [plates[0]] + [x for x in cut["layers"] if x is not plates[0]]:
+    pic = new.picture
+    intent.set_layer(pic.data, plates[0]["name"])
+    tl._mcache = None
+    group = {"id": cut["id"], "clips": [], "picture": pic, "start": pic.start}
+    existing = {(intent.layer_of(c.data) or c.id): c for c in tl.clips() if intent.cut_of(c.data) == cut["id"]}
+    for layer in cut["layers"]:
         try:
-            _add_layer(tl, cut["id"], group, layer)
+            clip = existing.get(layer["name"])
+            if clip is None:
+                _add_layer(tl, cut["id"], group, layer)
+            else:
+                _update_layer(tl, clip, layer, is_picture=clip.data is pic.data)
         except (TimelineEditError, mo.MomentError) as exc:
             raise SheetError(_with_text(f"line {layer['line']}: {cut['id']}.{layer['name']}: {exc}", layer["line"],
                                         layer.get("text_line", ""))) from None
-        if layer is plates[0]:
-            pic = tl.clip(f"{cut['id']}.{layer['name']}")
-            pic.on(cut["on"])
-            group["start"] = pic.start
     if cut["why"]:
-        intent.set_why(tl.clip(f"{cut['id']}.{plates[0]['name']}").data, cut["why"])
+        intent.set_why(pic.data, cut["why"])
 
 
 def _apply_sound(tl: Any, rows: list[dict[str, Any]]) -> None:
@@ -669,16 +691,21 @@ def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any
 
     from astrid.sdk.timeline_checkout import from_canvas
 
+    from astrid.sdk.timeline_checkout import parse_formula_value, parse_moment_value
+
     element = _element(layer["element"])
-    params = {k: from_canvas(element, k, v) for k, v in layer["params"].items() if v is not ELIDED}
-    bad = unknown_params(element, list(params))
+    computed = {k: v for k, v in layer["params"].items()
+                if v is not ELIDED and (parse_formula_value(v) is not None or parse_moment_value(v) is not None)}
+    params = {k: from_canvas(element, k, v) for k, v in layer["params"].items() if v is not ELIDED and k not in computed}
+    bad = unknown_params(element, list(params) + list(computed))
     if bad:
         raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: "
                                 + ", ".join(sorted(element_schema(element).get("properties") or {})))
     if layer["text"] is not None:
         params["text"] = layer["text"]
     start = group["start"]
-    clip = tl.add(element, at=start, hold=1.0, asset=layer["asset"], params=params, track=layer["track"], anchor=False)
+    clip = tl.add(element, at=start, asset=layer["asset"], params=params, track=layer["track"], anchor=False,
+                  cut=cut_id, layer=layer["name"])
     intent.set_cut(clip.data, cut_id)
     intent.set_layer(clip.data, layer["name"])
     tl._mcache = None
@@ -688,6 +715,8 @@ def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any
         clip.until(layer["until"])
     elif layer["for"] is not None:
         clip.hold_for(layer["for"])
+    for key, value in computed.items():  # x=ƒ(B2-HAND -42), at=ƒ("adapt" in w05c): a formula, not text
+        clip.set_param(key, value)
 
 
 def moment_range(tl: Any, text: str) -> tuple[float | None, float | None]:

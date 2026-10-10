@@ -3844,7 +3844,10 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
 
     voice_ops = any((parsed.line, parsed.insert_line, parsed.remove_line, parsed.gap_after, parsed.from_script))
-    timeline_level = parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops
+    cut_ops = bool(getattr(parsed, "split", None) or getattr(parsed, "add_cut", False))
+    if cut_ops and not parsed.on_moment:
+        raise _VerbError("--split and --add-cut need --on MOMENT (where the new cut starts)", 2)
+    timeline_level = parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops or cut_ops
     selector = parsed.clip is not None or parsed.cut is not None
     if selector and timeline_level:
         raise _VerbError("a clip edit and a timeline-level edit (--retime, --close-gap-before, --insert, or a voice "
@@ -3909,12 +3912,12 @@ def _edit_label(parsed: argparse.Namespace) -> str:
     """What one `timelines edit` did, for undo: ``edit --clip c30.cover --until Astrid``."""
     parts = []
     for name in ("clip", "cut", "on_moment", "until_moment", "for_seconds", "at_word", "at", "nudge", "nudge_frames",
-                 "extend", "duration", "swap_asset", "beats", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
+                 "extend", "duration", "swap_asset", "beats", "split", "cut_id", "picture", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
         value = getattr(parsed, name, None)
         if value not in (None, False, ""):
             flag = {"on_moment": "on", "until_moment": "until", "for_seconds": "for"}.get(name, name).replace("_", "-")
             parts.append(f"--{flag} {value}")
-    for name in ("remove", "keep", "clear_asset", "retime"):
+    for name in ("remove", "keep", "clear_asset", "retime", "add_cut"):
         if getattr(parsed, name, False):
             parts.append(f"--{name.replace('_', '-')}")
     for item in getattr(parsed, "set", None) or []:
@@ -3926,6 +3929,12 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     """Apply the operations in order: retime, move, nudge, extend, set, swap (timeline-level ops first)."""
     from astrid.sdk.timeline_checkout import TimelineEditError
 
+    if getattr(parsed, "split", None):
+        tl.cut(parsed.split).split(parsed.on_moment, id=parsed.cut_id, picture=parsed.picture)
+        return
+    if getattr(parsed, "add_cut", False):
+        tl.add_cut(parsed.on_moment, after=parsed.after, id=parsed.cut_id, picture=parsed.picture)
+        return
     if parsed.retime:
         tl.retime()
     if parsed.close_gap_before:
@@ -4252,9 +4261,16 @@ def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_edit(subparser: argparse.ArgumentParser) -> None:
+    subparser.formatter_class = argparse.RawDescriptionHelpFormatter
     subparser.description = (
-        "Edit a clip (or the timeline) in the working copy, in timeline seconds. Operations apply in order: "
-        "retime, move (--at-word/--at), nudge, extend/duration, set, swap."
+        "Edit the working copy. Most edits are one of these (ADDRESS = c30.cover, see `timelines show TL ADDRESS`):\n"
+        "  --clip ADDRESS --on MOMENT          start on a moment (\"viral\", after \"Astrid\", beat 2 after \"Astrid\", c22 +0.8s)\n"
+        "  --clip ADDRESS --until MOMENT       end on a moment (or --for SECONDS)\n"
+        "  --clip ADDRESS --set KEY=VALUE      a param (canvas px; 'states[3].at=\"adapt\" in w05c'; x='ƒ(B2-HAND -42)')\n"
+        "  --clip ADDRESS --swap-asset KEY     another asset (a key, a file, run:<id>/music …); --remove / --keep\n"
+        "  --split c33 --on MOMENT             a new cut (also --add-cut --on MOMENT [--after c33])\n"
+        "The narration: --from-script VO.json (then re-home orphans), --line/--insert-line/--remove-line, --gap-after.\n"
+        "Operations apply in order: retime, move, nudge, length, set, swap."
     )
     _add_timeline_args(subparser, required_timeline=False)
     subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
@@ -4297,6 +4313,15 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--beats", dest="beats", default=None, metavar="FILE|HANDLE|keep",
                            help="Attach a music clip's beat grid: a beats.json, a media handle (run:RUN/beats), or keep "
                                 "(its grid is right for the file it plays). Every beat moment re-resolves on it.")
+    cuts = subparser.add_argument_group("cuts (timeline-level; with --on MOMENT)")
+    cuts.add_argument("--split", default=None, metavar="CUT",
+                      help="Split cut CUT at --on: the new cut takes the picture from there, later layers move with it, "
+                           "layers spanning the split carry over it. New id: the next free (c33 → c33a) or --cut-id.")
+    cuts.add_argument("--add-cut", dest="add_cut", action="store_true",
+                      help="A new cut at --on (it splits the cut on screen there; --after CUT checks which one).")
+    cuts.add_argument("--cut-id", dest="cut_id", default=None, metavar="ID", help="The new cut's id (default: the next free).")
+    cuts.add_argument("--picture", default=None, metavar="KEY|FILE|HANDLE",
+                      help="The new cut's picture asset (default: the split cut's, continuing where it was).")
     timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")
     timeline_ops.add_argument("--retime", action="store_true", help="Move every anchored clip back onto its word.")
     timeline_ops.add_argument("--close-gap-before", dest="close_gap_before", default=None, metavar="WORD",
@@ -4309,7 +4334,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     voice.add_argument("--words", default=None, metavar="WORDS.json", help="The take's words: [[start, end, text], ...].")
     voice.add_argument("--text", default=None, help="The line's script text (narration).")
     voice.add_argument("--insert-line", dest="insert_line", default=None, metavar="SEG", help="Insert a new line SEG.")
-    voice.add_argument("--after", default=None, metavar="SEG", help="With --insert-line: the line before it.")
+    voice.add_argument("--after", default=None, metavar="SEG|CUT", help="With --insert-line: the line before it; with --add-cut: the cut it splits.")
     voice.add_argument("--gap", type=float, default=None, help="With --insert-line: silence after the new line (s).")
     voice.add_argument("--remove-line", dest="remove_line", default=None, metavar="SEG", help="Remove line SEG.")
     voice.add_argument("--gap-after", dest="gap_after", action="append", default=None, metavar="SEG=SECONDS",

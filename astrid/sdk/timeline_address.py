@@ -290,7 +290,8 @@ def element_schema(element: str) -> dict[str, Any]:
             continue
         schema = doc.get("schema") or {}
         found = {"properties": dict(schema.get("properties") or {}), "defaults": dict(doc.get("defaults") or {}),
-                 "additional": bool(schema.get("additionalProperties", True)), "path": str(path)}
+                 "additional": bool(schema.get("additionalProperties", True)), "path": str(path),
+                 "units": dict((doc.get("metadata") or {}).get("units") or {})}
         break
     _SCHEMAS[element] = found
     return found
