@@ -25,6 +25,7 @@ asset keys (``ROCKET``), element ids (``am-tweet``), on-screen text, and words
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import difflib
@@ -686,6 +687,8 @@ class Checkout:
         self.music = "whole"
         self._keep_inside = False  # a removal keeps the clips inside the window (as orphans) instead of deleting them
         self._kept: list[str] = []
+        self._journal: list[tuple[str, str | None]] = []  # (label, the document before that edit), one per edit
+        self._edit_depth = 0
         self._orphan_reason = "its line was removed"
 
     # ---- open / save ------------------------------------------------------
@@ -705,42 +708,94 @@ class Checkout:
         tl.fps = bundle_fps(tl.bundle) or 30.0
         return tl
 
-    HISTORY = 30  # saved versions of a working copy kept for undo
+    HISTORY = 60  # edits of a working copy kept for undo
 
     def save(self, path: str | Path | None = None) -> Path:
         """Write the checkout: content pretty-printed, provenance compact, both clocks on every clip.
 
-        A working copy keeps its previous versions (``undo``)."""
+        A working copy keeps one undo step per EDIT made since the last save (each verb, each
+        API call such as ``clip.on(...)``, each applied sheet), so ``undo`` goes back one edit."""
         target = Path(path or self.path or "timeline.checkout.json")
         text = _serialize(self._annotated())
         if target.is_file() and _is_draft(target):
             previous = target.read_text(encoding="utf-8")
-            if previous != text:
+            journal = list(self._journal)
+            if previous != text and not journal:  # edited without the API (by hand): one step
+                journal = [("an edit", None)]
+            if journal:
                 history = _history_dir(target)
                 history.mkdir(parents=True, exist_ok=True)
-                stamp = f"{len(list(history.glob('*.json'))):04d}-{uuid.uuid4().hex[:6]}"
-                (history / f"{stamp}.json").write_text(previous, encoding="utf-8")
+                for k, (label, snapshot) in enumerate(journal):
+                    # the first edit's "before" is exactly what was saved; later ones are in-memory snapshots
+                    _write_step(history, label, previous if (k == 0 or snapshot is None) else _draft_text(snapshot))
                 for old in sorted(history.glob("*.json"))[:-self.HISTORY]:
                     old.unlink()
+                import shutil
+
+                shutil.rmtree(_redo_dir(target), ignore_errors=True)  # a new edit ends the redo chain
         target.write_text(text, encoding="utf-8")
+        self._journal = []
         self.path = target
         return target
 
-    def undo(self, steps: int = 1) -> int:
-        """Go back ``steps`` saved versions of this working copy. Returns how many steps were undone."""
+    def undo(self, steps: int = 1) -> list[str]:
+        """Go back ``steps`` edits of this working copy (``redo`` goes forward). Returns what was undone."""
         if not self.path:
             raise TimelineEditError("only a saved working copy can undo")
-        history = sorted(_history_dir(Path(self.path)).glob("*.json"))
+        target = Path(self.path)
+        history = sorted(_history_dir(target).glob("*.json"))
         if not history:
-            raise TimelineEditError("nothing to undo: this working copy has no earlier version")
-        steps = max(1, min(int(steps), len(history)))
-        chosen = history[-steps]
-        Path(self.path).write_text(chosen.read_text(encoding="utf-8"), encoding="utf-8")
-        for used in history[-steps:]:
-            used.unlink()
+            raise TimelineEditError("nothing to undo: this working copy has no earlier edit")
+        undone = []
+        current = target.read_text(encoding="utf-8")
+        for step in reversed(history[-max(1, min(int(steps), len(history))):]):
+            label, state = _read_step(step)
+            _write_step(_redo_dir(target), label, current)
+            current = state
+            step.unlink()
+            undone.append(label)
+        target.write_text(current, encoding="utf-8")
+        self._reload()
+        return undone
+
+    def redo(self, steps: int = 1) -> list[str]:
+        """Re-apply edits that ``undo`` took back. Returns what was redone."""
+        if not self.path:
+            raise TimelineEditError("only a saved working copy can redo")
+        target = Path(self.path)
+        stack = sorted(_redo_dir(target).glob("*.json"))
+        if not stack:
+            raise TimelineEditError("nothing to redo")
+        redone = []
+        current = target.read_text(encoding="utf-8")
+        for step in reversed(stack[-max(1, min(int(steps), len(stack))):]):
+            label, state = _read_step(step)
+            _write_step(_history_dir(target), label, current)
+            current = state
+            step.unlink()
+            redone.append(label)
+        target.write_text(current, encoding="utf-8")
+        self._reload()
+        return redone
+
+    def _reload(self) -> None:
         fresh = Checkout.load(self.path)
-        self.bundle, self._mcache = fresh.bundle, None
-        return steps
+        self.bundle, self._mcache, self._journal = fresh.bundle, None, []
+
+    @contextlib.contextmanager
+    def step(self, label: str):
+        """One undo step for everything inside (a verb that makes several changes is one edit)."""
+        if self._edit_depth:
+            yield self
+            return
+        before = _snapshot(self)
+        self._edit_depth += 1
+        try:
+            yield self
+        finally:
+            self._edit_depth -= 1
+        if _snapshot(self) != before:
+            self._journal.append((label, before))
 
     # ---- working copy (draft) --------------------------------------------------
     @classmethod
@@ -2691,6 +2746,55 @@ def resolve_handle_entry(project: str, handle: str, *, client: Any = None) -> di
         return run(c)
 
 
+def _snapshot(tl: "Checkout") -> str:
+    """The document as compact JSON (cheap): what an undo step restores."""
+    return json.dumps(tl.bundle, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _draft_text(snapshot: str) -> str:
+    return _serialize(Checkout(json.loads(snapshot))._annotated())
+
+
+def _write_step(folder: Path, label: str, state: str) -> None:
+    import time as _time
+
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{_time.time_ns():020d}-{uuid.uuid4().hex[:4]}.json"  # monotonic: undo order never depends on a count
+    (folder / name).write_text(json.dumps({"label": label, "state": state}), encoding="utf-8")
+
+
+def _read_step(path: Path) -> tuple[str, str]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        record = json.loads(text)
+        if isinstance(record, dict) and "state" in record:
+            return str(record.get("label") or "an edit"), str(record["state"])
+    except ValueError:
+        pass
+    return "an edit", text  # an older history file: the whole draft
+
+
+def _redo_dir(path: Path) -> Path:
+    return Path(path).with_suffix(".redo")
+
+
+def _journaled(fn: Any, kind: str) -> Any:
+    """Wrap a mutating method: one undo step per outermost call, labelled with what it did."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        tl = self if kind == "checkout" else self._tl
+        if getattr(tl, "_edit_depth", 0):
+            return fn(self, *args, **kwargs)
+        who = getattr(self, "address", None) or getattr(self, "segment", None) or ""
+        shown = ", ".join([repr(a)[:40] for a in args] + [f"{k}={v!r}"[:40] for k, v in kwargs.items()])
+        with tl.step(f"{who + '.' if who else ''}{fn.__name__}({shown})"):
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 def _is_draft(path: Path) -> bool:
     try:
         return drafts_root().resolve() in Path(path).resolve().parents
@@ -2898,3 +3002,15 @@ def import_media(path: Path, project: Any) -> dict[str, Any]:
     if data.get("resolution"):
         entry["resolution"] = data["resolution"]
     return entry
+
+
+# every edit is one undo step (the outermost call; what it calls inside is part of it)
+for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "extend", "end_at", "set", "clear_asset",
+              "swap_asset", "keyframe_at", "remove", "remove_layer", "keep"):
+    setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
+for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
+              "fill_slot", "fill_standins", "declare_gaps"):
+    setattr(Checkout, _name, _journaled(getattr(Checkout, _name), "checkout"))
+for _name in ("replace", "set_gap_after"):
+    setattr(Voice, _name, _journaled(getattr(Voice, _name), "voice"))
+

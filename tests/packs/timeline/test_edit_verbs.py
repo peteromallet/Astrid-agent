@@ -391,7 +391,32 @@ def test_undo_steps_back_through_the_working_copy(tmp_path, monkeypatch, capsys)
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.2)
     capsys.readouterr()
     assert _run("undo", "t", "--project", "P") == 0
-    assert "undid 1 step(s)" in capsys.readouterr().out
+    assert "undid 1 edit(s)" in capsys.readouterr().out
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.1)
     assert _run("undo", "t", "--project", "P") == 0
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.0)
+
+
+def test_undo_is_one_edit_per_step_and_redo_goes_forward(tmp_path, monkeypatch, capsys):
+    """P1: several edits (verbs and Python, some before one save), undo one at a time, then redo."""
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
+    assert _run("checkout", "t", "--project", "P") == 0
+    for _ in range(3):
+        _run("edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "3")  # three verb edits
+    tl = Checkout.draft("P", "t")
+    for _ in range(12):  # twelve API edits, ONE save
+        tl.clip("a-rocket").nudge(frames=3)
+    tl.save()
+    path = tc.find_draft("P", "t")
+    start = lambda: round(Checkout.load(path).clip("a-rocket").start * 30)  # noqa: E731
+    assert start() == 30 + 45
+    capsys.readouterr()
+    assert _run("undo", "t", "--project", "P") == 0
+    out = capsys.readouterr().out
+    assert "undid" in out and "nudge" in out and start() == 30 + 42  # exactly one edit back
+    assert _run("undo", "t", "13", "--project", "P") == 0
+    assert start() == 30 + 3
+    assert _run("redo", "t", "--project", "P", "--steps", "2") == 0
+    assert start() == 30 + 9

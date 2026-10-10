@@ -3785,7 +3785,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         target = None
 
     before = tl.document()
-    _apply_edit(tl, parsed)
+    with tl.step(_edit_label(parsed)):
+        _apply_edit(tl, parsed)
     report = tl.check()
     changes = _describe_edit(before, tl.document(), tl)
     if voice_ops:
@@ -3807,6 +3808,23 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     # the edit was applied: exit 0 even when orphans still block publishing (check/publish say so)
     broken = [p for p in report.problems if p.startswith("invalid")]
     return 1 if broken else 0
+
+
+def _edit_label(parsed: argparse.Namespace) -> str:
+    """What one `timelines edit` did, for undo: ``edit --clip c30.cover --until Astrid``."""
+    parts = []
+    for name in ("clip", "cut", "on_moment", "until_moment", "for_seconds", "at_word", "at", "nudge", "nudge_frames",
+                 "extend", "duration", "swap_asset", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
+        value = getattr(parsed, name, None)
+        if value not in (None, False, ""):
+            flag = {"on_moment": "on", "until_moment": "until", "for_seconds": "for"}.get(name, name).replace("_", "-")
+            parts.append(f"--{flag} {value}")
+    for name in ("remove", "keep", "clear_asset", "retime"):
+        if getattr(parsed, name, False):
+            parts.append(f"--{name.replace('_', '-')}")
+    for item in getattr(parsed, "set", None) or []:
+        parts.append(f"--set {item}")
+    return ("edit " + " ".join(parts))[:160]
 
 
 def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
@@ -4288,7 +4306,8 @@ def _cmd_lines(parsed: argparse.Namespace) -> int:
 def _configure_undo(subparser: argparse.ArgumentParser) -> None:
     subparser.description = "Undo the last change(s) to the working copy (each edit, apply or re-flow is one step)."
     _add_timeline_args(subparser)
-    subparser.add_argument("steps", nargs="?", type=int, default=1, help="How many steps back (default 1).")
+    subparser.add_argument("steps", nargs="?", type=int, default=1, help="How many edits back (default 1).")
+    subparser.add_argument("--steps", dest="steps", type=int, help="The same, as an option.")
     subparser.set_defaults(handler=_cmd_undo)
 
 
@@ -4297,13 +4316,35 @@ def _cmd_undo(parsed: argparse.Namespace) -> int:
     tl, existed = _working_copy(parsed, create=False)
     if tl is None:
         raise _VerbError(f"no working copy to undo · next: timelines checkout {parsed.timeline} --project {parsed.project}", 2)
-    steps = tl.undo(parsed.steps)
+    undone = tl.undo(parsed.steps)
     changes = tl.changes()
-    print(f"undid {steps} step(s); the working copy now has {len(changes)} unpublished change(s):")
-    for line in _cap(changes):
-        print(f"  {line}")
-    print(f"next: timelines status {parsed.timeline} --project {parsed.project}   ·   timelines undo {parsed.timeline} --project {parsed.project}")
+    print(f"undid {len(undone)} edit(s):")
+    for label in undone:
+        print(f"  ↶ {label}")
+    print(f"the working copy now has {len(changes)} unpublished change(s)")
+    print(f"next: timelines redo {parsed.timeline} --project {parsed.project} (put it back)   ·   timelines status {parsed.timeline} --project {parsed.project}")
     return 0
+
+
+@_guard(2)
+def _cmd_redo(parsed: argparse.Namespace) -> int:
+    tl, existed = _working_copy(parsed, create=False)
+    if tl is None:
+        raise _VerbError(f"no working copy · next: timelines checkout {parsed.timeline} --project {parsed.project}", 2)
+    redone = tl.redo(parsed.steps)
+    print(f"redid {len(redone)} edit(s):")
+    for label in redone:
+        print(f"  ↷ {label}")
+    print(f"the working copy now has {len(tl.changes())} unpublished change(s)")
+    return 0
+
+
+def _configure_redo(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = "Put back edits that undo took back."
+    _add_timeline_args(subparser)
+    subparser.add_argument("steps", nargs="?", type=int, default=1, help="How many edits forward (default 1).")
+    subparser.add_argument("--steps", dest="steps", type=int, help="The same, as an option.")
+    subparser.set_defaults(handler=_cmd_redo)
 
 
 def _configure_apply(subparser: argparse.ArgumentParser) -> None:
@@ -4327,7 +4368,8 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
     if not existed:
         print(f"no working copy yet: checked out {parsed.timeline} from its published head")
     try:
-        changes = apply_sheet(tl, text)
+        with tl.step(f"apply {parsed.sheet}"):
+            changes = apply_sheet(tl, text)
     except SheetError as exc:
         raise _VerbError(f"{parsed.sheet}: {exc}", 2) from None
     for line in _cap(changes) or ["no change (the sheet matches the working copy)"]:
@@ -4471,8 +4513,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         "undo",
-        help="Undo the last change(s) to the working copy.",
+        help="Undo the last edit(s) to the working copy (one edit per step).",
         configure=_configure_undo,
+    ),
+    CommandSpec(
+        "redo",
+        help="Put back edits that undo took back.",
+        configure=_configure_redo,
     ),
     CommandSpec(
         "words",
