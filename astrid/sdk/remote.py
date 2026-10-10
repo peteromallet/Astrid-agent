@@ -1554,6 +1554,14 @@ class RemoteMedia(_RemoteFamily):
         if thumbnail_error:
             payload["thumbnail_diagnostics"] = [{"code": "thumbnail_extraction_failed", "message": thumbnail_error[:240]}]
         return DomainResult.success(payload, receipt=result.receipt, idempotency_key=result.idempotency_key)
+    def import_bytes(self, *, project: str, data: bytes, filename: str, media_type: str = "application/octet-stream", idempotency_key=None):
+        """Import in-memory bytes (an SDK-built document) as one managed project object."""
+        if project is None:
+            return DomainResult.failure(ErrorObject("validation_error", "media import requires a project", {"field": "project"}), idempotency_key=idempotency_key or "")
+        if not isinstance(data, (bytes, bytearray)):
+            return DomainResult.failure(ErrorObject("validation_error", "import_bytes takes bytes", {"field": "data"}), idempotency_key=idempotency_key or "")
+        key = idempotency_key or uuid.uuid4().hex
+        return self._typed("ingest_project_object", project, bytes(data), key=key, media_type=media_type, idempotency_key=key, filename=Path(filename).name)
     def import_directory(self, *, project: str, directory: Path, realm="managed_local", idempotency_key=None):
         realm_error = self._managed_realm_error(realm, idempotency_key=idempotency_key)
         if realm_error is not None:
