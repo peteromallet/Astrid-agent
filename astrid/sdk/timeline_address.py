@@ -15,6 +15,7 @@ Ambiguity is never guessed: the error lists every choice in its canonical form.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,7 +25,7 @@ from astrid.sdk import timeline_intent as intent
 
 TIME_RE = re.compile(r"^@?(?:(\d+):)?(\d+(?:\.\d+)?)s?$")
 CLIP_ADDR_RE = re.compile(r"^(c\d+[a-z]?)\.(\S+)$")
-MOMENT_HINT = re.compile(r'^(after |beat |downbeat |on )|"|“| in [A-Za-z]|#\d|[+-]\d+(\.\d+)?[fs]\b')
+MOMENT_HINT = re.compile(r'^(after |beat |downbeat |on |end\b)|^c\d+[a-z]?\.end\b|"|“| in [A-Za-z]|#\d|[+-]\d+(\.\d+)?[fs]\b')
 
 
 class AddressError(ValueError):
@@ -99,17 +100,16 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
         return [Target("time", f"{t:.2f}", t, t)]
     lowered = raw.lower()
     if mo.CUT_ID_RE.match(lowered):
+        lowered = tl._cut_id(lowered) or lowered  # c1 is c01
         if lowered in tl._cut_spans():
             return [cut_target(tl, lowered)]
         orphans = tl._cut_clips(lowered)
         if orphans:  # an orphaned cut (its line was removed): still addressable, to re-home or remove
             lo, hi = min(c.start for c in orphans), max(c.end for c in orphans)
             return [Target("cut", lowered, lo, hi, cut=lowered, note="orphaned: re-home it with --cut %s --on MOMENT" % lowered)]
-        ids = list(tl._cut_spans())
-        plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
-        extra = [c for c in ids if c not in plain]
-        span = (f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)) + (f" (+ {', '.join(extra)})" if extra else "")
-        raise AddressError(f"no cut {lowered}; cuts are {span}")
+        raise AddressError(tl._no_cut(lowered))
+    if MOMENT_HINT.match(lowered) and (lowered.startswith("end") or re.match(r"^c\d+[a-z]?\.end\b", lowered)):
+        return _moment(tl, raw)  # end, end of c30, c30.end (+offsets)
     m = CLIP_ADDR_RE.match(raw)
     if m:
         found = _clip_address(tl, m.group(1).lower(), m.group(2))
@@ -192,9 +192,13 @@ def _moment(tl: Any, raw: str) -> list[Target]:
     except mo.MomentError:
         return []
     if moment.kind != "word":
+        if moment.cut:
+            moment = dataclasses.replace(moment, cut=tl._cut_id(moment.cut) or moment.cut)
         try:
             t = mo.floor_frame(mo.resolve(moment, _ctx(tl)), tl.fps)
-        except mo.MomentError:
+        except mo.MomentError as exc:
+            if moment.kind in ("cut", "cut_end"):
+                raise AddressError(str(exc)) from None
             return []
         return [Target("time", mo.format_moment(moment), t, t)]
     hits = mo.find_words(moment, tl.words())
@@ -239,6 +243,20 @@ def _ctx(tl: Any) -> Any:
 
 def _nothing(tl: Any, raw: str) -> str:
     import difflib
+
+    if MOMENT_HINT.search(raw):  # a moment that names a word: say what is wrong with it, in its terms
+        try:
+            moment = mo.parse(raw)
+        except mo.MomentError as exc:
+            return str(exc)
+        base = moment.base if moment.kind in ("beat", "downbeat") else moment
+        if base is not None and base.kind == "word":
+            lines = list(dict.fromkeys(w.segment for w in tl.words()))
+            if base.line and base.line not in lines:
+                close = difflib.get_close_matches(base.line, lines, n=4)
+                return (f"there is no line {base.line}" + (f"; did you mean {', '.join(close)}?" if close else "")
+                        + f" (lines: timelines lines TL; {len(lines)} lines, {lines[0]}…{lines[-1]})" if lines else "")
+            return mo._missing(base, tl.words())
 
     layers = sorted({intent.layer_of(c.data) for c in tl.clips() if intent.layer_of(c.data)})
     words = sorted({re.sub(r"[^\w']", "", w.text.lower()) for w in tl.words()})
@@ -317,6 +335,23 @@ def unknown_params(element: str, keys: list[str], existing: dict[str, Any] | Non
     return [k for k in keys if k not in props and k not in (existing or {})]
 
 
+def _resolved(tl: Any, clip: Any, path: str, expr: Any) -> str:
+    """`` → frame 12 (93.40 s)``: what a computed param is now, and when that is on the timeline."""
+    from astrid.sdk.timeline_checkout import _get_path
+
+    value = _get_path(clip.data, path)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not isinstance(expr, dict):
+        return ""
+    unit = expr.get("as") or ("clip_seconds" if expr.get("moment") or expr.get("word") else None)
+    if unit == "clip_frame":
+        return f" → frame {value:g} ({clip.start + value / tl.fps:.2f} s)"
+    if unit == "clip_seconds":
+        return f" → {value:g} s into the clip ({clip.start + value:.2f} s)"
+    if unit == "timeline_seconds":
+        return f" → {value:.2f} s"
+    return f" → {value:g}"
+
+
 def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: str = "P") -> str:
     """The complete record of a target, as plain text: nothing truncated, every time resolved."""
     import json
@@ -375,13 +410,18 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
             note = "" if key in props or not props else "   (not declared by the element)"
             default = f"  default {json.dumps(to_canvas(clip.element, key, defaults[key]))}" if key in defaults else ""
             out.append(f"    {mark}{key:<{width}}  {shown}   [{kind}{unit}]{default}{note}")
-            flagged = [p for p in flagged if p != f"params.{key}"]
-            groups: dict[str, list[str]] = {}
-            for path in flagged:
-                head, _, leaf = path.removeprefix("params.").rpartition(".")
-                groups.setdefault(head, []).append((f"{leaf} = " if head else "= ") + formula_text(formulas[path]))
-            for head, parts in groups.items():
-                out.append(f"        {head + ': ' if head else ''}" + " · ".join(parts))
+            spec = props.get(key) or {}
+            if isinstance(value, dict) and isinstance(spec.get("properties"), dict):  # an object: each of its keys
+                if spec.get("description"):
+                    out.append(f"        {spec['description']}")
+                for sub, sub_spec in spec["properties"].items():
+                    sub_value = json.dumps(value[sub], ensure_ascii=False) if sub in value else "(not set)"
+                    said = f" — {sub_spec['description']}" if isinstance(sub_spec, dict) and sub_spec.get("description") else ""
+                    out.append(f"        {key}.{sub} = {sub_value}   [{_type_of(sub_spec) if isinstance(sub_spec, dict) else 'any'}]{said}")
+                for sub in [k for k in value if k not in spec["properties"]]:
+                    out.append(f"        {key}.{sub} = {json.dumps(value[sub], ensure_ascii=False)}   (not declared by the element)")
+            for path in [p for p in flagged if p != f"params.{key}"]:  # every computed part, each with its value
+                out.append(f"        {path.removeprefix('params.')} = {formula_text(formulas[path])}{_resolved(tl, clip, path, formulas[path])}")
         if props:
             missing = [k for k in props if k not in params]
             if missing:

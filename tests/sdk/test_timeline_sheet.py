@@ -112,3 +112,19 @@ def test_two_lines_with_one_layer_name_are_an_error_never_a_silent_merge():
     with pytest.raises(SheetError, match="already has a layer named 'dot'"):
         apply_sheet(tl, sheet)
     assert not [c for c in tl.clips() if c.layer_name == "dot"]  # nothing was applied
+
+
+def test_the_music_bed_is_in_the_sheet_and_its_line_edits_it():
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    sheet = render_sheet(tl, film="tiny")
+    assert "\nsound " in sheet and "music  a-music  media  Q  for 4s" in sheet
+    changes = apply_sheet(tl, sheet.replace("media  Q  for 4s", "media  Q  volume=0.5  for 3s"))
+    music = tl.clip("a-music")
+    assert music.duration == pytest.approx(3.0) and music.data["volume"] == 0.5 and changes
+    # a sheet without the sound section leaves the bed alone
+    assert apply_sheet(tl, sheet.split("\nsound ")[0] + "\n") == []
+    assert tl.clip("a-music").duration == pytest.approx(3.0)

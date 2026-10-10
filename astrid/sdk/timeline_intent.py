@@ -191,6 +191,59 @@ def beat_sources(clip: Mapping[str, Any], kind: str = "beat") -> list[float]:
     return []
 
 
+def beats_grid(data: Mapping[str, Any], source: str | None = None) -> dict[str, Any]:
+    """A beats file (``chiptune.compose``'s beats.json: ``{bpm, beats, downbeats, bars, hits, …}``) → the
+    stored form: source seconds of the music file, hits as ``[t, kind]``."""
+    def times(key: str) -> list[float]:
+        out = []
+        for b in data.get(key) or []:
+            t = b.get("t") if isinstance(b, Mapping) else b[0] if isinstance(b, (list, tuple)) and b else b
+            if isinstance(t, (int, float)) and not isinstance(t, bool):
+                out.append(round(float(t), 6))
+        return out
+
+    if not times("beats"):
+        raise ValueError("a beats file needs a non-empty beats list (seconds of the music file)")
+    grid: dict[str, Any] = {"beats": times("beats"), "downbeats": times("downbeats"), "time": "cue_seconds"}
+    if data.get("bars"):
+        grid["bars"] = times("bars")
+    hits = []
+    for h in data.get("hits") or []:
+        if isinstance(h, Mapping):
+            t, kind = h.get("t"), h.get("kind")
+        elif isinstance(h, (list, tuple)) and h:
+            t, kind = h[0], (h[1] if len(h) > 1 else None)
+        else:
+            t, kind = h, None
+        if isinstance(t, (int, float)) and not isinstance(t, bool):
+            hits.append([round(float(t), 6), kind] if kind else [round(float(t), 6)])
+    if hits:
+        grid["hits"] = hits
+    for key in ("bpm", "duration_s"):
+        if isinstance(data.get(key), (int, float)):
+            grid[key] = data[key]
+    if source:
+        grid["source"] = source
+    return grid
+
+
+def set_beats(clip: dict[str, Any], grid: Mapping[str, Any] | None) -> None:
+    """Attach a beat grid (``beats_grid``) to a music clip, or remove it (None)."""
+    if grid is None:
+        _app_w(clip).pop("beats", None)
+        _tidy(clip)
+    else:
+        _app_w(clip)["beats"] = dict(grid)
+
+
+def beats_label(clip: Mapping[str, Any]) -> str | None:
+    """Where the clip's beats came from (a file name or a media handle), if it has a grid."""
+    value = _app(clip).get("beats")
+    if isinstance(value, Mapping):
+        return str(value.get("source") or "a beat grid")
+    return "a beat list" if isinstance(value, list) and value else None
+
+
 def beat_period(clip: Mapping[str, Any]) -> float | None:
     """Seconds per beat (from ``bpm``, else the median beat spacing)."""
     value = _app(clip).get("beats")

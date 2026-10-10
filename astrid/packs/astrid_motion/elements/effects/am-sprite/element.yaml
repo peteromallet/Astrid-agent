@@ -58,6 +58,7 @@ schema:
       enum:
       - 2
       - 3
+      description: Clip frames per step of position, flip and keyframes (stop-motion). It does not set a strip's playback rate; frames.fps does.
     keyframes:
       type: array
       description: Held poses. The last keyframe at or before each step is active.
@@ -115,6 +116,7 @@ schema:
         fps:
           type: number
           exclusiveMinimum: 0
+          description: The strip's playback rate, in strip frames per second (quantised to clip frames). This, not stepFrames, sets how fast a run cycle plays.
     blinkAt:
       description: Clip frame(s) where the sprite hides (or shows blinkIndex) for two frames.
       oneOf:

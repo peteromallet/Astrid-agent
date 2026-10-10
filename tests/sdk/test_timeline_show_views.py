@@ -203,7 +203,7 @@ def test_working_copy_banner_and_edit_marks(tmp_path, monkeypatch, capsys):
     code, out = run(capsys, doc)
     assert code == 0
     first = out.splitlines()[0]
-    assert first.startswith("WORKING COPY · 1 unpublished edits vs published rev-0 · --published")
+    assert first.startswith("WORKING COPY · 1 clip changed vs published rev-0 · --published")
     assert any(line.startswith("✎") and "0.00" in line for line in out.splitlines())
 
     code, out = run(capsys, doc, json=True)

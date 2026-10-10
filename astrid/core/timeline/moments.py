@@ -10,8 +10,9 @@ The grammar (one line, used by the sheet, the CLI, the API and the stored form):
     after "Astrid"             the last word of the phrase ends
     "tool" in v20a #2          scope to a VO line, and pick the 2nd occurrence
     beat 2 after "Astrid"      the 2nd music beat after it (also: downbeat N after/before …)
-    c22                        a cut starts (cut ids, not positions)
-    end                        the end of the clip's own cut
+    c22                        a cut starts (cut ids, not positions; c1 is c01)
+    end of c30   c30.end       a cut ends (where the next cut starts)
+    end                        the end of the clip's own cut (with no clip: the end of the film)
     +0.8s   -3f                an offset; alone, it is relative to the clip's own cut start
     "viral" +2f                any of the above, then an offset
 
@@ -28,6 +29,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable, Protocol, Sequence
 
 CUT_ID_RE = re.compile(r"^c\d+[a-z]?$")
+_CUT_END_RE = re.compile(r"^(c\d+[a-z]?)\.end$")
 FRAME_EPSILON = 0.02  # frames: times arrive through ms placements, so allow ~0.6 ms of rounding
 _TOKEN_RE = re.compile(r'"[^"]*"|“[^”]*”|#\d+|[+-]\d+(?:\.\d+)?[fs]\b|[^\s"]+')
 _OFFSET_RE = re.compile(r"^([+-])(\d+(?:\.\d+)?)([fs])$")
@@ -39,7 +41,7 @@ class MomentError(ValueError):
 
 @dataclass(frozen=True)
 class Moment:
-    kind: str                      # word | beat | downbeat | cut | end | cut_start
+    kind: str                      # word | beat | downbeat | cut | cut_end | end | cut_start
     text: str = ""                 # the phrase (kind word)
     line: str | None = None        # scope: a VO line id
     n: int | None = None           # occurrence (#n) for words; the count for beats
@@ -71,6 +73,7 @@ class Context(Protocol):
     def words(self) -> Sequence[Word]: ...
     def beats(self, kind: str) -> Sequence[float]: ...       # timeline seconds, sorted
     def cut_start(self, cut_id: str) -> float: ...
+    def cut_end(self, cut_id: str) -> float: ...
     def own_cut(self) -> tuple[float, float] | None: ...      # (start, end) of the clip's cut
     def line_in_point(self, line: str) -> float | None: ...
 
@@ -109,7 +112,11 @@ def _parse_core(tokens: list[str], raw: str) -> tuple[Moment, list[str]]:
     if head == "on":
         return _parse_core(tokens[1:], raw)
     if head == "end":
+        if len(tokens) >= 3 and tokens[1].lower() == "of" and CUT_ID_RE.match(tokens[2].lower()):
+            return Moment("cut_end", cut=tokens[2].lower()), tokens[3:]
         return Moment("end"), tokens[1:]
+    if _CUT_END_RE.match(head):
+        return Moment("cut_end", cut=_CUT_END_RE.match(head).group(1)), tokens[1:]
     if CUT_ID_RE.match(head):
         return Moment("cut", cut=head), tokens[1:]
     if tokens[0][0] in "\"“":
@@ -153,6 +160,8 @@ def format_moment(m: Moment) -> str:
         core = f"{m.kind} {m.n} {m.direction} {format_moment(replace(m.base, offset_s=0.0, offset_frames=0)) if m.base else ''}".strip()
     elif m.kind == "cut":
         core = str(m.cut)
+    elif m.kind == "cut_end":
+        core = f"end of {m.cut}"
     elif m.kind == "end":
         core = "end"
     else:
@@ -225,12 +234,16 @@ def resolve(moment: Moment | str, ctx: Context, *, in_point: bool = False) -> fl
     elif m.kind in ("beat", "downbeat"):
         base = resolve(m.base, ctx) if m.base else 0.0
         beats = list(ctx.beats(m.kind))
-        pool = [b for b in beats if b > base + 1e-3] if m.direction == "after" else [b for b in reversed(beats) if b < base - 1e-3]
+        # a beat on the base's own frame is ON it, not after (or before) it: count from the next one
+        near = 0.5 / float(ctx.fps or 30)
+        pool = [b for b in beats if b > base + near] if m.direction == "after" else [b for b in reversed(beats) if b < base - near]
         if len(pool) < (m.n or 1):
             raise MomentError(f"there is no {m.kind} {m.n} {m.direction} {format_moment(m.base) if m.base else 'the start'} (the music has {len(beats)} {m.kind}s)")
         t = pool[(m.n or 1) - 1]
     elif m.kind == "cut":
         t = ctx.cut_start(str(m.cut))
+    elif m.kind == "cut_end":
+        t = ctx.cut_end(str(m.cut))
     elif m.kind in ("end", "cut_start"):
         own = ctx.own_cut()
         if own is None:

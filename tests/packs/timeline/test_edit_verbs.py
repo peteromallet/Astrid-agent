@@ -164,7 +164,7 @@ def test_edit_error_exits_2_with_the_message(local, capsys):
 def test_words_find_format_is_one_line_per_match(local, capsys):
     assert _run("words", "--file", str(local), "--find", "viral") == 0
     lines = capsys.readouterr().out.splitlines()
-    assert re.fullmatch(r"  \d+\.\d{3}  viral  \[s1:2\]  cut \d+", lines[0]), lines[0]
+    assert re.fullmatch(r"  \d+\.\d{3}–\d+\.\d{3}  viral  \[s1:2\]  (cut \d+|c\d+[a-z]?)", lines[0]), lines[0]
     assert len(lines) == 2  # one match plus the next-step line
     assert lines[-1].startswith("next: ")
 
@@ -228,7 +228,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     assert "next:" in out and any(line.strip().startswith("publish  timelines status t --project P") for line in out)
 
     assert _run("status", "t", "--project", "P") == 0
-    assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 unpublished changes')
+    assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 clips changed')
 
     assert _run("edit", "t", "--project", "P", "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
@@ -236,11 +236,11 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
 
     assert _run("status", "t", "--project", "P") == 0
     status = capsys.readouterr().out
-    assert status.startswith('WORKING COPY "main" · 1 unpublished change vs published rev-0')
+    assert status.startswith('WORKING COPY "main" · 1 clip changed vs published rev-0')
     assert "a-rocket" in status
 
     assert _run("discard", "t", "--project", "P") == 0
-    assert "1 unpublished change dropped" in capsys.readouterr().out
+    assert "1 clip changed, dropped" in capsys.readouterr().out
     assert _run("status", "t", "--project", "P") == 0
     assert "no working copy" in capsys.readouterr().out
 
@@ -343,7 +343,7 @@ def test_lint_reads_the_working_copy_by_default(draft_with_edit, capsys):
     capsys.readouterr()
     _run_with_client("lint", "t", "--project", "P")
     first = capsys.readouterr().out.splitlines()[0]
-    assert first.startswith('WORKING COPY · 1 unpublished edits vs published rev-0')
+    assert first.startswith('WORKING COPY · 1 clip changed vs published rev-0')
 
 
 def test_lint_published_has_no_banner(draft_with_edit, capsys):
@@ -356,7 +356,7 @@ def test_diff_without_from_compares_head_with_working_copy(draft_with_edit, caps
     capsys.readouterr()
     assert _run_with_client("diff", "t", "--project", "P") == 0
     out = capsys.readouterr().out
-    assert out.startswith('WORKING COPY · 1 unpublished edits vs published rev-0')
+    assert out.startswith('WORKING COPY · 1 clip changed vs published rev-0')
     assert "a-rocket" in out
     assert "working copy" in out
 
@@ -420,3 +420,39 @@ def test_undo_is_one_edit_per_step_and_redo_goes_forward(tmp_path, monkeypatch, 
     assert start() == 30 + 3
     assert _run("redo", "t", "--project", "P", "--steps", "2") == 0
     assert start() == 30 + 9
+
+
+def test_edit_beats_attaches_a_grid_from_a_file_and_says_what_moved(local, tmp_path, capsys):
+    tl = Checkout.load(local)
+    tl.clip("a-music").data["app"] = {"beats": {"beats": [i * 0.5 for i in range(8)], "time": "cue_seconds"}}
+    tl.clip("a-rocket").on('beat 2 after "went"')
+    tl.save(local)
+    grid = tmp_path / "beats.json"
+    grid.write_text(json.dumps({"bpm": 100, "beats": [0.0, 0.6, 1.2, 1.8, 2.4, 3.0, 3.6]}))
+    capsys.readouterr()
+    assert _run("edit", "--file", str(local), "--clip", "a-music", "--beats", str(grid)) == 0
+    out = capsys.readouterr().out
+    assert "beats from beats.json (7 beats, 100 bpm)" in out and "a-rocket" in out
+    assert Checkout.load(local).clip("a-rocket").start == pytest.approx(1.8)  # beat 2 after "went" (0.9 s): 1.2, 1.8
+    assert _run("words", "--file", str(local), "went", "--beats") == 0
+    assert "grid: beats.json" in capsys.readouterr().out
+
+
+def test_two_draft_handles_saving_at_once_keep_both_edits(draft_with_edit, capsys):
+    """Concurrency: two Checkout.draft handles on one working copy (one re-homing, one building loops)."""
+    one = Checkout.draft("P", "t")
+    two = Checkout.draft("P", "t")
+    one.clip("b-type").set(text="Now.")
+    two.clip("a-rocket").nudge(0.2)
+    one.save()
+    two.save()
+    assert two.merged and "merged with another writer's save" in two.merged[0]
+    after = Checkout.draft("P", "t")
+    assert after.clip("b-type").params["text"] == "Now."
+    assert after.clip("a-rocket").start == pytest.approx(1.0 + 3 / 30 + 0.2)
+    three = Checkout.draft("P", "t")
+    capsys.readouterr()
+    assert _run("edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "1") == 0
+    three.clip("a-rocket").nudge(0.5)
+    with pytest.raises(tc.TimelineEditError, match="another writer"):
+        three.save()

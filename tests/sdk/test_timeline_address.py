@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from astrid.sdk.timeline_address import AddressError, describe_target, resolve
+from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline_checkout import Checkout
 
 from tests.sdk.test_timeline_reflow_golden import film
@@ -51,3 +52,35 @@ def test_a_carried_layer_answers_to_the_later_cut(tl):
 def test_cut_ranges_are_inclusive(tl):
     target = resolve(tl, "c1..c2", prefer="time")
     assert (target.start, target.end) == (pytest.approx(0.0), pytest.approx(tl.clip("c3.field").start))
+
+
+def test_time_takes_the_moment_grammar_cut_ends_and_padded_ids(tl):
+    """P8: tl.time() reads what --on and --at read; c01 and c1 are one cut; end works without a clip."""
+    c2 = resolve(tl, "c2")
+    assert tl.time("c2") == pytest.approx(c2.start)
+    assert tl.time("c02") == tl.time("c2")  # T15a: c1 is c01 (and the other way round)
+    assert tl.time("c2 +1.8s") == pytest.approx(c2.start + 1.8)
+    assert tl.time("end of c2") == pytest.approx(c2.end) == tl.time("c2.end")
+    assert tl.time("c2.end -2f") == pytest.approx(c2.end - 2 / 30)
+    assert tl.time("end") == pytest.approx(tl.duration)
+    assert tl.time('"back" in s3') == pytest.approx(resolve(tl, '"back" in s3', prefer="time").start)
+    assert resolve(tl, "c02..c3").start == pytest.approx(c2.start)
+    with pytest.raises(Exception, match="no cut c9; cuts are c1…c3"):
+        tl.time("c9 +1s")
+    with pytest.raises(Exception, match="there is no line s9"):
+        tl.time('"back" in s9')
+
+
+def test_a_bare_layer_name_used_in_several_cuts_lists_each_with_its_time(tl):
+    """T15a(e): "claw" is in four cuts; the bare name is ambiguous and the error lists every one, timed."""
+    for cut in tl.cuts[:2]:
+        for clip in cut.clips:
+            if clip.track == "sprite":
+                clip.data.setdefault("app", {})["layer"] = "claw"
+    claws = [c for c in tl.clips() if intent.layer_of(c.data) == "claw"]
+    if len(claws) < 2:
+        pytest.skip("the fixture has one sprite")
+    with pytest.raises(AddressError) as err:
+        resolve(tl, "claw")
+    for clip in claws:
+        assert f"{clip.address} ({clip.start:.2f}" in str(err.value)

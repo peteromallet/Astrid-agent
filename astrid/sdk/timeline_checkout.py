@@ -508,9 +508,37 @@ class Clip:
         return self
 
     def swap_asset(self, asset: Any) -> "Clip":
-        """Point the clip at another asset: a registry key, a ``{media_id, …}`` entry, or a local file (imported)."""
+        """Point the clip at another asset: a registry key, a ``{media_id, …}`` entry, a local file (imported)
+        or a media handle (``run:<id>/music``, ``ref:NAME``, ``sha256:…``).
+
+        An audio clip that played its whole file plays the whole new one (and never runs past its end).
+        A music clip takes the beat grid made with the new file: the ``beats`` output of the run that
+        made it, or ``NAME.beats.json``/``beats.json`` beside a local file; every beat moment re-resolves.
+        If no grid comes along, check blocks until you attach one (``set_beats``) or keep the old one."""
+        registry = self._tl._registry(self.shot_id)
+        old_entry = copy.deepcopy(registry.get(str(self.data.get("asset"))) or {})
         key = self._tl._register_asset(self.shot_id, asset)
         self.data["asset"] = key
+        new_entry = self._tl._registry(self.shot_id).get(key) or {}
+        if self.is_audio and not intent.cut_of(self.data) and new_entry.get("media_id") != old_entry.get("media_id"):
+            self._tl._follow_media(self, old_entry, new_entry, asset)
+        return self
+
+    def set_beats(self, source: Any) -> "Clip":
+        """Attach this music clip's beat grid: a beats.json path, a media handle (``run:<id>/beats``), a
+        dict like beats.json, or ``"keep"`` (the grid it has is right for the file it now plays).
+
+        Every beat moment (``beat 2 after "Astrid"``, ``downbeat 1 before c30``) re-resolves on the new
+        grid; what moved is in ``tl.notes`` and ``tl.changes()``."""
+        if isinstance(source, str) and source.strip().lower() == "keep":
+            value = intent._app(self.data).get("beats")
+            if not value:
+                raise TimelineEditError(f"{self.address} has no beat grid to keep; attach one: set_beats(PATH|HANDLE)")
+            grid = dict(value) if isinstance(value, Mapping) else {"beats": intent.beat_sources(self.data), "time": "cue_seconds"}
+            label = intent.beats_label(self.data) or "its grid"
+        else:
+            grid, label = load_beats(str(self._tl.bundle.get("project_id") or ""), source)
+        self._tl._attach_beats(self, grid, label)
         return self
 
     def keyframe_at(self, index: int, when: Any) -> "Clip":
@@ -707,13 +735,23 @@ class _MomentContext:
         return sorted(out)
 
     def cut_start(self, cut_id: str) -> float:
+        cut_id = self.tl._cut_id(cut_id) or cut_id
         for g in self.tl._cut_groups():
             if g["id"] == cut_id:
                 return g["start"]
-        raise mo.MomentError(f"there is no cut {cut_id}")
+        raise mo.MomentError(self.tl._no_cut(cut_id))
+
+    def cut_end(self, cut_id: str) -> float:
+        cut_id = self.tl._cut_id(cut_id) or cut_id
+        spans = self.tl._cut_spans()
+        if cut_id not in spans:
+            raise mo.MomentError(self.tl._no_cut(cut_id))
+        end = spans[cut_id][1]
+        return float(end) if end is not None else self.tl.duration
 
     def own_cut(self):
-        return self.tl._own_cut_span(self.clip) if self.clip is not None else None
+        """The clip's cut; a moment asked of the film itself (``tl.time("end")``) is relative to the whole film."""
+        return self.tl._own_cut_span(self.clip) if self.clip is not None else (0.0, self.tl.duration)
 
     def line_in_point(self, line: str):
         """Where the take begins on the timeline (its file's zero: a trimmed or tightened take starts later)."""
@@ -752,6 +790,8 @@ class Checkout:
         self._journal: list[tuple[str, str | None]] = []  # (label, the document before that edit), one per edit
         self._edit_depth = 0
         self._orphan_reason = "its line was removed"
+        self._disk: str | None = None  # the file text this handle loaded (or last saved): what another writer may change
+        self.merged: list[str] = []      # what the last save merged in from another writer, in plain words
 
     # ---- open / save ------------------------------------------------------
     @classmethod
@@ -764,20 +804,36 @@ class Checkout:
     def load(cls, path: str | Path) -> "Checkout":
         """Open a checkout file (``timelines checkout`` or ``save`` wrote it). Applies `_timeline` edits."""
         path = Path(path)
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        raw = json.loads(text)
         tl = cls({}, path=path)
         tl.bundle = tl._absorb(raw)
         tl.fps = bundle_fps(tl.bundle) or 30.0
+        tl._disk = text
         return tl
 
     HISTORY = 60  # edits of a working copy kept for undo
 
-    def save(self, path: str | Path | None = None) -> Path:
+    def save(self, path: str | Path | None = None, *, force: bool = False) -> Path:
         """Write the checkout: content pretty-printed, provenance compact, both clocks on every clip.
 
         A working copy keeps one undo step per EDIT made since the last save (each verb, each
-        API call such as ``clip.on(...)``, each applied sheet), so ``undo`` goes back one edit."""
+        API call such as ``clip.on(...)``, each applied sheet), so ``undo`` goes back one edit.
+
+        Two writers on one working copy never lose each other's edits: if the file changed since
+        this handle loaded it, the save is a three-way merge (what you loaded → your edit, onto
+        what is there now), like publish. Edits to different clips merge (``self.merged`` says
+        what came in); the same clip changed by both refuses, unless ``force`` (yours wins)."""
         target = Path(path or self.path or "timeline.checkout.json")
+        with _file_lock(target):
+            return self._save_locked(target, force=force)
+
+    def _save_locked(self, target: Path, *, force: bool) -> Path:
+        self.merged = []
+        if self._disk is not None and self.path and Path(self.path) == target and target.is_file():
+            now = target.read_text(encoding="utf-8")
+            if now != self._disk:
+                self._merge_writer(target, now, force=force)
         text = _serialize(self._annotated())
         if target.is_file() and _is_draft(target):
             previous = target.read_text(encoding="utf-8")
@@ -795,10 +851,34 @@ class Checkout:
                 import shutil
 
                 shutil.rmtree(_redo_dir(target), ignore_errors=True)  # a new edit ends the redo chain
-        target.write_text(text, encoding="utf-8")
+        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)  # a reader never sees half a file
         self._journal = []
         self.path = target
+        self._disk = text
         return target
+
+    def _merge_writer(self, target: Path, now: str, *, force: bool) -> None:
+        """Another writer saved this file since we loaded it: put our edit on top of theirs."""
+        import datetime as _dt
+
+        mine = Checkout({}, path=target)
+        base = mine._absorb(json.loads(self._disk or "{}"))
+        theirs = mine._absorb(json.loads(now))
+        when = _dt.datetime.fromtimestamp(target.stat().st_mtime).strftime("%H:%M:%S")
+        merged, conflicts = three_way(base, theirs, self.bundle, force=force, whole=True)
+        if conflicts and not force:
+            raise TimelineEditError(
+                f"not saved: this working copy was saved by another writer at {when}, after you opened it, and you "
+                f"both changed {len(conflicts)} of the same thing(s): " + "; ".join(conflicts[:6])
+                + (f"; … {len(conflicts) - 6} more" if len(conflicts) > 6 else "")
+                + ". Open it again (their edit is there) and redo yours, or save(force=True) to overwrite theirs.")
+        before = Checkout(copy.deepcopy(base))
+        theirs_said = describe_changes(before, Checkout(copy.deepcopy(theirs)))
+        self.bundle, self._mcache = merged, None
+        self.merged = [f"merged with another writer's save at {when}: kept their {len(theirs_said)} change(s)"
+                       + (" (yours won where you both changed something)" if conflicts else "")] + theirs_said[:8]
 
     def undo(self, steps: int = 1) -> list[str]:
         """Go back ``steps`` edits of this working copy (``redo`` goes forward). Returns what was undone."""
@@ -842,7 +922,7 @@ class Checkout:
 
     def _reload(self) -> None:
         fresh = Checkout.load(self.path)
-        self.bundle, self._mcache, self._journal = fresh.bundle, None, []
+        self.bundle, self._mcache, self._journal, self._disk = fresh.bundle, None, [], fresh._disk
 
     @contextlib.contextmanager
     def step(self, label: str):
@@ -933,7 +1013,11 @@ class Checkout:
         return _r(round(float(seconds) * self.fps) / self.fps)
 
     def time(self, when: Any) -> float:
-        """Timeline seconds from a number, ``"1:02"``/``"62.5s"``/``"@62.5"``, a Word, a Clip or a word text/id."""
+        """Timeline seconds of anything you can point at, in the same grammar as ``--on`` and ``--at``:
+        a number, ``"1:02"``/``"62.5s"``/``"@62.5"``, a moment (``'"It" in s02'``, ``after "Astrid"``,
+        ``beat 2 after "Astrid"``, ``c04``, ``c41 +1.8s``, ``end of c30``/``c30.end``, ``end`` = the film's end),
+        an address (``c41.mink``: where it starts), a word id (``n20b:20``), a Word or a Clip.
+        Moments floor to their frame, as a clip placed on them would start."""
         if isinstance(when, bool):
             raise TimelineEditError("a time cannot be a boolean")
         if isinstance(when, (int, float)):
@@ -942,12 +1026,24 @@ class Checkout:
             return when.start
         if isinstance(when, Clip):
             return when.start
+        if isinstance(when, mo.Moment):
+            when = mo.format_moment(when)
         text = str(when).strip()
         match = TIME_RE.match(text)
         if match:
             minutes = int(match.group(1) or 0)
             return minutes * 60 + float(match.group(2))
-        return self.word(text).start
+        if WORD_ID_RE.match(text):
+            return self.word(text).start
+        from astrid.sdk import timeline_address as ta
+
+        try:
+            target = ta.resolve(self, text, prefer="time")
+        except ta.AddressError as exc:
+            raise TimelineEditError(str(exc)) from None
+        if target.kind == "range":
+            raise TimelineEditError(f"{text!r} is a range ({target.start:.3f}–{target.end:.3f} s); a time is one moment")
+        return float(target.start)
 
     def frame(self, seconds: Any) -> int:
         return int(round(self.time(seconds) * self.fps))
@@ -974,6 +1070,7 @@ class Checkout:
             return cuts[n - 1]
         text = str(selector).strip()
         if mo.CUT_ID_RE.match(text.lower()):
+            text = self._cut_id(text) or text  # c1 is c01
             group = next((g for g in self._cut_groups() if g["id"] == text.lower()), None)
             if group is None:
                 ids = [g["id"] for g in self._cut_groups()]
@@ -1648,6 +1745,24 @@ class Checkout:
         beds = sorted((c for c in self._cut_clips(cut_id) if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
         return beds[0] if beds else None
 
+    def _cut_id(self, text: str) -> str | None:
+        """The cut id as the sheet prints it: ``c1`` and ``c001`` are ``c01``; None when there is no such cut."""
+        m = re.fullmatch(r"c0*(\d+)([a-z]?)", str(text).strip().lower())
+        if not m:
+            return None
+        ids = [g["id"] for g in self._cut_groups()] + [cid for cid in {intent.cut_of(c.data) for c in self.clips()} if cid]
+        if str(text).strip().lower() in ids:
+            return str(text).strip().lower()
+        return next((cid for cid in ids if (mm := re.fullmatch(r"c0*(\d+)([a-z]?)", cid))
+                     and (mm.group(1), mm.group(2)) == (m.group(1), m.group(2))), None)
+
+    def _no_cut(self, cut_id: str) -> str:
+        ids = [g["id"] for g in self._cut_groups()]
+        plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
+        extra = [c for c in ids if c not in plain]
+        span = (f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)) + (f" (+ {', '.join(extra)})" if extra else "")
+        return f"no cut {cut_id}; cuts are {span or 'not named in this timeline'}"
+
     def _cut_spans(self, skip: Iterable[str] = ()) -> dict[str, tuple[float, float | None]]:
         """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last).
         Cuts in ``skip`` (orphans) don't end the cut before them."""
@@ -1987,10 +2102,12 @@ class Checkout:
             params = clip.data.get("params") if isinstance(clip.data.get("params"), dict) else {}
             props = (element_schema(clip.element).get("properties") or {}) if params else {}
             for key, value in params.items():
-                want = (props.get(key) or {}).get("type")
-                if want in ("integer", "number") and isinstance(value, str):
-                    hint = (f"; to put it on a moment: --set '{key}=ƒ({value})'" if value.strip().startswith('"') else "")
-                    out.append(f"{clip.address}.{key} is the text {value!r} where {clip.element} wants a {want}{hint}")
+                for path, text, want in _text_where_number(key, value, props.get(key) or {}):
+                    stripped = text.strip()
+                    moment = stripped[2:-1] if stripped.startswith("ƒ(") and stripped.endswith(")") else stripped
+                    hint = (f"; to put it on a moment: --set '{path}=ƒ({moment})' (or a number)"
+                            if moment.startswith(('"', "“", "after ", "beat ", "downbeat ", "c")) else "")
+                    out.append(f"{clip.address}.{path} is the text {text!r} where {clip.element} wants a {want}{hint}")
             for path, expr in intent.formulas(clip.data).items():
                 if isinstance(expr, Mapping) and expr.get("as") == "clip_frame":
                     value = _get_path(clip.data, path)
@@ -2016,7 +2133,10 @@ class Checkout:
         summary = render_diff(diff).splitlines()
         changed = {c["clip_id"] for c in diff["changes"]}
         cut_numbers = sorted({cut.n for cut in self.cuts for clip in cut.clips if clip.id in changed})
-        lint = self.lint(cuts=cut_numbers) if cut_numbers else []
+        from astrid.sdk.timeline_address import ordinals_to_ids
+
+        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if cut_numbers else []
+        lint_new, lint_old = _new_findings(lint, Checkout(base_bundle(candidate)))
         names = []
         for n in cut_numbers:
             pic = self.cuts[n - 1].picture
@@ -2028,6 +2148,7 @@ class Checkout:
                      for c in self.clips() if not c.is_audio and c.duration < 0.5 / self.fps]
         blocking += [f"outside {line}" for line in self._outside]
         blocking += [f"type    {line}" for line in self._type_mismatches()]
+        blocking += [f"beats   {line}" for line in self._stale_beats()]
         if blocking:
             valid = False
         music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
@@ -2036,7 +2157,7 @@ class Checkout:
                             f"({self.duration - music_end:.1f} s without music)")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
                            problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
-                           diff=diff, cut_names=names, blocking=blocking)
+                           diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old)
 
     def publish(self, message: str = "", *, idempotency_key: str | None = None, client: Any = None,
                 force: bool = False) -> dict[str, Any]:
@@ -2222,6 +2343,81 @@ class Checkout:
     def _registry(self, shot_id: str) -> dict[str, Any]:
         registry = self._internal(shot_id).setdefault("registry", {})
         return registry.setdefault("assets", {})
+
+    def _follow_media(self, clip: "Clip", old: Mapping[str, Any], new: Mapping[str, Any], asset: Any) -> None:
+        """After an audio swap: the clip's length follows the new file, and a music clip's beats come along."""
+        project = str(self.bundle.get("project_id") or "")
+        local = Path(str(asset)).expanduser() if isinstance(asset, (str, Path)) and Path(str(asset)).expanduser().is_file() else None
+        data = clip.data
+        if ("from" in data or "to" in data) and not intent.until(data) and intent.for_s(data) is None:
+            new_s = media_seconds(project, local or new)
+            old_s = media_seconds(project, old) if old else None
+            src0, speed = _num(data.get("from")), _num(data.get("speed"), 1.0) or 1.0
+            to = _num(data.get("to"))
+            whole = old_s is not None and src0 <= 1e-3 and abs(to - old_s) <= 1.0 / self.fps
+            before = clip.duration
+            if new_s is None:
+                self.notes.append(f"{clip.address}: could not read the new file's length; it keeps {before:.3f} s "
+                                  "(--duration S to change it)")
+            elif whole or to > new_s + 1e-3:
+                _set_length(data, mo.floor_frame((new_s - src0) / speed, self.fps))
+                self.notes.append(f"{clip.address}: plays the new file {'whole' if whole else 'to its end'}: "
+                                  f"{before:.3f} → {clip.duration:.3f} s")
+            elif abs(new_s - (to - src0)) > 1.0 / self.fps:
+                self.notes.append(f"{clip.address}: kept its length {before:.3f} s (it was a part of the old file); "
+                                  f"the new file is {new_s:.3f} s (--duration {new_s:.3f} plays it all)")
+        if not (clip.track == "music" or intent.beat_sources(data)):
+            return
+        from astrid.sdk.media_handles import is_media_handle
+
+        found = None
+        if local is not None:
+            found = file_beats(local)
+        elif isinstance(asset, str) and is_media_handle(asset):
+            found = handle_beats(project, asset)
+        if found is not None:
+            self._attach_beats(clip, *found)
+            return
+        value = intent._app(data).get("beats")
+        if value:  # the grid it has was made for the old file: say so until it is replaced or kept
+            grid = dict(value) if isinstance(value, Mapping) else {"beats": intent.beat_sources(data), "time": "cue_seconds"}
+            grid["media_id"] = old.get("media_id") or grid.get("media_id") or "the old file"
+            intent.set_beats(data, grid)
+        self.notes.append(f"{clip.address}: no beat grid came with the new file; " + (
+            f"its beats are still the old file's ({intent.beats_label(data)}): attach the new grid with "
+            "--beats FILE|run:<id>/beats (or --beats keep)" if value else "attach one with --beats FILE|run:<id>/beats"))
+
+    def _attach_beats(self, clip: "Clip", grid: Mapping[str, Any], label: str) -> None:
+        grid = dict(grid)
+        media = (self._registry(clip.shot_id).get(str(clip.asset)) or {}).get("media_id") if clip.asset else None
+        if media:
+            grid["media_id"] = media
+        else:
+            grid.pop("media_id", None)
+        intent.set_beats(clip.data, grid)
+        moved = [line for line in self.resolve() if line]
+        detail = f"{len(grid.get('beats') or [])} beats" + (f", {grid['bpm']:g} bpm" if isinstance(grid.get("bpm"), (int, float)) else "")
+        heard = _num(clip.data.get("to")) if "to" in clip.data else None
+        if isinstance(grid.get("duration_s"), (int, float)) and heard is not None and heard > float(grid["duration_s"]) + 0.5:
+            self.notes.append(f"{clip.address}: the beats file covers {grid['duration_s']:g} s but the clip plays to "
+                              f"{heard:.3f} s of its file: is it the grid for this music?")
+        self.notes.append(f"{clip.address}: beats from {label} ({detail}); " + (
+            f"{len(moved)} beat moment(s) re-resolved: " + "; ".join(moved[:8]) + (f"; … {len(moved) - 8} more" if len(moved) > 8 else "")
+            if moved else "no moment moved"))
+
+    def _stale_beats(self) -> list[str]:
+        """Music clips whose beat grid was made for another file (after a swap)."""
+        out = []
+        for clip in self.clips(audio=True):
+            value = intent._app(clip.data).get("beats")
+            if not isinstance(value, Mapping) or not value.get("media_id"):
+                continue
+            media = (self._registry(clip.shot_id).get(str(clip.asset)) or {}).get("media_id")
+            if media and value["media_id"] != media:
+                out.append(f"{clip.address}: its beats ({intent.beats_label(clip.data)}) were made for "
+                           f"{str(value['media_id'])[:19]}…, not the file it plays ({str(media)[:19]}…): attach this "
+                           "file's grid (--beats FILE|run:<id>/beats) or keep the old one (--beats keep)")
+        return out
 
     def _register_asset(self, shot_id: str, asset: Any) -> str:
         """Make ``asset`` resolvable in this shot; return its registry key."""
@@ -2486,39 +2682,81 @@ class CheckReport:
     diff: Mapping[str, Any]
     cut_names: list[str] = dataclasses.field(default_factory=list)
     blocking: list[str] = dataclasses.field(default_factory=list)
+    lint_new: list[str] | None = None   # lint findings the published head does not have (None: not computed)
+    lint_old: int = 0                    # findings on the changed cuts that were already there
 
-    def brief(self, *, full: bool = False) -> list[str]:
-        """Calm lines for after an edit: valid or not, what blocks publishing, and lint on the cuts it touched.
-        Many orphans are summed up by cut unless ``full`` (``status --all``)."""
-        where = ", ".join(self.cut_names or [f"cut {n}" for n in self.changed_cuts])
+    def brief(self, *, full: bool = False, cuts: Iterable[str] | None = None) -> list[str]:
+        """Calm lines for after an edit: valid or not, what blocks publishing, and NEW lint (findings the
+        published head does not have; the ones that were already there are counted). ``cuts`` (cut ids):
+        only what concerns those cuts, with a count of the rest. ``full`` (``--all``): every line."""
+        new = list(self.lint if full or self.lint_new is None else self.lint_new)
+        old = 0 if full or self.lint_new is None else self.lint_old
+        blocking, notes = list(self.blocking), [p for p in self.problems if p not in self.blocking and not p.startswith("resolved ")]
+        said = set()  # a note about a param that a blocking line already names is said once
+        for line in blocking:
+            m = re.match(r"^\w+\s+(\S+?)(?:\s+params\.(\S+))?\s+=", line)
+            if m:
+                said.add(f"{m.group(1)}.{m.group(2)}" if m.group(2) else m.group(1))
+        notes = [p for p in notes if p.split(": ", 1)[0] not in said]
+        elsewhere = 0
+        if cuts is not None and not full:
+            wanted = {c for c in cuts if c}
+            pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(wanted))) + r")\b") if wanted else None
+
+            def mine(line: str) -> bool:
+                return bool(pattern and pattern.search(line))
+
+            kept = [line for line in new if mine(line)]
+            kept_blocking = [line for line in blocking if mine(line)]
+            elsewhere = (len(new) - len(kept)) + (len(blocking) - len(kept_blocking))
+            new, blocking = kept, kept_blocking
         head = "check   " + ("valid" if self.valid else "NOT VALID")
         if self.blocking:
-            head += f" · {len(self.blocking)} to fix before publishing (re-home each orphan with a new moment, or remove it)"
-        if where:
-            shown = where if len(where) <= 80 else where[:77] + "…"
-            head += f" · lint on {shown}: " + ("clean" if not self.lint else f"{len(self.lint)} finding(s)")
-        notes = [p for p in self.problems if p not in self.blocking and not p.startswith("resolved ")]
-        if full or len(self.blocking) <= 8:
-            blocking = [f"  ! {p}" for p in self.blocking]
+            head += f" · {len(self.blocking)} to fix before publishing" + (
+                f" ({len(blocking)} here)" if cuts is not None and not full else " (re-home each orphan with a new moment, or remove it)")
+        if cuts is not None and not full:
+            where = ", ".join(sorted(set(cuts))) or "no cut"
+            head += f" · new lint on {where if len(where) <= 60 else where[:57] + '…'}: " + ("clean" if not new else f"{len(new)}")
+        else:
+            where = ", ".join(self.cut_names or [f"cut {n}" for n in self.changed_cuts])
+            if where:
+                head += f" · new lint on the {len(self.cut_names or self.changed_cuts)} changed cut(s): " + ("clean" if not new else f"{len(new)}")
+        if full or len(blocking) <= 8:
+            shown_blocking = [f"  ! {p}" for p in blocking]
         else:
             by_cut: dict[str, int] = {}
-            for line in self.blocking:
+            for line in blocking:
                 address = line.split()[1] if len(line.split()) > 1 else "?"
                 by_cut[address.split(".")[0]] = by_cut.get(address.split(".")[0], 0) + 1
-            blocking = [f"  ! {len(self.blocking)} orphan(s) in {len(by_cut)} cut(s): "
-                        + ", ".join(f"{cut} ({n})" for cut, n in by_cut.items()),
-                        "    each one: timelines status TL --project P --all   ·   the sheet's orphans section"]
-        lint = [f"  {line}" for line in self.lint] if full or len(self.lint) <= 12 else (
-            [f"  {line}" for line in self.lint[:12]] + [f"  … {len(self.lint) - 12} more lint finding(s) (timelines lint TL)"])
-        return [head] + blocking + [f"  · {p}" for p in notes[:12]] + lint
+            shown_blocking = [f"  ! {len(blocking)} orphan(s) in {len(by_cut)} cut(s): "
+                              + ", ".join(f"{cut} ({n})" for cut, n in by_cut.items()),
+                              "    each one: timelines status TL --project P --all   ·   the sheet's orphans section"]
+        lint = [f"  {line}" for line in new] if full or len(new) <= 12 else (
+            [f"  {line}" for line in new[:12]] + [f"  … {len(new) - 12} more new finding(s) (timelines check TL --all)"])
+        tail = []
+        if old or elsewhere:
+            tail.append("  (" + " · ".join(x for x in (
+                f"{elsewhere} more on other cuts" if elsewhere else "",
+                f"{old} lint finding(s) were already there before your changes" if old else "") if x)
+                + ": timelines check TL --all)")
+        return [head] + shown_blocking + [f"  · {p}" for p in notes[:12]] + lint + tail
 
-    def __str__(self) -> str:
+    def full_text(self) -> str:
+        """Everything: the whole diff summary, every problem, every lint line on the changed cuts."""
         lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
         lines += self.summary[1:]
         lines += [f"! {p}" for p in self.problems]
         if self.changed_cuts:
-            lines.append(f"lint on changed cuts {', '.join(map(str, self.changed_cuts))}: " + ("clean" if not self.lint else f"{len(self.lint)} line(s)"))
+            lines.append(f"lint on changed cuts {', '.join(self.cut_names or map(str, self.changed_cuts))}: "
+                         + ("clean" if not self.lint else f"{len(self.lint)} line(s)"))
             lines += [f"  {line}" for line in self.lint]
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        """The default report: the diff in brief, what blocks publishing, notes, and NEW lint (counts for the rest)."""
+        lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
+        lines += self.summary[1:13] + ([f"  … {len(self.summary) - 13} more (timelines diff TL)"] if len(self.summary) > 13 else [])
+        lines += self.brief()[1:]
         return "\n".join(lines)
 
 
@@ -2534,6 +2772,53 @@ def _end_rule(tl: "Checkout", clip: Clip) -> str:
     if intent.cut_of(clip.data) and not clip.is_audio:
         return "ends with its cut"
     return "keeps its own length"
+
+
+def _text_where_number(path: str, value: Any, spec: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    """``(param path, the text, the type wanted)`` for every string where the schema wants a number
+    (``allAt: 'ƒ("adapt" in w05c)'``, ``states[3].at: '"adapt"'``), nested lists and objects included."""
+    want = spec.get("type")
+    wants = want if isinstance(want, list) else [want]
+    if isinstance(value, str):
+        numeric = [w for w in wants if w in ("integer", "number")]
+        return [(path, value, numeric[0])] if numeric and "string" not in wants else []
+    out: list[tuple[str, str, str]] = []
+    if isinstance(value, list) and isinstance(spec.get("items"), Mapping):
+        for i, item in enumerate(value):
+            out += _text_where_number(f"{path}[{i}]", item, spec["items"])
+    elif isinstance(value, Mapping) and isinstance(spec.get("properties"), Mapping):
+        for key, item in value.items():
+            if isinstance(spec["properties"].get(key), Mapping):
+                out += _text_where_number(f"{path}.{key}", item, spec["properties"][key])
+    return out
+
+
+def _lint_key(line: str) -> str:
+    """A finding without its numbers: the same finding on a cut that moved is the same finding."""
+    return re.sub(r"[-+]?\d+(?:\.\d+)?", "#", line)
+
+
+def _new_findings(lint: list[str], base: "Checkout") -> tuple[list[str] | None, int]:
+    """(findings the base does not have, how many it already had)."""
+    from collections import Counter
+
+    from astrid.sdk.timeline_address import ordinals_to_ids
+
+    if not lint:
+        return [], 0
+    try:
+        seen = Counter(_lint_key(ordinals_to_ids(line, base)) for line in base.lint())
+    except Exception:  # noqa: BLE001 - without a base lint every finding counts as new
+        return None, 0
+    new, old = [], 0
+    for line in lint:
+        key = _lint_key(line)
+        if seen[key] > 0:
+            seen[key] -= 1
+            old += 1
+        else:
+            new.append(line)
+    return new, old
 
 
 def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
@@ -2856,6 +3141,129 @@ def resolve_handle_entry(project: str, handle: str, *, client: Any = None) -> di
         return run(c)
 
 
+def _with_client(client: Any, fn: Any) -> Any:
+    if client is not None:
+        return fn(client)
+    from astrid.sdk import AstridClient
+
+    with AstridClient.open_from_launcher(start_pack_host=False) as c:
+        return fn(c)
+
+
+def load_beats(project: str, source: Any, *, client: Any = None) -> tuple[dict[str, Any], str]:
+    """A beat grid from a beats file: a local JSON path, a media handle (``run:<id>/beats``, ``sha256:…``)
+    or the parsed dict. Returns ``(stored grid, where it came from)``."""
+    if isinstance(source, Mapping):
+        label = str(source.get("source") or "a beats dict")
+        return intent.beats_grid(source, label), label
+    text = str(source).strip()
+    path = Path(text).expanduser()
+    if path.is_file():
+        try:
+            return intent.beats_grid(json.loads(path.read_text(encoding="utf-8")), path.name), path.name
+        except (ValueError, OSError) as exc:
+            raise TimelineEditError(f"{path}: not a beats file ({exc})") from None
+    from astrid.sdk import media_handles as mh
+
+    if not mh.is_media_handle(text):
+        raise TimelineEditError(f"--beats {text!r}: not a file and not a media handle (run:<id>/beats, sha256:…)")
+
+    def run(c: Any) -> tuple[dict[str, Any], str]:
+        try:
+            descriptor, _lineage = mh.resolve_media_handle(c, project, text)
+            data = json.loads(c.media.read_bytes(descriptor["digest"]))
+        except (mh.MediaHandleError, ValueError) as exc:
+            raise TimelineEditError(f"--beats {text}: {exc}") from None
+        try:
+            return intent.beats_grid(data, text), text
+        except ValueError as exc:
+            raise TimelineEditError(f"--beats {text}: {exc}") from None
+
+    return _with_client(client, run)
+
+
+def handle_beats(project: str, handle: str, *, client: Any = None) -> tuple[dict[str, Any], str] | None:
+    """The beat grid made with this media: the ``beats`` output of the run (or task) that made it
+    (``chiptune.compose`` writes music + beats). None when that run made no beats file."""
+    from astrid.sdk import media_handles as mh
+
+    def run(c: Any) -> tuple[dict[str, Any], str] | None:
+        try:
+            _descriptor, lineage = mh.resolve_media_handle(c, project, handle)
+        except mh.MediaHandleError:
+            return None
+        made = lineage.get("output") if isinstance(lineage.get("output"), Mapping) else {}
+        kind, ident = ("run", made.get("run_id")) if made.get("run_id") else ("task", made.get("task_id"))
+        if not ident:
+            return None
+        try:
+            rows = mh._output_rows(c, kind, str(ident))
+        except mh.MediaHandleError:
+            return None
+        if not any(r.get("output_port") == "beats" for r in rows):
+            return None
+        return load_beats(project, f"{kind}:{ident}/beats", client=c)
+
+    try:
+        return _with_client(client, run)
+    except TimelineEditError:
+        raise
+    except Exception:  # noqa: BLE001 - no runtime: the caller says the beats did not come along
+        return None
+
+
+def file_beats(path: Path) -> tuple[dict[str, Any], str] | None:
+    """A beats file beside a local music file: ``NAME.beats.json`` or the folder's ``beats.json``."""
+    for candidate in (path.with_name(path.stem + ".beats.json"), path.with_name("beats.json")):
+        if candidate.is_file():
+            try:
+                return load_beats("", candidate)
+            except TimelineEditError:
+                continue
+    return None
+
+
+def media_seconds(project: str, media: Any, *, client: Any = None) -> float | None:
+    """How long an audio/video file plays: a local path, or a registry entry / digest in the project's
+    media store. None when it cannot be read (no runtime, not media)."""
+    import subprocess
+    import tempfile
+
+    from astrid.core.media import ffprobe_duration_seconds
+
+    if isinstance(media, (str, Path)) and Path(str(media)).expanduser().is_file():
+        try:
+            return float(ffprobe_duration_seconds(Path(str(media)).expanduser()))
+        except (subprocess.SubprocessError, ValueError, OSError):
+            return None
+    digest = str((media or {}).get("media_id") or (media or {}).get("content_sha256") or "") \
+        if isinstance(media, Mapping) else str(media or "")
+    if not digest.startswith("sha256:"):
+        return None
+    kind = str((media or {}).get("type") or "") if isinstance(media, Mapping) else ""
+
+    def run(c: Any) -> float | None:
+        data = c.media.read_bytes(digest)
+        if kind in ("audio/wav", "audio/x-wav", "audio/wave") or data[:4] == b"RIFF":
+            import io
+            import wave
+
+            try:
+                with wave.open(io.BytesIO(data)) as w:
+                    return w.getnframes() / float(w.getframerate())
+            except (wave.Error, EOFError):
+                pass
+        with tempfile.NamedTemporaryFile(suffix=Path(kind.replace("/", ".")).suffix or ".bin") as tmp:
+            tmp.write(data)
+            tmp.flush()
+            return float(ffprobe_duration_seconds(tmp.name))
+
+    try:
+        return _with_client(client, run)
+    except Exception:  # noqa: BLE001 - a length we cannot read is reported, never fatal
+        return None
+
+
 def _snapshot(tl: "Checkout") -> str:
     """The document as compact JSON (cheap): what an undo step restores."""
     return json.dumps(tl.bundle, sort_keys=True, default=str, separators=(",", ":"))
@@ -2903,6 +3311,31 @@ def _journaled(fn: Any, kind: str) -> Any:
             return fn(self, *args, **kwargs)
 
     return wrapper
+
+
+@contextlib.contextmanager
+def _file_lock(target: Path):
+    """One writer at a time for the read-compare-write of a save (other processes wait, briefly)."""
+    try:
+        import fcntl
+    except ImportError:  # not POSIX: the merge still guards, without the lock
+        yield
+        return
+    lock = target.with_name(f".{target.name}.lock")
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock, "w")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _is_draft(path: Path) -> bool:
@@ -2982,9 +3415,15 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
         return read(c)
 
 
-def _units(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], Any]:
-    """The bundle as mergeable units: every internal clip, every placement row, every parent clip."""
+def _units(bundle: Mapping[str, Any], *, whole: bool = False) -> dict[tuple[str, ...], Any]:
+    """The bundle as mergeable units: every internal clip, every placement row, every parent clip
+    (``whole``: also each film setting in ``parent.config`` and each shot's payload, for working-copy saves)."""
     units: dict[tuple[str, ...], Any] = {}
+    if whole:
+        for key, value in ((bundle.get("parent") or {}).get("config") or {}).items():
+            units[("parent-config", str(key))] = value
+        for sid, shot in (bundle.get("shots") or {}).items():
+            units[("payload", str(sid))] = shot.get("payload")
     for row in bundle.get("placements") or []:
         units[("placement", str(row.get("shot_id")))] = row
     for sid, shot in (bundle.get("shots") or {}).items():
@@ -2999,12 +3438,12 @@ def _units(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], Any]:
 
 
 def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mapping[str, Any], *,
-              force: bool = False) -> tuple[dict[str, Any], list[str]]:
+              force: bool = False, whole: bool = False) -> tuple[dict[str, Any], list[str]]:
     """Merge the candidate's changes (base → candidate) onto ``head``. Returns (merged, conflicts).
 
     With conflicts and no ``force`` the merge is not applied. With ``force`` your version wins
     on the conflicting units; every other unit of the head is kept."""
-    b, h, c = _units(base), _units(head), _units(candidate)
+    b, h, c = _units(base, whole=whole), _units(head, whole=whole), _units(candidate, whole=whole)
     same = lambda x, y: json.dumps(x, sort_keys=True, default=str) == json.dumps(y, sort_keys=True, default=str)
     ours = {k for k in set(b) | set(c) if not same(b.get(k), c.get(k))}
     theirs = {k for k in set(b) | set(h) if not same(b.get(k), h.get(k))}
@@ -3038,6 +3477,14 @@ def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mappi
         elif kind == "parent-clip":
             clips = merged.setdefault("parent", {}).setdefault("clips", [])
             clips[:] = [x for x in clips if str(x.get("id")) != key[1]] + ([value] if value is not None else [])
+        elif kind == "parent-config":
+            config = merged.setdefault("parent", {}).setdefault("config", {})
+            if value is None:
+                config.pop(key[1], None)
+            else:
+                config[key[1]] = value
+        elif kind == "payload" and key[1] in merged.get("shots", {}):
+            merged["shots"][key[1]]["payload"] = value
     return merged, lines
 
 
@@ -3116,7 +3563,7 @@ def import_media(path: Path, project: Any) -> dict[str, Any]:
 
 # every edit is one undo step (the outermost call; what it calls inside is part of it)
 for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "extend", "end_at", "set", "clear_asset",
-              "swap_asset", "keyframe_at", "remove", "remove_layer", "keep"):
+              "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep"):
     setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
 for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
               "fill_slot", "fill_standins", "declare_gaps"):

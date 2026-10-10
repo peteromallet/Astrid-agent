@@ -107,7 +107,7 @@ def test_visualize_reads_the_working_copy_with_banner_and_changed_cuts(draft, ca
     out = capsys.readouterr().out
     assert code == 0
     assert out.splitlines()[0] == (
-        "WORKING COPY · 3 unpublished change(s) vs published rev-publ · --published for the live version"
+        "WORKING COPY · 3 clips changed vs published rev-publ · --published for the live version"
     )
     assert out.splitlines()[1].startswith("showing the 3 cuts you changed (12, 13, 22) · --every-cut for all cuts")
     assert "[✎ c12, c13, c22]" in out.splitlines()[1]
@@ -196,7 +196,7 @@ def test_render_draft_human_banner(draft, monkeypatch, capsys):
     parsed.json = False
     assert cli._cmd_render(parsed) == 0
     first = capsys.readouterr().out.splitlines()[0]
-    assert first.startswith("WORKING COPY · 3 unpublished edits vs published rev-published-1")
+    assert first.startswith("WORKING COPY · 3 clips changed vs published rev-published-1")
 
 
 def test_render_draft_named(draft, monkeypatch):

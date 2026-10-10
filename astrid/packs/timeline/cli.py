@@ -1248,8 +1248,8 @@ def _show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any,
             path = None
         if path is not None:
             tl = Checkout.load(path)
-            n = len(tl.changes())
-            return tl, (f"WORKING COPY · {n} unpublished change{'s' if n != 1 else ''} vs published "
+            n = len(tl.edits().get("changes") or [])
+            return tl, (f"WORKING COPY · {_clips_changed(n)} vs published "
                         f"{_short_rev(tl.base_revision)} · --published for the live version")
     opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
     if not opened.ok or not isinstance(opened.data, Mapping):
@@ -1330,8 +1330,13 @@ def _at_detail(bundle: Mapping[str, Any], seconds: float) -> str:
 
 def _working_banner(working: Mapping[str, Any]) -> str:
     """The one-line banner show, lint and diff print when they read the working copy."""
-    return (f"WORKING COPY · {len(working['changes'])} unpublished edits vs published {working['base_revision']} · "
+    return (f"WORKING COPY · {_clips_changed(len(working['changes']))} vs published {working['base_revision']} · "
             "--published for the live version")
+
+
+def _clips_changed(n: int) -> str:
+    """The one count every verb prints for a working copy: clips added, removed, moved or edited."""
+    return f"{n} clip{'s' if n != 1 else ''} changed"
 
 
 def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
@@ -1367,7 +1372,7 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     banner: list[str] = []
     if working_info is not None:
         banner = [
-            f"WORKING COPY · {len(changes)} unpublished edits vs published {working['base_revision']} · "
+            f"WORKING COPY · {_clips_changed(len(changes))} vs published {working['base_revision']} · "
             "--published for the live version"
         ]
     if parsed.json:
@@ -1429,7 +1434,7 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     if getattr(parsed, "summary", False):
         lines = banner + [title, "", render_summary(table)]
         if changes:
-            lines += ["", f"unpublished edits ({len(changes)}):"]
+            lines += ["", f"unpublished: {_clips_changed(len(changes))}"]
             for change in changes:
                 lines.append(f"  ✎ {change.get('kind')} {change.get('clip_id')} "
                              f"({', '.join(change.get('fields') or []) or '-'}) at {change.get('after') or change.get('before')}")
@@ -1963,7 +1968,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
                 return code
         changed_ids = draft.changed_cut_ids()
         banner = (
-            f"WORKING COPY · {len(draft.changes())} unpublished change(s) vs published {_short_rev(working['base_revision'])} · "
+            f"WORKING COPY · {_clips_changed(len(draft.edits().get('changes') or []))} vs published {_short_rev(working['base_revision'])} · "
             "--published for the live version"
         )
         selected = any(
@@ -3085,7 +3090,7 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
     assert isinstance(data, Mapping)
     if working is not None:
         print(
-            f"WORKING COPY · {working['edits']} unpublished edits vs published {working['base_revision']} · "
+            f"WORKING COPY · {_clips_changed(working['edits'])} vs published {working['base_revision']} · "
             "rendering the draft, not the published head"
         )
     print(f"render {data['state']}")
@@ -3727,11 +3732,26 @@ def _cap(lines: list[str], limit: int = 30) -> list[str]:
     return lines[:limit] + [f"… and {len(lines) - limit} more (timelines diff shows them all)"]
 
 
-def _check_lines(report: Any) -> list[str]:
-    """After an edit: valid or not, and lint on the cuts it touched (the full report is `timelines check`)."""
+def _edit_cuts(before: Mapping[str, Any], tl: Any) -> list[str]:
+    """The cut ids one edit touched (its clips' cuts, before and after)."""
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_cuts import diff_bundles
+
+    touched = {str(ch.get("clip_id")) for ch in diff_bundles(before, tl.document())["changes"]}
+    out = set()
+    for doc in (Checkout(copy.deepcopy(dict(before))), tl):
+        for clip in doc.clips():
+            if clip.id in touched and intent.cut_of(clip.data):
+                out.add(intent.cut_of(clip.data))
+    return sorted(out)
+
+
+def _check_lines(report: Any, cuts: list[str] | None = None) -> list[str]:
+    """After an edit: valid or not, and NEW lint on the cuts it touched (the full report is `timelines check --all`)."""
     brief = getattr(report, "brief", None)
     if callable(brief):
-        return brief()
+        return brief(cuts=cuts) if cuts is not None else brief()
     lines = str(report).splitlines()
     return [lines[0]] + [ln for ln in lines[1:] if ln.startswith(("!", "  ", "lint"))]
 
@@ -3787,9 +3807,9 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
                                                     parsed.extend, parsed.duration, parsed.swap_asset, parsed.on_moment,
                                                     parsed.until_moment, parsed.for_seconds)) and not parsed.set \
             and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False) \
-            and not getattr(parsed, "clear_asset", False):
+            and not getattr(parsed, "clear_asset", False) and not getattr(parsed, "beats", None):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
-                         "--extend, --duration, --set or --swap-asset", 2)
+                         "--extend, --duration, --set, --swap-asset or --beats", 2)
     parsed.set = _parse_set(parsed.set)
     if parsed.duration is not None and parsed.extend is not None:
         raise _VerbError("--duration and --extend both set a length; pick one", 2)
@@ -3819,25 +3839,27 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         print(line)
     if not changes:
         print("no change")
-    for line in _cap(_check_lines(report)):
+    for line in _cap(_check_lines(report, cuts=_edit_cuts(before, tl))):
         print(line)
     tl.save(target)
+    for line in tl.merged:
+        print(line)
     if target is not None:
         print(f'next: timelines check {target}   ·   timelines publish {target} -m "…"')
     else:
         print(f'next: timelines show {parsed.timeline} --project {parsed.project} --range '
               f'{_edit_range(before, tl.document())} (your change)   ·   '
               f'timelines publish {parsed.timeline} --project {parsed.project} -m "…"')
-    # the edit was applied: exit 0 even when orphans still block publishing (check/publish say so)
-    broken = [p for p in report.problems if p.startswith("invalid")]
-    return 1 if broken else 0
+    # the edit was applied and saved: exit 0. Whether the working copy can be published is check's state,
+    # printed above (and `timelines check` exits 1 while it is not valid).
+    return 0
 
 
 def _edit_label(parsed: argparse.Namespace) -> str:
     """What one `timelines edit` did, for undo: ``edit --clip c30.cover --until Astrid``."""
     parts = []
     for name in ("clip", "cut", "on_moment", "until_moment", "for_seconds", "at_word", "at", "nudge", "nudge_frames",
-                 "extend", "duration", "swap_asset", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
+                 "extend", "duration", "swap_asset", "beats", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
         value = getattr(parsed, name, None)
         if value not in (None, False, ""):
             flag = {"on_moment": "on", "until_moment": "until", "for_seconds": "for"}.get(name, name).replace("_", "-")
@@ -3930,6 +3952,8 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip.set(**parsed.set)
     if parsed.swap_asset is not None:
         clip.swap_asset(parsed.swap_asset)
+    if getattr(parsed, "beats", None):
+        clip.set_beats(parsed.beats)
     if getattr(parsed, "clear_asset", False):
         clip.clear_asset()
 
@@ -3939,6 +3963,8 @@ def _cmd_words(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
 
     if parsed.file:
+        if parsed.timeline and not getattr(parsed, "word", None):  # `words --file F WORD`: no timeline to name
+            parsed.word, parsed.timeline = parsed.timeline, None
         tl = Checkout.load(parsed.file)
     elif parsed.published:
         tl = Checkout.open(_need_project(parsed), parsed.timeline, client=parsed.client)
@@ -3954,10 +3980,13 @@ def _cmd_words(parsed: argparse.Namespace) -> int:
     if parsed.find:
         needle = parsed.find.strip().lower()
         words = [w for w in words if needle in w.text.lower()]
-    cuts = tl.cuts
-    for w in words:
-        cut = next((c.n for c in cuts if c.start - 1e-6 <= w.start < c.end - 1e-6), "-")
-        print(f"  {w.start:.3f}  {w.text}  [{w.id}]  cut {cut}")
+    spans = sorted(((lo, hi if hi is not None else tl.duration, cid) for cid, (lo, hi) in tl._cut_spans().items()),
+                   key=lambda row: row[0])
+    cuts = tl.cuts if not spans else []  # a timeline without cut ids: its cuts by position
+    for w in words:  # the cut ids the sheet and show print (c21), never positions
+        cut = next((cid for lo, hi, cid in reversed(spans) if lo - 1e-6 <= w.start < hi - 1e-6), None) \
+            or next((f"cut {c.n}" for c in cuts if c.start - 1e-6 <= w.start < c.end - 1e-6), "-")
+        print(f"  {w.start:.3f}–{w.end:.3f}  {w.text}  [{w.id}]  {cut}")
     print(f'next: timelines edit {parsed.timeline or "<timeline>"} --project {parsed.project or "<project>"} '
           f"--clip QUERY --at-word WORD")
     return 0
@@ -3987,8 +4016,10 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
         return 0
     changes = tl.changes()
     edits = {"changes": changes}
-    print(f'WORKING COPY "{name}" · {len(changes)} unpublished change{"s" if len(changes) != 1 else ""} '
-          f"vs published {_short_rev(tl.base_revision)}")
+    clips = len(tl.edits().get("changes") or [])
+    print(f'WORKING COPY "{name}" · {_clips_changed(clips)} vs published {_short_rev(tl.base_revision)}'
+          + (f" (said in {len(changes)} lines: clips that only moved with the film are one line per shift)"
+             if clips != len(changes) else ""))
     shown = changes if getattr(parsed, "all", False) or len(changes) <= 25 else changes[:25]
     for line in shown:
         print(f"  {line}")
@@ -4044,7 +4075,7 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
 
     if _is_file_ref(parsed.ref):
         report = Checkout.load(parsed.ref).check()
-        print(str(report))
+        print(report.full_text() if getattr(parsed, "all", False) else str(report))
         print(f'next: timelines publish {parsed.ref} -m "what changed"')
         return 0 if report.valid else 1
     parsed.timeline = parsed.ref
@@ -4053,7 +4084,7 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
         print(f"no working copy · next: timelines checkout {parsed.ref} --project {parsed.project}")
         return 0
     report = tl.check()
-    print(str(report))
+    print(report.full_text() if getattr(parsed, "all", False) else str(report))
     print(f'next: timelines publish {parsed.ref} --project {parsed.project} -m "what changed"')
     return 0 if report.valid else 1
 
@@ -4098,9 +4129,9 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     if tl is None:
         print(f"no working copy \"{name}\" to discard · next: timelines checkout {parsed.timeline} --project {parsed.project}")
         return 0
-    dropped = len(tl.changes())
+    dropped = len(tl.edits().get("changes") or [])
     tl.discard()
-    print(f'discarded working copy "{name}" of {parsed.timeline} ({dropped} unpublished change{"s" if dropped != 1 else ""} dropped)')
+    print(f'discarded working copy "{name}" of {parsed.timeline} ({_clips_changed(dropped)}, dropped)')
     print(f"next: timelines checkout {parsed.timeline} --project {parsed.project}")
     return 0
 
@@ -4203,7 +4234,12 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE|HANDLE",
                            help="Point the clip at an asset: a registry key, a local file (imported), or media already in "
                                 "the project: run:RUN/PORT#n, task:TASK/PORT#n, ref:NAME, sha256:DIGEST. New media gets the "
-                                "key of its file name without the extension (robot-native.png → robot-native; -2 if taken).")
+                                "key of its file name without the extension (robot-native.png → robot-native; -2 if taken). "
+                                "An audio clip that played its whole file plays the whole new one; a music clip brings the "
+                                "new file's beats (the compose run's beats output, or NAME.beats.json beside a file).")
+    subparser.add_argument("--beats", dest="beats", default=None, metavar="FILE|HANDLE|keep",
+                           help="Attach a music clip's beat grid: a beats.json, a media handle (run:RUN/beats), or keep "
+                                "(its grid is right for the file it plays). Every beat moment re-resolves on it.")
     timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")
     timeline_ops.add_argument("--retime", action="store_true", help="Move every anchored clip back onto its word.")
     timeline_ops.add_argument("--close-gap-before", dest="close_gap_before", default=None, metavar="WORD",
@@ -4273,12 +4309,19 @@ def _print_word(tl: Any, parsed: argparse.Namespace) -> int:
 
         ctx = _MomentContext(tl, None)
         beats, downs = ctx.beats("beat"), set(round(b, 3) for b in ctx.beats("downbeat"))
-        t = target.start
-        after = [b for b in beats if b > t + 1e-3]
-        print(f"  beats near {t:.2f} s:")
+        t = base = target.start
+        if target.kind == "word":  # count exactly as the resolver does: from the word itself, not its frame
+            try:
+                base = mo.resolve(mo.parse(target.address), ctx)
+            except mo.MomentError:
+                pass
+        near = 0.5 / tl.fps
+        after = [b for b in beats if b > base + near]
+        grids = sorted({intent.beats_label(c.data) for c in tl.clips(audio=True) if intent.beat_sources(c.data)} - {None})
+        print(f"  beats near {t:.2f} s" + (f" (grid: {', '.join(grids)})" if grids else " (no music clip has a beat grid)") + ":")
         for b in [b for b in beats if t - 1.0 <= b <= t + 2.5]:
             n = after.index(b) + 1 if b in after else None
-            label = f"beat {n} after {target.address}" if n else ("on it" if abs(b - t) < 0.02 else "before it")
+            label = f"beat {n} after {target.address}" if n else ("on it (its own frame)" if abs(b - base) <= near else "before it")
             print(f"    {b:7.3f} s  {'downbeat' if round(b, 3) in downs else 'beat':<8}  {label}")
     return 0
 
@@ -4340,11 +4383,10 @@ def _cmd_undo(parsed: argparse.Namespace) -> int:
     if tl is None:
         raise _VerbError(f"no working copy to undo · next: timelines checkout {parsed.timeline} --project {parsed.project}", 2)
     undone = tl.undo(parsed.steps)
-    changes = tl.changes()
     print(f"undid {len(undone)} edit(s):")
     for label in undone:
         print(f"  ↶ {label}")
-    print(f"the working copy now has {len(changes)} unpublished change(s)")
+    print(f"the working copy now has {_clips_changed(len(tl.edits().get('changes') or []))} (unpublished)")
     print(f"next: timelines redo {parsed.timeline} --project {parsed.project} (put it back)   ·   timelines status {parsed.timeline} --project {parsed.project}")
     return 0
 
@@ -4358,7 +4400,7 @@ def _cmd_redo(parsed: argparse.Namespace) -> int:
     print(f"redid {len(redone)} edit(s):")
     for label in redone:
         print(f"  ↷ {label}")
-    print(f"the working copy now has {len(tl.changes())} unpublished change(s)")
+    print(f"the working copy now has {_clips_changed(len(tl.edits().get('changes') or []))} (unpublished)")
     return 0
 
 
@@ -4390,6 +4432,7 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
     tl, existed = _working_copy(parsed, create=True)
     if not existed:
         print(f"no working copy yet: checked out {parsed.timeline} from its published head")
+    before = tl.document()
     try:
         with tl.step(f"apply {parsed.sheet}"):
             changes = apply_sheet(tl, text)
@@ -4398,13 +4441,15 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
     for line in _cap(changes) or ["no change (the sheet matches the working copy)"]:
         print(line)
     report = tl.check()
-    for line in _cap(_check_lines(report)):
+    for line in _cap(_check_lines(report, cuts=_edit_cuts(before, tl))):
         print(line)
     tl.save()
+    for line in tl.merged:
+        print(line)
     where = f"{parsed.timeline} --project {parsed.project}"
     print(f"next: timelines visualize {where} --compare published   (before/after of what you changed)")
     print(f'      timelines status {where}   ·   timelines publish {where} -m "what changed"')
-    return 0 if report.valid else 1
+    return 0  # applied and saved; publishability is check's state, printed above
 
 
 def _configure_status(subparser: argparse.ArgumentParser) -> None:
@@ -4419,6 +4464,9 @@ def _configure_check(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("ref", help="Timeline (UUID, ULID or slug) or a checkout file.")
     _add_project_arg(subparser, required=False)
     subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
+    subparser.add_argument("--all", action="store_true",
+                           help="Everything: the whole diff, every lint finding (by default only findings new since checkout, "
+                                "with a count of the ones already there).")
     subparser.set_defaults(handler=_cmd_check)
 
 

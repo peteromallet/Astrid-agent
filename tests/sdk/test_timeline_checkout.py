@@ -497,3 +497,118 @@ def test_a_param_moment_outside_its_clip_blocks_and_keep_fixes_an_orphan():
     assert any("states[1].at" in o for o in tl.orphans())
     card.keep()
     assert not any("states[1].at" in o for o in tl.orphans())
+
+
+def _bed_on_beat(data):
+    """The music (Q, 4 s) carries a 120 bpm grid; the rocket starts on beat 2 after "went"."""
+    data = _with_beats(data)
+    tl = Checkout(data)
+    tl.clip("a-rocket").on('beat 2 after "went"')
+    return tl
+
+
+def test_swap_music_to_a_compose_run_brings_its_beats_and_its_length(monkeypatch):
+    import astrid.sdk.timeline_checkout as tc
+
+    tl = _bed_on_beat(bundle())
+    before = tl.clip("a-rocket").start  # "went" starts at 0.9 s; beats every 0.5 s → beat 2 after it is 1.5
+    assert before == pytest.approx(1.5)
+    new = {"key": "music", "media_id": "sha256:" + "b" * 64, "content_sha256": "sha256:" + "b" * 64, "type": "audio/wav"}
+    monkeypatch.setattr(tc, "resolve_handle_entry", lambda project, handle, client=None: dict(new))
+    monkeypatch.setattr(tc, "media_seconds", lambda project, media, client=None: 6.0 if media.get("media_id") == new["media_id"] else 4.0)
+    seen = {}
+
+    def beats(project, handle, client=None):
+        seen["handle"] = handle
+        return intent.beats_grid({"beats": [0.0, 0.7, 1.4, 2.1, 2.8, 3.5], "downbeats": [0.0, 2.8], "bpm": 85.7}, "run:R1/beats"), "run:R1/beats"
+
+    monkeypatch.setattr(tc, "handle_beats", beats)
+    music = tl.clips(track="music")[0]
+    music.swap_asset("run:R1/music")
+    assert seen["handle"] == "run:R1/music"
+    assert music.duration == pytest.approx(6.0)  # it played its whole file: it plays the whole new one
+    assert intent.beat_sources(music.data)[:3] == [0.0, 0.7, 1.4]
+    assert tl.clip("a-rocket").start == pytest.approx(2.1)  # beat 2 after "went" (0.9 s): 1.4, then 2.1
+    assert any("beats from run:R1/beats" in n and "re-resolved" in n for n in tl.notes)
+    assert tl.check().blocking == []
+
+
+def test_swap_music_without_a_grid_blocks_until_beats_are_attached_or_kept(monkeypatch, tmp_path):
+    import astrid.sdk.timeline_checkout as tc
+
+    tl = _bed_on_beat(bundle())
+    monkeypatch.setattr(tc, "media_seconds", lambda project, media, client=None: None)
+    music = tl.clips(track="music")[0]
+    music.swap_asset("P")  # a registry key: no run behind it, so no grid comes along
+    assert music.duration == pytest.approx(4.0) and any("could not read the new file's length" in n for n in tl.notes)
+    assert any(line.startswith("beats") for line in tl.check().blocking)
+    grid = tmp_path / "cue.beats.json"
+    grid.write_text(json.dumps({"bpm": 120, "beats": [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
+                                "hits": [{"t": 1.0, "kind": "stab"}]}))
+    music.set_beats(str(grid))
+    assert tl.clip("a-rocket").start == pytest.approx(37 / 30)  # beat 2 after 0.9 s: 1.0, 1.25 (floored to frame 37)
+    assert intent._app(music.data)["beats"]["hits"] == [[1.0, "stab"]]
+    assert tl.check().blocking == []
+    music.swap_asset("R")
+    assert any(line.startswith("beats") for line in tl.check().blocking)
+    music.set_beats("keep")
+    assert tl.check().blocking == []
+
+
+def test_check_blocks_a_literal_formula_string_where_the_element_wants_a_frame():
+    """T04c: allAt='ƒ("adapt" in w05c)' as TEXT failed visualize's schema for the whole film; check must catch it."""
+    tl = Checkout(bundle())
+    clip = tl.clip("a-rocket")
+    clip.data["clipType"] = "am-ui-sketch"
+    clip.data["params"] = {"allAt": 'ƒ("adapt" in w05c)', "states": [{"at": 0, "data": "A"}, {"at": '"went"', "data": "B"}]}
+    blocking = [line for line in tl.check().blocking if line.startswith("type")]
+    assert any("a-rocket.allAt is the text" in line and "--set 'allAt=ƒ(\"adapt\" in w05c)'" in line for line in blocking)
+    assert any("a-rocket.states[1].at is the text" in line for line in blocking)
+
+
+def test_check_reports_new_lint_only_and_an_edit_reports_its_own_cuts():
+    """P9/T15a(d): findings the published head already had are counted, not printed; an edit sees its cuts."""
+    from astrid.sdk.timeline_checkout import CheckReport, _new_findings
+
+    class Base:
+        cuts: list = []
+
+        def lint(self):
+            return ["SMALL  c02 +0.40s am-discord text 22 px < 32 px at 1080p"]
+
+    lint = ["SMALL  c02 +0.70s am-discord text 22 px < 32 px at 1080p", "SYNC   c02 +0.40s keys 0.18 s late", "HOLD   c07 +6.70s 7.80 s still"]
+    new, old = _new_findings(lint, Base())
+    assert old == 1 and new == lint[1:]  # the same finding on a cut that moved is not new
+    report = CheckReport(valid=True, validation={}, summary=[], lint=lint, problems=[], changed_cuts=[2, 7], diff={},
+                         cut_names=["c02", "c07"], blocking=[], lint_new=new, lint_old=old)
+    lines = report.brief()
+    assert "new lint on the 2 changed cut(s): 2" in lines[0]
+    assert any("1 lint finding(s) were already there" in line for line in lines)
+    mine = report.brief(cuts=["c07"])
+    assert any("HOLD   c07" in line for line in mine) and not any("SYNC" in line for line in mine)
+    assert any("1 more on other cuts" in line for line in mine)
+    assert len(report.brief(full=True)) > len(lines) - 1 and any("SMALL" in line for line in report.brief(full=True))
+
+
+def test_two_writers_on_one_working_copy_merge_and_never_drop_each_others_edits(tmp_path):
+    """Concurrency: two handles open the same working copy; each saves; nothing is lost silently."""
+    path = tmp_path / "main.json"
+    Checkout(bundle()).save(path)
+    a, b = Checkout.load(path), Checkout.load(path)
+    a.clip("a-rocket").nudge(0.5)
+    a.save()
+    b.clip("b-type").set(text="Now live.")
+    b.save()  # b loaded before a saved: a three-way merge, a's nudge is kept
+    assert any("merged with another writer's save" in line for line in b.merged)
+    both = Checkout.load(path)
+    assert both.clip("a-rocket").start == pytest.approx(1.5) and both.clip("b-type").params["text"] == "Now live."
+    # the same clip changed by both: refused, with what to do
+    c, d = Checkout.load(path), Checkout.load(path)
+    c.clip("a-rocket").nudge(0.1)
+    c.save()
+    d.clip("a-rocket").nudge(-0.1)
+    with pytest.raises(TimelineEditError, match="another writer"):
+        d.save()
+    assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.6)  # c's edit is there, d's was refused
+    d.save(force=True)
+    assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.4)

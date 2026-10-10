@@ -115,9 +115,9 @@ music = result.output("music")  # run:<id>/music: the bed to place on the timeli
 beats = result.output("beats")  # run:<id>/beats: cut times and beat grid
 ```
 
-The beats belong with the music clip: attach them to the music clip as `app.beats`. The visualize and
-pacing lanes read them from there. A fix is coming that carries `app.beats` through `--swap-asset`.
-Until it lands, check `app.beats` after any swap.
+The beats belong with the music clip. `timelines edit TL --project P --clip music --swap-asset run:<id>/music`
+brings the run's beats along (and the new length); to attach a grid yourself: `--beats run:<id>/beats` (or a
+beats.json), in Python `tl.clip("music").set_beats("run:<id>/beats")`. Every `beat N after …` moment re-resolves.
 
 ## chiptune.sfx
 

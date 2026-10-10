@@ -71,6 +71,10 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         for seg in lines_used:
             gap = tl.voice(seg).gap_after
             out.append((f"  {seg:<{width}}  {texts[seg]:<{tw}}" + (f"  gap {round(gap, 2):g}" if gap is not None else "")).rstrip())
+    sound = [c for c in sound_clips(tl) if (end is None or c.start < end - 1e-6) and (start is None or c.end > start + 1e-6)]
+    if sound:
+        out += ["", "sound" + " " * 44 + "# under the film, in no cut: asset, for, volume= (the grid: --beats)"]
+        out += _align([_sound_row(tl, c) for c in sound])
     orphans = tl.orphans()
     if orphans:
         out += ["", "orphans" + " " * 42 + "# moments whose words are gone: re-home or remove"]
@@ -107,6 +111,25 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         if why:
             out.append(f"         why: {why}")
     return "\n".join(out) + "\n"
+
+
+def sound_clips(tl: Any) -> list[Any]:
+    """Audio under the film that belongs to no cut and is not a narration take: the music bed, room tone, sfx."""
+    return sorted((c for c in tl.clips(audio=True) if not intent.cut_of(c.data) and not intent.line(c.data)),
+                  key=lambda c: (c.start, c.id))
+
+
+def _sound_row(tl: Any, clip: Any) -> list[str]:
+    bits = []
+    if isinstance(clip.data.get("volume"), (int, float)):
+        bits.append(f"volume={clip.data['volume']:g}")
+    label = intent.beats_label(clip.data)
+    if label:
+        bits.append(f"~beats={label}")
+    until = intent.until(clip.data)
+    timing = f"until {until}" if until else f"for {_length_text(clip.duration, tl.fps)}"
+    return [f"{clip.start:6.2f}", clip.track or "sfx", intent.layer_of(clip.data) or clip.id, _short(clip.element),
+            clip.asset or "", " ".join(bits), timing]
 
 
 def _carried(tl: Any, groups: list[dict[str, Any]], spans: dict[str, Any]) -> dict[str, list[Any]]:
@@ -246,7 +269,7 @@ def parse_sheet(text: str) -> dict[str, Any]:
         body = line.strip()
         if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:", "scope ")) or body.startswith((">", "↳")) or raw.startswith("# "):
             continue
-        if body in ("lines", "orphans"):
+        if body in ("lines", "orphans", "sound"):
             section, cut = body, None
             continue
         if "┃" in line:
@@ -265,6 +288,13 @@ def parse_sheet(text: str) -> dict[str, Any]:
             sheet["lines"][entry["id"]] = entry
             continue
         if section == "orphans":
+            continue
+        if section == "sound" and cut is None:
+            try:
+                sheet.setdefault("sound", []).append(_parse_layer(body, number, fps))
+            except SheetError as exc:
+                raise SheetError(_with_text(str(exc), number, body)) from None
+            sheet["sound"][-1]["text_line"] = body
             continue
         if cut is None:
             raise SheetError(f"line {number}: {body[:60]!r} is outside any cut (a cut starts with a '┃ cNN' line)")
@@ -353,12 +383,13 @@ def _tokens(body: str) -> list[str]:
 
 def _parse_layer(body: str, number: int, fps: float = 30.0) -> dict[str, Any]:
     tokens = _tokens(body)
+    gutter = None
     if tokens and re.fullmatch(r"\d+(\.\d+)?", tokens[0]):
-        tokens = tokens[1:]  # the time gutter
+        gutter, tokens = float(tokens[0]), tokens[1:]  # the time gutter
     if len(tokens) < 3:
         raise SheetError(f"line {number}: a layer reads  track name element [ASSET] [\"text\"] [k=v …] [on …] [until …|for …]")
     layer: dict[str, Any] = {"track": tokens[0], "name": tokens[1], "element": tokens[2], "asset": None, "text": None,
-                             "params": {}, "on": None, "until": None, "for": None, "line": number}
+                             "params": {}, "on": None, "until": None, "for": None, "line": number, "at": gutter}
     rest = tokens[3:]
     current, buf = None, []
 
@@ -453,6 +484,8 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
         if entry["gap"] is not None and (voice.gap_after is None or abs(voice.gap_after - entry["gap"]) > 0.0051):
             voice.set_gap_after(entry["gap"], reflow=False)
             reflow = True
+    if sheet.get("sound"):
+        _apply_sound(tl, sheet["sound"])
     groups = {g["id"]: g for g in tl._cut_groups()}
     for cut in sheet["cuts"]:
         group = groups.get(cut["id"])
@@ -493,6 +526,35 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
     if reflow:
         tl.reflow()
     return describe_changes(before, tl)
+
+
+def _apply_sound(tl: Any, rows: list[dict[str, Any]]) -> None:
+    """The sound section: a line changes its clip's asset, start, length (for/until) or volume. A line left
+    out changes nothing (the bed is never removed from a sheet)."""
+    from astrid.sdk.timeline_checkout import TimelineEditError
+
+    clips = {(intent.layer_of(c.data) or c.id): c for c in sound_clips(tl)}
+    for row in rows:
+        clip = clips.get(row["name"])
+        if clip is None:
+            raise SheetError(_with_text(f"line {row['line']}: no sound clip {row['name']!r} (sound clips: "
+                                        f"{', '.join(clips) or 'none'}); add one with timelines edit", row["line"], row.get("text_line", "")))
+        try:
+            if row["asset"] and row["asset"] != clip.asset:
+                clip.swap_asset(row["asset"])
+            if row.get("at") is not None and abs(row["at"] - clip.start) > 0.0051:
+                clip.enter_at(row["at"], anchor=False)
+            if row["until"] and row["until"] != intent.until(clip.data):
+                clip.until(row["until"])
+            elif row["for"] is not None and abs(row["for"] - clip.duration) > 0.5 / tl.fps:
+                clip.set_duration(row["for"])
+            for key, value in row["params"].items():
+                if key != "volume":
+                    raise SheetError(f"line {row['line']}: a sound line takes volume= only (got {key}=)")
+                if value is not ELIDED and value != clip.data.get("volume"):
+                    clip.data["volume"] = value
+        except (TimelineEditError, mo.MomentError) as exc:
+            raise SheetError(_with_text(f"line {row['line']}: {clip.address}: {exc}", row["line"], row.get("text_line", ""))) from None
 
 
 def _element(token: str, current: str | None = None) -> str:

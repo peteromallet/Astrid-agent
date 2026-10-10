@@ -4,6 +4,9 @@ lines                                            # the narration: everything han
   s1  "It went viral."
   s2  "Live now."
 
+sound                                            # under the film, in no cut: asset, for, volume= (the grid: --beats)
+  0.00   music  a-music  media  Q  for 4s
+
 # SHOT
   0.00 ┃ c1                                                               · 4.00 s
        > it went viral
