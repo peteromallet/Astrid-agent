@@ -1626,11 +1626,14 @@ class Checkout(_Suggest):
             self.notes.append(f"{clip.address}: {name} is read as the spoken word \"{name}\" (there is also a layer "
                               f"{', '.join(layers[:3])}; for where it ends write until end of its cut, or quote the word)")
 
-    def verify(self, at: Any = None, *, since: Mapping[str, Any] | None = None, client: Any = None) -> dict[str, Any]:
+    def verify(self, at: Any = None, *, since: Mapping[str, Any] | None = None, client: Any = None,
+               zoom: str | None = None, region: Any = None) -> dict[str, Any]:
         """One-shot verify (the CLI's ``edit --verify`` / ``check --at``): the published head and this working copy
         at the moments, on one page, with what differs and the new lint. ``at``: a moment, an address or a list
         of them; by default the frames that show what changed (since ``since``, a document, else since checkout).
-        Returns the fast lane's result (``page``, ``rows`` with a verdict per moment, ``lines`` to print)."""
+        ``zoom="c08.app"`` (or ``region="x,y,w,h"`` in canvas px) adds a full-resolution crop of both sides around
+        that layer under each moment. Returns the fast lane's result (``page``, ``rows`` with what each side shows
+        and what differs per moment, ``lines`` to print)."""
         from astrid.packs.rendering.executors.timeline_visualize import fast_lane
         from astrid.sdk.timeline_cuts import base_bundle, diff_bundles
 
@@ -1642,13 +1645,17 @@ class Checkout(_Suggest):
             diff = diff_bundles(before, self.document())
             names = {c.id: c.address for c in self.clips()}
             moments = fast_lane.moments_from_changes(diff["changes"], float(diff.get("fps") or self.fps), names=names)
+            if not moments and zoom is not None:  # nothing changed on screen: look at the zoomed layer's middle
+                layer = self.clip(zoom)
+                moments = [fast_lane.Moment((layer.start + layer.end) / 2, f"the middle of {layer.address}", layer.id)]
             if not moments:
                 raise TimelineEditError("nothing on screen changed: no frame to compare (pass at=…)")
         footer = self.check().brief()
         project, timeline = str(self.bundle.get("project_id")), str(self.bundle.get("timeline_id"))
 
         def run(c: Any) -> dict[str, Any]:
-            return fast_lane.verify(c, project, timeline, moments, draft=self, footer=footer)
+            return fast_lane.verify(c, project, timeline, moments, draft=self, footer=footer,
+                                    **({"zoom": zoom} if zoom else {}), **({"region": region} if region else {}))
 
         return _with_client(client, run)
 

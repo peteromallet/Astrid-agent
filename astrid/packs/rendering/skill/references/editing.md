@@ -11,10 +11,9 @@ timelines show TL c41.mink --project P                 # ONE thing's whole recor
                                                        #   formula, default, allowed keys), its moments in seconds
 timelines show TL --project P --as sheet --range c30..c31 > cut.sheet   # several cuts as an editable sheet
 timelines apply TL --project P cut.sheet               # change a line of the sheet, then apply it
-timelines edit TL --project P --clip c30.cover --until '"Astrid"' --verify   # edit + published|working frames + new lint
-timelines check TL --project P --at '"Astrid"'          # the same before/after page at any moment (~5 s warm, no queue)
 timelines edit TL --project P --clip c30.cover --until Astrid --verify    # edit, then published vs yours, one page
 timelines check TL --project P --at '"Astrid" in n21'                      # look at any moment (fast; no queue)
+timelines check TL --project P --at 33.9 --zoom c08.loras   # + both sides cropped around a layer, full resolution
 timelines status TL --project P   ·   timelines undo TL --project P   ·   timelines publish TL --project P -m "…"
 ```
 `show`/`visualize`/`lint`/`diff` read the working copy (line 1 says so; `--published` for the live one).

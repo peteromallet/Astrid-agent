@@ -3959,8 +3959,9 @@ def _print_verify(parsed: argparse.Namespace, tl: Any, moments: list[Any], foote
     """One-shot verify (the rendering pack's fast lane): published vs working copy at the moments, one page."""
     from astrid.packs.rendering.executors.timeline_visualize.fast_lane import FastLaneError, verify
 
+    extra = {k: v for k, v in (("zoom", getattr(parsed, "zoom", None)), ("region", getattr(parsed, "region", None))) if v}
     try:
-        result = verify(parsed.client, parsed.project, parsed.timeline, moments, draft=tl, footer=list(footer))
+        result = verify(parsed.client, parsed.project, parsed.timeline, moments, draft=tl, footer=list(footer), **extra)
     except FastLaneError as exc:
         print(f"verify  not captured: {exc} · next: timelines visualize {parsed.timeline} --project {parsed.project} "
               f"--preset frame --at {moments[0].t:.2f}")
@@ -4208,6 +4209,9 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
     parsed.timeline = parsed.ref
     tl, _ = _working_copy(parsed, create=False)
     at = list(getattr(parsed, "at", None) or [])
+    if tl is not None and not at and getattr(parsed, "zoom", None):  # --zoom alone: the layer's middle
+        layer = tl.clip(parsed.zoom)
+        at = [f"{(layer.start + layer.end) / 2:.2f}"]
     if tl is None:
         print(f"no working copy · next: timelines checkout {parsed.ref} --project {parsed.project}")
         return 0
@@ -4700,6 +4704,11 @@ def _configure_check(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--at", action="append", default=None, metavar="MOMENT",
                            help="Also show the published and working-copy frames at this moment (repeatable; "
                                 "'\"Astrid\"', c30.cover, 93.5): one page, a few seconds, no host queue.")
+    subparser.add_argument("--zoom", default=None, metavar="ADDRESS",
+                           help="With --at: also crop both frames around this layer at full resolution (c08.app), "
+                                "for details the thumbnails cannot show (connector ends, 1-px outlines).")
+    subparser.add_argument("--region", default=None, metavar="X,Y,W,H",
+                           help="With --at: crop this canvas-px rectangle at full resolution instead of a layer.")
     subparser.set_defaults(handler=_cmd_check)
 
 

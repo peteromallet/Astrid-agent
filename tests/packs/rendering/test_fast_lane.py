@@ -184,13 +184,16 @@ def test_verify_makes_one_page_from_two_snapshots_without_the_host(tmp_path, mon
                               draft=Draft(), footer=["lint on c30: clean"], root=tmp_path)
     assert [a[0] for a in asked] == ["published", "working"]
     same, changed = result["rows"]
-    assert same["verdict"] == "same picture as published"
-    assert changed["verdict"].startswith("differs from published:") and "box 100,50–161,91 of 640x360" in changed["verdict"]
+    assert same["pixels"] == "pixels: identical to published"
+    assert (same["published_shows"], same["working_shows"]) == ("the same layers", "the same layers, unchanged")
+    assert changed["pixels"] == "pixels: 1.09% differ, box 300,150–483,273 (183x123 canvas px)"
     with Image.open(result["page"]) as page:
         assert page.size[0] == 24 + 2 * (fast_lane.TILE[0] + 12)
     assert not list(Path(result["page"]).parent.glob("*/frames"))  # only the page is kept
     lines = result["lines"]
-    assert lines[0].startswith("verify  a: last frame · 29.00 s (f870): same picture")
+    assert lines[:3] == ["verify  a: last frame · 29.00 s (f870)",
+                         "        published: the same layers · working copy: the same layers, unchanged",
+                         "        pixels: identical to published"]
     assert any(line.startswith("page    ") for line in lines)
     assert any("fast lane, no queue" in line and "warm renderer" in line for line in lines)
 
@@ -301,3 +304,230 @@ def test_edit_and_check_offer_the_one_shot_verify():
     assert "--at MOMENT" in verbs["check"].format_help()
     parsed = verbs["check"].parse_args(["tl", "--project", "p", "--at", '"Astrid"', "--at", "c30.cover"])
     assert parsed.at == ['"Astrid"', "c30.cover"]
+
+
+# --- 1. what each side shows, in plain words ------------------------------------------------
+
+def _sparks(at, hold, **params):
+    return {"id": "occ:c41-03-am-sprite", "track": "sprite", "clipType": "am-sprite", "at": at, "hold": hold,
+            "asset": "SPARKS", "params": {"x": 230, **params}, "app": {"cut": "c41", "layer": "sparks"}}
+
+
+def _cfg(*clips):
+    return {"tracks": [{"id": "fx", "kind": "visual"}, {"id": "sprite", "kind": "visual"},
+                       {"id": "plate", "kind": "visual"}], "clips": list(clips)}
+
+
+def test_a_moved_start_says_the_old_layer_is_still_there_and_the_new_one_is_not_yet():
+    published, working = _cfg(_sparks(121.0, 1.0)), _cfg(_sparks(121.867, 1.0))
+    before = Moment(121.833, "c41.sparks: the frame before it starts", "occ:c41-03-am-sprite")
+    shows = fast_lane.describe_sides(before, frame_of(before.t, FPS), FPS, published, working)
+    assert shows == ("c41.sparks on screen", "no c41.sparks yet (it starts at 121.87 s)")
+    after_end = Moment(122.5, "c41.sparks: the first frame without it", "occ:c41-03-am-sprite")
+    shows = fast_lane.describe_sides(after_end, frame_of(after_end.t, FPS), FPS, published, working)
+    assert shows == ("no c41.sparks any more (it ended at 122.00 s)", "c41.sparks on screen")
+    moved = _cfg(_sparks(121.0, 1.0, x=260))
+    shows = fast_lane.describe_sides(Moment(121.5, "mid", "c41-03-am-sprite"), frame_of(121.5, FPS), FPS, published, moved)
+    assert shows == ("c41.sparks on screen, before your change", "c41.sparks on screen with your change (params)")
+
+
+def test_a_bare_moment_names_the_layers_only_one_side_has_and_the_changed_ones():
+    cover = {"id": "occ:c30-01-am-sprite", "track": "sprite", "clipType": "am-sprite", "at": 91.5, "hold": 2.0,
+             "asset": "MYSTERY", "app": {"cut": "c30", "layer": "cover"}}
+    icon = {"id": "occ:c30-02-am-sprite", "track": "sprite", "clipType": "am-sprite", "at": 93.4, "hold": 1.0,
+            "asset": "ICON", "app": {"cut": "c30", "layer": "icon"}}
+    shows = fast_lane.describe_sides(Moment(93.45, "93.45"), frame_of(93.45, FPS), FPS, _cfg(cover),
+                                     _cfg({**cover, "hold": 1.8}, icon))
+    assert shows == ("c30.cover (not in the working copy here)", "c30.icon (new here)")
+
+
+# --- 2. small changes are never "0.0%" -------------------------------------------------------
+
+def test_a_few_changed_pixels_read_as_less_than_a_tenth_of_a_percent_with_their_box(tmp_path):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    Image.new("RGB", (640, 360), "#204050").save(a)
+    image = Image.new("RGB", (640, 360), "#204050")
+    for x in (300, 301, 302):
+        image.putpixel((x, 100), (40, 74, 90))  # a faint, 1-px connector end: delta 10 per channel
+    image.save(b)
+    share, count, box, size = fast_lane._difference(a, b)
+    assert count == 3 and box == (300, 100, 303, 101)
+    line = fast_lane.pixel_line(share, count, box, size, (1920, 1080))
+    assert line == "pixels: <0.1% (3 px) differ, box 900,300–909,303 (9x3 canvas px)"
+    assert fast_lane.pixel_line(0.03041, 7000, (10, 10, 20, 20), (640, 360), (1920, 1080)).startswith("pixels: 3.04% differ")
+
+
+# --- 3. the first use primes the renderer (no visualize needed first) ------------------------
+
+def test_after_a_host_restart_the_renderer_settings_come_from_the_live_host(tmp_path, monkeypatch):
+    ps = ("/usr/bin/python -m astrid.core.execution.generic_host run PATH=/usr/bin "
+          "ASTRID_NODE_EXECUTABLE=/host/node20 ASTRID_REMOTION_PROJECT_DIR=/serve/remotion HOME=/Users/x")
+
+    class Done:
+        stdout = ps
+
+    monkeypatch.setattr(fast_lane.subprocess, "run", lambda *a, **k: Done())
+    assert fast_lane.host_renderer_env(123) == {"ASTRID_NODE_EXECUTABLE": "/host/node20",
+                                                "ASTRID_REMOTION_PROJECT_DIR": "/serve/remotion"}
+    monkeypatch.setattr(remotion_run, "owner_records", lambda project_dir: [{"env": {"ASTRID_NODE_EXECUTABLE": "/old"}}])
+    monkeypatch.delenv("ASTRID_NODE_EXECUTABLE", raising=False)
+    env, source = fast_lane.worker_environment(tmp_path, host_pid=123)
+    assert env["ASTRID_NODE_EXECUTABLE"] == "/host/node20" and source.startswith("the pack host's renderer")
+
+
+def test_with_no_host_and_no_record_the_projects_pinned_node_is_found(tmp_path, monkeypatch):
+    (tmp_path / "remotion").mkdir()
+    (tmp_path / "remotion" / "package.json").write_text(json.dumps({"engines": {"node": "=20.19.4"}}))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, version in (("old", "v18.0.0"), ("node", "v20.19.4")):
+        target = bin_dir / name / "node" if name == "old" else bin_dir / "node"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(f"#!/bin/sh\necho {version}\n")
+        target.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir / 'old'}{os.pathsep}{bin_dir}")
+    monkeypatch.delenv("ASTRID_NODE_EXECUTABLE", raising=False)
+    monkeypatch.setattr(remotion_run, "owner_records", lambda project_dir: [])
+    env, source = fast_lane.worker_environment(tmp_path, host_pid=None)
+    assert env["ASTRID_NODE_EXECUTABLE"] == str(bin_dir / "node") and "version pin" in source
+
+
+# --- 4. zoom: a layer at full resolution ------------------------------------------------------
+
+def _layered():
+    from tests.packs.rendering.test_timeline_visualize_motion import layered_snapshot
+
+    snapshot = layered_snapshot()
+    snapshot["config"] = {"tracks": snapshot["tracks"], "clips": [dict(c) for c in snapshot["clips"]]}
+    return snapshot
+
+
+def test_zoom_finds_the_layers_box_and_regions_parse():
+    snapshot = _layered()
+    region = fast_lane.zoom_region([snapshot], "card", 3.8, FPS, (1920, 1080))
+    x0, y0, x1, y1 = region
+    assert x0 < 1260 < 1980 and y0 < 120 and x1 == 1920 and y1 > 200  # the callout box, padded, inside the canvas
+    assert fast_lane.zoom_region([snapshot], "card", 1.0, FPS, (1920, 1080)) is None  # not on screen yet
+    for clip in snapshot["clips"]:
+        if clip["id"].endswith("card"):
+            clip["params"] = {**clip["params"], "anchor": {"x": 900, "y": 700}}
+    x0, y0, x1, y1 = fast_lane.zoom_region([snapshot], "card", 3.8, FPS, (1920, 1080))
+    assert x0 < 900 and y1 > 700  # the connector's end is in the crop
+    assert fast_lane.parse_region("100,50,300,200") == (100, 50, 400, 250)
+    assert fast_lane.zoom_scale((747, 377)) == 1.0  # full resolution when it fits the page
+    assert fast_lane.zoom_scale((100, 50)) == 6.0 and fast_lane.zoom_scale((1968, 400)) == 0.5
+    with pytest.raises(FastLaneError, match="x,y,w,h"):
+        fast_lane.parse_region("100,50")
+
+
+def test_verify_with_zoom_crops_both_sides_at_full_resolution(tmp_path, monkeypatch):
+    snapshot = _layered()
+
+    def prepare(inputs, *, project, client):
+        return {"capture_snapshot": snapshot}
+
+    def worker(jobs, run_dir, *, served=None, timeout=None):
+        assert all(job["resolution"] is None for job in jobs)  # full resolution when zooming
+        out = {"jobs": [], "notes": []}
+        for job in jobs:
+            frames = {}
+            for f in job["frames"]:
+                image = Image.new("RGB", (1920, 1080), "#204050")
+                if job["name"] == "working":
+                    ImageDraw.Draw(image).rectangle((1500, 150, 1503, 152), fill="#ffffff")  # a connector end moved
+                path = Path(job["out"]) / "frames" / f"f{f:06d}.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                image.save(path)
+                frames[str(f)] = str(path)
+            out["jobs"].append({"name": job["name"], "frames": frames, "owner": {}})
+        return out
+
+    class Draft:
+        def document(self):
+            return {}
+
+    monkeypatch.setattr("astrid.sdk.timeline_filmstrip.prepare_filmstrip", prepare)
+    monkeypatch.setattr("astrid.core.timeline.authoring_bundle.preview_authoring_candidate", lambda doc: {})
+    monkeypatch.setattr(fast_lane, "run_worker", worker)
+    monkeypatch.setattr(fast_lane, "materialize", lambda remote, reg, root=None: (reg, {}, 0))
+    result = fast_lane.verify(object(), "demo", "tl", [Moment(3.8, "card")], draft=Draft(), zoom="card", root=tmp_path)
+    (row,) = result["rows"]
+    zoom = row["zoom"]
+    x0, y0, x1, y1 = zoom["region"]
+    with Image.open(zoom["published"]) as crop:
+        assert crop.size == (x1 - x0, y1 - y0)  # canvas px, not a thumbnail
+    assert "full resolution" in zoom["label"] and "box 1500,150–1504,153" in zoom["label"]
+    assert any(line.strip().startswith("zoom card:") for line in result["lines"])
+
+
+def test_python_and_the_cli_take_a_zoom(monkeypatch):
+    from tests.sdk.test_timeline_checkout import bundle
+
+    from astrid.packs.timeline import cli
+    from astrid.sdk.timeline_checkout import Checkout
+
+    seen = {}
+
+    def fake(client, project, timeline, moments, **kwargs):
+        seen.update(kwargs, moments=[round(m.t, 2) for m in moments])
+        return {"lines": [], "rows": [], "page": "p.png"}
+
+    monkeypatch.setattr(fast_lane, "verify", fake)
+    tl = Checkout(bundle())
+    tl.verify(at=6.0, zoom="a-rocket", client=object())
+    assert seen["zoom"] == "a-rocket" and seen["moments"] == [6.0]
+    rocket = tl.clip("a-rocket")
+    tl.verify(zoom="a-rocket", client=object())  # nothing changed: a zoom alone looks at the layer's middle
+    assert seen["moments"] == [round((rocket.start + rocket.end) / 2, 2)]
+    before = tl.document()
+    tl.clip("a-rocket").nudge(0.5)
+    tl.verify(since=before, zoom="a-rocket", client=object())  # an edit: its changed moments, zoomed
+    assert seen["moments"] != [round((rocket.start + rocket.end) / 2, 2)] and seen["zoom"] == "a-rocket"
+    help_text = cli.build_parser(object())._subparsers._group_actions[0].choices["check"].format_help()
+    assert "--zoom ADDRESS" in help_text and "--region X,Y,W,H" in help_text
+
+
+# --- 5. a change hidden under a higher layer is not "the same picture" -------------------------
+
+def test_a_changed_layer_under_an_opaque_higher_layer_is_named_as_hidden(tmp_path, monkeypatch):
+    from tests.packs.rendering.test_timeline_visualize_motion import _clip
+
+    occ = "occ-ch01"
+    clips = [
+        _clip("p1", "plate", "visual", 0.0, 2.0, occ, clipType="am-snap-plate", params={"zoom": 1}),
+        _clip("churn", "sprite", "visual", 0.0, 2.0, occ, clipType="am-churn", params={},
+              app={"cut": "c18", "layer": "churn"}),
+        _clip("board", "fx", "visual", 0.0, 2.0, occ, clipType="am-ui-sketch", params={},
+              app={"cut": "c18", "layer": "board"}),
+    ]
+    snapshot = _layered()
+    snapshot.update(clips=clips, config={"tracks": snapshot["tracks"], "clips": [dict(c) for c in clips]},
+                    occurrences=[{"occurrence_id": occ, "shot_id": "ch01", "shot_name": "01", "start": 0.0, "end": 2.0,
+                                  "start_frame": 0, "end_frame": 60}])
+    assert fast_lane.hidden_under(snapshot, "churn", 1.0, FPS) == "c18.board"
+    assert fast_lane.hidden_under(snapshot, "board", 1.0, FPS) is None  # nothing above it
+
+    moved = {**snapshot, "config": {**snapshot["config"],
+                                    "clips": [dict(c, params={"speed": 2}) if c["id"].endswith("churn") else dict(c)
+                                              for c in snapshot["config"]["clips"]]}}
+
+    def prepare(inputs, *, project, client):
+        return {"capture_snapshot": moved if "authoring_preview" in inputs else snapshot}
+
+    def worker(jobs, run_dir, *, served=None, timeout=None):
+        return {"jobs": [{"name": job["name"], "owner": {},
+                          "frames": {str(f): _tile(Path(job["out"]) / "frames" / f"f{f}.png", box=False) for f in job["frames"]}}
+                         for job in jobs], "notes": []}
+
+    class Draft:
+        def document(self):
+            return {}
+
+    monkeypatch.setattr("astrid.sdk.timeline_filmstrip.prepare_filmstrip", prepare)
+    monkeypatch.setattr("astrid.core.timeline.authoring_bundle.preview_authoring_candidate", lambda doc: {})
+    monkeypatch.setattr(fast_lane, "run_worker", worker)
+    monkeypatch.setattr(fast_lane, "materialize", lambda remote, reg, root=None: (reg, {}, 0))
+    result = fast_lane.verify(object(), "demo", "tl", [Moment(1.0, "c18.churn (params) mid-clip", f"{occ}:churn")],
+                              draft=Draft(), root=tmp_path)
+    assert result["rows"][0]["pixels"] == ("pixels: identical to published, but c18.churn changed and is hidden on "
+                                           "this frame (under c18.board)")
