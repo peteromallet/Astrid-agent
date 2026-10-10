@@ -204,6 +204,7 @@ def _moment(tl: Any, raw: str) -> list[Target]:
     for run in hits:
         word = run[-1] if moment.edge == "end" else run[0]
         t = (word.end if moment.edge == "end" else word.start) + moment.offset_s + moment.offset_frames / tl.fps
+        t = mo.floor_frame(t, tl.fps)  # one quantisation everywhere: the frame a clip on this moment starts
         address = _phrase_address(tl, moment, run)
         out.append(Target("word", address, t, t, word=word))
     return out
@@ -435,7 +436,7 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         except Exception:  # noqa: BLE001
             cut_id = None
         line = tl.voice(word.segment)
-        out.append(f"{target.address} · {word.start:.3f}–{word.end:.3f} s · line {word.segment}: \"{line.text}\""
+        out.append(f"{target.address} · {word.start:.3f}–{word.end:.3f} s (frame {round(target.start * tl.fps)}) · line {word.segment}: \"{line.text}\""
                    + (f" · in cut {cut_id}" if cut_id else ""))
         showing = [c for c in tl.clips() if not c.is_audio and c.start - 1e-6 <= word.start < c.end - 1e-6]
         out.append("  on screen: " + (", ".join(c.address for c in showing) or "nothing"))

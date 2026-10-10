@@ -246,3 +246,14 @@ def test_render_draft_without_checkout_fails_before_rendering(no_draft, monkeypa
     assert code != 0
     assert envelope["ok"] is False
     assert "timelines checkout" in envelope["error"]["message"]
+
+
+def test_render_audio_target_maps_to_delivery_audio():
+    from astrid.packs.timeline import cli
+
+    parsed = cli.build_parser(object()).parse_args(["render", "--project", "P", "tl", "--true-peak", "-1.5"])
+    assert cli._delivery_audio(parsed) == {"lufs": -14.0, "true_peak": -1.5}
+    parsed = cli.build_parser(object()).parse_args(["render", "--project", "P", "tl", "--audio-target", "-16"])
+    assert cli._delivery_audio(parsed) == {"lufs": -16.0, "true_peak": -1.0}
+    parsed = cli.build_parser(object()).parse_args(["render", "--project", "P", "tl"])
+    assert cli._delivery_audio(parsed) is None

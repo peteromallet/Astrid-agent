@@ -108,6 +108,28 @@ def from_canvas(element: str, key: str, value: Any) -> Any:
 _FORMULA_VALUE = re.compile(r"^\s*(?:ƒ|f|mark)\(\s*(?:(?P<mark>[A-Za-z][\w-]*?)\s*)?(?P<off>[+−-]\s*\d+(?:\.\d+)?)?\s*\)\s*$")
 
 
+def parse_moment_value(value: Any, current_expr: Mapping[str, Any] | None = None) -> str | None:
+    """A value meant as a moment: ``ƒ("adapt" in w05c)``, or (for a param already on a moment, or plainly a
+    moment: quoted words, ``after``/``beat``/``in``) ``'"adapt" in w05c'``. Canonical text, else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    m = re.fullmatch(r"(?:ƒ|f)\((.*)\)", text)
+    explicit = m is not None
+    if explicit:
+        text = m.group(1).strip()
+    looks = explicit or text.startswith(('"', "“", "after ", "beat ", "downbeat ")) or bool(current_expr and current_expr.get("moment"))
+    if not looks:
+        return None
+    try:
+        moment = mo.parse(text)
+    except mo.MomentError:
+        if explicit:
+            raise TimelineEditError(f"{value!r} is not a moment (e.g. ƒ(\"adapt\" in w05c), ƒ(beat 2 after \"Astrid\"))") from None
+        return None
+    return mo.format_moment(moment)
+
+
 def parse_formula_value(value: Any) -> dict[str, Any] | None:
     """``"ƒ(B2-HAND -42)"`` / ``"f(-60)"`` / ``"mark(B2-HAND +12)"`` → {mark, offset (canvas px)}; else None."""
     if not isinstance(value, str):
@@ -336,10 +358,22 @@ class Clip:
         return self
 
     def keep(self) -> "Clip":
-        """Accept an orphan where it is (a fixed time, no moment): it stops blocking publish."""
+        """Accept an orphan where it is (a fixed time, no moment): it stops blocking publish. Params on a
+        moment that no longer resolves keep their last value as a fixed one."""
         for clip in self._sequence_mates():
             intent.set_orphan(clip.data, None)
-        intent.set_on(self.data, None)
+        on = intent.on(self.data)
+        if on:
+            try:
+                self._tl._moment_time(on, self)
+            except TimelineEditError:
+                intent.set_on(self.data, None)
+        for path, expr in intent.formulas(self.data).items():
+            if isinstance(expr, Mapping) and expr.get("moment"):
+                try:
+                    self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots)
+                except TimelineEditError:
+                    intent.set_formula(self.data, path, None)  # keeps its last value
         return self
 
     def _sequence_mates(self) -> list["Clip"]:
@@ -422,23 +456,50 @@ class Clip:
     def set(self, **params: Any) -> "Clip":
         """Update element params (``x``, ``size``, ``text`` …). Positions are canvas px for every element.
 
-        A param computed by a formula (``x = ƒ(B2-HAND −42)``, following a slot's hand mark) is
-        never silently recomputed over your value: a plain value replaces the formula (and
-        ``changes()`` says so); ``x="ƒ(B2-HAND -60)"`` (or ``"ƒ(-60)"``) edits the formula instead."""
+        A param computed by a formula (``x = ƒ(B2-HAND −42)``, ``states[3].at = ƒ("adapt" in w05c)``)
+        is never silently recomputed over your value: a plain value replaces the formula (and
+        ``changes()`` says so); ``x="ƒ(B2-HAND -60)"`` edits a mark, and a moment
+        (``'"adapt" in w05c'``, ``'ƒ(beat 2 after "Astrid")'``) puts a time-valued param on that moment.
+        Nested params take their address: ``clip.set(**{"states[3].at": '"adapt" in w05c'})``."""
         for key, value in params.items():
-            spec = parse_formula_value(value)
-            existing = [p for p in intent.formulas(self.data)
-                        if p == f"params.{key}" or p.startswith((f"params.{key}[", f"params.{key}."))]
-            if spec is not None:
-                current = intent.formulas(self.data).get(f"params.{key}") or {}
-                expr = formula_from_spec(spec, self.element, key, current)
-                intent.set_formula(self.data, f"params.{key}", expr)
-                value = self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots)
-                self.params[key] = value
-                continue
-            for path in existing:  # a fixed value replaces the formula: never a silent revert
-                intent.set_formula(self.data, path, None)
-            self.params[key] = copy.deepcopy(from_canvas(self.element, key, value))
+            self.set_param(key, value)
+        return self
+
+    def set_param(self, path: str, value: Any) -> "Clip":
+        """Set one param by its address inside the clip (``x``, ``states[3].at``, ``stamp.at``)."""
+        top = re.split(r"[.\[]", path, maxsplit=1)[0]
+        formulas = intent.formulas(self.data)
+        full = f"params.{path}"
+        current_expr = formulas.get(full) or {}
+        spec = parse_formula_value(value)
+        moment = None
+        if spec is None:
+            moment = parse_moment_value(value, current_expr)
+        if spec is not None:  # a slot mark: ƒ(B2-HAND -42)
+            expr = formula_from_spec(spec, self.element, top if path == top else path.rsplit(".", 1)[-1], current_expr)
+            intent.set_formula(self.data, full, expr)
+            _set_path(self.data, full, self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots))
+            return self
+        if moment is not None:  # a time-valued param on a moment
+            current = _get_path(self.data, full)
+            unit = current_expr.get("as") or ("clip_frame" if isinstance(current, int) and not isinstance(current, bool)
+                                               else "clip_seconds")
+            expr = {k: v for k, v in current_expr.items() if k in ("min", "max", "step", "snap", "offset_frames")} if current_expr.get("moment") else {}
+            expr.update({"moment": moment, "as": unit})
+            try:
+                resolved = self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots)
+            except TimelineEditError as exc:
+                raise TimelineEditError(f"{self.address}.{path}: {exc}") from None
+            intent.set_formula(self.data, full, expr)
+            _set_path(self.data, full, resolved)
+            return self
+        for existing in [p for p in formulas if p == full or p.startswith((f"{full}[", f"{full}."))]:
+            intent.set_formula(self.data, existing, None)  # a fixed value replaces the formula: never a silent revert
+        if path == top:
+            self.params[top] = copy.deepcopy(from_canvas(self.element, top, value))
+        else:
+            self.data.setdefault("params", {})
+            _set_path(self.data, full, copy.deepcopy(value))
         return self
 
     def clear_asset(self) -> "Clip":
@@ -687,6 +748,7 @@ class Checkout:
         self.music = "whole"
         self._keep_inside = False  # a removal keeps the clips inside the window (as orphans) instead of deleting them
         self._kept: list[str] = []
+        self._outside: list[str] = []
         self._journal: list[tuple[str, str | None]] = []  # (label, the document before that edit), one per edit
         self._edit_depth = 0
         self._orphan_reason = "its line was removed"
@@ -1463,7 +1525,7 @@ class Checkout:
             self.notes.append(str(exc))
             return None
 
-    def _pin_nearest(self, text: str, clip: "Clip") -> str | None:
+    def _pin_nearest(self, text: str, clip: "Clip", at: float | None = None) -> str | None:
         """A word moment that became ambiguous (a new line says the same word): its scoped form for the
         occurrence nearest the clip's current time, or None if it is not an ambiguity."""
         try:
@@ -1490,7 +1552,7 @@ class Checkout:
         hits = mo.find_words(moment, self.words())
         if len(hits) < 2:
             return None
-        anchor_t = clip.start - moment.offset_s - moment.offset_frames / self.fps
+        anchor_t = (at if at is not None else clip.start) - moment.offset_s - moment.offset_frames / self.fps
         run = min(hits, key=lambda r: abs((r[-1].end if moment.edge == "end" else r[0].start) - anchor_t))
         from astrid.sdk.timeline_address import _phrase_address
 
@@ -1739,6 +1801,7 @@ class Checkout:
 
         Paths look like ``params.words``, ``params.punchAt[0]``, ``params.keyframes[2].frame``. Returns what changed.
         """
+        self._outside = []
         changes = [f"{cid}: start {old:.3f} → {new:.3f} s (anchored to its word)" for cid, old, new in self.retime()]
         changes += self._fit_sequences()
         words = self.words()
@@ -1752,7 +1815,14 @@ class Checkout:
                 try:
                     value = self._evaluate(clip, expr, by_id, words, slots)
                 except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
-                    pinned = self._pin_nearest(expr.get("moment"), clip) if isinstance(expr, Mapping) and expr.get("moment") else None
+                    previous_at = None  # a param's moment: pin to the occurrence nearest where the param was
+                    current = _get_path(clip.data, path)
+                    if isinstance(expr, Mapping) and isinstance(current, (int, float)) and not isinstance(current, bool):
+                        previous_at = clip.start + (current / self.fps if expr.get("as") == "clip_frame" else
+                                                    0.0 if expr.get("as") == "timeline_seconds" else current)
+                        if expr.get("as") == "timeline_seconds":
+                            previous_at = float(current)
+                    pinned = self._pin_nearest(expr.get("moment"), clip, previous_at) if isinstance(expr, Mapping) and expr.get("moment") else None
                     if pinned is not None:
                         expr = {**expr, "moment": pinned}
                         intent.set_formula(clip.data, path, expr)
@@ -1765,6 +1835,13 @@ class Checkout:
                     else:
                         self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {exc} (kept its last value)")
                         continue
+                unit = expr.get("as") if isinstance(expr, Mapping) else None
+                length = clip.duration * (self.fps if unit == "clip_frame" else 1.0)
+                if isinstance(expr, Mapping) and expr.get("moment") and unit in ("clip_frame", "clip_seconds") \
+                        and isinstance(value, (int, float)) and not (-1e-6 <= value <= length + 1e-6):
+                    self._outside.append(f"{clip.address}.{path.removeprefix('params.')} = {expr['moment']} → "
+                                         f"{'frame' if unit == 'clip_frame' else 's'} {value}, outside the clip "
+                                         f"(0–{length:g}): re-home it on a moment inside {clip.start:.2f}–{clip.end:.2f} s")
                 if _set_path(clip.data, path, value):
                     changes.append(f"{clip.id}.{path} = {json.dumps(value)[:60]}")
         return changes
@@ -1901,6 +1978,26 @@ class Checkout:
             lines += [f.line(cut["start"]) for f in findings if f.severity != "info"]
         return lines
 
+    def _type_mismatches(self) -> list[str]:
+        """Params whose value has the wrong type: text where the element (or a formula) wants a number."""
+        from astrid.sdk.timeline_address import element_schema
+
+        out = []
+        for clip in self.clips():
+            params = clip.data.get("params") if isinstance(clip.data.get("params"), dict) else {}
+            props = (element_schema(clip.element).get("properties") or {}) if params else {}
+            for key, value in params.items():
+                want = (props.get(key) or {}).get("type")
+                if want in ("integer", "number") and isinstance(value, str):
+                    hint = (f"; to put it on a moment: --set '{key}=ƒ({value})'" if value.strip().startswith('"') else "")
+                    out.append(f"{clip.address}.{key} is the text {value!r} where {clip.element} wants a {want}{hint}")
+            for path, expr in intent.formulas(clip.data).items():
+                if isinstance(expr, Mapping) and expr.get("as") == "clip_frame":
+                    value = _get_path(clip.data, path)
+                    if value is not None and not (isinstance(value, int) and not isinstance(value, bool)):
+                        out.append(f"{clip.address}.{path.removeprefix('params.')} is {value!r} where a frame number belongs")
+        return out
+
     def check(self) -> "CheckReport":
         """Validate, say what moved (timeline seconds, against the checked-out head) and lint the changed cuts."""
         from astrid.sdk.authoring_bundle import validate_authoring_candidate
@@ -1929,6 +2026,8 @@ class Checkout:
         blocking = [f"orphan  {line}" for line in self.orphans()]
         blocking += [f"empty   {c.address} has no length ({c.start:.3f}–{c.end:.3f} s): give it a length or remove it"
                      for c in self.clips() if not c.is_audio and c.duration < 0.5 / self.fps]
+        blocking += [f"outside {line}" for line in self._outside]
+        blocking += [f"type    {line}" for line in self._type_mismatches()]
         if blocking:
             valid = False
         music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
@@ -2639,6 +2738,17 @@ def _read_words(words: Any, *, relative: bool = False) -> list[tuple[float, floa
 
 
 _PATH_RE = re.compile(r"([A-Za-z_][\w-]*)|\[(\d+)\]")
+
+
+def _get_path(data: Mapping[str, Any], path: str) -> Any:
+    target: Any = data
+    for m in _PATH_RE.finditer(path):
+        name, index = m.group(1), m.group(2)
+        try:
+            target = target[name] if name is not None else target[int(index)]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return target
 
 
 def _set_path(data: dict[str, Any], path: str, value: Any) -> bool:

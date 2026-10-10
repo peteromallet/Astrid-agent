@@ -456,3 +456,44 @@ def test_swap_asset_takes_a_media_handle(monkeypatch):
     assert seen["handle"] == "run:01ABC/images#0" and tl.clip("a-rocket").asset == "robot-native"
     tl.clip("a-rocket").clear_asset()
     assert tl.clip("a-rocket").asset is None
+
+
+# ---- moments on params (P2/P3) ---------------------------------------------------------
+
+def _param_moment_bundle():
+    data = bundle()
+    card = data["shots"]["B"]["internal_timeline"]["clips"][1]  # b-type 6.0–7.0 s
+    card["params"]["states"] = [{"at": 0}, {"at": 3}]
+    card["app"] = {"cut": "c2", "layer": "card",
+                   "formulas": {"params.states[1].at": {"moment": '"now"', "as": "clip_frame"}}}
+    return data
+
+
+def test_a_nested_param_takes_a_moment_and_check_rejects_text_in_a_number():
+    tl = Checkout(_param_moment_bundle())
+    tl.resolve()
+    card = tl.clip("c2.card")
+    card.set(**{"states[1].at": '"Live"'})  # show's own nested address; a moment, not a literal string
+    assert intent.formulas(card.data)["params.states[1].at"]["moment"] == '"Live"'
+    assert card.params["states"][1]["at"] == 0  # "Live" is at the clip's start
+    card.set(**{"states[0].at": 5})  # a fixed value
+    assert card.params["states"][0]["at"] == 5
+    with pytest.raises(TimelineEditError, match="not spoken"):
+        tl.clip("R").set(scale='"oops"')  # a quoted word is read as a moment, and this one is not spoken
+    tl.clip("R").data["params"]["scale"] = '"adapt" in w05c'  # an old literal string where a number belongs
+    assert any(line.startswith("type    a-rocket.scale") and "ƒ(" in line for line in tl.check().blocking)
+
+
+def test_a_param_moment_outside_its_clip_blocks_and_keep_fixes_an_orphan():
+    tl = Checkout(_param_moment_bundle())
+    card = tl.clip("c2.card")
+    card.set(**{"states[1].at": '"viral"'})  # 1.3 s: long before this clip (6.0 s)
+    blocking = tl.check().blocking
+    assert any(line.startswith("outside c2.card.states[1].at") for line in blocking)
+    card.set(**{"states[1].at": '"now"'})
+    assert not any("outside" in line for line in tl.check().blocking)
+    intent.formulas(card.data)["params.states[1].at"]["moment"] = '"gone"'
+    card.data["app"]["formulas"]["params.states[1].at"] = {"moment": '"gone"', "as": "clip_frame"}
+    assert any("states[1].at" in o for o in tl.orphans())
+    card.keep()
+    assert not any("states[1].at" in o for o in tl.orphans())

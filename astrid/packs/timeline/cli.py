@@ -2955,6 +2955,20 @@ def offline_inspect_main(args: list[str]) -> int:
         return 2
 
 
+def _delivery_audio(parsed: argparse.Namespace) -> dict[str, float] | None:
+    """``--audio-target -14 --true-peak -1`` (either implies the other's default) or ``--delivery-audio JSON``."""
+    raw = getattr(parsed, "delivery_audio", None)
+    if raw not in (None, ""):
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(value, Mapping):
+            raise _VerbError('--delivery-audio takes JSON like {"lufs": -14, "true_peak": -1}', 2)
+        return dict(value)
+    lufs, peak = getattr(parsed, "audio_target", None), getattr(parsed, "true_peak", None)
+    if lufs is None and peak is None:
+        return None
+    return {"lufs": float(lufs if lufs is not None else -14.0), "true_peak": float(peak if peak is not None else -1.0)}
+
+
 def _cmd_render(parsed: argparse.Namespace) -> int:
     """Render one kernel timeline through the shared runtime scope resolver."""
     from astrid.sdk.contracts import ErrorObject
@@ -2966,6 +2980,9 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
         value = getattr(parsed, name, None)
         if value not in (None, ""):
             inputs[name] = value
+    delivery = _delivery_audio(parsed)
+    if delivery is not None:
+        inputs["delivery_audio"] = delivery
     if parsed.backend not in (None, ""):
         # ``--backend`` is the product-language spelling.  The rendering
         # executor's stable input/CLI contract calls this value ``selector``;
@@ -2986,7 +3003,7 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
                 as_json=parsed.json,
             )
         try:
-            path = find_draft(parsed.project, parsed.ref, draft or "main", client=parsed.client)
+            path = find_draft(parsed.project, parsed.ref, draft or None, client=parsed.client)
         except Exception as exc:  # the runtime is not reachable
             return print_result(
                 DomainResult.failure(ErrorObject("unavailable", f"working copy not checked: {exc}", {})),
@@ -3536,6 +3553,12 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
 def _configure_render(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("--review", action="store_true", default=None, help="Burn in shot names/time plus pinned authored speech captions at the bottom (Remotion/Three.js).")
+    subparser.add_argument("--audio-target", dest="audio_target", type=float, default=None, metavar="LUFS",
+                           help="Master the final mix to this integrated loudness (e.g. -14); with --true-peak (default -1 dBTP).")
+    subparser.add_argument("--true-peak", dest="true_peak", type=float, default=None, metavar="DBTP",
+                           help="The true-peak ceiling of the master (e.g. -1); alone it implies --audio-target -14.")
+    subparser.add_argument("--delivery-audio", dest="delivery_audio", default=None, metavar="JSON",
+                           help='The master as JSON, e.g. {"lufs": -14, "true_peak": -1} (same as the two flags).')
     subparser.add_argument(
         "ref",
         nargs="?",
@@ -3894,7 +3917,7 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.set:
         from astrid.sdk.timeline_address import element_schema, unknown_params
 
-        bad = unknown_params(clip.element, list(parsed.set), existing=clip.params)
+        bad = unknown_params(clip.element, [re.split(r"[.\[]", k, maxsplit=1)[0] for k in parsed.set], existing=clip.params)
         if bad and not getattr(parsed, "allow_new_params", False):
             import difflib
 
