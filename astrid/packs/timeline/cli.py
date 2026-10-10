@@ -3860,7 +3860,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
                                                     parsed.extend, parsed.duration, parsed.swap_asset, parsed.on_moment,
                                                     parsed.until_moment, parsed.for_seconds)) and not parsed.set \
             and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False) \
-            and not getattr(parsed, "clear_asset", False) and not getattr(parsed, "beats", None):
+            and not getattr(parsed, "clear_asset", False) and not getattr(parsed, "beats", None) \
+            and getattr(parsed, "why", None) is None and not getattr(parsed, "hold", None):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
                          "--extend, --duration, --set, --swap-asset or --beats", 2)
     parsed.set = _parse_set(parsed.set)
@@ -3912,7 +3913,7 @@ def _edit_label(parsed: argparse.Namespace) -> str:
     """What one `timelines edit` did, for undo: ``edit --clip c30.cover --until Astrid``."""
     parts = []
     for name in ("clip", "cut", "on_moment", "until_moment", "for_seconds", "at_word", "at", "nudge", "nudge_frames",
-                 "extend", "duration", "swap_asset", "beats", "split", "cut_id", "picture", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
+                 "extend", "duration", "swap_asset", "beats", "split", "cut_id", "picture", "why", "hold", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
         value = getattr(parsed, name, None)
         if value not in (None, False, ""):
             flag = {"on_moment": "on", "until_moment": "until", "for_seconds": "for"}.get(name, name).replace("_", "-")
@@ -3974,6 +3975,10 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
             clip = tl.cut(cut_ref).picture
         if clip is None:
             raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
+    if getattr(parsed, "why", None) is not None or getattr(parsed, "hold", None):
+        if parsed.clip is not None:
+            raise _VerbError("--why and --hold are about a cut: use --cut cNN", 2)
+        tl.set_cut_note(parsed.cut, why=parsed.why, hold=parsed.hold)
     if getattr(parsed, "remove", False):
         clip.remove_layer()
         return
@@ -4175,7 +4180,8 @@ def _print_published(receipt: Mapping[str, Any], next_line: str) -> int:
         print("guard   the head had not moved since your checkout: nothing to merge, nothing overwritten")
     pinned = receipt.get("narration_pinned") or []
     if pinned:
-        print(f"narration re-bound for {len(pinned)} shot(s) whose line text changed")
+        print(f"narration: the script text kept with {len(pinned)} shot(s) was updated to the new lines "
+              "(a second small revision; nothing to do)")
     print(f"published {_short_rev(receipt.get('new_head'))} (was {_short_rev(receipt.get('old_head'))}) · {receipt.get('message') or ''}".rstrip(" ·"))
     if receipt.get("narration_error"):
         print(f"narration NOT bound: {receipt['narration_error']}", file=sys.stderr)
@@ -4320,6 +4326,9 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     cuts.add_argument("--add-cut", dest="add_cut", action="store_true",
                       help="A new cut at --on (it splits the cut on screen there; --after CUT checks which one).")
     cuts.add_argument("--cut-id", dest="cut_id", default=None, metavar="ID", help="The new cut's id (default: the next free).")
+    cuts.add_argument("--why", default=None, metavar="TEXT", help="With --cut: why the cut is there (the sheet's why: line).")
+    cuts.add_argument("--hold", default=None, choices=("deliberate", "off"),
+                      help="With --cut: mark the cut a deliberate hold (lint's HOLD/STILL leave it alone), or off.")
     cuts.add_argument("--picture", default=None, metavar="KEY|FILE|HANDLE",
                       help="The new cut's picture asset (default: the split cut's, continuing where it was).")
     timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")
@@ -4463,6 +4472,8 @@ def _configure_lines(subparser: argparse.ArgumentParser) -> None:
     subparser.description = "The narration line by line: id, when it is spoken, the silence after it, its text and take."
     _add_timeline_args(subparser)
     subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
+    subparser.add_argument("--line", default=None, metavar="ID", help="One line in full: its text, take, span, gap, "
+                                                                        "every word with its time, and the cuts it is under.")
     subparser.set_defaults(handler=_cmd_lines)
 
 
@@ -4475,6 +4486,8 @@ def _cmd_lines(parsed: argparse.Namespace) -> int:
     else:
         tl, _existed = _working_copy(parsed, create=True)
     lines = tl.lines()
+    if getattr(parsed, "line", None):
+        return _print_line(tl, parsed)
     width = max([len(v.segment) for v in lines] + [4])
     print(f"{len(lines)} lines · film {tl.duration:.2f} s" + (" · working copy" if not parsed.published else " · published"))
     for v in lines:
@@ -4486,6 +4499,25 @@ def _cmd_lines(parsed: argparse.Namespace) -> int:
               f"take {v.clips[0].asset or '?':<12} \"{text}\"")
     print(f"next: timelines words {parsed.timeline} --project {parsed.project} WORD   ·   "
           f"timelines edit {parsed.timeline} --project {parsed.project} --line ID --take WAV --words WORDS.json")
+    return 0
+
+
+def _print_line(tl: Any, parsed: argparse.Namespace) -> int:
+    """``lines TL --line w23c``: one narration line in full."""
+    from astrid.sdk.timeline_address import _cut_at
+
+    voice = tl.voice(parsed.line)
+    words = voice.words
+    start, end = (words[0].start, words[-1].end) if words else (voice.clips[0].start, voice.clips[-1].end)
+    gap = voice.gap_after
+    cuts = list(dict.fromkeys(c for c in (_cut_at(tl, w.start) for w in words) if c))
+    print(f"{voice.segment} · {start:.3f}–{end:.3f} s · gap after {('%.2f s' % gap) if gap is not None else '-'} · "
+          f"take {voice.clips[0].asset or '?'} · under {', '.join(cuts) or 'no cut'}")
+    print(f'  "{voice.text}"')
+    for w in words:
+        print(f"  {w.start:8.3f}–{w.end:.3f}  {w.text:<16} [{w.id}]  {_cut_at(tl, w.start) or '-'}")
+    print(f"next: timelines edit {parsed.timeline} --project {parsed.project} --line {voice.segment} --take WAV --words WORDS.json"
+          f"   ·   --gap-after {voice.segment}=SECONDS")
     return 0
 
 

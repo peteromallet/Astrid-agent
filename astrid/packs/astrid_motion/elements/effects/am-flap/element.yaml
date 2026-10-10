@@ -19,6 +19,8 @@ outputs:
     artifact_type: clip/visual
     description: Split-flap readout overlay.
 metadata:
+  units:
+    frames: ["values[].at"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Flap
   description: Split-flap readout with stepped drum flips and staggered tiles.
   whenToUse: Use for a date, number or short word that changes on screen, such as a days-since counter or a date that ticks day by day. Keep every value the same length (shorter values are padded with spaces). Flip steps are two frames by default.

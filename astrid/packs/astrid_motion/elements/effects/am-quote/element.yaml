@@ -17,6 +17,8 @@ outputs:
   artifact_type: clip/visual
   description: AM Quote overlay.
 metadata:
+  units:
+    frames: ["mark.at", "stamp.at", "strikeAt"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Quote
   description: Quotation card that reveals on the VO's words, strikes through word by word and takes a rubber stamp.
   whenToUse: Use to put a quotation on screen and then overrule it (strike plus stamp). Quote and attribution must be accurate; use the attribution to correct a misattribution.

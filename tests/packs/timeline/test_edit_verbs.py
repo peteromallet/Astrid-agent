@@ -474,3 +474,25 @@ def test_edit_split_and_add_cut_from_the_cli(tmp_path, capsys):
     assert _run("edit", "--file", str(path), "--split", "c1") == 2  # needs --on
     help_text = cli.build_parser(object())._subparsers._group_actions[0].choices["edit"].format_help()
     assert help_text.index("--split c33 --on MOMENT") < help_text.index("clip selector (one)")  # the common five first
+
+
+def test_a_cut_takes_a_why_and_a_deliberate_hold_and_a_stale_why_is_flagged(tmp_path, capsys):
+    from pathlib import Path
+
+    from astrid.core.timeline.cuts import is_deliberate
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline_sheet import apply_sheet, render_sheet
+
+    root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
+    path = tmp_path / "tiny.checkout.json"
+    Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8"))).save(path)
+    assert _run("edit", "--file", str(path), "--cut", "c1", "--hold", "deliberate", "--why", "a reading hold") == 0
+    tl = Checkout.load(path)
+    pic = tl.cut_picture("c1")
+    assert is_deliberate(pic.data) and intent.why(pic.data) == "a reading hold"  # lint reads is_deliberate
+    sheet = render_sheet(tl)
+    assert "hold: deliberate" in sheet and apply_sheet(tl, sheet) == []
+    apply_sheet(tl, sheet.replace("hold: deliberate", "hold: off"))
+    assert not intent.deliberate(tl.cut_picture("c1").data)
+    tl.clip("c1.rocket").remove()
+    assert any(p.startswith("why     c1: its why was written") for p in tl.check().problems)

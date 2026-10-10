@@ -17,6 +17,8 @@ outputs:
   artifact_type: clip/visual
   description: AM Terminal overlay.
 metadata:
+  units:
+    frames: ["lines[].at", "badges[].at"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Terminal
   description: 'Pixel terminal window: commands type in after an orange prompt, output lands whole, a progress line counts.'
   whenToUse: Use to show real commands and their real output as evidence (an agent running without the interface). Do not invent output lines.

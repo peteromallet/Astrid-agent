@@ -21,6 +21,7 @@ metadata:
   units:  # how x/y are STORED: logical px on the 320x180 grid; every editing surface shows canvas px (x scale)
     scale: 6
     logical: [x, y, "keyframes[].x", "keyframes[].y"]
+    frames: ["keyframes[].frame"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Sprite
   description: Transparent pixel cutout with stepped keyframes, stamp or slide entrance, and run-cycle strips.
   whenToUse: Use for a pixel character or prop that moves in stop-motion steps over a plate. Attach the cutout as clip.asset. Set scale to the screen px per art px (6 puts one art px on one logical px). Use frames for a horizontal run strip; use blinkAt for mink blinks.

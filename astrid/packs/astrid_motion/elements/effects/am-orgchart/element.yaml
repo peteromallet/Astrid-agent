@@ -18,6 +18,8 @@ outputs:
   artifact_type: clip/visual
   description: Org chart overlay.
 metadata:
+  units:
+    frames: ["revealAt[]", "stamp.at"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Orgchart
   description: Recursive pixel org chart with a stamp.
   whenToUse: Use for hierarchies that multiply (agents managing agents). Time revealAt to the words; add a stamp for the punchline.

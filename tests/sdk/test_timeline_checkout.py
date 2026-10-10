@@ -636,3 +636,19 @@ def test_position_units_come_from_the_element_declaration_so_am_pixel_shape_take
     assert shape.params["x"] == round((1200 - 42) / 6) and shape.get("x") == round((1200 - 42) / 6) * 6
     assert shape.params["y"] == 100 and "x=ƒ(HAND -42)" in render_sheet(tl) and "y=600" in render_sheet(tl)
     assert not tl.check().blocking
+
+
+def test_time_valued_params_take_their_unit_from_the_element_declaration():
+    """am-terminal declares lines[].at in clip frames: a moment set on it resolves to a frame (T12)."""
+    from astrid.sdk.timeline_checkout import param_unit
+
+    assert param_unit("am-terminal", "params.lines[3].at") == "clip frames"
+    assert param_unit("am-sprite", "x") == "canvas px" and param_unit("am-type", "size") is None
+    tl = Checkout(_param_moment_bundle())
+    tl.resolve()
+    term = tl.clip("c2.card")
+    term.data["clipType"] = "am-terminal"
+    term.data["params"] = {"lines": [{"kind": "cmd", "text": "ls"}]}
+    term.set(**{"lines[0].at": '"Live"'})
+    assert intent.formulas(term.data)["params.lines[0].at"]["as"] == "clip_frame"
+    assert isinstance(term.params["lines"][0]["at"], int)

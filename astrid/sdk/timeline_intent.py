@@ -87,6 +87,23 @@ def set_layer(clip: dict[str, Any], name: str | None) -> None:
     _set_or_drop(clip, "layer", name)
 
 
+def deliberate(clip: Mapping[str, Any]) -> bool:
+    """The cut is a deliberate hold (lint's HOLD/STILL checks leave it alone). On the cut's picture clip."""
+    app = _app(clip)
+    return bool(app.get("deliberate_hold") or app.get("deliberate"))
+
+
+def set_deliberate(clip: dict[str, Any], on: bool) -> None:
+    _app_w(clip).pop("deliberate", None)
+    _set_or_drop(clip, "deliberate_hold", True if on else None)
+
+
+def why_layers(clip: Mapping[str, Any]) -> list[str] | None:
+    """The layer names the cut had when its why was written (to flag a why that may be stale)."""
+    value = _app(clip).get("why_layers")
+    return [str(v) for v in value] if isinstance(value, list) else None
+
+
 def why(clip: Mapping[str, Any]) -> str | None:
     """Why the cut is there (on the cut's picture clip)."""
     value = _app(clip).get("why")

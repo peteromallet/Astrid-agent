@@ -45,6 +45,9 @@ Or `timelines edit TL --split c33 --on MOMENT` (`--add-cut --on M [--after c33]`
 `tl.add("am-type", at='"Building" in v27', layer="title", hold=1.2)` joins the cut on screen as `cNN.title`.
 `x=ƒ(MARK ±px)` follows a slot's mark: a plain number replaces it (and says so). `k=…` is unchanged, `~k` is info.
 The `sound` section lists the music bed and other audio in no cut: edit its asset, `for`, `volume=` there.
+A cut's notes: `why: …` and `hold: deliberate` (lint's HOLD/STILL leave it; `hold: off` clears), or `edit --cut c33
+--why "…" --hold deliberate`. JSON params go in one token: `inset={"x":12,"y":40}`; a nested one: `--set lines[0].at=…`.
+Units are the element's own declaration (element.yaml `metadata.units`): positions canvas px, `…at` params clip frames.
 
 ## The same edit as a verb or in Python
 ```bash

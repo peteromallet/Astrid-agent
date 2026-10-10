@@ -99,6 +99,21 @@ def is_logical(element: str, path: str) -> bool:
     return _unit_path(path) in element_units(element)[1]
 
 
+def param_unit(element: str, path: str) -> str | None:
+    """What a param's number means, as the element declares it: ``canvas px`` (stored on a grid or not),
+    ``clip frames``, ``clip seconds``; None when the element says nothing about it."""
+    from astrid.sdk.timeline_address import element_schema
+
+    units = element_schema(element).get("units") or {}
+    key = _unit_path(path)
+    for name, label in (("frames", "clip frames"), ("seconds", "clip seconds")):
+        if key in [str(p) for p in units.get(name) or []]:
+            return label
+    if key in element_units(element)[1] or key in POSITION_KEYS:
+        return "canvas px"
+    return None
+
+
 def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -386,6 +401,15 @@ class Clip:
             self._tl._mcache = None
         self._tl._place_on(self, moment)
         self._tl.retime()  # its end follows its rule (until / for / its cut) right away
+        cut = intent.cut_of(self.data)
+        span = self._tl._cut_spans().get(cut) if cut and not self._tl._is_picture(self) else None
+        if span is not None:
+            lo, hi = span[0], span[1] if span[1] is not None else self._tl.duration
+            if not lo - 0.5 / self._tl.fps <= self.start < hi - 0.5 / self._tl.fps:
+                there = self._tl._cut_on_screen(self.start)
+                self._tl.notes.append(f"{self.address}: {intent.on(self.data)} = {self.start:.3f} s is outside its cut {cut} "
+                                      f"({lo:.2f}–{hi:.2f} s)" + (f", in {there}" if there else "")
+                                      + f"; move it to that cut's moments, or pick a moment inside {cut}")
         return self
 
     def keep(self) -> "Clip":
@@ -513,8 +537,9 @@ class Clip:
             return self
         if moment is not None:  # a time-valued param on a moment
             current = _get_path(self.data, full)
-            unit = current_expr.get("as") or ("clip_frame" if isinstance(current, int) and not isinstance(current, bool)
-                                               else "clip_seconds")
+            declared = param_unit(self.element, full)
+            unit = current_expr.get("as") or {"clip frames": "clip_frame", "clip seconds": "clip_seconds"}.get(declared or "") \
+                or ("clip_frame" if isinstance(current, int) and not isinstance(current, bool) else "clip_seconds")
             expr = {k: v for k, v in current_expr.items() if k in ("min", "max", "step", "snap", "offset_frames")} if current_expr.get("moment") else {}
             expr.update({"moment": moment, "as": unit})
             try:
@@ -1433,6 +1458,39 @@ class Checkout:
                           + (f"; carried over it: {', '.join(carried)}" if carried else ""))
         return self.cut(new_id)
 
+    def set_cut_note(self, cut: Any, *, why: str | None = None, hold: str | bool | None = None) -> Clip:
+        """A cut's notes, on its picture: ``why`` (why the cut is there; it remembers the cut's layers then,
+        so check can say when it may be stale) and ``hold`` (``"deliberate"``/True: lint's HOLD and STILL
+        leave it alone; ``"off"``/False clears it)."""
+        cid = self._cut_id(str(cut)) or str(cut)
+        pic = self.cut_picture(cid) if re.fullmatch(r"c\d+[a-z]?", cid) else self.cut(cut).picture
+        if pic is None:
+            raise TimelineEditError(f"cut {cut} has no picture to hold its notes")
+        if why is not None:
+            intent.set_why(pic.data, why or None)
+            names = sorted(intent.layer_of(c.data) or c.id for c in self.clips() if intent.cut_of(c.data) == cid)
+            intent._set_or_drop(pic.data, "why_layers", names if why else None)
+        if hold is not None:
+            intent.set_deliberate(pic.data, hold in (True, "deliberate", "on", "yes"))
+        return pic
+
+    def _stale_whys(self) -> list[str]:
+        """Cuts whose why was written when they had other layers (it may no longer say what is there)."""
+        out = []
+        for g in self._cut_groups():
+            pic = g["picture"]
+            then = intent.why_layers(pic.data) if pic is not None else None
+            if then is None:
+                continue
+            now = sorted(intent.layer_of(c.data) or c.id for c in g["clips"])
+            if now != then:
+                gone, new = sorted(set(then) - set(now)), sorted(set(now) - set(then))
+                out.append(f"{g['id']}: its why was written when it had other layers ("
+                           + " · ".join(x for x in (f"since added {', '.join(new)}" if new else "",
+                                                    f"since removed {', '.join(gone)}" if gone else "") if x)
+                           + f"); still true? \"{intent.why(pic.data)}\" (edit --cut {g['id']} --why …)")
+        return out
+
     def _cut_on_screen(self, t: float) -> str | None:
         """The cut id on screen at ``t`` (None when the timeline names no cuts)."""
         spans = sorted(((lo, hi if hi is not None else self.duration, cid) for cid, (lo, hi) in self._cut_spans().items()))
@@ -2344,6 +2402,7 @@ class Checkout:
         blocking += [f"beats   {line}" for line in self._stale_beats()]
         if blocking:
             valid = False
+        problems += [f"why     {line}" for line in self._stale_whys()]
         music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
         if music_end is not None and music_end < self.duration - 0.5:
             problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
@@ -3789,7 +3848,7 @@ for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "e
               "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep"):
     setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
 for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
-              "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut"):
+              "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note"):
     setattr(Checkout, _name, _journaled(getattr(Checkout, _name), "checkout"))
 Cut.split = _journaled(Cut.split, "cut")
 for _name in ("replace", "set_gap_after"):

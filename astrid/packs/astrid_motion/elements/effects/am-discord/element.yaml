@@ -21,6 +21,8 @@ outputs:
     artifact_type: clip/visual
     description: Transparent Discord window overlay, centred on the frame.
 metadata:
+  units:
+    frames: ["camera[].at", "circle[].at", "composer.startAt", "messages[].appearAt"]  # clip frames (a moment set on them resolves to a frame)
   label: AM Discord
   description: Pixel-styled Discord channel reconstruction with a content-fit window, stepped camera, highlighter, circle and annotation.
   whenToUse: Use for the announcement and the follow-up reaction beats. Pass the post as one message with its lines, verbatim, with real timestamps. Mark echo words with {u:word}. Use fit content for a hero post, camera for a stepped push-in on a word, and keep joins and reactions labelled illustrative with the badge.

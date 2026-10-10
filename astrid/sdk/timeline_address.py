@@ -409,7 +409,12 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
             exact = formulas.get(f"params.{key}")
             shown = (f"{formula_short(exact, clip.element)} = " if exact else "") + json.dumps(value, ensure_ascii=False)
             kind = _type_of(props[key]) if key in props else type(value).__name__.replace("str", "string").replace("dict", "object").replace("list", "array")
-            unit = " canvas px" if key in ("x", "y") else ""
+            from astrid.sdk.timeline_checkout import param_unit
+
+            declared = param_unit(clip.element, key) or next(
+                (param_unit(clip.element, f"{key}[0].{sub}") and f"{key}[].{sub}: " + str(param_unit(clip.element, f"{key}[0].{sub}"))
+                 for sub in ("at", "frame", "appearAt") if param_unit(clip.element, f"{key}[0].{sub}")), None)
+            unit = f" · {declared}" if declared else ""
             flagged = [p for p in formulas if p == f"params.{key}" or p.startswith(f"params.{key}[") or p.startswith(f"params.{key}.")]
             mark = "ƒ " if flagged else "  "
             note = "" if key in props or not props else "   (not declared by the element)"

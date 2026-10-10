@@ -258,12 +258,14 @@ def timing(
         offset = event.t - word.start
         if tolerance < abs(offset) <= search:
             side = "after" if offset > 0 else "before"
-            fix = {"clip": event.element.rsplit(":", 1)[-1], "move_s": round(-offset, 3)}
+            frames = int(round(-offset * fps))
+            fix = {"clip": event.element.rsplit(":", 1)[-1], "move_s": round(-offset, 3), "move_frames": frames}
             if event.kind == "key":
                 fix["key"] = event.label
             found.append(finding("SYNC", event.t,
                                  f"{event.label} {event.kind}s {abs(offset):.2f} s {side} \"{word.text}\" "
-                                 f"(onset {word.start:.2f}; move {-offset:+.2f} s){_next_word(onsets, word)}", fix=fix))
+                                 f"(onset {word.start:.2f}; move {-offset:+.2f} s = {frames:+d}f){_next_word(onsets, word)}",
+                                 fix=fix))
     # Music accents: hits (stab/thud/blip) and downbeats. A near miss (0.1–0.2 s)
     # reads as late/early; further away it is simply not on the beat.
     marks = [(t, kind) for t, kind in (beats or {}).get("hits") or []]

@@ -110,6 +110,8 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         why = next((intent.why(c.data) for c in ([pic] if pic else []) + layers if intent.why(c.data)), None)
         if why:
             out.append(f"         why: {why}")
+        if pic is not None and intent.deliberate(pic.data):
+            out.append("         hold: deliberate")
     return "\n".join(out) + "\n"
 
 
@@ -307,6 +309,12 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if body.startswith("why:"):
             cut["why"] = body[4:].strip()
             continue
+        if body.startswith("hold:"):
+            value = body[5:].strip().lower()
+            if value not in ("deliberate", "off"):
+                raise SheetError(_with_text(f"line {number}: hold: takes deliberate (or off)", number, body))
+            cut["hold"] = value
+            continue
         try:
             cut["layers"].append(_parse_layer(body, number, fps))
         except SheetError as exc:
@@ -502,7 +510,9 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
         if cut["on"] is not None and pic is not None and cut["on"] != intent.on(pic.data):
             pic.on(cut["on"])
         if cut["why"] is not None and pic is not None and cut["why"] != intent.why(pic.data):
-            intent.set_why(pic.data, cut["why"])
+            tl.set_cut_note(cut["id"], why=cut["why"])
+        if pic is not None and cut.get("hold") is not None and (cut["hold"] == "deliberate") != intent.deliberate(pic.data):
+            tl.set_cut_note(cut["id"], hold=cut["hold"] == "deliberate")
         lo, hi = tl._cut_spans()[cut["id"]]
         loose = _loose_in(tl, lo, hi if hi is not None else tl.duration)
         existing = {(intent.layer_of(c.data) or c.id): c for c in _ordered(group["clips"] + loose)}

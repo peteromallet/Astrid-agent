@@ -19,6 +19,8 @@ outputs:
     artifact_type: clip/visual
     description: UI sketch overlay.
 metadata:
+  units:
+    frames: ["prompt.at", "states[].at", "allAt"]  # clip frames (a moment set on them resolves to a frame)
   label: AM UI Sketch
   description: Swappable interface, behaviour and data layers in a pixel app window, with stepped flicker and sparks.
   whenToUse: Use to show that the tool changes while it is being used, such as the vision snaps. Keep layer swaps at least six frames apart so each flicker reads. Use allAt for a one-beat mutate-everything moment.
