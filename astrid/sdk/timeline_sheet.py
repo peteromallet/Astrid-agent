@@ -179,11 +179,18 @@ def _layer_row(tl: Any, clip: Any, lo: float, hi: float, *, is_picture: bool) ->
         fit = intent.sequence_fit(clip.data)
         if fit and isinstance(fit.get("land"), str):
             bits.append(f"~fit-until={fit['land']}")
+    from astrid.sdk.timeline_checkout import formula_short, to_canvas
+
+    formulas = intent.formulas(clip.data)
     for key, value in params.items():
-        if key in intent.formulas(clip.data) or key == "keyframes" and any(p.startswith("params.keyframes") for p in intent.formulas(clip.data)):
-            bits.append(f"{key}=ƒ")
+        exact = formulas.get(f"params.{key}")
+        if exact is not None:  # computed: show the formula (canvas px), never a bare number that edits would fight
+            bits.append(f"{key}={formula_short(exact, clip.element)}")
             continue
-        shown = _value(value)
+        if any(p.startswith((f"params.{key}[", f"params.{key}.")) for p in formulas):
+            bits.append(f"{key}=ƒ…")
+            continue
+        shown = _value(to_canvas(clip.element, key, value))
         bits.append(f"{key}={shown}" if len(shown) <= 28 else f"{key}=…")
     timing = []
     on = intent.on(clip.data)
@@ -326,9 +333,9 @@ def _tokens(body: str) -> list[str]:
             continue
         if ch == '"':
             quote = not quote
-        elif not quote and ch in "[{":
+        elif not quote and ch in "[{(":
             depth += 1
-        elif not quote and ch in "]}":
+        elif not quote and ch in "]})":
             depth = max(0, depth - 1)
         if ch.isspace() and not quote and depth == 0:
             if buf:
@@ -506,12 +513,23 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
     if bad:
         props = sorted(element_schema(element).get("properties") or {})
         raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
+    from astrid.sdk.timeline_checkout import formula_from_spec, parse_formula_value, to_canvas
+
+    formulas = intent.formulas(data)
     for key, value in wanted.items():
         if value is ELIDED:
             continue
-        if current.get(key) != value:
+        spec = parse_formula_value(value)
+        if spec is not None:
+            current_expr = formulas.get(f"params.{key}") or {}
+            new_expr = formula_from_spec(spec, element, key, current_expr)
+            if not (current_expr and current_expr.get("mark") == new_expr["mark"]
+                    and abs(float(current_expr.get("offset") or 0) - new_expr["offset"]) < 1e-6):
+                clip.set(**{key: value})
+            continue
+        has_formula = any(p == f"params.{key}" or p.startswith((f"params.{key}[", f"params.{key}.")) for p in formulas)
+        if has_formula or to_canvas(element, key, current.get(key)) != value:
             clip.set(**{key: value})
-            intent.set_formula(data, f"params.{key}", None)
     if not is_picture:
         if layer["on"] != intent.on(data):
             clip.on(layer["on"]) if layer["on"] else tl._place_on(clip, None)
@@ -531,8 +549,10 @@ def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any
     from astrid.sdk.timeline_address import element_schema, unknown_params
     from astrid.sdk.timeline_checkout import TimelineEditError
 
+    from astrid.sdk.timeline_checkout import from_canvas
+
     element = _element(layer["element"])
-    params = {k: v for k, v in layer["params"].items() if v is not ELIDED}
+    params = {k: from_canvas(element, k, v) for k, v in layer["params"].items() if v is not ELIDED}
     bad = unknown_params(element, list(params))
     if bad:
         raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: "

@@ -74,7 +74,73 @@ SAFE_MARGIN = (96, 54)        # title-safe at 1920x1080 (90%)
 
 
 LOGICAL_PX = 6  # canvas px per logical px (the 320×180 grid of 1920×1080)
-LOGICAL_GRID_ELEMENTS = frozenset({"am-sprite"})  # elements whose x/y are logical px
+LOGICAL_GRID_ELEMENTS = frozenset({"am-sprite"})  # elements whose x/y are STORED in logical px
+POSITION_KEYS = frozenset({"x", "y"})
+
+
+def to_canvas(element: str, key: str, value: Any) -> Any:
+    """Stored → canvas px (what every surface shows): am-sprite x/y and keyframe x/y ×6."""
+    if element not in LOGICAL_GRID_ELEMENTS:
+        return value
+    if key in POSITION_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value * LOGICAL_PX
+    if key == "keyframes" and isinstance(value, list):
+        return [{**k, **{a: k[a] * LOGICAL_PX for a in POSITION_KEYS if isinstance(k.get(a), (int, float))}}
+                if isinstance(k, Mapping) else k for k in value]
+    return value
+
+
+def from_canvas(element: str, key: str, value: Any) -> Any:
+    """Canvas px (what you write) → stored. ``"1290px"`` is accepted too. am-sprite snaps to its 6-px grid."""
+    if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?px", value.strip()):
+        value = float(value.strip()[:-2])
+    if element not in LOGICAL_GRID_ELEMENTS:
+        return round(value) if isinstance(value, float) and key in POSITION_KEYS and value.is_integer() else value
+    if key in POSITION_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return round(value / LOGICAL_PX)
+    if key == "keyframes" and isinstance(value, list):
+        return [{**k, **{a: round(k[a] / LOGICAL_PX) for a in POSITION_KEYS if isinstance(k.get(a), (int, float))}}
+                if isinstance(k, Mapping) else k for k in value]
+    return value
+
+
+_FORMULA_VALUE = re.compile(r"^\s*(?:ƒ|f|mark)\(\s*(?:(?P<mark>[A-Za-z][\w-]*?)\s*)?(?P<off>[+−-]\s*\d+(?:\.\d+)?)?\s*\)\s*$")
+
+
+def parse_formula_value(value: Any) -> dict[str, Any] | None:
+    """``"ƒ(B2-HAND -42)"`` / ``"f(-60)"`` / ``"mark(B2-HAND +12)"`` → {mark, offset (canvas px)}; else None."""
+    if not isinstance(value, str):
+        return None
+    m = _FORMULA_VALUE.match(value)
+    if not m or (m.group("mark") is None and m.group("off") is None):
+        return None
+    off = (m.group("off") or "0").replace("−", "-").replace(" ", "")
+    return {"mark": m.group("mark"), "offset": float(off)}
+
+
+def formula_from_spec(spec: Mapping[str, Any], element: str, key: str, current: Mapping[str, Any]) -> dict[str, Any]:
+    """A mark formula from a canvas-px spec, keeping the current formula's mark/axis when not given."""
+    mark = spec.get("mark") or current.get("mark")
+    if not mark:
+        raise TimelineEditError(f"{key}: name the slot mark, e.g. {key}=ƒ(B2-HAND -42)")
+    axis = current.get("axis") or (key if key in POSITION_KEYS else "x")
+    logical = element in LOGICAL_GRID_ELEMENTS
+    offset = float(spec["offset"]) / LOGICAL_PX if logical else float(spec["offset"])
+    return {"mark": mark, "axis": axis, "offset": round(offset, 3), "unit": "logical" if logical else "px"}
+
+
+def formula_short(expr: Any, element: str) -> str:
+    """A formula as the sheet writes it, in canvas px: ``ƒ(B2-HAND -42)``; a moment: ``ƒ("viral" …)``."""
+    if isinstance(expr, Mapping) and "mark" in expr:
+        offset = _num(expr.get("offset"))
+        if expr.get("unit", "logical") == "logical":
+            offset *= LOGICAL_PX
+        return f"ƒ({expr['mark']} {offset:+g})"
+    if isinstance(expr, Mapping) and expr.get("moment"):
+        return f"ƒ({expr['moment']})"
+    if isinstance(expr, Mapping) and "words_of" in expr:
+        return f"ƒ(words of {expr['words_of']})"
+    return "ƒ"
 
 
 class TimelineEditError(ValueError):
@@ -311,16 +377,32 @@ class Clip:
             return self.until(moment)
         return self.set_duration(self._tl.quantize(self._tl.time(when) + offset) - self.start)
 
-    def set(self, **params: Any) -> "Clip":
-        """Update element params (``x``, ``size``, ``text`` …).
+    def get(self, key: str) -> Any:
+        """A param as you would write it: positions (x, y) in CANVAS px for every element.
 
-        A position may be given in canvas pixels as a string, ``x="1290px"``: elements on the
-        320×180 logical grid (``am-sprite``) store it as logical px (÷6, rounded), others as px."""
+        (``clip.params`` is the stored dict; an ``am-sprite`` stores x/y on its 320×180 grid, ×6.)"""
+        return to_canvas(self.element, key, self.params.get(key))
+
+    def set(self, **params: Any) -> "Clip":
+        """Update element params (``x``, ``size``, ``text`` …). Positions are canvas px for every element.
+
+        A param computed by a formula (``x = ƒ(B2-HAND −42)``, following a slot's hand mark) is
+        never silently recomputed over your value: a plain value replaces the formula (and
+        ``changes()`` says so); ``x="ƒ(B2-HAND -60)"`` (or ``"ƒ(-60)"``) edits the formula instead."""
         for key, value in params.items():
-            if isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?px", value.strip()):
-                px = float(value.strip()[:-2])
-                params[key] = round(px / LOGICAL_PX) if self.element in LOGICAL_GRID_ELEMENTS else round(px)
-        self.params.update(copy.deepcopy(params))
+            spec = parse_formula_value(value)
+            existing = [p for p in intent.formulas(self.data)
+                        if p == f"params.{key}" or p.startswith((f"params.{key}[", f"params.{key}."))]
+            if spec is not None:
+                current = intent.formulas(self.data).get(f"params.{key}") or {}
+                expr = formula_from_spec(spec, self.element, key, current)
+                intent.set_formula(self.data, f"params.{key}", expr)
+                value = self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots)
+                self.params[key] = value
+                continue
+            for path in existing:  # a fixed value replaces the formula: never a silent revert
+                intent.set_formula(self.data, path, None)
+            self.params[key] = copy.deepcopy(from_canvas(self.element, key, value))
         return self
 
     def swap_asset(self, asset: Any) -> "Clip":
@@ -2057,16 +2139,33 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
             said.append(f"asset {prev.asset} → {clip.asset}")
         if clip.element != prev.element:
             said.append(f"element {prev.element} → {clip.element}")
+        fa, fb = intent.formulas(prev.data), intent.formulas(clip.data)
+        formula_keys = set()
+        for path in sorted(set(fa) | set(fb)):
+            a_expr, b_expr = fa.get(path), fb.get(path)
+            if a_expr == b_expr:
+                continue
+            key = path.removeprefix("params.")
+            top = key.split(".")[0].split("[")[0]
+            formula_keys.add(top)
+            value = to_canvas(clip.element, key, clip.params.get(key)) if "." not in key and "[" not in key else None
+            shown = f" = {json.dumps(value, ensure_ascii=False)}" if value is not None else ""
+            if a_expr and not b_expr:
+                said.append(f"{key} was {formula_short(a_expr, clip.element)} → now fixed{shown}"
+                            + (f" (write {key}={formula_short(a_expr, clip.element)} to keep it computed)" if "mark" in a_expr else ""))
+            elif b_expr and not a_expr:
+                said.append(f"{key} now {formula_short(b_expr, clip.element)}{shown}")
+            else:
+                said.append(f"{key} {formula_short(a_expr, clip.element)} → {formula_short(b_expr, clip.element)}{shown}")
         for key in sorted(set(prev.params) | set(clip.params)):
             a_val, b_val = prev.params.get(key), clip.params.get(key)
-            if a_val == b_val:
+            if a_val == b_val or key in formula_keys:
                 continue
             if isinstance(a_val, (dict, list)) or isinstance(b_val, (dict, list)):
                 said.append(f"{key} changed")
             else:
-                said.append(f"{key} {json.dumps(a_val, ensure_ascii=False)} → {json.dumps(b_val, ensure_ascii=False)}")
-        if intent.formulas(prev.data) != intent.formulas(clip.data):
-            said.append("formulas changed")
+                said.append(f"{key} {json.dumps(to_canvas(clip.element, key, a_val), ensure_ascii=False)} → "
+                            f"{json.dumps(to_canvas(clip.element, key, b_val), ensure_ascii=False)}")
         same_shift = abs((clip.end - prev.end) - (clip.start - prev.start)) < 0.5 / fps
         if any(x.startswith(("now enters", "no longer")) for x in said) and same_shift:
             moved_end = False  # it kept its length

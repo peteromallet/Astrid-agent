@@ -1583,13 +1583,35 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     if working is not None:
         lines.insert(0, _working_banner(working))
     rank = {"error": 0, "warn": 1, "info": 2}
+    from astrid.sdk.timeline_address import name_things
+    from astrid.sdk.timeline_checkout import Checkout
 
-    def emit(finding, start=None) -> None:
+    named = Checkout(copy.deepcopy(dict(bundle)))
+    # With a working copy, lint shows what is NEW since your checkout; --all shows everything.
+    known: set[str] = set()
+    if working is not None and not parsed.all:
+        base_bundle = opened.data["bundle"]
+        base_occurrences = occurrences_from_bundle(base_bundle)
+        base_cuts = picture_cuts(base_occurrences, fps=fps)
+        base_results, base_timeline = run_checks(
+            base_cuts, model.elements_from_occurrences(base_occurrences), fps, track_order=track_order, beats=beats,
+            params=params, severity=(rules or {}).get("severity"), disable=(rules or {}).get("disable") or (),
+            all_cuts=base_cuts,
+        )
+        known = {f.line(c["start"]) for c, fs in base_results for f in fs} | {f.line(None) for f in base_timeline}
+    already = 0
+
+    def emit(finding, start=None, end=None) -> None:
+        nonlocal already
+        text = finding.line(start)
+        if text in known:
+            already += 1
+            return
         bucket = info if finding.severity == "info" else counts
         bucket[finding.code] = bucket.get(finding.code, 0) + 1
         if finding.severity != "info" or parsed.all:
             prefix = "ERROR " if finding.severity == "error" else ""
-            lines.append(prefix + finding.line(start))
+            lines.append(prefix + (name_things(text, named, start, end) if start is not None and end is not None else text))
 
     for finding in sorted(timeline_findings, key=lambda f: rank.get(f.severity, 3)):
         emit(finding)
@@ -1600,8 +1622,10 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     lines.append(f"checks run: {', '.join(ran)} (a check with no line passed or is off: see --list-checks)")
     for cut, findings in results:
         for finding in findings:
-            emit(finding, cut["start"])
+            emit(finding, cut["start"], cut["end"])
     summary = ", ".join(f"{code} {n}" for code, n in sorted(counts.items(), key=lambda item: -item[1])) or "none"
+    if working is not None and not parsed.all:
+        lines.append(f"(new since your checkout only; {already} finding(s) were already in the published version: --all shows everything)")
     lines.append(f"findings: {summary}" + (
         f"; info hidden ({', '.join(f'{c} {n}' for c, n in sorted(info.items()))}; --all shows them)" if info and not parsed.all else ""))
     project = str(parsed.project or "<project>")

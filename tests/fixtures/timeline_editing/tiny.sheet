@@ -8,7 +8,7 @@ lines                                            # the narration: everything han
   0.00 ┃ c1                                                               · 4.00 s
        > it went viral
          plate   plate   snap-plate  P
-  1.30   sprite  rocket  sprite      R  on "viral"  x=10
+  1.30   sprite  rocket  sprite      R  on "viral"  x=60
          why: the opener
   4.00 ┃ c2                                                               · 4.00 s
        > Live now

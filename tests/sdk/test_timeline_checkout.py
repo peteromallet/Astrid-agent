@@ -7,7 +7,8 @@ import json
 
 import pytest
 
-from astrid.sdk.timeline_checkout import Checkout, TimelineEditError, three_way
+from astrid.sdk import timeline_intent as intent
+from astrid.sdk.timeline_checkout import Checkout, TimelineEditError, describe_changes, three_way
 
 FPS = 30
 
@@ -384,3 +385,56 @@ def test_apply_script_swaps_changed_takes_and_adds_new_lines(tmp_path, monkeypat
     assert tl.voice("s2").clips[0].start == pytest.approx(tl.word("really").end + 0.4, abs=1 / FPS)
     assert tl.clip("b-type").start == pytest.approx(tl.word("now").start, abs=1 / FPS)
     assert tl.voice("s2").text == "Live now."
+
+
+# ---- formula-backed params are visible and never silently override an edit (F1) --------
+
+def _formula_bundle():
+    data = bundle()
+    data["parent"]["config"]["slots"] = {"HAND": {"hand_mark": {"x": 1200, "y": 600}}}
+    rocket = data["shots"]["A"]["internal_timeline"]["clips"][1]
+    rocket["params"]["x"] = 193
+    rocket["app"] = {"cut": "c1", "layer": "rocket", "formulas": {"params.x": {"mark": "HAND", "axis": "x", "offset": -7, "unit": "logical"}}}
+    return data
+
+
+def test_python_set_on_a_formula_param_replaces_it_and_says_so():
+    tl = Checkout(_formula_bundle())
+    tl.resolve()
+    tl.clip("c1.rocket").set(x=120)
+    tl.resolve()  # what check/status do: the value must survive
+    assert tl.clip("c1.rocket").get("x") == 120 and "params.x" not in intent.formulas(tl.clip("c1.rocket").data)
+    lines = describe_changes(Checkout(_formula_bundle()), tl)
+    assert any("x was ƒ(HAND -42) → now fixed = 120" in line for line in lines)
+
+
+def test_a_formula_can_be_edited_in_place():
+    tl = Checkout(_formula_bundle())
+    tl.clip("c1.rocket").set(x="ƒ(HAND -60)")
+    tl.resolve()
+    assert intent.formulas(tl.clip("c1.rocket").data)["params.x"]["offset"] == -10  # canvas -60 = 10 sprite px
+    assert tl.clip("c1.rocket").get("x") == (round(1200 / 6) - 10) * 6
+
+
+def test_the_sheet_and_the_verb_show_and_replace_formulas_the_same_way():
+    from astrid.sdk.timeline_sheet import apply_sheet, render_sheet
+
+    tl = Checkout(_formula_bundle())
+    tl.resolve()
+    sheet = render_sheet(tl)
+    assert "x=ƒ(HAND -42)" in sheet  # visible, in canvas px
+    assert apply_sheet(tl, sheet) == []  # unchanged round-trip
+    lines = apply_sheet(tl, sheet.replace("x=ƒ(HAND -42)", "x=120"))
+    assert tl.clip("c1.rocket").get("x") == 120 and any("now fixed" in line for line in lines)
+    tl2 = Checkout(_formula_bundle())
+    tl2.resolve()
+    apply_sheet(tl2, render_sheet(tl2).replace("x=ƒ(HAND -42)", "x=ƒ(HAND -60)"))
+    assert intent.formulas(tl2.clip("c1.rocket").data)["params.x"]["offset"] == -10
+
+
+def test_positions_are_canvas_px_for_every_element():
+    tl = Checkout(bundle())
+    rocket = tl.clip("R").set(x=1290)  # am-sprite: stored on its 320x180 grid
+    assert rocket.params["x"] == 215 and rocket.get("x") == 1290
+    card = tl.clip("b-type").set(x=900)  # am-type: stored as canvas px
+    assert card.params["x"] == 900 and card.get("x") == 900

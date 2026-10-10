@@ -139,7 +139,7 @@ def test_edit_at_word_moves_the_clip_and_says_so(local, capsys):
 def test_edit_nudge_frames_set_and_close_gap(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--nudge-frames", "3", "--set", "x=42") == 0
     rocket = Checkout.load(local).clip("a-rocket")
-    assert rocket.params["x"] == 42
+    assert rocket.get("x") == 42 and rocket.params["x"] == 7  # canvas px in, stored on the sprite grid (÷6)
     assert rocket.start == pytest.approx(1.1)
     capsys.readouterr()
 
@@ -359,3 +359,22 @@ def test_diff_without_from_compares_head_with_working_copy(draft_with_edit, caps
     assert out.startswith('WORKING COPY · 1 unpublished edits vs published rev-0')
     assert "a-rocket" in out
     assert "working copy" in out
+
+
+def test_edit_set_on_a_formula_param_replaces_it_and_says_so(tmp_path, capsys):
+    from tests.sdk.test_timeline_checkout import _formula_bundle
+
+    path = tmp_path / "f.checkout.json"
+    tl = Checkout(_formula_bundle())
+    tl.resolve()
+    tl.save(path)
+    _run("edit", "--file", str(path), "--clip", "c1.rocket", "--set", "x=120")  # (the synthetic bundle is not publishable)
+    out = capsys.readouterr().out
+    assert "x was ƒ(HAND -42) → now fixed = 120" in out and "no change" not in out
+    assert Checkout.load(path).clip("c1.rocket").get("x") == 120
+
+
+def test_edit_set_refuses_a_param_the_element_does_not_declare(local, capsys):
+    assert _run("edit", "--file", str(local), "--clip", "R", "--set", "sclae=3") == 2
+    err = capsys.readouterr().err
+    assert "has no param sclae (did you mean scale?)" in err

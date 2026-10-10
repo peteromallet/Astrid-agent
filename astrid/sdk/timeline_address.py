@@ -383,3 +383,48 @@ def _chapter_of(tl: Any, cut_id: str | None) -> str | None:
     if cut_id not in order:
         return None
     return next((labels[c] for c in reversed(order[:order.index(cut_id) + 1]) if c in labels), None)
+
+
+# ---------------------------------------------------------------- naming things in findings
+
+def name_things(text: str, tl: Any, lo: float, hi: float) -> str:
+    """Rewrite element/asset mentions in a finding line as addresses (``am-sprite ICON`` → ``c30.icon``),
+    using the clips on screen in [lo, hi]. Repeated mentions map, in order, to clips in time order."""
+    clips = sorted((c for c in tl.clips() if not c.is_audio and c.start < hi + 1e-6 and c.end > lo - 1e-6
+                    and intent.layer_of(c.data)), key=lambda c: (c.start, c.address))
+    if not clips:
+        return text
+
+    def by(pred: Any) -> list[Any]:
+        return [c for c in clips if pred(c)]
+
+    counters: dict[str, int] = {}
+
+    def pick(key: str, pool: list[Any]) -> str | None:
+        if not pool:
+            return None
+        k = counters.get(key, 0)
+        counters[key] = k + 1
+        return pool[min(k, len(pool) - 1)].address if (len(pool) == 1 or k < len(pool)) else None
+
+    def element_asset(m: re.Match) -> str:
+        element, asset = m.group(1), m.group(2)
+        hit = pick(f"{element} {asset}", by(lambda c: c.element == element and (c.asset or "") == asset))
+        return hit or m.group(0)
+
+    def element_text(m: re.Match) -> str:
+        element, said = m.group(1), m.group(2).rstrip("…")
+        hit = pick(f"{element} \"{said}", by(lambda c: c.element == element and (c.text or "").startswith(said)))
+        return hit or m.group(0)
+
+    out = re.sub(r'\b(am-[a-z-]+) "([^"]*)"', element_text, text)
+    out = re.sub(r"\b(am-[a-z-]+) ([A-Z][A-Z0-9_-]+)\b", element_asset, out)
+    assets = {c.asset for c in clips if c.asset}
+
+    def bare(m: re.Match) -> str:
+        token = m.group(0)
+        if token not in assets:
+            return token
+        return pick(f"bare {token}", by(lambda c: c.asset == token)) or token
+
+    return re.sub(r"(?<![\w.-])[A-Z][A-Z0-9_-]{1,}(?![\w.-])", bare, out)
