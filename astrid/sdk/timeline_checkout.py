@@ -1491,6 +1491,20 @@ class Checkout:
                            + f"); still true? \"{intent.why(pic.data)}\" (edit --cut {g['id']} --why …)")
         return out
 
+    def cut_count(self) -> str:
+        """One way to count cuts everywhere: the named cuts (what you address), and the pictures if a
+        sequence (a time-lapse) shows several pictures in one cut."""
+        named, cuts = len(self._cut_groups()), self.cuts
+        pictures = len(cuts)
+        if not named or pictures == named:
+            return f"{named} cuts" if named else f"{pictures} cuts"
+        ids = [intent.cut_of(c.picture.data) if c.picture else None for c in cuts]
+        unnamed = sum(1 for i in ids if not i)
+        steps = pictures - unnamed - len({i for i in ids if i})
+        why = " · ".join(x for x in (f"{steps} more from sequence steps" if steps else "",
+                                     f"{unnamed} without a cut id" if unnamed else "") if x)
+        return f"{named} cuts ({pictures} pictures" + (f": {why})" if why else ")")
+
     def _cut_on_screen(self, t: float) -> str | None:
         """The cut id on screen at ``t`` (None when the timeline names no cuts)."""
         spans = sorted(((lo, hi if hi is not None else self.duration, cid) for cid, (lo, hi) in self._cut_spans().items()))
@@ -3022,7 +3036,8 @@ class CheckReport:
 
     def __str__(self) -> str:
         """The default report: the diff in brief, what blocks publishing, notes, and NEW lint (counts for the rest)."""
-        lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
+        head = re.sub(r"\bcuts (\d+) → (\d+)", r"pictures \1 → \2", self.summary[0]) if self.summary else "no changes"
+        lines = [("valid" if self.valid else "INVALID") + " · " + head]
         kinds: dict[str, int] = {}
         rest = []
         for line in self.summary[1:]:  # "cut added at 7.37 s" × 44 → "44 cuts added"

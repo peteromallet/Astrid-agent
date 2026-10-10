@@ -39,6 +39,12 @@ Beats come from the music clip's grid: `--swap-asset run:<id>/music` brings the 
 ```
 A layer line: `track name element [ASSET] ["text"] [on …] [until …|for …] [k=v …]`. A partial sheet is safe:
 apply changes ONLY the cuts in the file; a layer line deleted from one of those cuts removes that layer.
+A brand-new layer is a new name: `sprite  paw  sprite  PAW  on "Building" in v27  x=ƒ(B2-HAND -177.5) y=600`
+(element: sprite, type, pixel-shape, footage, …; fractional ƒ offsets are fine). Stacking is by TRACK, not line
+order: chrome > type > fx > sprite > plate; to put a layer behind another, give it a lower track (to be sure,
+not the same one). A sprite's `scale` is canvas px per art px (default 6); a pixel-shape's `px_scale` is the same
+for its cells. The film line ends `· v 1a2b…`: the version you exported. If the working copy was edited since,
+apply merges: lines you did not change keep the newer value; a line changed both places refuses (re-export).
 A NEW cut: a header `┃ c05b on "word"` with a `plate` line (its picture) and any layers; the cut before ends there.
 Or `timelines edit TL --split c33 --on MOMENT` (`--add-cut --on M [--after c33]`; Python `tl.cut("c33").split(on=…)`,
 `tl.add_cut(…)`): later layers move with it, spanning ones carry over it. `…` values in a sheet are kept as they are.

@@ -51,7 +51,14 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
               if (end is None or g["start"] < end - 1e-6) and (start is None or (spans[g["id"]][1] or tl.duration) > start + 1e-6)]
     fps = tl.fps
     canvas = _canvas(tl)
-    out = [f"film {film or tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {canvas} · {fps:g} fps"]
+    version = sheet_version(tl)
+    exported = tl.__dict__.setdefault("_exported", {})  # what each exported version was (apply merges against it)
+    if version not in exported:
+        exported[version] = copy.deepcopy(tl.bundle)
+        for old in list(exported)[:-5]:
+            exported.pop(old, None)
+    out = [f"film {film or tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {canvas} · {fps:g} fps"
+           f" · v {version}"]
     if banner:
         out.append(banner)
     if start is not None or end is not None:
@@ -271,6 +278,9 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if raw.startswith("film "):
             m = re.search(r"([\d.]+) fps", raw)
             fps = float(m.group(1)) if m else fps
+            v = re.search(r"· v ([0-9a-f]{8,})", raw)
+            if v:
+                sheet["version"] = v.group(1)
         line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue
@@ -478,12 +488,148 @@ def apply_sheet(tl: Any, text: str) -> list[str]:
 
     sheet = parse_sheet(text)
     before = Checkout(copy.deepcopy(tl.bundle))
+    if sheet.get("version") and sheet["version"] != sheet_version(tl):
+        # exported from an earlier version: merge three-way (what the sheet changed since it was exported,
+        # onto what is here now), like save and publish. Never revert an edit made after the export.
+        base = find_version(tl, sheet["version"])
+        if base is None:
+            raise SheetError(f"this sheet was exported from version {sheet['version']}, which this working copy no longer "
+                             f"has (it is now {sheet_version(tl)}): re-export it (timelines show TL --as sheet) and make "
+                             "your change again, so nothing edited since is undone")
+        sheet = merge_sheet(sheet, base, tl)
     try:
         return _apply_parsed(tl, sheet, before)
     except Exception:
         tl.bundle = before.bundle  # all or nothing: a sheet that cannot be applied changes nothing
         tl._mcache = None
         raise
+
+
+def sheet_version(tl: Any) -> str:
+    """The version a sheet is exported from: a digest of the document (what apply merges against)."""
+    import hashlib
+
+    return hashlib.sha256(json.dumps(tl.document(), sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+
+
+def find_version(tl: Any, version: str) -> Any:
+    """The Checkout this working copy was at ``version``: now, an earlier saved edit (undo history), or its
+    published base. None when it is not kept any more."""
+    from astrid.sdk.timeline_checkout import Checkout, _history_dir, _read_step
+    from astrid.sdk.timeline_cuts import base_bundle
+
+    if sheet_version(tl) == version:
+        return tl
+    kept = (getattr(tl, "_exported", None) or {}).get(version)
+    if kept is not None:
+        return Checkout(copy.deepcopy(kept))
+    candidates: list[Any] = []
+    path = getattr(tl, "path", None)
+    if path:
+        from pathlib import Path
+
+        target = Path(path)
+        if target.is_file():
+            candidates.append(lambda: target.read_text(encoding="utf-8"))
+        for step in sorted(_history_dir(target).glob("*.json"), reverse=True):
+            candidates.append(lambda step=step: _read_step(step)[1])
+    for read in candidates:
+        try:
+            other = Checkout({})
+            other.bundle = other._absorb(json.loads(read()))
+            other = Checkout(other.bundle)
+        except Exception:  # noqa: BLE001 - an unreadable step is skipped
+            continue
+        if sheet_version(other) == version:
+            return other
+    try:
+        base = Checkout(base_bundle(tl.document()))
+        if sheet_version(base) == version:
+            return base
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _norm_layer(layer: dict[str, Any] | None) -> str | None:
+    if layer is None:
+        return None
+    keep = {k: v for k, v in layer.items() if k not in ("line", "text_line", "at")}
+    keep["params"] = {k: ("…" if v is ELIDED else v) for k, v in (keep.get("params") or {}).items()}
+    return json.dumps(keep, sort_keys=True, default=str)
+
+
+def merge_sheet(sheet: dict[str, Any], base_tl: Any, tl: Any) -> dict[str, Any]:
+    """Three-way, line by line: a line the sheet left as exported takes what is here now; a line the sheet
+    changed applies; both changed (differently) is a clash, named, never a silent choice."""
+    base, now = parse_sheet(render_sheet(base_tl)), parse_sheet(render_sheet(tl))
+    base_cuts, now_cuts = {c["id"]: c for c in base["cuts"]}, {c["id"]: c for c in now["cuts"]}
+    clashes: list[str] = []
+    merged: dict[str, Any] = {"lines": {}, "cuts": [], "version": sheet.get("version")}
+
+    def pick(what: str, b: Any, s: Any, c: Any) -> Any:
+        if s == b:
+            return c
+        if c == b or s == c:
+            return s
+        clashes.append(what)
+        return s
+
+    for seg, entry in sheet["lines"].items():
+        b, c = base["lines"].get(seg), now["lines"].get(seg)
+        key = lambda e: None if e is None else (e.get("text"), e.get("gap"))
+        chosen = pick(f"line {seg} (narration)", key(b), key(entry), key(c))
+        if chosen is not None and chosen != key(c):
+            merged["lines"][seg] = {**entry, "text": chosen[0], "gap": chosen[1]}
+    if sheet.get("sound"):
+        b_sound = {r["name"]: r for r in base.get("sound") or []}
+        c_sound = {r["name"]: r for r in now.get("sound") or []}
+        rows = []
+        for row in sheet["sound"]:
+            b, c = _norm_layer(b_sound.get(row["name"])), _norm_layer(c_sound.get(row["name"]))
+            s = _norm_layer(row)
+            if s == b:
+                continue
+            if c != b and s != c:
+                clashes.append(f"sound {row['name']} (line {row['line']})")
+            rows.append(row)
+        if rows:
+            merged["sound"] = rows
+    for cut in sheet["cuts"]:
+        b_cut, c_cut = base_cuts.get(cut["id"]), now_cuts.get(cut["id"])
+        if b_cut is None:  # new in the sheet: as written
+            merged["cuts"].append(cut)
+            continue
+        if c_cut is None:
+            clashes.append(f"{cut['id']} (line {cut['line']}): it is gone since the sheet was exported")
+            continue
+        out = dict(c_cut)
+        for field in ("on", "why", "hold"):
+            value = pick(f"{cut['id']} {field} (line {cut['line']})", b_cut.get(field), cut.get(field), c_cut.get(field))
+            out[field] = value
+        b_l = {l["name"]: l for l in b_cut["layers"]}
+        s_l = {l["name"]: l for l in cut["layers"]}
+        c_l = {l["name"]: l for l in c_cut["layers"]}
+        layers = []
+        for name in list(dict.fromkeys(list(c_l) + list(s_l) + list(b_l))):
+            b, s, c = _norm_layer(b_l.get(name)), _norm_layer(s_l.get(name)), _norm_layer(c_l.get(name))
+            line = (s_l.get(name) or {}).get("line") or (b_l.get(name) or {}).get("line")
+            if s == b:
+                chosen = c_l.get(name)
+            elif c == b or s == c:
+                chosen = s_l.get(name)
+            else:
+                clashes.append(f"{cut['id']}.{name} (line {line})")
+                chosen = s_l.get(name)
+            if chosen is not None:
+                layers.append(chosen)
+        out["layers"] = layers
+        merged["cuts"].append(out)
+    if clashes:
+        raise SheetError("not applied: since this sheet was exported, these were changed both here and in the sheet: "
+                         + "; ".join(clashes[:10]) + (f"; … {len(clashes) - 10} more" if len(clashes) > 10 else "")
+                         + ". Re-export (timelines show TL --as sheet) and make your change again.")
+    return merged
 
 
 def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:

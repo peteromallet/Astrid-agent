@@ -496,3 +496,31 @@ def test_a_cut_takes_a_why_and_a_deliberate_hold_and_a_stale_why_is_flagged(tmp_
     assert not intent.deliberate(tl.cut_picture("c1").data)
     tl.clip("c1.rocket").remove()
     assert any(p.startswith("why     c1: its why was written") for p in tl.check().problems)
+
+
+def test_a_sheet_exported_before_an_edit_never_reverts_it(tmp_path, monkeypatch, capsys):
+    """TOP: export → edit via the verb → apply the OLD sheet with an unrelated change: both survive; a clash refuses."""
+    from pathlib import Path
+
+    from astrid.sdk.timeline_sheet import SheetError, apply_sheet, render_sheet
+
+    root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
+    tiny = json.loads((root / "tiny.json").read_text(encoding="utf-8"))
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
+    assert _run("checkout", "t", "--project", "P") == 0
+    old = render_sheet(Checkout.draft("P", "t"))
+    sheet_file = tmp_path / "old.sheet"
+    assert _run("edit", "t", "--project", "P", "--clip", "c1.rocket", "--set", "x=120") == 0  # after the export
+    sheet_file.write_text(old.replace('"Live."', '"Now live."'), encoding="utf-8")  # an unrelated change
+    capsys.readouterr()
+    assert _run("apply", "t", "--project", "P", str(sheet_file)) == 0
+    tl = Checkout.draft("P", "t")
+    assert tl.clip("c1.rocket").get("x") == 120 and tl.clip("c2.card").text == "Now live."
+    # the same line changed in both: refused, named, nothing applied
+    sheet_file.write_text(old.replace("x=60", "x=90"), encoding="utf-8")
+    assert _run("apply", "t", "--project", "P", str(sheet_file)) == 2
+    err = capsys.readouterr().err
+    assert "c1.rocket" in err and "Re-export" in err
+    assert Checkout.draft("P", "t").clip("c1.rocket").get("x") == 120

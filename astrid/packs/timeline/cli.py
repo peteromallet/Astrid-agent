@@ -3792,7 +3792,7 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
     name = _draft_name(parsed)
     head = tl.base_revision
     named = len(tl._cut_groups())
-    summary = f"{named} cuts · {len(tl.clips())} clips · {len(tl.words())} words" if named else _cuts_summary(tl)
+    summary = f"{tl.cut_count()} · {len(tl.clips())} clips · {len(tl.words())} words" if named else _cuts_summary(tl)
     print(f'working copy "{name}" of {parsed.timeline} · from published {_short_rev(head)} · {summary}'
           + ("" if existed and not parsed.fresh else " · a new working copy, made from the published head"))
     print("show, visualize, lint and diff now read this working copy (--published for the live version)")

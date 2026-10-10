@@ -116,10 +116,7 @@ def adopt_summary(before: Checkout, after: Checkout, source_name: str) -> list[s
     removed = [c for c in old_cuts if c not in new_cuts]
     old_lines, new_lines = lines(before), lines(after)
     said = [f"adopted {source_name}: the film is now {after.duration:.2f} s (was {before.duration:.2f} s), "
-            f"{len(new_cuts)} cuts (was {len(old_cuts)})"
-            + (f" showing {len(after.cuts)} pictures (a sequence's steps are pictures of one cut)"
-               if len(after.cuts) != len(new_cuts) else "")
-            + f", {len(after.orphans())} orphans"]
+            f"{after.cut_count()} (was {len(old_cuts)}), {len(after.orphans())} orphans"]
     if added or removed:
         said.append("  cuts " + " · ".join(x for x in (f"added {', '.join(added)}" if added else "",
                                                       f"removed {', '.join(removed)}" if removed else "") if x))
