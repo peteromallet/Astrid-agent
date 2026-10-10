@@ -440,6 +440,11 @@ class Clip:
             self.params[key] = copy.deepcopy(from_canvas(self.element, key, value))
         return self
 
+    def clear_asset(self) -> "Clip":
+        """Take the asset off this clip (e.g. an am-footage slot that should draw its slot card again)."""
+        self.data.pop("asset", None)
+        return self
+
     def swap_asset(self, asset: Any) -> "Clip":
         """Point the clip at another asset: a registry key, a ``{media_id, …}`` entry, or a local file (imported)."""
         key = self._tl._register_asset(self.shot_id, asset)
@@ -739,13 +744,14 @@ class Checkout:
 
     # ---- working copy (draft) --------------------------------------------------
     @classmethod
-    def draft(cls, project: str, timeline: str, name: str = "main", *, client: Any = None, fresh: bool = False) -> "Checkout":
+    def draft(cls, project: str, timeline: str, name: str | None = None, *, client: Any = None, fresh: bool = False) -> "Checkout":
         """The timeline's working copy: the existing draft, or a new one checked out from the head.
 
         Drafts live in Astrid's data root (never a file you name). ``show``, ``lint``, ``diff``,
         ``visualize`` and ``render --draft`` read the same working copy; ``save()`` writes it back.
         """
         project_id, timeline_id, _head = resolve_ids(project, timeline, client=client)
+        name = name or current_draft(project_id, timeline_id)
         path = draft_path(project_id, timeline_id, name)
         if path.is_file() and not fresh:
             tl = cls.load(path)
@@ -753,6 +759,7 @@ class Checkout:
             tl = cls(fetch_bundle(project, timeline, client=client))
             path.parent.mkdir(parents=True, exist_ok=True)
             tl.save(path)
+        set_current_draft(project_id, timeline_id, name)  # commands that name no draft use this one
         tl.draft_name = name
         return tl
 
@@ -2636,11 +2643,28 @@ def resolve_ids(project: str, timeline: str, *, client: Any = None) -> tuple[str
         return read(c)
 
 
-def find_draft(project: str, timeline: str, name: str = "main", *, client: Any = None) -> Path | None:
-    """The working copy for this timeline, if one exists."""
+def find_draft(project: str, timeline: str, name: str | None = None, *, client: Any = None) -> Path | None:
+    """The working copy for this timeline, if one exists: the named one, else the CURRENT one (the
+    last checked out, ``checkout --draft NAME``), else "main"."""
     project_id, timeline_id, _head = resolve_ids(project, timeline, client=client)
-    path = draft_path(project_id, timeline_id, name)
+    path = draft_path(project_id, timeline_id, name or current_draft(project_id, timeline_id))
     return path if path.is_file() else None
+
+
+def current_draft(project_id: str, timeline_id: str) -> str:
+    """The working copy commands use when none is named: the one last checked out (default "main")."""
+    pointer = draft_path(project_id, timeline_id, "main").parent / ".current"
+    try:
+        name = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "main"
+    return name if name and draft_path(project_id, timeline_id, name).is_file() else "main"
+
+
+def set_current_draft(project_id: str, timeline_id: str, name: str) -> None:
+    pointer = draft_path(project_id, timeline_id, "main").parent / ".current"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
 
 
 

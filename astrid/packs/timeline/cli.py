@@ -1212,7 +1212,7 @@ def _working_copy_view(parsed: argparse.Namespace) -> dict[str, Any] | None:
     from astrid.sdk.timeline_checkout import Checkout, find_draft
 
     try:
-        path = find_draft(parsed.project, parsed.ref)
+        path = find_draft(parsed.project, parsed.ref, getattr(parsed, "draft", None))
     except Exception as exc:  # the runtime is not reachable: say so, show the published head
         print(f"working copy: not checked ({exc}); showing the published head", file=sys.stderr)
         return None
@@ -1239,7 +1239,7 @@ def _show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any,
 
     if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
         try:
-            path = find_draft(parsed.project, parsed.ref, client=parsed.client)
+            path = find_draft(parsed.project, parsed.ref, getattr(parsed, "draft", None), client=parsed.client)
         except Exception as exc:  # noqa: BLE001 - say so and show the head
             print(f"working copy: not checked ({exc}); showing the published head", file=sys.stderr)
             path = None
@@ -1806,7 +1806,7 @@ def _visualize_working_copy(parsed: argparse.Namespace) -> dict[str, Any] | None
         return None
     ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
     try:
-        path = find_draft(parsed.project, ref)
+        path = find_draft(parsed.project, ref, getattr(parsed, "draft", None))
     except Exception as exc:  # the runtime is not reachable: say so, visualize the published head
         print(f"working copy: not checked ({exc}); visualizing the published head", file=sys.stderr)
         return None
@@ -2122,7 +2122,7 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
     tl = None
     if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
         try:
-            path = find_draft(parsed.project, ref, client=parsed.client)
+            path = find_draft(parsed.project, ref, getattr(parsed, "draft", None), client=parsed.client)
         except Exception:  # noqa: BLE001 - fall back to the published head
             path = None
         tl = Checkout.load(path) if path is not None else None
@@ -3156,6 +3156,7 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
         "--published", action="store_true", default=False,
         help="Read the published head, ignoring the unpublished working copy (when one exists).",
     )
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.add_argument(
         "--occurrence",
         default=None,
@@ -3254,6 +3255,7 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
     _add_json_flag(subparser, default=False)
     subparser.add_argument("--published", action="store_true",
                            help="Diff saved revisions only, ignoring the working copy (no --from/--to: the head vs the working copy).")
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.set_defaults(handler=_cmd_diff)
 
 
@@ -3287,6 +3289,7 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     _add_json_flag(subparser, default=False)
     subparser.add_argument("--published", action="store_true",
                            help="Lint the published head, not the working copy (when one exists).")
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.set_defaults(handler=_cmd_lint)
 
 
@@ -3324,6 +3327,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         "--published", action="store_true", default=False,
         help="Visualize the published head, ignoring the unpublished working copy (when one exists).",
     )
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.add_argument(
         "--every-cut", dest="all_cuts", action="store_true", default=False,
         help="With a working copy and no cut/range selection: every cut, not only the cuts you changed.",
@@ -3615,7 +3619,16 @@ def _is_file_ref(ref: str | None) -> bool:
 
 
 def _draft_name(parsed: argparse.Namespace) -> str:
-    return getattr(parsed, "draft", None) or "main"
+    """The working copy a command uses: --draft NAME, else the current one (last checked out), else main."""
+    if getattr(parsed, "draft", None):
+        return parsed.draft
+    try:
+        from astrid.sdk.timeline_checkout import current_draft, resolve_ids
+
+        project_id, timeline_id, _head = resolve_ids(_need_project(parsed), parsed.timeline, client=parsed.client)
+        return current_draft(project_id, timeline_id)
+    except Exception:  # noqa: BLE001 - the runtime is unreachable: the default name
+        return "main"
 
 
 def _need_project(parsed: argparse.Namespace) -> str:
@@ -3716,7 +3729,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     if selector and not any(v is not None for v in (parsed.at_word, parsed.at, parsed.nudge, parsed.nudge_frames,
                                                     parsed.extend, parsed.duration, parsed.swap_asset, parsed.on_moment,
                                                     parsed.until_moment, parsed.for_seconds)) and not parsed.set \
-            and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False):
+            and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False) \
+            and not getattr(parsed, "clear_asset", False):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
                          "--extend, --duration, --set or --swap-asset", 2)
     parsed.set = _parse_set(parsed.set)
@@ -3839,6 +3853,8 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip.set(**parsed.set)
     if parsed.swap_asset is not None:
         clip.swap_asset(parsed.swap_asset)
+    if getattr(parsed, "clear_asset", False):
+        clip.clear_asset()
 
 
 @_guard(2)
@@ -4064,6 +4080,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                            help="Remove the clip (a whole sequence, for one of its steps).")
     subparser.add_argument("--keep", action="store_true",
                            help="Accept an orphan where it is (a fixed time): it stops blocking publish.")
+    subparser.add_argument("--clear-asset", dest="clear_asset", action="store_true",
+                           help="Take the asset off the clip (e.g. an am-footage slot that should draw its slot card again).")
     subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",
                            help="Let --set add a param the element does not declare (normally refused).")
     subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE",

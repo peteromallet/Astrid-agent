@@ -1,60 +1,56 @@
 # Edit a timeline: the front door
 
-A narrated film runs on its words. You edit a **working copy** (a draft of the published
-timeline), look at it, then publish it. Times are timeline seconds; *when* things happen is
-written as **moments** (`on "viral"`), so a new take moves everything with its words.
+A narrated film runs on its words. You edit a **working copy** (a draft of the published timeline),
+look at it, then publish it. Times are timeline seconds; **positions are canvas px** for every element.
+*When* things happen is written as **moments** (`on "viral"`), so a new take moves everything with its words.
 
 ## The loop
 ```bash
 timelines checkout TL --project P                      # your working copy; it prints the next steps
-timelines show TL --project P --as sheet --range c30..c31 > cut.sheet   # read: the cut sheet
-#   change a line of cut.sheet (e.g. `for 1.9s` → `until "Astrid"`), then:
-timelines apply TL --project P cut.sheet               # the change in plain words, check, lint
-timelines visualize TL --project P --preset motion --at Astrid      # frames of it (--compare published: before/after)
-timelines status TL --project P                        # every unpublished change, in words
-timelines publish TL --project P -m "cover until Astrid"
+timelines show TL c41.mink --project P                 # ONE thing's whole record: every param (typed, canvas px,
+                                                       #   formula, default, allowed keys), its moments in seconds
+timelines show TL --project P --as sheet --range c30..c31 > cut.sheet   # several cuts as an editable sheet
+timelines apply TL --project P cut.sheet               # change a line of the sheet, then apply it
+timelines visualize TL --project P --preset motion --at '"Astrid" in n21'   # frames (every frame in a 1 s window)
+timelines status TL --project P   ·   timelines undo TL --project P   ·   timelines publish TL --project P -m "…"
 ```
-`show`/`visualize`/`lint`/`diff` read the working copy (line 1 says so; `--published` for the live one). `discard` drops it.
+`show`/`visualize`/`lint`/`diff` read the working copy (line 1 says so; `--published` for the live one).
 
-## Moments (one grammar everywhere)
-`"viral"` · `after "Astrid"` (the word's end) · `"tool" in v20a #2` (scope a line, nth time) ·
-`beat 2 after "Astrid"` · `downbeat 1 after "x"` · `c22` (a cut starts) · `end` (own cut ends) ·
-`+0.8s` alone = after the clip's cut starts · any of these `+2f` / `-0.1s`.
-A clip has `on` (start), and `until` (end moment) or `for 1.9s` (a literal length); no `until`/`for` = to its cut's end.
+## Addresses (the same everywhere: show, edit --clip, visualize --at/--highlight, Python)
+`c41.mink` (cut.layer; a layer carried into a later cut also answers to it: c30.cover = c29.cover) ·
+`c41.mink.x` (one param) · `c30` (a cut; `c30..c31` inclusive) · `"Building" in v27 #2` (a spoken word) ·
+`93.5` · an asset key · a layer name. Ambiguous names list their choices; outputs print the canonical address.
+
+## Moments
+`"viral"` · `after "Astrid"` (word end) · `"tool" in v20a #2` · `beat 2 after "Astrid"` · `c22` · `end` ·
+`+0.8s` (after the clip's cut starts) · any of these `+2f`. A clip has `on`, and `until` or `for 1.9s`.
 
 ## The sheet
 ```
  91.50 ┃ c30   on "And" in n21                                    · 2.50 s     ← cut id and its moment
-         sprite  cover   sprite  MYSTERY  until "Astrid"  enter=stamp scale=5 x=226 y=33
- 93.50   chrome  icon    sprite  ICON     on "Astrid"     scale=1 x=225 y=35
-         why: held on the covered tool; on "Astrid" the cover drops.
+         sprite  cover   sprite  MYSTERY  until "Astrid"  enter=stamp x=1356 y=198
+         sprite  tool    sprite  TOOL-16  on "Building"   x=ƒ(B2-HAND -42) y=ƒ(B2-HAND -384)
 ```
-A layer line: `track name element [ASSET] ["text"] [on …] [until …|for …] [k=v …]`. Change any part; a new
-name adds a layer; a deleted line removes it. In `lines`, change a line's text or `gap`. Ignored when applied:
-the time gutter, `· 2.50 s`, `> words`, `# chapter`. `k=…` (too long to print) stays as is; `k=ƒ` is computed
-by a formula; `~k=v` is information. `apply` names the line and what to write when something is wrong.
+A layer line: `track name element [ASSET] ["text"] [on …] [until …|for …] [k=v …]`. A partial sheet is safe:
+apply changes ONLY the cuts in the file; a layer line deleted from one of those cuts removes that layer.
+`x=ƒ(MARK ±px)` follows a slot's mark: a plain number replaces it (and says so). `k=…` is unchanged, `~k` is info.
 
 ## The same edit as a verb or in Python
 ```bash
-timelines edit TL --project P --clip c30.cover --until Astrid   # also --on, --for, --set k=v, --swap-asset KEY|FILE, --nudge-frames N
+timelines edit TL --project P --clip c30.cover --until Astrid   # --on, --for, --set k=v, --swap-asset, --clear-asset, --remove
 ```
 ```python
 from astrid.sdk.timeline_checkout import Checkout
-tl = Checkout.draft("P", "TL")                 # the working copy (created from the head if missing)
-tl.clip("c30.cover").until("Astrid")           # or .on('"viral" +2f'), .hold_for(1.9), .set(x=230), .swap_asset("KEY")
+tl = Checkout.draft("P", "TL")                 # the current working copy (Checkout.draft("P", "TL", "name") for another)
+tl.clip("c30.cover").until("Astrid"); tl.clip("c41.tool-16").set(x=1200)   # canvas px
 print("\n".join(tl.changes() + tl.check().brief())); tl.save()
 ```
-Find things: `tl.clip("c30.cover")` (cut.layer, a layer name, asset key, clip id; ambiguity lists choices),
-`tl.cut("c30")`, `tl.word("viral")`, `tl.at("1:02")` (what is on screen and said), `tl.clips(cut="c30")`, `tl.orphans()`.
 
 ## The narration (re-flow)
-```bash
-timelines edit TL --project P --line n21 --take n21.wav --words n21.words.json --text "…"   # a new take
-timelines edit TL --project P --insert-line n21b --after n21 --take … --words … --text "…" --gap 0.4
-timelines edit TL --project P --remove-line n21    ·   --gap-after n21=0.85    ·   --from-script vo.json
-```
-Everything after a changed line moves with it; clips on words follow their words; music is cut on a beat
-(the seam is reported). Moments whose word is gone are **orphans**: the sheet lists them; re-home or remove each.
+`timelines edit TL --project P --from-script vo.json --takes DIR` (DIR has `<id>.wav` + `<id>.words.json`;
+`--script-gaps` uses the script's gaps) · `--line ID --take … --words …` · `--insert-line` · `--remove-line`.
+Everything after a change moves; clips on words follow them; the music bed stays whole. A removed line's
+clips are kept as **orphans** (status, sheet and check list them; publish waits): `--cut c07 --on '"word" in w05'`
+re-homes a cut with its layers, `--clip X --on …` one layer, `--keep` accepts it in place, `--remove` drops it.
 
-Publish never overwrites a change published after your checkout: it merges other clips' changes and names
-any clash. New media: `--swap-asset FILE`. Low-level document reference: [document-checkout](document-checkout.md).
+Publish never overwrites a change published after your checkout (it merges other clips and names clashes).

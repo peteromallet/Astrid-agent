@@ -54,6 +54,9 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
     out = [f"film {film or tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {canvas} · {fps:g} fps"]
     if banner:
         out.append(banner)
+    if start is not None or end is not None:
+        ids = [g["id"] for g in picked]
+        out.append(f"scope {ids[0]}..{ids[-1]} ({len(ids)} cuts): apply changes only these cuts" if ids else "scope: no cuts")
     lines_used = []
     for g in picked:
         lo, hi = spans[g["id"]]
@@ -241,7 +244,7 @@ def parse_sheet(text: str) -> dict[str, Any]:
         if not line.strip():
             continue
         body = line.strip()
-        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:")) or body.startswith((">", "↳")) or raw.startswith("# "):
+        if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:", "scope ")) or body.startswith((">", "↳")) or raw.startswith("# "):
             continue
         if body in ("lines", "orphans"):
             section, cut = body, None
