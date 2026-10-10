@@ -128,7 +128,7 @@ def test_publish_requires_a_message():
 def test_edit_at_word_moves_the_clip_and_says_so(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
-    assert "✎ a-rocket" in out and "1.000 → 1.300 s (+0.30 s)" in out
+    assert "✎ a-rocket" in out and 'now enters on "viral" = 1.30 s (was 1.00 s, +0.30 s)' in out
     assert 'now enters on "viral"' in out
     assert "next: timelines show" in out.splitlines()[-1] or "next:" in out
     reloaded = Checkout.load(local)

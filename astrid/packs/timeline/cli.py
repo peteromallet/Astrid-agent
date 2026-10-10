@@ -56,6 +56,7 @@ returned envelope.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import shlex
@@ -918,9 +919,13 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
     # --layers and the clip/occurrence/asset/track/cursor/detail selectors it alone supports.
     layered = bool(
         getattr(parsed, "layers", False)
-        or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor", "detail"))
+        or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor"))
+        # --detail with --at or a text view (--as code/script) means "untruncated", not the layer rows
+        or (values.get("detail") and not getattr(parsed, "at", None) and (getattr(parsed, "as_view", None) or "cuts") == "cuts")
     )
     bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
+    if getattr(parsed, "address", None):
+        return _print_address(parsed, bundle_opener)
     if getattr(parsed, "as_view", None) == "sheet":
         return _print_sheet(parsed, bundle_opener)
     if not layered and callable(bundle_opener):
@@ -1227,12 +1232,11 @@ def _short_rev(revision: Any) -> str:
     return text.removeprefix("authoring-parent-revision-")[:8] or text
 
 
-def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
-    """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
+def _show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any, str] | int:
+    """The timeline ``show`` reads, as a Checkout: the working copy (unless --published/--revision-id)
+    or the published head; with the banner line that says which. An int is an exit code."""
     from astrid.sdk.timeline_checkout import Checkout, find_draft
-    from astrid.sdk.timeline_sheet import SheetError, moment_range, render_sheet
 
-    tl, banner = None, None
     if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
         try:
             path = find_draft(parsed.project, parsed.ref, client=parsed.client)
@@ -1242,27 +1246,83 @@ def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
         if path is not None:
             tl = Checkout.load(path)
             n = len(tl.changes())
-            banner = (f"WORKING COPY · {n} unpublished change{'s' if n != 1 else ''} vs published "
-                      f"{_short_rev(tl.base_revision)} · --published for the live version")
-    if tl is None:
-        opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
-        if not opened.ok or not isinstance(opened.data, Mapping):
-            return print_result(opened, as_json=False)
-        tl = Checkout(dict(opened.data["bundle"]))
-        banner = f"PUBLISHED {_short_rev(opened.data.get('revision_id') or (tl.bundle.get('base_parent') or {}).get('revision_id'))}"
+            return tl, (f"WORKING COPY · {n} unpublished change{'s' if n != 1 else ''} vs published "
+                        f"{_short_rev(tl.base_revision)} · --published for the live version")
+    opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
+    if not opened.ok or not isinstance(opened.data, Mapping):
+        return print_result(opened, as_json=False)
+    tl = Checkout(dict(opened.data["bundle"]))
+    return tl, f"PUBLISHED {_short_rev(opened.data.get('revision_id') or (tl.bundle.get('base_parent') or {}).get('revision_id'))}"
+
+
+def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
+    """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
+    from astrid.sdk.timeline_address import AddressError, resolve
+    from astrid.sdk.timeline_sheet import SheetError, moment_range, render_sheet
+
+    got = _show_checkout(parsed, bundle_opener)
+    if isinstance(got, int):
+        return got
+    tl, banner = got
     start = end = None
-    if parsed.range:
-        try:
+    try:
+        if parsed.range:
             start, end = moment_range(tl, parsed.range)
-        except (SheetError, Exception) as exc:  # noqa: BLE001
-            print(f"--range: {exc}", file=sys.stderr)
-            return 2
+        elif getattr(parsed, "at", None):
+            # --at scopes the sheet to the cut on screen then
+            target = resolve(tl, parsed.at, prefer="time")
+            spans = tl._cut_spans()
+            t = target.start
+            cut_id = next((cid for cid, (lo, hi) in spans.items() if lo - 1e-6 <= t < (hi if hi is not None else tl.duration + 1)), None)
+            if cut_id is None:
+                raise AddressError(f"no cut is on screen at {t:.2f} s")
+            start, end = spans[cut_id][0], spans[cut_id][1] or tl.duration
+            print(f"--at {parsed.at!r}: {target} · in {cut_id}", file=sys.stderr)
+    except (SheetError, AddressError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project)), end="")
     where = f"{parsed.ref} --project {parsed.project}"
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
     if sys.stdout.isatty():
         print(f"next: save it (> FILE), change a line, then  timelines apply {where} FILE", file=sys.stderr)
     return 0
+
+
+def _print_address(parsed: argparse.Namespace, bundle_opener: Any) -> int:
+    """``show TL ADDRESS``: the complete record of one thing (a layer, a word, a cut, a time)."""
+    from astrid.sdk.timeline_address import AddressError, describe_target, resolve
+
+    got = _show_checkout(parsed, bundle_opener)
+    if isinstance(got, int):
+        return got
+    tl, banner = got
+    try:
+        target = resolve(tl, parsed.address, prefer="thing")
+    except AddressError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(banner)
+    print(describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project)))
+    return 0
+
+
+def _at_detail(bundle: Mapping[str, Any], seconds: float) -> str:
+    """``show --at T --detail``: each clip on screen at T once, with its moments and every param untruncated."""
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline_checkout import Checkout
+
+    tl = Checkout(copy.deepcopy(dict(bundle)))
+    lines = [f"on screen at {seconds:.3f} s (every param, untruncated):"]
+    for clip in tl.clips():
+        if clip.is_audio or not (clip.start - 1e-6 <= seconds < clip.end - 1e-6):
+            continue
+        when = " ".join(x for x in (f"on {intent.on(clip.data)}" if intent.on(clip.data) else "",
+                                     f"until {intent.until(clip.data)}" if intent.until(clip.data) else "") if x)
+        params = json.dumps(clip.data.get("params") or {}, ensure_ascii=False, separators=(", ", ": "))
+        lines.append(f"  {clip.address:<18} {clip.element:<14} {clip.asset or '':<14} {clip.start:7.3f}–{clip.end:.3f} s  {when}")
+        lines.append(f"      {params}")
+    return "\n".join(lines)
 
 
 def _working_banner(working: Mapping[str, Any]) -> str:
@@ -1329,12 +1389,24 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     show_base = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
 
     if getattr(parsed, "at", None):
+        from astrid.sdk.timeline_address import AddressError, resolve
+        from astrid.sdk.timeline_checkout import Checkout
+
         try:
             seconds = parse_seconds(parsed.at)
-        except ValueError as exc:
-            print(f"error validation_error: {exc}")
-            return 2
+            at_note = None
+        except ValueError:
+            try:
+                target = resolve(Checkout(copy.deepcopy(dict(bundle))), parsed.at, prefer="time")
+            except AddressError as exc:
+                print(f"error: {exc}")
+                return 2
+            seconds, at_note = target.start, f"--at {parsed.at!r}: {target}"
         text = render_at(bundle, table, seconds, changed=changed, show_command=shlex.join(show_base))
+        if text is not None and at_note:
+            text = at_note + "\n" + text
+        if text is not None and getattr(parsed, "detail", False):
+            text += "\n" + _at_detail(bundle, seconds)
         if text is None:
             print(f"error validation_error: no cut at {seconds:.2f} s (the timeline runs {table['duration']:.2f} s)")
             return 2
@@ -1361,8 +1433,20 @@ def _print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
         lines += ["", f"full table: {shlex.join(show_base)}   (no flag)  ·  one chapter: --shot N   ·  clips in a chapter: --shot N --clips"]
         print("\n".join(lines))
         return 0
+    range_value = getattr(parsed, "range", None)
+    if range_value and not re.fullmatch(r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*", str(range_value)):
+        # a cut (c30), cut range (c30..c31, inclusive), words ("a".."b") or a layer: the same addresses as everywhere
+        from astrid.sdk.timeline_address import AddressError, resolve
+        from astrid.sdk.timeline_checkout import Checkout
+
+        try:
+            target = resolve(Checkout(copy.deepcopy(dict(bundle))), range_value, prefer="time")
+        except AddressError as exc:
+            print(f"error: {exc}")
+            return 2
+        range_value = f"{target.start:.3f}..{max(target.end, target.start + 1e-3):.3f}"
     try:
-        rows = filter_rows(table, range_value=getattr(parsed, "range", None), shot=getattr(parsed, "shot", None))
+        rows = filter_rows(table, range_value=range_value, shot=getattr(parsed, "shot", None))
     except ValueError as exc:
         print(f"error validation_error: {exc}")
         return 2
@@ -1409,7 +1493,8 @@ def _render_view(
     shot_ids = {row["shot_id"] for row in rows} if getattr(parsed, "shot", None) else None
     if view == "script":
         return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids, changed=changed)
-    return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "))
+    return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "),
+                       full=bool(getattr(parsed, "detail", False)))
 
 
 def _cmd_lint(parsed: argparse.Namespace) -> int:
@@ -2931,6 +3016,11 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
         help="Optional timeline UUID, ULID, or slug; omit to use the project's default timeline.",
     )
     subparser.add_argument(
+        "address", nargs="?", default=None,
+        help='One thing\'s complete record: a layer (c41.mink), a cut (c30), a word ("Building" in v27), a time, '
+        "an asset key or a layer name. Every param untruncated, the element's allowed keys, moments in seconds.",
+    )
+    subparser.add_argument(
         "--summary",
         action="store_true",
         help="One line per chapter (name, span, cut count, first words); with a working copy, its edits too.",
@@ -3598,6 +3688,18 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.duration is not None:
         clip.set_duration(parsed.duration)
     if parsed.set:
+        from astrid.sdk.timeline_address import element_schema, unknown_params
+
+        bad = unknown_params(clip.element, list(parsed.set), existing=clip.params)
+        if bad and not getattr(parsed, "allow_new_params", False):
+            import difflib
+
+            props = sorted((element_schema(clip.element).get("properties") or {}))
+            hints = [f"{k} (did you mean {', '.join(difflib.get_close_matches(k, props, n=2))}?)"
+                     if difflib.get_close_matches(k, props, n=2) else k for k in bad]
+            raise _VerbError(f"{clip.address} is an {clip.element}, which has no param {', '.join(hints)}. "
+                             f"It takes: {', '.join(props)}. (See them all: timelines show TL {clip.address}; "
+                             "an undeclared param on purpose: --allow-new-params)", 2)
         clip.set(**parsed.set)
     if parsed.swap_asset is not None:
         clip.swap_asset(parsed.swap_asset)
@@ -3822,6 +3924,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     nudge.add_argument("--duration", type=float, default=None, help="Set the clip's length in seconds.")
     subparser.add_argument("--set", action="append", default=None, metavar="KEY=VALUE",
                            help="Set an element param (repeatable; JSON values parsed, else a string).")
+    subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",
+                           help="Let --set add a param the element does not declare (normally refused).")
     subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE",
                            help="Point the clip at another asset key or a local file.")
     timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")

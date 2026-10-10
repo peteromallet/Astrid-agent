@@ -50,7 +50,7 @@ def test_text_verb_and_code_make_the_same_change():
     lines = apply_sheet(by_text, sheet)
     by_code.clip("c2.card").until("now")
     assert by_text.document() == by_code.document()
-    assert any('c2.card' in line and 'now holds until "now"' in line for line in lines)
+    assert any('c2.card' in line and 'now holds until "now" = ends' in line for line in lines)
 
 
 def test_a_fragment_touches_only_its_cuts_and_a_new_line_adds_a_layer():
@@ -76,7 +76,9 @@ def test_ranges_take_words_times_and_cuts():
     tl = Checkout(named())
     tl.resolve()
     assert moment_range(tl, '"went".."Live"') == (pytest.approx(0.9), pytest.approx(6.0))
-    assert moment_range(tl, "1..c2")[1] == pytest.approx(tl.clip("c2.plate").start)
+    assert moment_range(tl, "1..c2")[1] == pytest.approx(8.0)  # cut ranges are inclusive: through the end of c2
+    assert moment_range(tl, "c2") == (pytest.approx(4.0), pytest.approx(8.0))  # one cut
+    assert moment_range(tl, "c1..c1") == (pytest.approx(0.0), pytest.approx(4.0))
 
 
 def test_the_tiny_fixture_prints_its_golden_sheet_and_round_trips():

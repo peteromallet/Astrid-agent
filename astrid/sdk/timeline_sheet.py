@@ -475,6 +475,8 @@ def _element(token: str, current: str | None = None) -> str:
 
 
 def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool) -> None:
+    from astrid.sdk.timeline_checkout import TimelineEditError
+
     data = clip.data
     element = _element(layer["element"], clip.element)
     if element != clip.element:
@@ -498,6 +500,12 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
         if key not in wanted and key != "text":
             if params is not None:
                 params.pop(key, None)
+    from astrid.sdk.timeline_address import element_schema, unknown_params
+
+    bad = unknown_params(element, [k for k, v in wanted.items() if v is not ELIDED], existing=current)
+    if bad:
+        props = sorted(element_schema(element).get("properties") or {})
+        raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
     for key, value in wanted.items():
         if value is ELIDED:
             continue
@@ -520,8 +528,15 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
 
 
 def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any]) -> None:
+    from astrid.sdk.timeline_address import element_schema, unknown_params
+    from astrid.sdk.timeline_checkout import TimelineEditError
+
     element = _element(layer["element"])
     params = {k: v for k, v in layer["params"].items() if v is not ELIDED}
+    bad = unknown_params(element, list(params))
+    if bad:
+        raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: "
+                                + ", ".join(sorted(element_schema(element).get("properties") or {})))
     if layer["text"] is not None:
         params["text"] = layer["text"]
     start = group["start"]
@@ -538,20 +553,17 @@ def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any
 
 
 def moment_range(tl: Any, text: str) -> tuple[float | None, float | None]:
-    """``'"and the conclusion".."Named"'`` or ``'91.5..96'`` or ``c30..c31`` → (start, end) seconds."""
-    parts = re.split(r'\.\.(?=(?:[^"]*"[^"]*")*[^"]*$)', text, maxsplit=1)
-    if len(parts) != 2:
-        raise SheetError(f"a range reads A..B (times, \"words\" or cut ids); got {text!r}")
+    """Seconds for a range or a single address: ``c30`` (one cut), ``c30..c31`` (both, inclusive),
+    ``'"and the conclusion".."Named"'``, ``91.5..96``, ``c41.mink`` (its span)."""
+    from astrid.sdk.timeline_address import AddressError, resolve
 
-    def one(side: str) -> float | None:
-        side = side.strip()
-        if not side:
-            return None
-        if _is_number(side):
-            return float(side)
-        return tl._moment_time(mo.format_moment(mo.parse(side)))
-
-    return one(parts[0]), one(parts[1])
+    try:
+        target = resolve(tl, text, prefer="time")
+    except AddressError as exc:
+        raise SheetError(str(exc)) from None
+    if target.kind == "time" or target.kind == "word":
+        return target.start, target.start + 1e-3
+    return target.start, target.end
 
 
 def iter_layers(sheet: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:

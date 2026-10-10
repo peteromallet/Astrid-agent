@@ -250,6 +250,7 @@ class Clip:
         Stored as written (seconds are only the cache), then resolved now. A plain number
         is a time: it becomes an offset from the clip's cut (or a fixed time without a cut)."""
         self._tl._place_on(self, moment)
+        self._tl.retime()  # its end follows its rule (until / for / its cut) right away
         return self
 
     def until(self, moment: Any) -> "Clip":
@@ -261,6 +262,7 @@ class Clip:
         intent.set_until(self.data, text)
         intent.set_for(self.data, None)
         _set_length(self.data, self._tl._frame(t) - self.start)
+        self._tl.retime()
         return self
 
     def enter_at(self, when: Any, *, offset: float = 0.0, anchor: bool = True) -> "Clip":
@@ -741,6 +743,16 @@ class Checkout:
         If several match, ``near=`` (a word or time) picks the one on screen closest to it,
         ``cut=`` restricts to one cut; otherwise the error lists the choices.
         """
+        if isinstance(query, str) and cut is None and near is None:
+            # one address, everywhere: c41.mink, a carried alias (c30.cover), a layer name, an asset key, …
+            from astrid.sdk.timeline_address import candidates
+
+            found = [t for t in candidates(self, query, prefer="thing") if t.kind == "clip"]
+            if len(found) == 1:
+                return found[0].clip
+            if len(found) > 1:
+                listing = "\n  ".join(str(t) for t in found[:12]) + (f"\n  … {len(found) - 12} more" if len(found) > 12 else "")
+                raise TimelineEditError(f"{query!r} matches {len(found)} clips; name one:\n  {listing}")
         pool = self.cut(cut).clips if cut is not None else self.clips()
         if near is not None:
             point = self.time(near)
@@ -1992,6 +2004,18 @@ class CheckReport:
 
 # ----------------------------------------------------------------- document helpers
 
+def _end_rule(tl: "Checkout", clip: Clip) -> str:
+    """How a clip's end is decided, in words: until "Astrid" · for 1.9s · with its cut · its own length."""
+    until, length = intent.until(clip.data), intent.for_s(clip.data)
+    if until:
+        return f"holds until {until}"
+    if length is not None:
+        return f"holds for {mo.offset_text(length, tl.fps).lstrip('+')}"
+    if intent.cut_of(clip.data) and not clip.is_audio:
+        return "ends with its cut"
+    return "keeps its own length"
+
+
 def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
     """Plain-words lines for what changed between two versions of a timeline (see ``Checkout.changes``)."""
     old = {c.id: c for c in before.clips()}
@@ -2018,17 +2042,16 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
         a_until, b_until = intent.until(prev.data), intent.until(clip.data)
         a_for, b_for = intent.for_s(prev.data), intent.for_s(clip.data)
         if a_on != b_on:
-            what = f"now enters on {b_on}" if b_on else "no longer tied to a moment"
-            said.append(f"{what}  {prev.start:.3f} → {clip.start:.3f} s ({secs(clip.start - prev.start)})" if moved_start else what)
+            what = f"now enters on {b_on} = {clip.start:.2f} s" if b_on else f"no longer tied to a moment: starts {clip.start:.2f} s"
+            what += f" (was {prev.start:.2f} s, {secs(clip.start - prev.start)})" if moved_start else " (it was already there)"
+            if not (a_until != b_until or a_for != b_for):
+                what += f"; {_end_rule(after, clip)}, ending {clip.end:.2f} s"
+            said.append(what)
             moved_start = False
         if a_until != b_until or a_for != b_for:
-            if b_until:
-                what = f"now holds until {b_until}"
-            elif b_for is not None:
-                what = f"now holds for {b_for:g} s"
-            else:
-                what = "now ends with its cut"
-            said.append(f"{what}  ends {prev.end:.3f} → {clip.end:.3f} s ({secs(clip.end - prev.end)})" if moved_end else what)
+            what = f"now {_end_rule(after, clip)} = ends {clip.end:.2f} s"
+            what += f" (was {prev.end:.2f} s, {secs(clip.end - prev.end)})" if moved_end else " (it already ended there)"
+            said.append(what)
             moved_end = False
         if (clip.asset or None) != (prev.asset or None):
             said.append(f"asset {prev.asset} → {clip.asset}")
