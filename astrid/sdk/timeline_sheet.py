@@ -795,7 +795,7 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
     if element != clip.element:
         data["clipType"] = element
     if layer["track"] != clip.track and not clip.is_audio:
-        data["track"] = layer["track"]
+        clip.set_track(layer["track"])  # its timing stays (a picture's in-point becomes an explicit offset)
     if (layer["asset"] or None) != (clip.asset or None):
         if layer["asset"]:
             clip.swap_asset(layer["asset"])

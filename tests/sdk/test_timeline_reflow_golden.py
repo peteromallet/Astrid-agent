@@ -7,6 +7,8 @@ layer whose formula names a word of the removed line.
 """
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from astrid.sdk import timeline_intent as intent
@@ -132,3 +134,100 @@ def test_rehoming_an_orphaned_cut_brings_its_layers():
     assert tl.clip("c2.live").start == pytest.approx(picture.start, abs=1 / FPS)  # it entered with its cut
     assert tl.clip("c2.dot").start == pytest.approx(picture.start + 0.5, abs=1 / FPS)  # +0.5s after the cut
     assert not any(line.startswith(("c2.field", "c2.live", "c2.dot")) for line in tl.orphans())
+
+
+def _film_with_a_time_lapse():
+    """c3 is a stepped sequence (a time-lapse: its picture + 4 steps tiling 6–9 s), and line s4 is spoken
+    inside it, so a re-flow opens time INSIDE the sequence as well as before it (the c17 regression)."""
+    data = film()
+    clips = data["shots"]["F"]["internal_timeline"]["clips"]
+    pic = next(c for c in clips if c["id"] == "c3-plate")
+    pic["hold"] = 1.0
+    pic["app"].update({"sequence": "c3-seq", "sequence_index": 0})
+    at = 7.0
+    for i, frames in enumerate((15, 9, 6, 30), start=1):
+        step = {"id": f"c3-step-{i:02d}", "clipType": "am-snap-plate", "track": "plate", "asset": "Q", "at": at,
+                "hold": frames / FPS, "params": {}, "app": {"cut": "c3", "layer": f"step-{i:02d}",
+                                                            "sequence": "c3-seq", "sequence_index": i}}
+        clips.append(step)
+        at += frames / FPS
+    vo3 = next(c for c in clips if c["id"] == "vo-s3")
+    vo3["app"]["gap_after_s"] = 0.2
+    clips.append({"id": "vo-s4", "clipType": "media", "track": "vo", "asset": "V", "at": 7.6, "from": 0.0, "to": 0.8,
+                  "app": {"segment": "s4", "text": "Done.", "words": [[0.1, 0.6, "Done"]]}})
+    return data
+
+
+def _steps(tl):
+    return sorted((c for c in tl.clips() if intent.sequence(c.data)), key=lambda c: intent.sequence(c.data)[1])
+
+
+def test_a_reflow_moves_and_stretches_a_time_lapse_as_one_unit():
+    """Regression (c17): a re-flow before a cut and inside its time-lapse must not tear the sequence."""
+    tl = Checkout(_film_with_a_time_lapse())
+    tl.resolve()
+    before = [round(s.duration * FPS) for s in _steps(tl)]
+    tl.voice("s1").set_gap_after(3.0, reflow=False)   # +1.0 s before c3
+    tl.voice("s3").set_gap_after(1.2, reflow=False)   # +1.0 s inside the time-lapse (after "work", 7.4 s)
+    tl.reflow()
+    steps = _steps(tl)
+    assert [intent.sequence(s.data)[1] for s in steps] == [0, 1, 2, 3, 4]  # order kept
+    assert all(intent.cut_of(s.data) == "c3" for s in steps)                # one cut
+    for a, b in zip(steps, steps[1:]):
+        assert b.start == pytest.approx(a.end, abs=1e-6)                     # end to end: no hole, no overlap
+    lo, hi = tl._cut_spans()["c3"]
+    assert steps[0].start == pytest.approx(lo, abs=1 / FPS) and steps[-1].end == pytest.approx(hi or tl.duration, abs=1 / FPS)
+    after = [round(s.duration * FPS) for s in steps]
+    scale = sum(after) / sum(before)
+    for n_before, n_after in zip(before, after):                            # spacing ratios kept (to a frame)
+        assert abs(n_after - n_before * scale) <= 1.0
+    assert not tl.check().blocking
+
+
+def test_fit_sequence_restores_a_shape_and_fits_a_span_as_one_unit(monkeypatch):
+    """(b): tl.sequence(step).fit(on=, until=, shape_from=) — a torn time-lapse is repaired in one call."""
+    from astrid.sdk import timeline_checkout as tc
+
+    original = _film_with_a_time_lapse()
+    tl = Checkout(copy.deepcopy(original))
+    tl.resolve()
+    shape = [round(s.duration * FPS) for s in _steps(tl)]
+    torn = _steps(tl)
+    torn[2].data["hold"] = 3.2  # what the old ripple did to step 10 of c17
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(original))
+    seq = tl.sequence("c3.step-02")
+    seq.fit(on='"back"', until="end", shape_from="round0")
+    steps = _steps(tl)
+    assert intent.on(steps[0].data) == '"back"' and intent.until(steps[0].data) == "end"
+    assert steps[0].start == pytest.approx(tl.word("back").start, abs=1 / FPS)
+    for a, b in zip(steps, steps[1:]):
+        assert b.start == pytest.approx(a.end, abs=1e-6)
+    after = [round(s.duration * FPS) for s in steps]
+    scale = sum(after) / sum(shape)
+    assert all(abs(n - m * scale) <= 1.0 for n, m in zip(after, shape))  # the restored shape, not the torn one
+    with pytest.raises(Exception, match="not a step of a sequence"):
+        tl.sequence("c1.rocket")
+
+
+def test_a_track_change_never_moves_the_clip():
+    """A cut's picture on a line's first word opens at the take's in-point; moved to fx it keeps that frame."""
+    tl = Checkout(film())
+    tl.resolve()
+    pic = tl.clip("c3.field")
+    start = pic.start
+    assert start < tl.word("So").start - 1 / FPS  # the take's in-point, before the word
+    pic.set_track("type")
+    tl.retime()
+    assert tl.clip("c3.field").start == pytest.approx(start, abs=1e-6) and tl.clip("c3.field").track == "type"
+    assert intent.on(tl.clip("c3.field").data).startswith('"So" -')  # the offset says so
+
+
+def test_a_picture_gap_blocks_publishing_and_says_what_is_left_on_screen():
+    """(c): check validates the picture, not only the structure: a span with no plate is a blocking gap."""
+    tl = Checkout(film())
+    tl.resolve()
+    assert tl.picture_gaps() == []
+    tl.clip("c2.field").remove()
+    gaps = tl.picture_gaps()
+    assert len(gaps) == 1 and gaps[0].startswith("4.000–6.000 s") and "c2.live" in gaps[0]
+    assert any(line.startswith("picture") for line in tl.check().blocking)

@@ -89,10 +89,16 @@ print("\n".join(tl.verify()["lines"]))   # published vs yours at what changed (o
 `on`/`until` a word mean its START (`after "word"` = its end); `until c30b` = when c30b STARTS; `until end of c30`
 ends with that cut. Clip methods return the clip, so they chain: `tl.clip("c30.cover").on('"x"').hold_for(1.2)`.
 `Checkout.draft(P, TL)` makes the working copy from the published head if there is none; `tl.save()` prints one
-line. `--verify`/`check --at` write only their page and frames, under the data root's fast-lane cache. In check,
+line. `--verify`/`check --at` write only their page and frames, in the fast lane's cache in the temp dir. In check,
 "intent" (was "app") is a clip's moments, cut and words; "shot" is the film's one authoring shot; a layer that
 carries over later cuts counts as a change in each of them. A moment
 lands on the frame it falls in (148.13 s → frame 4443 = 148.10 s at 30 fps), so a clip on it starts there.
+
+A time-lapse (a stepped sequence) moves and stretches as ONE unit and fills its cut (or `until` its first step's
+moment): `edit --clip c17.rt-01 --fit-sequence --on 'after "So" in w17' --until c19 [--shape-from round0]`, in Python
+`tl.sequence("c17.rt-01").fit(on=…, until=…, shape_from=…)`. check blocks a PICTURE GAP (a span nothing covers).
+A line break in text is JSON: `--set 'text="One\nTwo"'`; look at several moments: `check TL --at A --at B`.
+`lint --only SAFE,FACE` narrows lint; with a working copy it also counts what was resolved since checkout.
 
 ## The narration (re-flow)
 `timelines edit TL --project P --from-script vo.json --takes DIR` (DIR has `<id>.wav` + `<id>.words.json`;

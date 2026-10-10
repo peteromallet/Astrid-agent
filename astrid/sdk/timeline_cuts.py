@@ -720,9 +720,16 @@ def diff_bundles(before: Mapping[str, Any], after: Mapping[str, Any], *, toleran
             fields.append("start")
         if abs(a["end"] - b["end"]) > tolerance:
             fields.append("end")
-        for name in ("track", "asset", "params", "app"):
+        for name in ("track", "asset", "params"):
             if a[name] != b[name]:
                 fields.append(name)
+        notes = ("why", "why_layers", "deliberate_hold", "deliberate")  # a cut's notes are not picture changes
+        app_a, app_b = (json.loads(x) if isinstance(x, str) else dict(x or {}) for x in (a["app"], b["app"]))
+        app_a, app_b = dict(app_a or {}), dict(app_b or {})
+        if {k: v for k, v in app_a.items() if k not in notes} != {k: v for k, v in app_b.items() if k not in notes}:
+            fields.append("app")
+        if any(app_a.get(k) != app_b.get(k) for k in notes):
+            fields.append("note")
         if fields:
             changes.append({
                 "kind": "changed", "shot": b["shot"], "clip_id": b["clip_id"], "track": b["track"],

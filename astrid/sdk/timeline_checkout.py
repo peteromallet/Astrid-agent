@@ -633,6 +633,27 @@ class Clip(_Suggest):
             _set_path(self.data, full, copy.deepcopy(value))
         return self
 
+    def set_track(self, track: str) -> "Clip":
+        """Move the clip to another track (stacking: chrome > type > fx > sprite > plate). Its timing does not
+        change: a cut's picture on a line's first word opens at the take's in-point; as a layer it keeps that
+        frame (its moment gets the offset that says so)."""
+        if track == self.track:
+            return self
+        if not any(str(t.get("id")) == track for t in self._tl._internal(self.shot_id).get("tracks") or []):
+            raise TimelineEditError(f"{self.address}: no track {track!r} in this shot")
+        was_picture, start, on = self._tl._is_picture(self), self.start, intent.on(self.data)
+        self.data["track"] = track
+        self._tl._mcache = None
+        if was_picture and on and not self._tl._is_picture(self):
+            try:
+                plain = self._tl._moment_time(on, self)
+            except TimelineEditError:
+                plain = start
+            if abs(plain - start) >= 0.5 / self._tl.fps:
+                moment = mo.parse(on).with_offset(frames=int(round((start - plain) * self._tl.fps)))
+                intent.set_on(self.data, mo.format_moment(moment))
+        return self
+
     def clear_asset(self) -> "Clip":
         """Take the asset off this clip (e.g. an am-footage slot that should draw its slot card again)."""
         self.data.pop("asset", None)
@@ -766,6 +787,63 @@ class Cut(_Suggest):
     def __repr__(self) -> str:
         pic = self.picture
         return f"<Cut {self.n} {self.start:.3f}–{self.end:.3f} s {self.shot} · {pic.asset if pic else '-'} · {len(self.layers)} layer(s)>"
+
+
+class StepSequence(_Suggest):
+    """A stepped sequence (a time-lapse): its steps in order, moved and fitted as ONE unit."""
+
+    def __init__(self, tl: "Checkout", seq_id: str):
+        self._tl, self.id = tl, seq_id
+
+    @property
+    def steps(self) -> list[Clip]:
+        steps = [c for c in self._tl.clips() if (intent.sequence(c.data) or ("",))[0] == self.id]
+        return sorted(steps, key=lambda c: intent.sequence(c.data)[1])
+
+    @property
+    def frames(self) -> list[int]:
+        return [max(1, int(round(c.duration * self._tl.fps))) for c in self.steps]
+
+    def fit(self, on: Any = None, until: Any = None, *, shape: Sequence[int] | None = None, shape_from: Any = None,
+            client: Any = None) -> "StepSequence":
+        """Fit the whole sequence into a span, keeping its shape (each step's share; its acceleration).
+
+        ``on``: where it (and its cut) starts; ``until``: where it ends (``c19``, ``after "x" in w17``; it
+        is kept, so a re-flow fits it again). ``shape``: frame counts per step; ``shape_from``: another
+        timeline (``"almost-ready-round0"`` or ``"TL@REV"``) whose same sequence has the shape to restore
+        (a sequence torn by an earlier re-flow). Default: the shape it has now."""
+        steps = self.steps
+        if not steps:
+            raise TimelineEditError(f"no sequence {self.id!r}")
+        frames = list(shape) if shape else None
+        if shape_from is not None:
+            name, _, rev = str(shape_from).partition("@")
+            other = Checkout(fetch_bundle(str(self._tl.bundle.get("project_id")), name,
+                                          revision_id=rev if rev.startswith("authoring-parent-revision-") else None, client=client))
+            frames = StepSequence(other, self.id).frames
+            if not frames:
+                raise TimelineEditError(f"{name} has no sequence {self.id!r} to take the shape from")
+        if frames is not None and len(frames) != len(steps):
+            raise TimelineEditError(f"the shape has {len(frames)} steps; {self.id} has {len(steps)}")
+        if frames is not None:  # set the shape now: the re-lay keeps it
+            first = steps[0]
+            self._tl._relay_steps([c.data for c in steps], first.start - self._tl._shot_start(first.shot_id),
+                                  sum(frames) / self._tl.fps, [int(n) for n in frames])
+        head = steps[0]
+        if on is not None:
+            head.on(on)
+        if until is not None:
+            text = self._tl._moment_text(until)
+            self._tl._moment_time(text, head)  # it must resolve
+            intent.set_until(head.data, text)
+            intent.set_for(head.data, None)
+        self._tl.retime()
+        return self
+
+    def __repr__(self) -> str:
+        steps = self.steps
+        return (f"<StepSequence {self.id}: {len(steps)} steps {steps[0].start:.3f}–{steps[-1].end:.3f} s>" if steps
+                else f"<Sequence {self.id}: none>")
 
 
 class Voice(_Suggest):
@@ -1578,6 +1656,29 @@ class Checkout(_Suggest):
                            + (f"; {note}" if "outside" in note else "") + f" (size {fits:g} fits; or move x/width)")
         return out
 
+    FULL_FRAME = frozenset({"am-snap-plate", "am-footage", "media"})
+
+    def picture_gaps(self) -> list[str]:
+        """Spans where nothing covers the canvas: no picture-track clip (plate) and no full-frame footage or
+        plate on any track. Black under whatever layers are left. Blocking: a re-flow must never tear the film."""
+        cover = sorted((c.start, c.end) for c in self.clips()
+                       if not c.is_audio and (c.track == "plate" or c.element in self.FULL_FRAME) and c.duration > 0)
+        gaps, at = [], 0.0
+        for a, b in cover:
+            if a > at + 0.5 / self.fps:
+                gaps.append((at, a))
+            at = max(at, b)
+        if self.duration > at + 0.5 / self.fps:
+            gaps.append((at, self.duration))
+        out = []
+        for a, b in gaps:
+            showing = sorted({c.address for c in self.clips() if not c.is_audio and c.start < b - 1e-6 and c.end > a + 1e-6})
+            cut = self._cut_on_screen(a)
+            out.append(f"{a:.3f}–{b:.3f} s ({b - a:.2f} s{', in ' + cut if cut else ''}): nothing covers the canvas"
+                       + (f" (only {', '.join(showing[:4])}{' …' if len(showing) > 4 else ''})" if showing else " (black)")
+                       + "; give the cut a picture there, or fit its sequence (edit --clip STEP --fit-sequence --until …)")
+        return out
+
     def _stale_whys(self) -> list[str]:
         """Cuts whose why may no longer say what is there: written when the cut had other layers, or its
         layers changed (a swap, a replace) since checkout while the why stayed the same. Info, never a block."""
@@ -1651,6 +1752,17 @@ class Checkout(_Suggest):
             return fast_lane.verify(c, project, timeline, moments, draft=self, footer=footer)
 
         return _with_client(client, run)
+
+    def sequence(self, address: Any) -> "StepSequence":
+        """The sequence a step belongs to (``tl.sequence("c17.rt-01")``), or by its id (``"c17-seq0"``)."""
+        text = str(address)
+        if any((intent.sequence(c.data) or ("",))[0] == text for c in self.clips()):
+            return StepSequence(self, text)
+        clip = address if isinstance(address, Clip) else self.clip(text)
+        tag = intent.sequence(clip.data)
+        if tag is None:
+            raise TimelineEditError(f"{clip.address} is not a step of a sequence")
+        return StepSequence(self, tag[0])
 
     def find(self, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Any]:
         """What you hear or see → addresses and times (``timelines find``): ``tl.find("the conclusion")``."""
@@ -1959,6 +2071,13 @@ class Checkout(_Suggest):
         self._mcache = None
         groups = self._cut_groups()
         orphan_cuts: set[str] = set()
+        sequences: dict[str, list[Clip]] = {}
+        for clip in self.clips():
+            tag = intent.sequence(clip.data)
+            if tag and not intent.orphan(clip.data):
+                sequences.setdefault(tag[0], []).append(clip)
+        ratios = {sid: [max(1, int(round(c.duration * self.fps))) for c in sorted(steps, key=lambda c: intent.sequence(c.data)[1])]
+                  for sid, steps in sequences.items()}  # before anything moves: the unit's shape
         for g in groups:  # 1. cut starts
             pic = g["picture"]
             on = intent.on(pic.data) if pic else None
@@ -1975,6 +2094,26 @@ class Checkout(_Suggest):
             group = next(g for g in self._cut_groups() if g["id"] == cid)
             cut_span[cid] = (group["start"], group["picture"].end if group["picture"] else None)
         self._orphan_cuts = orphan_cuts
+        self._mcache = {"cuts": cut_span}
+        pictures = {id(g["picture"].data): g["id"] for g in groups if g["picture"] is not None}
+        for seq_id, steps in sequences.items():  # 1b. a cut's sequence fills its cut, as one unit, in its ratios
+            steps = sorted(steps, key=lambda c: intent.sequence(c.data)[1])
+            cid = pictures.get(id(steps[0].data))
+            if cid is None or cid in orphan_cuts or cid not in cut_span:
+                continue
+            lo, hi = cut_span[cid]
+            until = intent.until(steps[0].data)
+            if until:
+                hi = self._resolve_note(until, steps[0], start=lo)
+            if hi is None:
+                hi = max(c.end for c in steps)
+            if hi - lo < len(steps) / self.fps:
+                continue
+            before = [(c.start, c.end) for c in steps]
+            self._relay_steps([c.data for c in steps], lo - self._shot_start(steps[0].shot_id), hi - lo, ratios[seq_id])
+            for c, (a, b) in zip(steps, before):
+                if round(a * self.fps) != round(c.start * self.fps) or round(b * self.fps) != round(c.end * self.fps):
+                    moved.setdefault(id(c.data), (c.address, a, c.start))
         self._mcache = {"cuts": cut_span}
         for clip in self.clips():  # 2. every clip on its moments
             cut = intent.cut_of(clip.data)
@@ -1998,8 +2137,8 @@ class Checkout(_Suggest):
                 end = start + length
             elif cut and not clip.is_audio and not later_step and cut in cut_span and (seq is None or is_picture):
                 end = cut_span[cut][1]
-            if seq is not None and not is_picture:
-                end = None
+            if seq is not None:  # a sequence's steps were laid out as one unit (1b): never one by one
+                start, end = clip.start, None
             self._place(clip, start, end, moved)
         self._mcache = None
         return list(moved.values())
@@ -2237,9 +2376,17 @@ class Checkout(_Suggest):
             self.notes.append(f"{clip.address}: opens its chapter at {lo:.3f} s; its moment ({t:.3f} s) is kept for re-flow, not applied")
             return False
         end = clip.end
-        clip._set_start(t)
-        if keep_end:
-            _set_length(clip.data, end - t)
+        tag = intent.sequence(clip.data)
+        if tag is not None:  # a sequence's first step: the whole sequence moves, its shape intact (re-time fits it)
+            delta = t - old
+            for step in self.clips(shot=clip.shot_id):
+                if (intent.sequence(step.data) or ("",))[0] == tag[0] and step.data is not clip.data:
+                    step._set_start(step.start + delta)
+            clip._set_start(t)
+        else:
+            clip._set_start(t)
+            if keep_end:
+                _set_length(clip.data, end - t)
         for prev in before:
             _set_length(prev.data, t - prev.start)
         moved[id(clip.data)] = (clip.address, old, t)
@@ -2581,6 +2728,7 @@ class Checkout(_Suggest):
         blocking += [f"outside {line}" for line in self._outside]
         blocking += [f"type    {line}" for line in self._type_mismatches()]
         blocking += [f"beats   {line}" for line in self._stale_beats()]
+        blocking += [f"picture {line}" for line in self.picture_gaps()]
         if blocking:
             valid = False
         problems += [f"why     {line}" for line in self._stale_whys()]
@@ -2968,8 +3116,66 @@ class Checkout(_Suggest):
         self._shift_parent(b, -removed)
         return _r(removed)
 
+    def _shot_sequences(self, sid: str) -> list[list[dict[str, Any]]]:
+        """The sequences (a time-lapse's steps) of one shot, each in step order."""
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for clip in self._internal(sid)["clips"]:
+            tag = intent.sequence(clip)
+            if tag and not intent.orphan(clip):
+                groups.setdefault(tag[0], []).append(clip)
+        return [sorted(steps, key=lambda c: intent.sequence(c)[1]) for steps in groups.values()]
+
+    def _relay_steps(self, steps: list[dict[str, Any]], at: float, length: float, frames: list[int] | None = None) -> None:
+        """Lay a sequence's steps end to end from ``at`` (shot seconds) over ``length``, keeping their
+        frame ratios (``frames``, else their lengths now; each at least one frame): one unit."""
+        frames = frames or [max(1, int(round(clip_duration(c) * self.fps))) for c in steps]
+        total = max(len(steps), int(round(length * self.fps)))
+        scaled = [n * total / max(1, sum(frames)) for n in frames]
+        plan = [max(1, int(x)) for x in scaled]
+        order = sorted(range(len(steps)), key=lambda i: scaled[i] - int(scaled[i]), reverse=True)
+        k = 0
+        while sum(plan) < total:  # largest remainders first
+            plan[order[k % len(order)]] += 1
+            k += 1
+        k = 0
+        while sum(plan) > total:  # never below one frame
+            i = max(range(len(plan)), key=lambda j: plan[j])
+            if plan[i] <= 1:
+                break
+            plan[i] -= 1
+            k += 1
+        frame = int(round(at * self.fps))
+        for clip, n in zip(steps, plan):
+            clip["at"] = _r(frame / self.fps)
+            _set_length(clip, n / self.fps)
+            frame += n
+
+    def _sequences_across(self, sid: str, ra: float, rb: float, skip_ids: set[int]) -> list[list[dict[str, Any]]]:
+        """Sequences a ripple at [ra, rb] would tear (it starts inside them): they move as units instead."""
+        out = []
+        for steps in self._shot_sequences(sid):
+            if any(id(c) in skip_ids for c in steps):
+                continue
+            s0 = _num(steps[0].get("at"))
+            e1 = max(_num(c.get("at")) + clip_duration(c) for c in steps)
+            if s0 < ra - 0.5 / self.fps and e1 > ra + 0.5 / self.fps:
+                out.append(steps)
+        return out
+
     def _close_in_shot(self, sid: str, ra: float, rb: float, skip_ids: set[int]) -> None:
         d = rb - ra
+        for steps in self._shot_sequences(sid):  # a window closing over part of a sequence shrinks it whole
+            if any(id(c) in skip_ids for c in steps):
+                continue
+            s0 = _num(steps[0].get("at"))
+            e1 = max(_num(c.get("at")) + clip_duration(c) for c in steps)
+            overlap = max(0.0, min(e1, rb) - max(s0, ra))
+            whole = s0 >= ra - 0.5 / self.fps and e1 <= rb + 0.5 / self.fps
+            if overlap <= 0.5 / self.fps or whole:
+                continue  # untouched (or wholly removed: the clip loop below handles it)
+            start = s0 if s0 < ra else ra
+            self._relay_steps(steps, start, max(len(steps) / self.fps, (e1 - s0) - overlap))
+            skip_ids = skip_ids | {id(c) for c in steps}
         clips = self._internal(sid)["clips"]
         out = []
         for clip in clips:
@@ -3014,6 +3220,11 @@ class Checkout(_Suggest):
         clips[:] = out
 
     def _open_in_shot(self, sid: str, ra: float, d: float, skip_ids: set[int]) -> None:
+        for steps in self._sequences_across(sid, ra, ra, skip_ids):  # time opened inside a sequence stretches it whole
+            s0 = _num(steps[0].get("at"))
+            e1 = max(_num(c.get("at")) + clip_duration(c) for c in steps)
+            self._relay_steps(steps, s0, (e1 - s0) + d)
+            skip_ids = skip_ids | {id(c) for c in steps}
         clips = self._internal(sid)["clips"]
         out = []
         for clip in clips:
@@ -3220,6 +3431,7 @@ class CheckReport:
             lines.append("  cut points: " + " · ".join(f"{n} {what}" for what, n in kinds.items()))
         def plain(line: str) -> str:  # addresses, not clip ids; "app" is the clip's intent
             line = re.sub(r"\b[\w.-]+\b", lambda m: self.addresses.get(m.group(0), m.group(0)), line)
+            line = line.replace("(note changed)", "(why note)").replace(", note changed)", ", why note)")
             return line.replace("app changed", "intent changed: moments, cut, words").replace(", app,", ", intent,")
         lines += [plain(line) for line in rest[:10]] + ([f"  … {len(rest) - 10} more clip lines"] if len(rest) > 10 else [])
         if kinds or len(rest) > 10:
@@ -3337,6 +3549,10 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
             said.append(f"asset {prev.asset} → {clip.asset}")
         if clip.track != prev.track:
             said.append(f"track {prev.track} → {clip.track} (stacking: chrome > type > fx > sprite > plate)")
+        if intent.why(clip.data) != intent.why(prev.data):
+            said.append(f"why: \"{(intent.why(clip.data) or '(none)')[:70]}\"")
+        if intent.deliberate(clip.data) != intent.deliberate(prev.data):
+            said.append("hold: deliberate" if intent.deliberate(clip.data) else "hold: off")
         if clip.element != prev.element:
             said.append(f"element {prev.element} → {clip.element}")
         fa, fb = intent.formulas(prev.data), intent.formulas(clip.data)
@@ -4046,13 +4262,14 @@ def import_media(path: Path, project: Any) -> dict[str, Any]:
 
 
 # every edit is one undo step (the outermost call; what it calls inside is part of it)
-for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "extend", "end_at", "set", "clear_asset",
+for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "extend", "end_at", "set", "set_track", "clear_asset",
               "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep"):
     setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
 for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
               "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note"):
     setattr(Checkout, _name, _journaled(getattr(Checkout, _name), "checkout"))
 Cut.split = _journaled(Cut.split, "cut")
+StepSequence.fit = _journaled(StepSequence.fit, "cut")
 for _name in ("replace", "set_gap_after"):
     setattr(Voice, _name, _journaled(getattr(Voice, _name), "voice"))
 

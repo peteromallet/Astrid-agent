@@ -1636,10 +1636,15 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         )
         known = {f.line(c["start"]) for c, fs in base_results for f in fs} | {f.line(None) for f in base_timeline}
     already = 0
+    only = {t.strip().upper() for t in str(getattr(parsed, "only", None) or "").split(",") if t.strip()}
+    seen_now: list[str] = []
 
     def emit(finding, start=None, end=None) -> None:
         nonlocal already
+        if only and finding.code.upper() not in only:
+            return
         text = finding.line(start)
+        seen_now.append(text)
         if text in known:
             already += 1
             return
@@ -1662,7 +1667,23 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
             emit(finding, cut["start"], cut["end"])
     summary = ", ".join(f"{code} {n}" for code, n in sorted(counts.items(), key=lambda item: -item[1])) or "none"
     if working is not None and not parsed.all:
+        from collections import Counter
+
+        from astrid.sdk.timeline_checkout import _lint_key
+
+        now_keys = Counter(_lint_key(t) for t in seen_now)
+        resolved = []
+        for text in sorted(known):
+            if only and text.split(" ", 1)[0].upper() not in only:
+                continue
+            if now_keys[_lint_key(text)] > 0:
+                now_keys[_lint_key(text)] -= 1
+            else:
+                resolved.append(text)
         lines.append(f"(new since your checkout only; {already} finding(s) were already in the published version: --all shows everything)")
+        if resolved:
+            lines.append(f"resolved since checkout: {len(resolved)} — " + "; ".join(
+                ordinals_to_ids(r, named, ordinals)[:70] for r in resolved[:3]) + (" …" if len(resolved) > 3 else ""))
     lines.append(f"findings: {summary}" + (
         f"; info hidden ({', '.join(f'{c} {n}' for c, n in sorted(info.items()))}; --all shows them)" if info and not parsed.all else ""))
     project = str(parsed.project or "<project>")
@@ -3382,6 +3403,7 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
                            help="List every registered check (built-in and pack), its threshold keys and defaults.")
     subparser.add_argument("--strict", action="store_true", help="Exit 1 when any finding has severity error.")
     subparser.add_argument("--all", action="store_true", help="Also print info lines (EDGE crops, BEAT near-misses).")
+    subparser.add_argument("--only", default=None, metavar="TAGS", help="Only these findings, e.g. --only SAFE,FACE.")
     _add_json_flag(subparser, default=False)
     subparser.add_argument("--published", action="store_true",
                            help="Lint the published head, not the working copy (when one exists).")
@@ -3891,7 +3913,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
                                                     parsed.until_moment, parsed.for_seconds)) and not parsed.set \
             and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False) \
             and not getattr(parsed, "clear_asset", False) and not getattr(parsed, "beats", None) \
-            and getattr(parsed, "why", None) is None and not getattr(parsed, "hold", None):
+            and getattr(parsed, "why", None) is None and not getattr(parsed, "hold", None) \
+            and not getattr(parsed, "fit_sequence", False):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
                          "--extend, --duration, --set, --swap-asset or --beats", 2)
     parsed.set = _parse_set(parsed.set)
@@ -3974,12 +3997,12 @@ def _edit_label(parsed: argparse.Namespace) -> str:
     """What one `timelines edit` did, for undo: ``edit --clip c30.cover --until Astrid``."""
     parts = []
     for name in ("clip", "cut", "on_moment", "until_moment", "for_seconds", "at_word", "at", "nudge", "nudge_frames",
-                 "extend", "duration", "swap_asset", "beats", "split", "cut_id", "picture", "why", "hold", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
+                 "extend", "duration", "swap_asset", "beats", "split", "cut_id", "picture", "why", "hold", "shape_from", "line", "insert_line", "remove_line", "from_script", "close_gap_before"):
         value = getattr(parsed, name, None)
         if value not in (None, False, ""):
             flag = {"on_moment": "on", "until_moment": "until", "for_seconds": "for"}.get(name, name).replace("_", "-")
             parts.append(f"--{flag} {value}")
-    for name in ("remove", "keep", "clear_asset", "retime", "add_cut"):
+    for name in ("remove", "keep", "clear_asset", "retime", "add_cut", "fit_sequence"):
         if getattr(parsed, name, False):
             parts.append(f"--{name.replace('_', '-')}")
     for item in getattr(parsed, "set", None) or []:
@@ -4036,6 +4059,10 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
             clip = tl.cut(cut_ref).picture
         if clip is None:
             raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
+    if getattr(parsed, "fit_sequence", False):  # the step's whole sequence, as one unit
+        tl.sequence(clip).fit(on=parsed.on_moment, until=parsed.until_moment,
+                              shape_from=getattr(parsed, "shape_from", None), client=parsed.client)
+        return
     if getattr(parsed, "why", None) is not None or getattr(parsed, "hold", None):
         if parsed.clip is not None:
             raise _VerbError("--why and --hold are about a cut: use --cut cNN", 2)
@@ -4398,6 +4425,12 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     cuts.add_argument("--add-cut", dest="add_cut", action="store_true",
                       help="A new cut at --on (it splits the cut on screen there; --after CUT checks which one).")
     cuts.add_argument("--cut-id", dest="cut_id", default=None, metavar="ID", help="The new cut's id (default: the next free).")
+    cuts.add_argument("--fit-sequence", dest="fit_sequence", action="store_true",
+                      help="With --clip (a step of a time-lapse): fit the WHOLE sequence between --on and --until, keeping "
+                           "its shape (each step's share). --until is kept, so a re-flow fits it again.")
+    cuts.add_argument("--shape-from", dest="shape_from", default=None, metavar="TL[@REV]",
+                      help="With --fit-sequence: restore the sequence's shape from another timeline (e.g. a duplicate made "
+                           "before a re-flow tore it).")
     cuts.add_argument("--why", default=None, metavar="TEXT", help="With --cut: why the cut is there (the sheet's why: line).")
     cuts.add_argument("--hold", default=None, choices=("deliberate", "off"),
                       help="With --cut: mark the cut a deliberate hold (lint's HOLD/STILL leave it alone), or off.")
