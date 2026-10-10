@@ -3786,6 +3786,8 @@ def _edit_range(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
 
 @_guard(1)
 def _cmd_checkout(parsed: argparse.Namespace) -> int:
+    if getattr(parsed, "adopt_from", None):
+        return _checkout_from(parsed)
     tl, existed = _working_copy(parsed, create=True)
     name = _draft_name(parsed)
     head = tl.base_revision
@@ -3802,6 +3804,38 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
     print(f'           or  Python: tl = Checkout.draft("{parsed.project}", "{parsed.timeline}"); tl.clip("c30.cover").until("Astrid"); tl.save()')
     print(f"  look     timelines visualize {where} --preset motion --at Astrid   (--compare published: before/after)")
     print(f'  publish  timelines status {where}   ·   timelines publish {where} -m "what changed"')
+    return 0
+
+
+def _checkout_from(parsed: argparse.Namespace) -> int:
+    """``checkout FILM --from TL[@REV]``: the film's working copy becomes TL's head (see Checkout.adopt)."""
+    source, _, rev = str(parsed.adopt_from).partition("@")
+    tl, existed = _working_copy(parsed, create=True)
+    if existed and not parsed.fresh and tl.edits().get("changes"):
+        raise _VerbError(f"the working copy of {parsed.timeline} has {_clips_changed(len(tl.edits()['changes']))}; adopting "
+                         f"replaces it: add --fresh to drop them (or publish them first)", 2)
+    revision = None
+    if rev:
+        revision = rev if rev.startswith("authoring-parent-revision-") else None
+        if revision is None:
+            from astrid.sdk.timeline_checkout import resolve_ids
+
+            _p, _t, head = resolve_ids(parsed.project, source, client=parsed.client)
+            if not _short_rev(head).startswith(rev[:8]) and not head.removeprefix("authoring-parent-revision-").startswith(rev):
+                raise _VerbError(f"{source}'s head is {_short_rev(head)}, not {rev}: name an older revision by its full id "
+                                 "(authoring-parent-revision-…)", 2)
+            revision = head
+    with tl.step(f"checkout --from {parsed.adopt_from}"):
+        report = tl.adopt(source, revision_id=revision, client=parsed.client)
+    for line in report:
+        print(line)
+    check = tl.check()
+    for line in _cap(_check_lines(check)):
+        print(line)
+    tl.save()
+    where = f"{parsed.timeline} --project {parsed.project}"
+    print(f"next: timelines status {where}   ·   timelines visualize {where} --compare published   ·   "
+          f'timelines publish {where} -m "adopt {parsed.adopt_from}"')
     return 0
 
 
@@ -4117,7 +4151,7 @@ def _cmd_publish(parsed: argparse.Namespace) -> int:
                                 f"{tl.bundle.get('project_id')} --from {receipt.get('old_head')}")
     parsed.timeline = parsed.ref
     tl, _ = _working_copy(parsed, create=False)
-    if tl is None or not tl.edits()["changes"]:
+    if tl is None or not (tl.edits()["changes"] or tl.narration_changes()):
         raise _VerbError(f"no unpublished edits to publish · next: timelines checkout {parsed.ref} --project {parsed.project}")
     receipt = tl.publish(parsed.message, idempotency_key=parsed.idempotency_key,
                          client=parsed.client, force=parsed.force)
@@ -4134,6 +4168,9 @@ def _print_published(receipt: Mapping[str, Any], next_line: str) -> int:
     if pinned:
         print(f"narration re-bound for {len(pinned)} shot(s) whose line text changed")
     print(f"published {_short_rev(receipt.get('new_head'))} (was {_short_rev(receipt.get('old_head'))}) · {receipt.get('message') or ''}".rstrip(" ·"))
+    if receipt.get("narration_error"):
+        print(f"narration NOT bound: {receipt['narration_error']}", file=sys.stderr)
+        return 1
     print(f"next: {next_line}")
     return 0
 
@@ -4207,6 +4244,10 @@ def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
     )
     _add_timeline_args(subparser)
     subparser.add_argument("--fresh", action="store_true", help="Replace the working copy with the current head (drops its edits).")
+    subparser.add_argument("--from", dest="adopt_from", default=None, metavar="TL[@REV]",
+                           help="Adopt another timeline: this working copy becomes TL's head (or revision REV): its cuts, "
+                                "narration, clips with their moments and formulas, assets and beats, chapters and slots. "
+                                "The film keeps its own shots and base; check, status and publish (three-way) as usual.")
     subparser.set_defaults(handler=_cmd_checkout)
 
 

@@ -128,3 +128,19 @@ def test_the_music_bed_is_in_the_sheet_and_its_line_edits_it():
     # a sheet without the sound section leaves the bed alone
     assert apply_sheet(tl, sheet.split("\nsound ")[0] + "\n") == []
     assert tl.clip("a-music").duration == pytest.approx(3.0)
+
+
+def test_a_new_cut_header_with_a_plate_line_adds_the_cut():
+    """A sheet can add a cut: ┃ c1b on "viral" + a plate line (its picture); the cut before ends there."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    changes = apply_sheet(tl, '  1.30 ┃ c1b on "viral"\n         plate  plate2  snap-plate  Q\n         why: the turn\n')
+    assert any(line.startswith("+ c1b.plate2") for line in changes)
+    spans = tl._cut_spans()
+    assert spans["c1"][1] == pytest.approx(spans["c1b"][0]) == pytest.approx(tl.word("viral").start, abs=1 / 30)
+    assert "┃ c1b   on \"viral\"" in render_sheet(tl)
+    with pytest.raises(SheetError, match="needs a plate line"):
+        apply_sheet(tl, '  1.30 ┃ c1c on "went"\n         type  t  type  "x"  for 1s\n')

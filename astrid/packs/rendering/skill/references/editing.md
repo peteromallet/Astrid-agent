@@ -15,6 +15,9 @@ timelines visualize TL --project P --preset motion --at '"Astrid" in n21'   # fr
 timelines status TL --project P   ·   timelines undo TL --project P   ·   timelines publish TL --project P -m "…"
 ```
 `show`/`visualize`/`lint`/`diff` read the working copy (line 1 says so; `--published` for the live one).
+`timelines find TL "the conclusion"` (also `--text "Astrid."`, `--asset ROCKET`, a layer name) → addresses and times.
+**Make one timeline equal another** (a finished duplicate → the film): `timelines checkout FILM --project P --from
+round2[@rev]`, then publish. Narration, cuts, clips and intent, assets and beats, chapters and slots all come along.
 
 ## Addresses (the same everywhere: show, edit --clip, visualize --at/--highlight, Python)
 `c41.mink` (cut.layer; a layer carried into a later cut also answers to it: c30.cover = c29.cover) ·
@@ -36,6 +39,7 @@ Beats come from the music clip's grid: `--swap-asset run:<id>/music` brings the 
 ```
 A layer line: `track name element [ASSET] ["text"] [on …] [until …|for …] [k=v …]`. A partial sheet is safe:
 apply changes ONLY the cuts in the file; a layer line deleted from one of those cuts removes that layer.
+A NEW cut: a header `┃ c05b on "word"` with a `plate` line (its picture) and any layers; the cut before ends there.
 `x=ƒ(MARK ±px)` follows a slot's mark: a plain number replaces it (and says so). `k=…` is unchanged, `~k` is info.
 The `sound` section lists the music bed and other audio in no cut: edit its asset, `for`, `volume=` there.
 

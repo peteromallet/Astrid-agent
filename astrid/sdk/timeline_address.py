@@ -110,6 +110,9 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
         raise AddressError(tl._no_cut(lowered))
     if MOMENT_HINT.match(lowered) and (lowered.startswith("end") or re.match(r"^c\d+[a-z]?\.end\b", lowered)):
         return _moment(tl, raw)  # end, end of c30, c30.end (+offsets)
+    by_id = [c for c in tl.clips() if c.id == raw]
+    if by_id:  # a clip id (c22-02-am-sprite): the clip, printed back by its address
+        return [clip_target(tl, c, note=f"clip id {raw}" if c.address != raw else None) for c in by_id]
     m = CLIP_ADDR_RE.match(raw)
     if m:
         found = _clip_address(tl, m.group(1).lower(), m.group(2))

@@ -489,8 +489,9 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
     groups = {g["id"]: g for g in tl._cut_groups()}
     for cut in sheet["cuts"]:
         group = groups.get(cut["id"])
-        if group is None:
-            raise SheetError(f"line {cut['line']}: there is no cut {cut['id']} (adding cuts from a sheet is not supported yet)")
+        if group is None:  # a new cut: its header's moment and a plate line (its picture) make it
+            _add_cut(tl, cut)
+            continue
         pic = group["picture"]
         if cut["on"] is not None and pic is not None and cut["on"] != intent.on(pic.data):
             pic.on(cut["on"])
@@ -526,6 +527,39 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
     if reflow:
         tl.reflow()
     return describe_changes(before, tl)
+
+
+def _add_cut(tl: Any, cut: dict[str, Any]) -> None:
+    """A cut the timeline does not have yet: ``┃ c05b on "word"`` plus a ``plate`` line (the picture) and
+    any other layers. The cut before it now ends where it starts; it runs to the next cut."""
+    from astrid.sdk.timeline_checkout import TimelineEditError
+
+    line = cut["line"]
+    if not cut["on"]:
+        raise SheetError(f"line {line}: a new cut needs its moment: ┃ {cut['id']} on \"word\" (or on c05 +1.2s)")
+    plates = [layer for layer in cut["layers"] if layer["track"] == "plate"]
+    if not plates:
+        raise SheetError(f"line {line}: new cut {cut['id']} needs a plate line (its picture), e.g.  plate  field  snap-plate  FIELD")
+    names = [layer["name"] for layer in cut["layers"]]
+    if len(set(names)) != len(names):
+        raise SheetError(f"line {line}: {cut['id']} names a layer twice; give each its own name")
+    try:
+        t = tl._moment_time(cut["on"], None, in_point=True)
+    except Exception as exc:  # noqa: BLE001 - the moment's own message
+        raise SheetError(_with_text(f"line {line}: {cut['id']}: {exc}", line, f"┃ {cut['id']} on {cut['on']}")) from None
+    group = {"id": cut["id"], "clips": [], "picture": None, "start": tl.quantize(t)}
+    for layer in [plates[0]] + [x for x in cut["layers"] if x is not plates[0]]:
+        try:
+            _add_layer(tl, cut["id"], group, layer)
+        except (TimelineEditError, mo.MomentError) as exc:
+            raise SheetError(_with_text(f"line {layer['line']}: {cut['id']}.{layer['name']}: {exc}", layer["line"],
+                                        layer.get("text_line", ""))) from None
+        if layer is plates[0]:
+            pic = tl.clip(f"{cut['id']}.{layer['name']}")
+            pic.on(cut["on"])
+            group["start"] = pic.start
+    if cut["why"]:
+        intent.set_why(tl.clip(f"{cut['id']}.{plates[0]['name']}").data, cut["why"])
 
 
 def _apply_sound(tl: Any, rows: list[dict[str, Any]]) -> None:

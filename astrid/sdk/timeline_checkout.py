@@ -964,6 +964,26 @@ class Checkout:
         tl.draft_name = name
         return tl
 
+    def adopt(self, timeline: str, *, revision_id: str | None = None, client: Any = None) -> list[str]:
+        """Make this working copy equal another timeline's head (or ``revision_id``): its cuts, narration
+        (lines, takes, words), clips with all their intent, assets and the music's beats, chapters and slots.
+
+        The working copy keeps its own timeline, shots and base, so ``changes()``, ``check()``, status and
+        the three-way publish guard work as for any edit (one undo step). Returns what changed, in words."""
+        from astrid.sdk.timeline_adopt import adopt_content, adopt_summary
+
+        project = str(self.bundle.get("project_id") or "")
+        source = fetch_bundle(project, timeline, revision_id=revision_id, client=client)
+        before = Checkout(copy.deepcopy(self.bundle))
+        bundle, notes = adopt_content(source, self.bundle)
+        self.bundle, self._mcache = bundle, None
+        self.fps = bundle_fps(bundle) or self.fps
+        self.notes.extend(notes)
+        rev = str((source.get("base_parent") or {}).get("revision_id") or revision_id or "")
+        self.report = adopt_summary(before, self, f"{timeline}" + (f"@{rev.removeprefix('authoring-parent-revision-')[:8]}" if rev else ""))
+        self.report += [f"  note: {n}" for n in notes]
+        return list(self.report)
+
     def discard(self) -> None:
         """Delete this working copy and its undo history (nothing published is touched)."""
         if self.path and Path(self.path).is_file():
@@ -2180,12 +2200,20 @@ class Checkout:
         if not report.valid:
             raise TimelineEditError("not publishing: " + "; ".join(report.problems or ["the candidate is invalid"]))
         key = idempotency_key or f"edit-{re.sub(r'[^a-z0-9]+', '-', message.lower())[:40].strip('-') or 'timeline'}-{uuid.uuid4().hex[:8]}"
-        receipt = publish_bundle(self.document(), key, client=client, force=force)
+        if self.edits().get("changes") or not self.narration_changes():
+            receipt = publish_bundle(self.document(), key, client=client, force=force)
+        else:  # only the narration binding is behind (a retry after it failed): pin it, nothing else to publish
+            receipt = {"old_head": self.base_revision, "new_head": self.base_revision, "structure": "unchanged"}
         receipt["narration_pinned"] = []
         if self.narration_changes():
             # A line's text changed (or the shots are new): bind each such shot's narration now that
             # the shots exist, then publish the pins as a second, small revision.
-            receipt.update(self._publish_narration(key, client=client))
+            try:
+                receipt.update(self._publish_narration(key, client=client))
+            except TimelineEditError as exc:  # the structure IS published: say so, and how to finish
+                receipt["narration_error"] = (f"{exc}. The cut is published (head {receipt.get('new_head')}); only the "
+                                              "narration binding is behind: timelines checkout TL --fresh, then "
+                                              "timelines publish TL -m \"narration\" pins it")
         receipt["message"] = message
         return receipt
 
@@ -2237,9 +2265,17 @@ class Checkout:
         for sid, text in self.narration_changes().items():
             payload = self.bundle["shots"][sid]["payload"]
             bound = next((b for b in payload.get("text_bindings") or [] if b.get("kind") == "voiceover_script"), None)
+            expected = int((bound or {}).get("head") or 0)
             result = client.shots.set_text_binding(self.bundle["project_id"], shot_id=sid, kind="voiceover_script", text=text,
-                                                    expected_head=int((bound or {}).get("head") or 0),
+                                                    expected_head=expected,
                                                     idempotency_key=f"{idempotency_key}-narration-{sid}"[:120])
+            error = getattr(result, "error", None)
+            actual = (getattr(error, "details", None) or {}).get("actual_head") if error is not None else None
+            if getattr(result, "ok", True) is False and isinstance(actual, int) and actual != expected:
+                # the shot's binding moved on (adopted content, another publish): bind on its current head
+                result = client.shots.set_text_binding(self.bundle["project_id"], shot_id=sid, kind="voiceover_script",
+                                                        text=text, expected_head=actual,
+                                                        idempotency_key=f"{idempotency_key}-narration-{sid}-h{actual}"[:120])
             pin = getattr(result, "data", result)
             if getattr(result, "ok", True) is False or not isinstance(pin, Mapping):
                 raise TimelineEditError(f"could not register the narration for shot {sid}: {getattr(result, 'error', result)}")
@@ -2763,7 +2799,21 @@ class CheckReport:
     def __str__(self) -> str:
         """The default report: the diff in brief, what blocks publishing, notes, and NEW lint (counts for the rest)."""
         lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
-        lines += self.summary[1:13] + ([f"  … {len(self.summary) - 13} more (timelines diff TL)"] if len(self.summary) > 13 else [])
+        kinds: dict[str, int] = {}
+        rest = []
+        for line in self.summary[1:]:  # "cut added at 7.37 s" × 44 → "44 cuts added"
+            m = re.match(r"^cuts? (added|removed|moved)\b", line.strip())
+            if m:
+                kinds[m.group(1)] = kinds.get(m.group(1), 0) + 1
+            else:
+                rest.append(line)
+        if kinds:
+            lines.append("  cut points: " + " · ".join(f"{n} {what}" for what, n in kinds.items()))
+        lines += rest[:10] + ([f"  … {len(rest) - 10} more clip lines"] if len(rest) > 10 else [])
+        if kinds or len(rest) > 10:
+            lines.append("  (every line: timelines check TL --all · timelines diff TL)")
+        orphans = sum(1 for p in self.blocking if p.startswith("orphan"))
+        lines.append(f"  {orphans} orphan(s) · {len(self.blocking)} to fix before publishing")
         lines += self.brief()[1:]
         return "\n".join(lines)
 
@@ -3574,7 +3624,7 @@ for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "e
               "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep"):
     setattr(Clip, _name, _journaled(getattr(Clip, _name), "clip"))
 for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
-              "fill_slot", "fill_standins", "declare_gaps"):
+              "fill_slot", "fill_standins", "declare_gaps", "adopt"):
     setattr(Checkout, _name, _journaled(getattr(Checkout, _name), "checkout"))
 for _name in ("replace", "set_gap_after"):
     setattr(Voice, _name, _journaled(getattr(Voice, _name), "voice"))
