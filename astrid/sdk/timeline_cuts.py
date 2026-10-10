@@ -284,13 +284,49 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "deliberate_hold": cut["deliberate_hold"],
             "sequence": cut.get("sequence"),
         })
+    labelled = _chapter_labels(bundle, rows, end_of_timeline)
     return {
         "fps": fps,
         "duration": round(end_of_timeline, 6),
-        "shots": chapters,
+        "shots": labelled or chapters,
         "rows": rows,
         "word_sources": word_sources,
     }
+
+
+def _chapter_labels(bundle: Mapping[str, Any], rows: list[dict[str, Any]], end: float) -> list[dict[str, Any]]:
+    """Chapters as labels (``parent.config.chapters``: each starts at a cut id) instead of shots.
+
+    Renames each row's ``shot`` to its chapter and returns the chapter list; empty when the
+    timeline has no labels (then chapters are its shots, as before)."""
+    table = _list(_map(_map(bundle.get("parent")).get("config")).get("chapters"))
+    starts = {str(_map(row).get("from")): str(_map(row).get("name")) for row in table if _map(row).get("from")}
+    if not starts:
+        return []
+    out: list[dict[str, Any]] = []
+    current = None
+    for row in rows:
+        cut_id = None
+        base = _cut_clip(bundle, row)
+        if base is not None:
+            cut_id = _map(base.get("app")).get("cut")
+        if cut_id in starts:
+            current = starts[cut_id]
+            if out:
+                out[-1]["end"] = row["start"]
+            out.append({"shot_id": row["shot_id"], "occurrence_id": row["occurrence_id"], "name": current,
+                        "start": row["start"], "end": end})
+        if current is not None:
+            row["shot"] = current
+    return out
+
+
+def _cut_clip(bundle: Mapping[str, Any], row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    shot = _map(_map(bundle.get("shots")).get(str(row.get("shot_id"))))
+    for clip in _list(_map(shot.get("internal_timeline")).get("clips")):
+        if isinstance(clip, Mapping) and clip.get("id") == row.get("clip_id"):
+            return clip
+    return None
 
 
 def _parse_range(value: str) -> tuple[float, float]:
@@ -483,11 +519,13 @@ def render_summary(
         lines.append(title)
     duration = float(table.get("duration") or 0)
     lines.append(
-        f"{_clock(duration)} ({timecode(duration, fps)}) at {fps:g} fps · {len(table.get('shots') or [])} shots · "
+        f"{_clock(duration)} ({timecode(duration, fps)}) at {fps:g} fps · {len(table.get('shots') or [])} chapters · "
         f"{len(rows)} cuts"
     )
     for number, shot in enumerate(table.get("shots") or [], start=1):
-        members = [row for row in rows if row["occurrence_id"] == shot["occurrence_id"]]
+        # a chapter is its rows in time (a label over cuts, or a shot's occurrence)
+        members = [row for row in rows if shot["start"] - 1e-6 <= row["start"] < shot["end"] - 1e-6
+                   and row["occurrence_id"] == shot["occurrence_id"]]
         said = next((row["say"] for row in members if row.get("say")), "")
         first = (said[:words_chars] + "…") if len(said) > words_chars else said
         lines.append(
