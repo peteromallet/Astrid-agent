@@ -367,7 +367,8 @@ def _safe_note(box: dict[str, Any]) -> str:
     return "inside title-safe" if over[side] <= 2 else f"{over[side]:.0f} px outside title-safe ({side})"
 
 
-def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: str = "P") -> str:
+def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: str = "P", full: bool = False,
+                    keys: Any = None) -> str:
     """The complete record of a target, as plain text: nothing truncated, every time resolved."""
     import json
 
@@ -401,6 +402,16 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         else:
             end_rule = "its own length"
         out.append(f"  ends    {clip.end:8.3f} s   {end_rule}   ({clip.duration:.3f} s, frames {clip.start_frame}–{clip.end_frame})")
+        tag = intent.sequence(clip.data)
+        if tag is not None:  # a step: the whole sequence is the unit that moves and fits
+            seq = tl.sequence(tag[0])
+            steps = seq.steps
+            head = steps[0].data
+            shaped = intent._app(head).get("sequence_shape_from")
+            out.append(f"  sequence {tag[0]}: step {tag[1] + 1} of {len(steps)} · {steps[0].start:.2f}–{steps[-1].end:.2f} s"
+                       + (f" · until {intent.until(head)}" if intent.until(head) else " · fills its cut")
+                       + (f" · shape from {shaped}" if shaped else "")
+                       + f"   (fit it: --clip {clip.address} --fit-sequence --on … --until …)")
         if clip.asset:
             entry = tl._registry(clip.shot_id).get(clip.asset) or {}
             media = entry.get("media_id") or entry.get("content_sha256") or ""
@@ -421,10 +432,19 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         out.append("  params  (every one, as you write them: positions in canvas px; ƒ = computed by a formula; "
                    "address one with " + f"{clip.address}.KEY)")
         width = max([len(k) for k in params] + [6])
+        wanted = {k.strip() for k in str(keys).split(",") if k.strip()} if keys else None
+        elided = 0
         for key in sorted(params):
+            if wanted is not None and key not in wanted:
+                continue
             value = to_canvas(clip.element, key, params[key])
             exact = formulas.get(f"params.{key}")
-            shown = (f"{formula_short(exact, clip.element)} = " if exact else "") + json.dumps(value, ensure_ascii=False)
+            text = json.dumps(value, ensure_ascii=False)
+            if not full and wanted is None and isinstance(value, (list, dict)) and len(text) > 240:
+                count = f"{len(value)} items" if isinstance(value, list) else f"{len(value)} keys"
+                text = f"[{count}: {text[:80]}…]   (all of it: --full, or --keys {key})"
+                elided += 1
+            shown = (f"{formula_short(exact, clip.element)} = " if exact else "") + text
             kind = _type_of(props[key]) if key in props else type(value).__name__.replace("str", "string").replace("dict", "object").replace("list", "array")
             from astrid.sdk.timeline_checkout import param_unit
 
@@ -653,6 +673,13 @@ def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: s
     (``claw``), on-screen text, or an asset key: every kind that matches. ``text=``: only on-screen text.
     ``asset=``: only assets (key, or part of it, any case)."""
     found: list[Found] = []
+    if query and mo.CUT_ID_RE.match(query.strip().lower()) and (tl._cut_id(query.strip()) in tl._cut_spans()):
+        cid = tl._cut_id(query.strip())
+        lo, hi = tl._cut_spans()[cid]
+        hi = hi if hi is not None else tl.duration
+        found.append(Found("cut", cid, lo, hi, cut=cid, detail=f"{len([c for c in tl.clips() if intent.cut_of(c.data) == cid])} layer(s)",
+                           clips=_on_screen(tl, lo, hi)))
+        return found
     if query:
         found += _find_spoken(tl, query) + _find_layers(tl, query) + _find_text(tl, query) + _find_assets(tl, query)
     if text:
@@ -780,14 +807,16 @@ def describe_found(tl: Any, found: list[Found], *, timeline: str = "TL", project
         span = f"{item.start:.2f}–{item.end:.2f} s"
         chapter = chapter_of.get(item.cut) if item.cut else None
         cut = (f" · in {item.cut}" + (f" ({chapter})" if chapter else "")) if item.cut else ""
-        if item.kind == "spoken":
+        if item.kind == "cut":
+            lines.append(f"cut    {item.address}  · {span}{(' (' + chapter + ')') if chapter else ''} · {item.detail}")
+        elif item.kind == "spoken":
             lines.append(f'heard  {item.address}  · {span} · line {item.line}, words {item.words}{cut}')
         elif item.kind == "asset":
             lines.append(f"asset  {item.address}  · {item.detail}" + (f" · {span}" if item.clips else ""))
         else:
             lines.append(f"{'seen ' if item.kind == 'text' else 'layer'}  {item.address}  · {span}{cut} · {item.detail}")
         width = max([len(c.address) for c in item.clips] + [8])
-        shown = item.clips if item.kind in ("spoken", "asset") else []  # a layer or text hit IS its clip
+        shown = item.clips if item.kind in ("spoken", "asset", "cut") else []  # a layer or text hit IS its clip
         for clip in shown[:12]:
             lines.append(f"         {clip.address:<{width}}  {clip.element:<14} {clip.start:7.2f}–{clip.end:.2f} s"
                          + (f"  {clip.asset}" if clip.asset else "") + (f'  "{clip.text[:30]}"' if clip.text else ""))

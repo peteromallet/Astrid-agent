@@ -262,3 +262,28 @@ def test_detail_prints_long_values_as_editable_json_and_round_trips():
     assert 'inset={"top":120,"left":64,"right":64,"bottom":40}' in sheet and apply_sheet(tl, sheet) == []
     apply_sheet(tl, sheet.replace('"top":120', '"top":90'))
     assert card.params["inset"]["top"] == 90
+
+
+def test_a_cuts_notes_belong_to_the_cut_when_its_picture_changes():
+    """Repro (c18): a why written while churn was the picture; churn moves to fx and another clip becomes the
+    picture; a new why must be written, shown and diffed, and the hold must follow the picture role."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    old_pic = tl.cut_picture("c2")
+    old_pic.data["app"]["why"] = "the old note, on the old picture"  # how notes used to be kept
+    old_pic.data["app"]["deliberate_hold"] = True
+    tl.add("am-snap-plate", at=4.0, layer="lead", asset="P", track="plate")
+    old_pic.set_track("type")  # the picture role moves to the new plate
+    tl.retime()
+    assert tl.cut_picture("c2").data is not old_pic.data
+    assert tl.cut_note("c2") == {"why": "the old note, on the old picture", "hold": "deliberate"}
+    assert intent.deliberate(tl.cut_picture("c2").data) and not intent.deliberate(old_pic.data)  # follows the role
+    before = Checkout(json.loads(json.dumps(tl.bundle)))
+    tl.set_cut_note("c2", why="s19: the new note")
+    assert tl.cut_note("c2")["why"] == "s19: the new note" and "why: s19: the new note" in render_sheet(tl)
+    from astrid.sdk.timeline_checkout import describe_changes
+    assert any("c2" in line and "why note" in line for line in describe_changes(before, tl))
+    assert intent.cut_notes(tl.bundle)["c2"]["why"] == "s19: the new note" and not intent.why(old_pic.data)

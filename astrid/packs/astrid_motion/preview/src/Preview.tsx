@@ -1,23 +1,5 @@
 import type {ReactElement} from 'react';
 import {AbsoluteFill, Img, Sequence, useVideoConfig} from 'remotion';
-import AmSnapPlate from '../../elements/effects/am-snap-plate/component';
-import AmSprite from '../../elements/effects/am-sprite/component';
-import AmType from '../../elements/effects/am-type/component';
-import AmCallout from '../../elements/effects/am-callout/component';
-import AmPixelWipe from '../../elements/effects/am-pixel-wipe/component';
-import AmPresenter from '../../elements/effects/am-presenter/component';
-import AmDiscord from '../../elements/effects/am-discord/component';
-import AmFlap from '../../elements/effects/am-flap/component';
-import AmUiSketch from '../../elements/effects/am-ui-sketch/component';
-import AmBurst from '../../elements/effects/am-burst/component';
-import AmFootage from '../../elements/effects/am-footage/component';
-import AmTweet from '../../elements/effects/am-tweet/component';
-import AmQuote from '../../elements/effects/am-quote/component';
-import AmTerminal from '../../elements/effects/am-terminal/component';
-import AmDroste from '../../elements/effects/am-droste/component';
-import AmSeasons from '../../elements/effects/am-seasons/component';
-import AmOrbit from '../../elements/effects/am-orbit/component';
-import AmOrgchart from '../../elements/effects/am-orgchart/component';
 import {elementSource, type ElementComponentProps} from '../../elements/_shared/am';
 
 // Control: the same plate through a plain <Img> with no pixelated style. It shows
@@ -33,25 +15,13 @@ const ControlPlain = (props: ElementComponentProps): ReactElement | null => {
 };
 
 type Comp = (props: ElementComponentProps) => ReactElement | null;
+
+// Every element of the pack, found by the bundler (webpack's require.context): a new element is
+// previewable as soon as its folder exists. No hand-kept list (one used to drop am-churn silently).
+declare const require: {context: (dir: string, deep: boolean, match: RegExp) => {keys: () => string[]; (key: string): {default: Comp}}};
+const elements = require.context('../../elements/effects', true, /^\.\/am-[a-z0-9-]+\/component\.tsx$/);
 const REGISTRY: Record<string, Comp> = {
-  'am-snap-plate': AmSnapPlate,
-  'am-sprite': AmSprite,
-  'am-type': AmType,
-  'am-callout': AmCallout,
-  'am-pixel-wipe': AmPixelWipe,
-  'am-presenter': AmPresenter,
-  'am-discord': AmDiscord,
-  'am-flap': AmFlap,
-  'am-ui-sketch': AmUiSketch,
-  'am-burst': AmBurst,
-  'am-footage': AmFootage,
-  'am-tweet': AmTweet,
-  'am-quote': AmQuote,
-  'am-terminal': AmTerminal,
-  'am-droste': AmDroste,
-  'am-seasons': AmSeasons,
-  'am-orbit': AmOrbit,
-  'am-orgchart': AmOrgchart,
+  ...Object.fromEntries(elements.keys().map((key) => [key.split('/')[1], elements(key).default])),
   'control-plain': ControlPlain,
 };
 
@@ -67,7 +37,10 @@ export const Preview = ({layers, assets}: SceneProps): ReactElement => {
     <AbsoluteFill style={{backgroundColor: '#F7F4ED'}}>
       {layers.map((layer, index) => {
         const Component = REGISTRY[layer.element];
-        if (!Component) return null;
+        if (!Component) {
+          // never a silent blank: say which element, and which exist
+          throw new Error(`preview: no element ${layer.element}; elements: ${Object.keys(REGISTRY).sort().join(', ')}`);
+        }
         const params = layer.params ?? {};
         const clip = {id: 'l' + index, at: layer.at, track: 'fx', clipType: layer.element, hold: layer.hold, asset: layer.asset, params};
         return (

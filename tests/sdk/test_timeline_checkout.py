@@ -709,3 +709,37 @@ def test_type_boxes_are_measured_with_the_fonts_and_check_says_when_text_leaves_
     card.set(text="A very long headline that will not fit", size=120, x=900, width=1600)
     problems = [p for p in tl.check().problems if p.startswith("text")]
     assert problems and "outside title-safe (right)" in problems[0] and "fits" in problems[0]
+
+
+def test_duplicate_is_all_or_nothing(monkeypatch):
+    """A refused duplicate leaves no empty timeline: an invalid head is refused before creating, a failure
+    after creating archives what was created."""
+    from types import SimpleNamespace
+
+    from astrid.sdk import timeline_duplicate as td
+
+    calls = []
+
+    class Timelines:
+        def create_empty(self, **kw):
+            calls.append("create")
+            return SimpleNamespace(ok=True, data={"timeline_id": "dup-1"})
+
+        def archive(self, project, ref):
+            calls.append(f"archive {ref}")
+            return SimpleNamespace(ok=True)
+
+    client = SimpleNamespace(timelines=Timelines())
+    bad = Checkout(bundle())
+    bad.clip("a-rocket").data["params"]["scale"] = '"oops"'  # text in a number: check blocks it
+    monkeypatch.setattr(td.Checkout, "open", classmethod(lambda cls, p, t, client=None: Checkout(copy.deepcopy(bad.bundle))))
+    with pytest.raises(TimelineEditError, match="nothing was created"):
+        td._duplicate(client, "p", "t", slug=None)
+    assert calls == []
+    good = Checkout(bundle())
+    good.check = lambda: SimpleNamespace(valid=True, blocking=[], problems=[])
+    monkeypatch.setattr(td.Checkout, "open", classmethod(lambda cls, p, t, client=None: good))
+    monkeypatch.setattr(td, "copy_content", lambda *a, **k: (_ for _ in ()).throw(TimelineEditError("the copy failed")))
+    with pytest.raises(TimelineEditError, match="archived again"):
+        td._duplicate(client, "p", "t", slug=None)
+    assert calls == ["create", "archive dup-1"]

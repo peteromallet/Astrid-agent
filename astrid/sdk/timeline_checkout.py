@@ -825,6 +825,12 @@ class StepSequence(_Suggest):
                 raise TimelineEditError(f"{name} has no sequence {self.id!r} to take the shape from")
         if frames is not None and len(frames) != len(steps):
             raise TimelineEditError(f"the shape has {len(frames)} steps; {self.id} has {len(steps)}")
+        if shape_from is not None:  # where its shape came from (show says so)
+            other_rev = str((other.bundle.get("base_parent") or {}).get("revision_id") or "")
+            intent._set_or_drop(steps[0].data, "sequence_shape_from",
+                                f"{name}@{other_rev.removeprefix('authoring-parent-revision-')[:8]}" if other_rev else name)
+        elif shape is not None:
+            intent._set_or_drop(steps[0].data, "sequence_shape_from", "a given shape")
         if frames is not None:  # set the shape now: the re-lay keeps it
             first = steps[0]
             self._tl._relay_steps([c.data for c in steps], first.start - self._tl._shot_start(first.shot_id),
@@ -1619,21 +1625,66 @@ class Checkout(_Suggest):
                           + (f"; carried over it: {', '.join(carried)}" if carried else ""))
         return self.cut(new_id)
 
-    def set_cut_note(self, cut: Any, *, why: str | None = None, hold: str | bool | None = None) -> Clip:
-        """A cut's notes, on its picture: ``why`` (why the cut is there; it remembers the cut's layers then,
-        so check can say when it may be stale) and ``hold`` (``"deliberate"``/True: lint's HOLD and STILL
-        leave it alone; ``"off"``/False clears it)."""
+    def set_cut_note(self, cut: Any, *, why: str | None = None, hold: str | bool | None = None) -> dict[str, Any]:
+        """A cut's notes, kept on the CUT (whatever clip is its picture): ``why`` (why the cut is there; it
+        remembers the cut's layers then, so check can say when it may be stale) and ``hold``
+        (``"deliberate"``/True: lint's HOLD and STILL leave it alone; ``"off"``/False clears it)."""
         cid = self._cut_id(str(cut)) or str(cut)
-        pic = self.cut_picture(cid) if re.fullmatch(r"c\d+[a-z]?", cid) else self.cut(cut).picture
-        if pic is None:
-            raise TimelineEditError(f"cut {cut} has no picture to hold its notes")
+        if not any(intent.cut_of(c.data) == cid for c in self.clips()):
+            raise TimelineEditError(self._no_cut(cid))
+        current = self.cut_note(cid)  # an older note kept on a clip moves to the cut now
+        intent.set_cut_note(self.bundle, cid, why=current.get("why"), why_layers=current.get("why_layers"),
+                            hold=current.get("hold"))
+        for clip in self.clips():
+            if intent.cut_of(clip.data) == cid:
+                intent.set_why(clip.data, None)
+                intent._set_or_drop(clip.data, "why_layers", None)
         if why is not None:
-            intent.set_why(pic.data, why or None)
             names = sorted(intent.layer_of(c.data) or c.id for c in self.clips() if intent.cut_of(c.data) == cid)
-            intent._set_or_drop(pic.data, "why_layers", names if why else None)
+            intent.set_cut_note(self.bundle, cid, why=why or None, why_layers=names if why else None)
         if hold is not None:
-            intent.set_deliberate(pic.data, hold in (True, "deliberate", "on", "yes"))
-        return pic
+            intent.set_cut_note(self.bundle, cid, hold="deliberate" if hold in (True, "deliberate", "on", "yes") else None)
+        self._mirror_holds()
+        return self.cut_note(cid)
+
+    def cut_note(self, cut: Any) -> dict[str, Any]:
+        """``{why, why_layers, hold}`` of a cut ({} when it has none)."""
+        cid = self._cut_id(str(cut)) or str(cut)
+        return self.cut_notes_all().get(cid, {})
+
+    def cut_notes_all(self) -> dict[str, dict[str, Any]]:
+        """Every cut's notes: the cut's own (``parent.config.cut_notes``), else an older note on one of its clips
+        (picture first). Read-only: nothing moves until a note is written."""
+        notes = intent.cut_notes(self.bundle)
+        out = {cid: dict(note) for cid, note in notes.items()}
+        for g in self._cut_groups():
+            cid = g["id"]
+            if cid in notes:
+                continue
+            pic = g["picture"]
+            for clip in sorted(g["clips"], key=lambda c: (pic is None or c.data is not pic.data, c.start)):
+                why, layers, held = intent.why(clip.data), intent.why_layers(clip.data), intent.deliberate(clip.data)
+                note = out.setdefault(cid, {})
+                if why and "why" not in note:
+                    note["why"] = why
+                    if layers:
+                        note["why_layers"] = layers
+                if held:
+                    note["hold"] = "deliberate"
+            if not out.get(cid):
+                out.pop(cid, None)
+        return out
+
+    def _mirror_holds(self) -> None:
+        """Lint reads a deliberate hold from a cut's picture: put the cut's hold on whichever clip is its picture
+        now, and on no other clip of the cut."""
+        notes = self.cut_notes_all()
+        for g in self._cut_groups():
+            held = notes.get(g["id"], {}).get("hold") == "deliberate"
+            for clip in g["clips"]:
+                on_it = held and g["picture"] is not None and clip.data is g["picture"].data
+                if intent.deliberate(clip.data) != on_it:
+                    intent.set_deliberate(clip.data, on_it)
 
     def _text_overflow(self) -> list[str]:
         """Type whose measured box leaves title-safe, or has a word wider than its width (the fonts' widths)."""
@@ -1685,36 +1736,39 @@ class Checkout(_Suggest):
         from astrid.sdk.timeline_cuts import base_bundle
 
         out = []
+        notes = self.cut_notes_all()
         try:
             base = Checkout(base_bundle(self.document()))
             then_groups = {g["id"]: g for g in base._cut_groups()}
+            then_notes = base.cut_notes_all()
         except Exception:  # noqa: BLE001
-            then_groups = {}
+            then_groups, then_notes = {}, {}
 
         def signature(clips: Iterable[Clip]) -> list[str]:
             return sorted(f"{intent.layer_of(c.data) or c.id}:{c.element}:{c.asset or ''}" for c in clips)
 
         for g in self._cut_groups():
-            pic = g["picture"]
-            why = intent.why(pic.data) if pic is not None else None
+            note = notes.get(g["id"], {})
+            why = note.get("why")
             old = then_groups.get(g["id"])
-            old_pic = old["picture"] if old else None
-            if why and old and old_pic is not None and intent.why(old_pic.data) == why \
-                    and intent.why_layers(pic.data) is None and signature(old["clips"]) != signature(g["clips"]):
+            if why and old and then_notes.get(g["id"], {}).get("why") == why and not note.get("why_layers") \
+                    and (signature(old["clips"]) != signature(g["clips"])
+                         or (round(old["start"] * self.fps), len(old["clips"])) != (round(g["start"] * self.fps), len(g["clips"]))
+                         or _span_frames(old["clips"], self.fps) != _span_frames(g["clips"], self.fps)):
                 out.append(f"{g['id']}: its why was written before this change; still true? \"{why}\" "
                            f"(edit --cut {g['id']} --why …)")
         for g in self._cut_groups():
-            pic = g["picture"]
-            then = intent.why_layers(pic.data) if pic is not None else None
-            if then is None:
+            note = notes.get(g["id"], {})
+            then = note.get("why_layers")
+            if not then or not note.get("why"):
                 continue
             now = sorted(intent.layer_of(c.data) or c.id for c in g["clips"])
-            if now != then:
+            if now != list(then):
                 gone, new = sorted(set(then) - set(now)), sorted(set(now) - set(then))
                 out.append(f"{g['id']}: its why was written when it had other layers ("
                            + " · ".join(x for x in (f"since added {', '.join(new)}" if new else "",
                                                     f"since removed {', '.join(gone)}" if gone else "") if x)
-                           + f"); still true? \"{intent.why(pic.data)}\" (edit --cut {g['id']} --why …)")
+                           + f"); still true? \"{note['why']}\" (edit --cut {g['id']} --why …)")
         return out
 
     def _note_bare_word(self, moment: Any, clip: Clip) -> None:
@@ -2148,6 +2202,7 @@ class Checkout(_Suggest):
                 start, end = clip.start, None
             self._place(clip, start, end, moved)
         self._mcache = None
+        self._mirror_holds()  # a cut's hold follows its picture role
         return list(moved.values())
 
     # ---- moments: the plumbing ------------------------------------------------
@@ -3487,6 +3542,14 @@ def text_fit_safe_width(box: Mapping[str, Any], width: float) -> float:
     return max(1.0, 1824.0 - float(box["x0"]))
 
 
+def _span_frames(clips: Iterable[Clip], fps: float) -> tuple[int, int]:
+    """A group's picture span in frames (to tell a re-fit from no change)."""
+    clips = list(clips)
+    if not clips:
+        return (0, 0)
+    return (round(min(c.start for c in clips) * fps), round(max(c.end for c in clips) * fps))
+
+
 def _lint_key(line: str) -> str:
     """A finding without its numbers: the same finding on a cut that moved is the same finding."""
     return re.sub(r"[-+]?\d+(?:\.\d+)?", "#", line)
@@ -3556,10 +3619,7 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
             said.append(f"asset {prev.asset} → {clip.asset}")
         if clip.track != prev.track:
             said.append(f"track {prev.track} → {clip.track} (stacking: chrome > type > fx > sprite > plate)")
-        if intent.why(clip.data) != intent.why(prev.data):
-            said.append(f"why: \"{(intent.why(clip.data) or '(none)')[:70]}\"")
-        if intent.deliberate(clip.data) != intent.deliberate(prev.data):
-            said.append("hold: deliberate" if intent.deliberate(clip.data) else "hold: off")
+
         if clip.element != prev.element:
             said.append(f"element {prev.element} → {clip.element}")
         fa, fb = intent.formulas(prev.data), intent.formulas(clip.data)
@@ -3613,6 +3673,15 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:
                 lines.append((c.start, f"✎ {c.address:<{width}}  {c.start - frames / fps:.3f} → {c.start:.3f} s ({secs(frames / fps)})"))
         else:
             lines.append((first.start, f"  {len(clips)} clips moved {secs(frames / fps)} from {first.start - frames / fps:.3f} s on (everything after the change)"))
+    old_notes, new_notes = before.cut_notes_all(), after.cut_notes_all()
+    spans = after._cut_spans()
+    for cid in sorted(set(old_notes) | set(new_notes)):  # a cut's notes: said as the cut's, never a picture change
+        a, b = old_notes.get(cid, {}), new_notes.get(cid, {})
+        at = (spans.get(cid) or (0.0, None))[0]
+        if a.get("why") != b.get("why"):
+            lines.append((at, f"✎ {cid}  why note: \"{(b.get('why') or '(none)')[:70]}\""))
+        if a.get("hold") != b.get("hold"):
+            lines.append((at, f"✎ {cid}  hold: {b.get('hold') or 'off'}"))
     ordered = [text for _t, text in sorted(lines, key=lambda item: item[0])]
     # align the addresses to the widest one actually printed
     cells = [re.match(r"^(\S\s|\s\s)(\S+)\s+(.*)$", t) for t in ordered]
@@ -4126,9 +4195,12 @@ def _units(bundle: Mapping[str, Any], *, whole: bool = False) -> dict[tuple[str,
     """The bundle as mergeable units: every internal clip, every placement row, every parent clip
     (``whole``: also each film setting in ``parent.config`` and each shot's payload, for working-copy saves)."""
     units: dict[tuple[str, ...], Any] = {}
+    for cid, note in intent.cut_notes(bundle).items():  # a cut's notes merge cut by cut, on publish and on save
+        units[("cut-note", cid)] = note
     if whole:
         for key, value in ((bundle.get("parent") or {}).get("config") or {}).items():
-            units[("parent-config", str(key))] = value
+            if key != "cut_notes":
+                units[("parent-config", str(key))] = value
         for sid, shot in (bundle.get("shots") or {}).items():
             units[("payload", str(sid))] = shot.get("payload")
     for row in bundle.get("placements") or []:
@@ -4192,6 +4264,12 @@ def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mappi
                 config[key[1]] = value
         elif kind == "payload" and key[1] in merged.get("shots", {}):
             merged["shots"][key[1]]["payload"] = value
+        elif kind == "cut-note":
+            notes = merged.setdefault("parent", {}).setdefault("config", {}).setdefault("cut_notes", {})
+            if value is None:
+                notes.pop(key[1], None)
+            else:
+                notes[key[1]] = value
     return merged, lines
 
 

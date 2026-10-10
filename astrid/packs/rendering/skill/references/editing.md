@@ -98,6 +98,8 @@ moment): `edit --clip c17.rt-01 --fit-sequence --on 'after "So" in w17' --until 
 `tl.sequence("c17.rt-01").fit(on=…, until=…, shape_from=…)`. check blocks a PICTURE GAP (a span nothing covers).
 A line break in text is JSON: `--set 'text="One\nTwo"'`; look at several moments: `check TL --at A --at B`.
 `lint --only SAFE,FACE` narrows lint; with a working copy it also counts what was resolved since checkout.
+`show TL c18.churn` counts long lists (`highlights: 41 items`); `--full` or `--keys highlights,totals` prints them.
+A cut's `why`/`hold` belong to the cut (they stay when its picture changes). `diff --all` prints every change.
 
 ## The narration (re-flow)
 `timelines edit TL --project P --from-script vo.json --takes DIR` (DIR has `<id>.wav` + `<id>.words.json`;

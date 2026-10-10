@@ -783,7 +783,7 @@ def _change_windows(changes: Sequence[Mapping[str, Any]], *, pad: float = 0.5, j
     return [[round(max(0.0, low - pad), 3), round(high + pad, 3)] for low, high in windows[:limit]]
 
 
-def render_diff(diff: Mapping[str, Any], *, title: str = "", limit: int = 40) -> str:
+def render_diff(diff: Mapping[str, Any], *, title: str = "", limit: int | None = 40) -> str:
     changes = list(diff.get("changes") or [])
     points = _map(diff.get("cut_points"))
     kinds: dict[str, int] = {}
@@ -807,7 +807,7 @@ def render_diff(diff: Mapping[str, Any], *, title: str = "", limit: int = 40) ->
     for point in points.get("removed") or []:
         lines.append(f"  cut removed at {point:.2f} s")
     current = None
-    for change in changes[:limit]:
+    for change in (changes if limit is None else changes[:limit]):
         if change["shot"] != current:
             current = change["shot"]
             lines.append(f"{current}")
@@ -822,7 +822,7 @@ def render_diff(diff: Mapping[str, Any], *, title: str = "", limit: int = 40) ->
             f"  {change['kind']:<8} {change['clip_id']:<28} {change['track']:<7} {span(before)} → {span(after)}{detail}"
             + (f"  ({', '.join(extra)} changed)" if extra else "")
         )
-    if len(changes) > limit:
-        lines.append(f"  … {len(changes) - limit} more (use --json for all)")
+    if limit is not None and len(changes) > limit:
+        lines.append(f"  … {len(changes) - limit} more (--all prints every one; --json for data)")
     return "\n".join(lines)
 

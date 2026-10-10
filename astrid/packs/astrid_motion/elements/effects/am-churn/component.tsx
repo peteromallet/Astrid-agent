@@ -70,7 +70,9 @@ const DATE_GAP = 6;
 
 // Panel layout (logical px, scaled to the box): date at 0, then the two counters.
 const PANEL_SIGN_OFFSET = snapPx(COUNTER_SIZE * 0.36) + 24;
-const PANEL_DIGIT_W = Math.round(COUNTER_SIZE * 0.6);
+// Departure Mono's advance is 7/11 em (measured from the font: 81.45 px at 128 px). The old 0.6 em
+// estimate ran 42 px short on a 9-glyph total ("3,963,147"), and the last digit was cut off.
+const PANEL_DIGIT_W = Math.ceil((COUNTER_SIZE * 7) / 11);
 const PANEL_WRITTEN_LABEL_TOP = 156;
 const PANEL_WRITTEN_TOP = 186;
 const PANEL_DELETED_LABEL_TOP = 346;
@@ -393,6 +395,8 @@ export default function AmChurn(props: ElementComponentProps): ReactElement | nu
     // Panel: date readout and the two counters only, scaled whole into the box
     // on a transparent ground. Natural size is fixed from the totals so the
     // scale does not change from frame to frame.
+    // CONTAIN: the natural box is as wide as the widest total really is (plus its sign), and the panel
+    // scales by the smaller of the two fits, so neither a 7-digit total nor the date is ever cropped.
     const digits = Math.max(formatCount(totals.added).length, formatCount(totals.deleted).length);
     const natW = Math.max(dateStripW, PANEL_SIGN_OFFSET + digits * PANEL_DIGIT_W);
     const scale = Math.min(width / natW, height / PANEL_H);

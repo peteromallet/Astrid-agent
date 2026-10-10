@@ -450,7 +450,7 @@ def _difference(a: Path, b: Path) -> tuple[float, int, tuple[int, int, int, int]
 
 def pixel_line(share: float, count: int, box: tuple[int, int, int, int] | None, size: tuple[int, int],
                canvas: tuple[int, int], *, offset: tuple[int, int] = (0, 0)) -> str:
-    """``pixels: 3.04% differ, box 558,522–1527,723 (969×201 canvas px)``; tiny changes say ``<0.1% (12 px)``."""
+    """``pixels: 3.04% differ, changed area (old ∪ new) 558,522–1527,723 (…)``; tiny changes say ``<0.1% (12 px)``."""
     if not box:
         return "pixels: identical to published"
     amount = f"{share * 100:.2f}%" if share >= 0.001 else f"<0.1% ({count} px)"
@@ -459,7 +459,8 @@ def pixel_line(share: float, count: int, box: tuple[int, int, int, int] | None, 
         sx = sy = 1.0
     x0, y0 = round(offset[0] + box[0] * sx), round(offset[1] + box[1] * sy)
     x1, y1 = round(offset[0] + box[2] * sx), round(offset[1] + box[3] * sy)
-    return f"pixels: {amount} differ, box {x0},{y0}–{x1},{y1} ({x1 - x0}x{y1 - y0} canvas px)"
+    return (f"pixels: {amount} differ, changed area (old ∪ new) {x0},{y0}–{x1},{y1} "
+            f"({x1 - x0}x{y1 - y0} canvas px; where either side differs, not a layer's box)")
 
 
 OPAQUE_KINDS = ("plate", "panel", "card")  # boxes that hide what is under them (sprites and type have holes)

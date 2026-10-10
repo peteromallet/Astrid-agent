@@ -370,6 +370,34 @@ def set_sequence_fit(clip: dict[str, Any], spec: Mapping[str, Any] | None) -> No
 
 
 # ---- chapters: labels over runs of cuts (not containers) -----------------------------
+def cut_notes(bundle: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """``{cut id: {why, why_layers, hold}}``: notes belong to the CUT (``parent.config.cut_notes``), not to
+    whichever clip is its picture today (that changes: a picture moved to another track, a new first step)."""
+    config = (bundle.get("parent") or {}).get("config") or {}
+    value = config.get("cut_notes")
+    return {str(k): dict(v) for k, v in value.items() if isinstance(v, Mapping)} if isinstance(value, Mapping) else {}
+
+
+def set_cut_note(bundle: dict[str, Any], cut_id: str, **fields: Any) -> None:
+    """Set (or, with None, drop) fields of one cut's note: ``why``, ``why_layers``, ``hold`` ("deliberate")."""
+    config = bundle.setdefault("parent", {}).setdefault("config", {})
+    notes = dict(config.get("cut_notes") or {})
+    note = dict(notes.get(cut_id) or {})
+    for key, value in fields.items():
+        if value in (None, "", False, []):
+            note.pop(key, None)
+        else:
+            note[key] = value
+    if note:
+        notes[cut_id] = note
+    else:
+        notes.pop(cut_id, None)
+    if notes:
+        config["cut_notes"] = notes
+    else:
+        config.pop("cut_notes", None)
+
+
 def chapters(bundle: Mapping[str, Any]) -> list[dict[str, str]]:
     """``[{"name": "06 ASTRID", "from": "c30"}, …]``: each chapter starts at a cut."""
     config = (bundle.get("parent") or {}).get("config") or {}

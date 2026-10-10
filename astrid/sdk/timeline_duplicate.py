@@ -145,6 +145,10 @@ def duplicate_timeline(project: str, source: str, *, slug: str | None = None, cl
 
 def _duplicate(client: Any, project: str, source: str, *, slug: str | None) -> dict[str, Any]:
     src = Checkout.open(project, source, client=client)
+    report = src.check()  # all or nothing: refuse an invalid head BEFORE creating anything
+    if not report.valid:
+        raise TimelineEditError(f"not duplicating {source}: its head is not valid ("
+                                + "; ".join((report.blocking or report.problems or ["invalid"])[:3]) + "); nothing was created")
     created = client.timelines.create_empty(
         project=project,
         timeline_id=slug or None,
@@ -169,7 +173,10 @@ def _duplicate(client: Any, project: str, source: str, *, slug: str | None) -> d
         receipt = dst.publish(f"duplicate of {source}", client=client,
                               idempotency_key=f"dup-{uuid.uuid4().hex}")
     except Exception as exc:
-        raise TimelineEditError(f"{exc} (the empty timeline {new_id!r} was created; archive it with "
+        archived = client.timelines.archive(project, new_id)  # all or nothing: the empty timeline goes too
+        if getattr(archived, "ok", False):
+            raise TimelineEditError(f"{exc} (nothing kept: the new timeline {new_id!r} was archived again)") from exc
+        raise TimelineEditError(f"{exc} (the empty timeline {new_id!r} was created and could not be archived: "
                                 f"`timelines archive {new_id} --project {project}`)") from exc
     return {
         "timeline_id": new_id,

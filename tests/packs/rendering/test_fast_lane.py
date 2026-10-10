@@ -189,7 +189,7 @@ def test_verify_makes_one_page_from_two_snapshots_without_the_host(tmp_path, mon
     same, changed = result["rows"]
     assert same["pixels"] == "pixels: identical to published"
     assert (same["published_shows"], same["working_shows"]) == ("the same layers", "the same layers, unchanged")
-    assert changed["pixels"] == "pixels: 1.09% differ, box 300,150–483,273 (183x123 canvas px)"
+    assert changed["pixels"].startswith("pixels: 1.09% differ, changed area (old ∪ new) 300,150–483,273 (183x123 canvas px")
     with Image.open(result["page"]) as page:
         assert page.size[0] == 24 + 2 * (fast_lane.TILE[0] + 12)
     assert not list(Path(result["page"]).parent.glob("*/frames"))  # only the page is kept
@@ -356,7 +356,7 @@ def test_a_few_changed_pixels_read_as_less_than_a_tenth_of_a_percent_with_their_
     share, count, box, size = fast_lane._difference(a, b)
     assert count == 3 and box == (300, 100, 303, 101)
     line = fast_lane.pixel_line(share, count, box, size, (1920, 1080))
-    assert line == "pixels: <0.1% (3 px) differ, box 900,300–909,303 (9x3 canvas px)"
+    assert line.startswith("pixels: <0.1% (3 px) differ, changed area (old ∪ new) 900,300–909,303 (9x3 canvas px")
     assert fast_lane.pixel_line(0.03041, 7000, (10, 10, 20, 20), (640, 360), (1920, 1080)).startswith("pixels: 3.04% differ")
 
 
@@ -459,7 +459,7 @@ def test_verify_with_zoom_crops_both_sides_at_full_resolution(tmp_path, monkeypa
     x0, y0, x1, y1 = zoom["region"]
     with Image.open(zoom["published"]) as crop:
         assert crop.size == (x1 - x0, y1 - y0)  # canvas px, not a thumbnail
-    assert "full resolution" in zoom["label"] and "box 1500,150–1504,153" in zoom["label"]
+    assert "full resolution" in zoom["label"] and "changed area (old ∪ new) 1500,150–1504,153" in zoom["label"]
     assert any(line.strip().startswith("zoom card:") for line in result["lines"])
 
 

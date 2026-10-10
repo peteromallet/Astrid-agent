@@ -47,6 +47,7 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
     groups = tl._cut_groups()
     if not groups:
         return "this timeline has no named cuts yet (import its intent first)\n"
+    notes = tl.cut_notes_all()
     spans = tl._cut_spans()
     wanted = set(cuts) if cuts is not None else None
     picked = [g for g in groups
@@ -120,10 +121,10 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         out += _align(rows)
         for clip in carried.get(g["id"], []):
             out.append(f"         ↳ {clip.address} carries on over this cut (until {clip.end:.2f} s)")
-        why = next((intent.why(c.data) for c in ([pic] if pic else []) + layers if intent.why(c.data)), None)
-        if why:
-            out.append(f"         why: {why}")
-        if pic is not None and intent.deliberate(pic.data):
+        note = notes.get(g["id"], {})
+        if note.get("why"):
+            out.append(f"         why: {note['why']}")
+        if note.get("hold") == "deliberate":
             out.append("         hold: deliberate")
     return "\n".join(out) + "\n"
 
@@ -665,9 +666,10 @@ def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
         pic = group["picture"]
         if cut["on"] is not None and pic is not None and cut["on"] != intent.on(pic.data):
             pic.on(cut["on"])
-        if cut["why"] is not None and pic is not None and cut["why"] != intent.why(pic.data):
+        note = tl.cut_note(cut["id"])
+        if cut["why"] is not None and cut["why"] != note.get("why"):
             tl.set_cut_note(cut["id"], why=cut["why"])
-        if pic is not None and cut.get("hold") is not None and (cut["hold"] == "deliberate") != intent.deliberate(pic.data):
+        if cut.get("hold") is not None and (cut["hold"] == "deliberate") != (note.get("hold") == "deliberate"):
             tl.set_cut_note(cut["id"], hold=cut["hold"] == "deliberate")
         lo, hi = tl._cut_spans()[cut["id"]]
         loose = _loose_in(tl, lo, hi if hi is not None else tl.duration)
@@ -747,7 +749,7 @@ def _add_cut(tl: Any, cut: dict[str, Any]) -> None:
             raise SheetError(_with_text(f"line {layer['line']}: {cut['id']}.{layer['name']}: {exc}", layer["line"],
                                         layer.get("text_line", ""))) from None
     if cut["why"]:
-        intent.set_why(pic.data, cut["why"])
+        tl.set_cut_note(cut["id"], why=cut["why"])
 
 
 def _apply_sound(tl: Any, rows: list[dict[str, Any]]) -> None:

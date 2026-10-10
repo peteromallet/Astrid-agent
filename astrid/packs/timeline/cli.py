@@ -1314,7 +1314,8 @@ def _print_address(parsed: argparse.Namespace, bundle_opener: Any) -> int:
             return 2
     print(banner)
     for k, target in enumerate(targets):
-        text = describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project))
+        text = describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project),
+                               full=bool(getattr(parsed, "full", False)), keys=getattr(parsed, "keys", None))
         print(text if k == len(targets) - 1 else text.split("\nnext:")[0])
     return 0
 
@@ -1763,7 +1764,8 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
     if parsed.json:
         print(json.dumps({"ok": True, "data": diff, "error": None}, indent=2, sort_keys=True))
         return 0
-    lines = [render_diff(diff, title=f"Timeline {after.data.get('timeline_id')}: {old} → {new}")]
+    lines = [render_diff(diff, title=f"Timeline {after.data.get('timeline_id')}: {old} → {new}",
+                         limit=None if getattr(parsed, "all", False) else 40)]
     if commands:
         lines.append("see it: frames of only the changed moments, before and after (no full render):")
         lines.extend(f"  {label}: {command}" for label, command in commands.items())
@@ -1790,7 +1792,8 @@ def _diff_working_copy(parsed: argparse.Namespace, working: Mapping[str, Any]) -
                           "edits": len(working["changes"])}}, "error": None}, indent=2, sort_keys=True))
         return 0
     print(_working_banner(working))
-    print(render_diff(diff, title=f"Timeline {head.data.get('timeline_id')}: {old} → working copy"))
+    print(render_diff(diff, title=f"Timeline {head.data.get('timeline_id')}: {old} → working copy",
+                      limit=None if getattr(parsed, "all", False) else 40))
     return 0
 
 
@@ -3256,8 +3259,10 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "address", nargs="?", default=None,
         help='One thing\'s complete record: a layer (c41.mink), a cut (c30), a word ("Building" in v27), a time, '
-        "an asset key or a layer name. Every param untruncated, the element's allowed keys, moments in seconds.",
+        "an asset key or a layer name. Every param (long lists counted: --full prints them), moments in seconds.",
     )
+    subparser.add_argument("--full", action="store_true", help="With an address: long params (a 41-item list) in full.")
+    subparser.add_argument("--keys", default=None, metavar="K1,K2", help="With an address: only these params, in full.")
     subparser.add_argument(
         "--summary",
         action="store_true",
@@ -3367,6 +3372,7 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
         "--as", dest="as_view", choices=("cuts", "script", "code"), default="cuts",
         help="cuts (default): changed clips and moved cut points. script/code: a unified diff of that view.",
     )
+    subparser.add_argument("--all", action="store_true", help="Every changed clip (by default the first 40, then a count).")
     subparser.add_argument("--from-version", type=int, default=None, help=argparse.SUPPRESS)
     subparser.add_argument("--to-version", type=int, default=None, help=argparse.SUPPRESS)
     _add_json_flag(subparser, default=False)
@@ -4649,10 +4655,17 @@ def _cmd_undo(parsed: argparse.Namespace) -> int:
     tl, existed = _working_copy(parsed, create=False)
     if tl is None:
         raise _VerbError(f"no working copy to undo · next: timelines checkout {parsed.timeline} --project {parsed.project}", 2)
+    from astrid.sdk.timeline_checkout import Checkout, describe_changes
+
+    was = Checkout(copy.deepcopy(tl.bundle))
     undone = tl.undo(parsed.steps)
     print(f"undid {len(undone)} edit(s):")
     for label in undone:
         print(f"  ↶ {label}")
+    restored = describe_changes(was, tl)  # what is back, in the same words as an edit says what it changed
+    print("restored:" if restored else "restored: nothing visible changed")
+    for line in _cap(restored, 20):
+        print(f"  {line}")
     print(f"the working copy now has {_clips_changed(len(tl.edits().get('changes') or []))} (unpublished)")
     print(f"next: timelines redo {parsed.timeline} --project {parsed.project} (put it back)   ·   timelines status {parsed.timeline} --project {parsed.project}")
     return 0

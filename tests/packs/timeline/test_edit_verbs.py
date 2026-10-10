@@ -416,6 +416,7 @@ def test_undo_is_one_edit_per_step_and_redo_goes_forward(tmp_path, monkeypatch, 
     assert _run("undo", "t", "--project", "P") == 0
     out = capsys.readouterr().out
     assert "undid" in out and "nudge" in out and start() == 30 + 42  # exactly one edit back
+    assert "restored:" in out and "a-rocket" in out and "2.500 → 2.400" in out  # what is back, not the flags
     assert _run("undo", "t", "13", "--project", "P") == 0
     assert start() == 30 + 3
     assert _run("redo", "t", "--project", "P", "--steps", "2") == 0
@@ -489,11 +490,11 @@ def test_a_cut_takes_a_why_and_a_deliberate_hold_and_a_stale_why_is_flagged(tmp_
     assert _run("edit", "--file", str(path), "--cut", "c1", "--hold", "deliberate", "--why", "a reading hold") == 0
     tl = Checkout.load(path)
     pic = tl.cut_picture("c1")
-    assert is_deliberate(pic.data) and intent.why(pic.data) == "a reading hold"  # lint reads is_deliberate
+    assert is_deliberate(pic.data) and tl.cut_note("c1")["why"] == "a reading hold"  # lint reads is_deliberate
     sheet = render_sheet(tl)
     assert "hold: deliberate" in sheet and apply_sheet(tl, sheet) == []
     apply_sheet(tl, sheet.replace("hold: deliberate", "hold: off"))
-    assert not intent.deliberate(tl.cut_picture("c1").data)
+    assert not intent.deliberate(tl.cut_picture("c1").data) and "hold" not in tl.cut_note("c1")
     tl.clip("c1.rocket").remove()
     assert any(p.startswith("why     c1: its why was written") for p in tl.check().problems)
 
