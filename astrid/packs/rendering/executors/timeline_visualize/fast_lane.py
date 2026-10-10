@@ -232,43 +232,18 @@ def host_renderer_env(pid: int | None) -> dict[str, str]:
     After a host restart there may be no frame-owner record yet; the host process itself
     always has the settings its captures use, so the fast lane reads them there.
     """
+    from astrid.core.rendering.node_pin import process_env
     from astrid.packs.rendering.backends.remotion.run import OWNER_IDENTITY_ENV
 
-    if not pid or sys.platform not in ("darwin", "linux"):
-        return {}
-    try:
-        done = subprocess.run(["ps", "-E", "-ww", "-p", str(int(pid)), "-o", "command="] if sys.platform == "darwin"
-                              else ["cat", f"/proc/{int(pid)}/environ"], capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    text = done.stdout.replace("\0", " ")
-    found = {}
-    for name in OWNER_IDENTITY_ENV:
-        match = re.search(rf"(?:^|\s){name}=(\S+)", text)
-        if match:
-            found[name] = match.group(1)
-    return found
+    return process_env(pid, OWNER_IDENTITY_ENV)
 
 
 def pinned_node(checkout: Path) -> str | None:
-    """A Node on PATH (or nvm) whose version is the Remotion project's ``engines.node`` pin."""
-    try:
-        pin = json.loads((checkout / "remotion" / "package.json").read_text(encoding="utf-8"))["engines"]["node"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    wanted = "v" + str(pin).lstrip("=v^~ ")
-    candidates = [Path(d) / "node" for d in os.environ.get("PATH", "").split(os.pathsep) if d]
-    candidates.append(Path.home() / ".nvm" / "versions" / "node" / wanted / "bin" / "node")
-    for node in candidates:
-        if not node.is_file():
-            continue
-        try:
-            version = subprocess.run([str(node), "--version"], capture_output=True, text=True, timeout=5).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if version == wanted:
-            return str(node)
-    return None
+    """The Node the Remotion project pins (core/rendering/node_pin: the one resolver)."""
+    from astrid.core.rendering.node_pin import resolve_pinned_node
+
+    found = resolve_pinned_node(checkout / "remotion")
+    return str(found.path) if found.ok else None
 
 
 def worker_environment(checkout: Path, *, host_pid: int | None = None) -> tuple[dict[str, str], str]:
@@ -303,6 +278,10 @@ def worker_environment(checkout: Path, *, host_pid: int | None = None) -> tuple[
         source += f"; Node {node} by the project's version pin"
     env["PYTHONPATH"] = str(checkout)
     env.setdefault("ASTRID_INTERNAL_INVOCATION", "1")
+    if host_pid and live:  # an owner this starts belongs to the running host and stops with it
+        from astrid.packs.rendering.backends.remotion.run import OWNER_HOST_ENV
+
+        env[OWNER_HOST_ENV] = str(host_pid)
     return env, source
 
 

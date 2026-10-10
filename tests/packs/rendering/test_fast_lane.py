@@ -131,6 +131,9 @@ def test_the_worker_reproduces_the_hosts_renderer_from_its_owner_record(tmp_path
 
     monkeypatch.setattr(remotion_run, "owner_records", lambda project_dir: [])
     monkeypatch.delenv("ASTRID_NODE_EXECUTABLE")
+    (checkout / "remotion" / "package.json").write_text(json.dumps({"engines": {"node": "=20.19.4"}}))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     with pytest.raises(FastLaneError, match="ASTRID_NODE_EXECUTABLE"):
         fast_lane.worker_environment(checkout)
 

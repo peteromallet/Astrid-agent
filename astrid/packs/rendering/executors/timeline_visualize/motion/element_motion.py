@@ -39,12 +39,14 @@ class Unavailable(RuntimeError):
 
 
 def _runtime() -> tuple[str, Path]:
-    node = (os.environ.get("ASTRID_NODE_EXECUTABLE") or "").strip() or shutil.which("node")
-    if not node or not Path(node).is_file():
-        raise Unavailable("no Node (ASTRID_NODE_EXECUTABLE unset)")
+    from astrid.core.rendering.node_pin import resolve_pinned_node
     from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
 
     project = resolve_remotion_project_dir()
+    found = resolve_pinned_node(project, override=(os.environ.get("ASTRID_NODE_EXECUTABLE") or "").strip() or None)
+    if not found.ok:
+        raise Unavailable(f"no Node: {found.problem}")
+    node = str(found.path)
     if not (project / "node_modules" / "esbuild").is_dir():
         raise Unavailable(f"no esbuild in {project}")
     return node, project

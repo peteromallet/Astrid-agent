@@ -81,13 +81,14 @@ def test_source_profile_provisions_explicit_render_runtime(monkeypatch, tmp_path
     )
     schema.mkdir(parents=True)
     (schema / "__init__.py").write_text("", encoding="utf-8")
-    (remotion / "package.json").write_text("{}", encoding="utf-8")
-    node = tmp_path / "node"
-    node.write_text("", encoding="utf-8")
+    (remotion / "package.json").write_text('{"engines": {"node": "=20.19.4"}}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    node = bin_dir / "node"
+    node.write_text("#!/bin/sh\necho v20.19.4\n", encoding="utf-8")
     node.chmod(0o700)
-    monkeypatch.setattr("astrid.sdk.host_bootstrap.shutil.which", lambda *_args, **_kwargs: str(node))
 
-    child_env = {"PATH": "/usr/bin"}
+    child_env = {"PATH": str(bin_dir)}
     _provision_render_runtime_env(source, child_env)
 
     assert child_env["ASTRID_REMOTION_PROJECT_DIR"] == str(remotion.resolve())
