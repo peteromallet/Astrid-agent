@@ -25,9 +25,11 @@ with AstridClient.open_from_launcher() as client:  # optional: sdk.invoke opens 
                          inputs={"image": "run:<run_id>/generated_images#0", "grid_width": 48, "grid_height": 48, "fit": "none"})
     cutout = sdk.invoke("pixel.cutout", kind="executor", project="almost-ready", client=client, wait=True,
                         inputs={"image": "run:<run_id>/generated_images#0", "mode": "flat", "grid": "48x48", "fit": "none"})
+    snapped.raise_for_error()  # wait=True returns normally for a FAILED task; this raises with the reason
     print(snapped)  # native[0]  run:<run_id>/native#0  <viewable local path>
     loop = sdk.invoke("pixel.strip", kind="executor", project="almost-ready", client=client, wait=True,
                       inputs={"frame": [snapped.output("native"), "run:<other_run_id>/native#0"]})  # 2+ handles
+    loop.raise_for_error()
 ```
 
 Invocations are admitted as tasks. Identical inputs reuse the existing task,
@@ -40,7 +42,7 @@ region first, for example a character pose out of a reference sheet.
 
 | Executor | What it does |
 |---|---|
-| `pixel.snap` | Mode-downsamples onto an explicit grid (`grid_width`/`grid_height`, `fit`) or a detected lattice (`auto_grid`). Optional `palette` (`astrid` preset or hex list) or `max_colors`. Outputs `native` (grid size), `preview` (scaled), `report`. |
+| `pixel.snap` | Mode-downsamples onto an explicit grid (`grid_width`/`grid_height`, `fit`) or a detected lattice (`auto_grid`). Optional `palette` (`astrid` preset, comma-separated hex string, or a list of hex colours) or `max_colors`. Outputs `native` (grid size), `preview` (scaled), `report`. |
 | `pixel.cutout` | Removes a background (`chroma`, `flat`, or `luma`) into hard alpha. Inputs: `image`, `crop`, `mode` (default `chroma`), `key` (`#FF00FF`), `tolerance` (48), `grid` (none; `auto` or `WxH`), `fit` (`contain`, read only with `grid`), `trim` (`true`), `trim_padding` (2), `keep_largest` (`true`), `holes` (`false`). Trims to the subject by default. Outputs `cutout` (RGBA) and `report`. Full table in `executors/cutout/STAGE.md`. |
 | `pixel.strip` | Joins an ordered list of same-grid frame handles (`frame`, repeatable) into one horizontal strip on a shared grid (`grid_width`/`grid_height`, `fit`, `palette`/`max_colors`). Outputs `strip` (PNG) and `metadata` (JSON, with `am_sprite_frames` for `am-sprite`'s `frames` param). Keep the loop by handle; regenerate nothing. |
 

@@ -185,7 +185,8 @@ with AstridClient.open_from_launcher() as client:
         matches = json.loads(client.media.read_bytes(artifact["digest"]))
 ```
 
-Check `result.ok` and the runtime result/artifacts. The module-level SDK
+Check `result.ok` and the runtime result/artifacts. `sdk.invoke(..., wait=True)` returns
+normally for a FAILED task, so call `result.raise_for_error()` when the script must stop. The module-level SDK
 helper requires a connected `client`; importing `astrid.sdk` alone does not
 connect or start a runtime.
 
