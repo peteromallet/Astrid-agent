@@ -36,7 +36,7 @@ keeping the low-resolution badge readable.
 
 | User intent | Read and use | Typical entrypoints |
 | --- | --- | --- |
-| Generate an image, video, or audio asset from a prompt | [generation](../../../generation/skill/SKILL.md) | `generation.generate_image`, `generation.generate_video`, `generation.generate_audio` |
+| Generate an image, video, or audio asset from a prompt | [generation](../../../generation/skill/SKILL.md) | `generation.generate_image`, `generation.generate_video`, `generation.generate_audio`. Image inputs: `count` (no `n`/`num_images`), `size`, `quality`, `background`, `execution`; codex references take `references=[{ref, role}]` with roles `source`, `character`/`style`, `brand`. Validate any request first with `sdk.invoke(..., dry_run=True)`, which binds inputs and admits nothing. See [generate_image](../../../generation/executors/generate_image/STAGE.md) for every input and default |
 | Make true pixel art from a generated image, or cut it out with transparency | [pixel](../../../pixel/skill/SKILL.md) | `pixel.snap`, `pixel.cutout`, `pixel.strip` |
 | Generate chiptune music or retro sound effects | [chiptune](../../../chiptune/skill/SKILL.md) | `chiptune.compose` (music WAV plus beat grid JSON), `chiptune.sfx` (one-shot WAV or batch zip) |
 | Speech / voiceover: narration from exact words, with word timing | [generation](../../../generation/skill/SKILL.md), then [rendering placeholder voiceover](../../../rendering/skill/references/placeholder-voiceover.md) to place it | `generation.generate_speech` (also `generation.generate_audio` with `mode="tts"`); returns `speech`, `speech_manifest`, `speech_words` |

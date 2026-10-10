@@ -47,6 +47,30 @@ def _feature_is_missing(feature: str, value: Any) -> bool:
     return False
 
 
+def _unknown_model_message(registry: Any, model: Any, execution: str, exc: Exception) -> str:
+    """Explain a failed (model, mode) lookup, naming the models valid on *execution*.
+
+    A known model with an unsupported mode keeps the registry's own message.
+    An unknown model lists only the catalog cells that *execution* can run
+    (the registry's full list mixes in routes the caller cannot use).
+    """
+    try:
+        registry.get(model)
+        return str(exc)
+    except (KeyError, TypeError, AttributeError):
+        pass
+    routes = getattr(registry, "modes_for_route", None)
+    if routes is None or not isinstance(execution, str):
+        return str(exc)
+    valid = routes(execution)
+    listing = "; ".join(f"{name} ({'/'.join(modes)})" for name, modes in sorted(valid.items()))
+    return (
+        f"Unknown model {model!r} for execution {execution!r}. "
+        f"Models valid on that route (model (mode)): {listing or 'none'}. "
+        "The model label picks the catalog cell; the Codex route chooses the actual image model."
+    )
+
+
 def validate_generation_request(
     registry: Any,
     *,
@@ -87,7 +111,7 @@ def validate_generation_request(
     try:
         entry, mode_spec = registry.get_by_mode(model, mode)
     except (KeyError, TypeError, AttributeError) as exc:
-        raise CapabilityValidationError(str(exc)) from exc
+        raise CapabilityValidationError(_unknown_model_message(registry, model, execution, exc)) from exc
 
     if modality is not None and getattr(entry, "modality", None) != modality:
         raise CapabilityValidationError(

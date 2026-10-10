@@ -2887,6 +2887,16 @@ def invoke(
             raise CapabilityValidationError("idempotency_context must be an object")
         invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
     if capability.id == "generation.generate_image_codex":
+        # Catch undeclared inputs (e.g. n=, num_images=) before admission, so
+        # dry_run reports them; the host would otherwise refuse after a ledger row.
+        declared_inputs = tuple(str(port.name) for port in (getattr(capability, "inputs", ()) or ()))
+        undeclared = sorted(str(key) for key in request_inputs if str(key) not in declared_inputs)
+        if undeclared:
+            hint = "; use count (not n/num_images) for the image count" if set(undeclared) & {"n", "num_images"} else ""
+            raise CapabilityValidationError(
+                f"undeclared parameter(s): {', '.join(undeclared)}. "
+                f"Declared inputs: {', '.join(declared_inputs)}{hint}"
+            )
         count = request_inputs.get("count", 1)
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:
             raise CapabilityValidationError("Codex count must be an integer between 1 and 4")

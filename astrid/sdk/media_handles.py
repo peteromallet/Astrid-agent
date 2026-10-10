@@ -203,7 +203,10 @@ def _row_lineage(row: Mapping[str, Any]) -> dict[str, Any]:
 def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve one handle to ``(descriptor, lineage)`` inside *project*."""
     if client is None or not project:
-        raise MediaHandleError("resolving a media handle needs client= and project=")
+        raise MediaHandleError(
+            "resolving a media handle needs client= and project= "
+            "(on the CLI pass --project PROJECT; the handle is resolved inside that project)"
+        )
     if isinstance(value, Mapping) and "ref" in value:
         value = value["ref"]
     lineage: dict[str, Any]
@@ -249,6 +252,27 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
     return descriptor, {"handle": handle, "digest": digest, **lineage}
 
 
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"})
+
+
+def _local_file_hint(ref: Any) -> str | None:
+    """Return the import hint when a reference names a local file, else ``None``.
+
+    Local files are not accepted directly: the managed media store must hold
+    them first, so the hint names the exact import command.
+    """
+    if not isinstance(ref, str) or not ref or is_media_handle(ref):
+        return None
+    path = Path(ref).expanduser()
+    looks_like_file = path.suffix.lower() in _IMAGE_SUFFIXES or ref.startswith(("/", "~", "./", "../"))
+    if not (looks_like_file or path.exists()):
+        return None
+    return (
+        f"{ref!r} is a local file, not a project reference; import it first: "
+        f"python -m astrid media import {ref} --project P, then pass the imported name or its sha256 digest"
+    )
+
+
 def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str, Any]]:
     """Move ``references=[...]`` onto the capability's ports (pure, no I/O)."""
     entries = inputs.pop("references", None)
@@ -262,6 +286,7 @@ def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str
         if str(getattr(port, "type", "")).lower() == "file"
     }
     supported = [role for role, port in REFERENCE_ROLES.items() if port in file_ports]
+    table = ", ".join(f"{role}->{REFERENCE_ROLES[role]}" for role in supported)
     planned: list[dict[str, Any]] = []
     taken: dict[str, str] = {}
     for index, entry in enumerate(entries):
@@ -275,16 +300,20 @@ def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str
         if port is None or port not in file_ports:
             raise MediaHandleError(
                 f"role {role!r} is not available on {getattr(capability, 'id', 'this capability')}; "
-                f"roles here: {', '.join(supported) or 'none'}"
+                f"roles here: {', '.join(supported) or 'none'} (slots: {table or 'none'})"
                 + ("" if supported else " (use execution='codex' for reference roles)")
             )
         if port in taken or inputs.get(port) is not None:
             other = taken.get(port, port)
             raise MediaHandleError(
-                f"roles {other!r} and {role!r} both use the {port} slot; pass one of them"
+                f"roles {other!r} and {role!r} both use the {port} slot; pass one of them. "
+                f"Valid roles and slots: {table}. 'character' and 'style' share the style_ref slot."
             )
         taken[port] = role
         handle = entry["ref"]
+        local_hint = _local_file_hint(handle)
+        if local_hint is not None:
+            raise MediaHandleError(local_hint)
         if isinstance(handle, str) and not is_media_handle(handle):
             handle = "ref:" + handle  # a bare name inside references= is a reference name
         inputs[port] = handle

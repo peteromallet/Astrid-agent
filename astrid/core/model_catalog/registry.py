@@ -100,6 +100,21 @@ class ModelRegistry:
             entries = [e for e in entries if not e.closed]
         return entries
 
+    def modes_for_route(self, execution: str) -> dict[str, tuple[str, ...]]:
+        """Map each model id to the modes that declare *execution* as a backend.
+
+        Used to explain an unknown model on a given route (for example
+        ``codex``) with only the models that route can actually run.
+        """
+        routes: dict[str, tuple[str, ...]] = {}
+        for entry in self.list_all():
+            modes = tuple(
+                sorted(name for name, spec in entry.modes.items() if execution in spec.backends)
+            )
+            if modes:
+                routes[entry.id] = modes
+        return routes
+
     # -- loading ---------------------------------------------------------
 
     @classmethod
