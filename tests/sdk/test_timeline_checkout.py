@@ -205,6 +205,7 @@ def _with_beats(data):
 
 def test_a_longer_take_reflows_the_film_and_keeps_the_gap_overlays_and_music():
     tl = Checkout(_with_beats(bundle()))
+    tl.music = "seams"  # opt in: cut the bed on a beat (the default keeps it whole)
     tl.clip("b-type").enter_at("now")
     gap = tl.gaps()["s1"]  # "viral" ends 1.7 → the next take begins 5.9
     assert gap == pytest.approx(4.2)

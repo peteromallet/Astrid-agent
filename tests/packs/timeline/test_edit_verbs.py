@@ -378,3 +378,20 @@ def test_edit_set_refuses_a_param_the_element_does_not_declare(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--set", "sclae=3") == 2
     err = capsys.readouterr().err
     assert "has no param sclae (did you mean scale?)" in err
+
+
+def test_undo_steps_back_through_the_working_copy(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
+    assert _run("checkout", "t", "--project", "P") == 0
+    _run("edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "3")
+    _run("edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "3")
+    path = tc.find_draft("P", "t")
+    assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.2)
+    capsys.readouterr()
+    assert _run("undo", "t", "--project", "P") == 0
+    assert "undid 1 step(s)" in capsys.readouterr().out
+    assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.1)
+    assert _run("undo", "t", "--project", "P") == 0
+    assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.0)

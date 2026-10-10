@@ -2111,9 +2111,13 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
     from astrid.sdk.timeline_address import AddressError, resolve
     from astrid.sdk.timeline_checkout import Checkout, find_draft
 
-    wanted = [getattr(parsed, name, None) for name in ("at", "range", "highlight", "cut")]
-    if not any(isinstance(v, str) and v.strip() for v in wanted):
-        return None
+    def needs(name: str, plain: str) -> bool:
+        value = getattr(parsed, name, None)
+        return isinstance(value, str) and bool(value.strip()) and not re.fullmatch(plain, value)
+
+    if not (needs("at", r"\s*@?[\d.:]+s?\s*") or needs("range", r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*")
+            or needs("highlight", r"") or (needs("cut", r"\s*\d+\s*") and re.fullmatch(r"\s*c\d+[a-z]?\s*", str(parsed.cut).lower()))):
+        return None  # plain seconds and cut numbers need no lookup
     ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
     tl = None
     if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
@@ -2143,7 +2147,7 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
                 parsed.at = f"{min(target.end - 1 / tl.fps, target.start + 0.25):.3f}"
                 notes.append(f"at {float(parsed.at):.2f} s (inside it)")
         cut = getattr(parsed, "cut", None)
-        if isinstance(cut, str) and cut.strip().lower().startswith("c"):
+        if isinstance(cut, str) and re.fullmatch(r"c\d+[a-z]?", cut.strip().lower()):
             from astrid.sdk.timeline_address import cut_ids_by_ordinal
 
             by_id = {cid: n for n, cid in cut_ids_by_ordinal(tl).items()}
@@ -3711,7 +3715,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
                          "--gap-after SEG=S, --from-script VO.json)", 2)
     if selector and not any(v is not None for v in (parsed.at_word, parsed.at, parsed.nudge, parsed.nudge_frames,
                                                     parsed.extend, parsed.duration, parsed.swap_asset, parsed.on_moment,
-                                                    parsed.until_moment, parsed.for_seconds)) and not parsed.set:
+                                                    parsed.until_moment, parsed.for_seconds)) and not parsed.set \
+            and not getattr(parsed, "remove", False) and not getattr(parsed, "keep", False):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
                          "--extend, --duration, --set or --swap-asset", 2)
     parsed.set = _parse_set(parsed.set)
@@ -3794,6 +3799,11 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip = tl.cut(cut_ref).picture
         if clip is None:
             raise TimelineEditError(f"cut {parsed.cut} has no picture clip to edit; use --clip")
+    if getattr(parsed, "remove", False):
+        clip.remove_layer()
+        return
+    if getattr(parsed, "keep", False):
+        clip.keep()
     if parsed.on_moment is not None:
         clip.on(parsed.on_moment)
     elif parsed.at_word is not None:
@@ -4047,6 +4057,10 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     nudge.add_argument("--duration", type=float, default=None, help="Set the clip's length in seconds.")
     subparser.add_argument("--set", action="append", default=None, metavar="KEY=VALUE",
                            help="Set an element param (repeatable; JSON values parsed, else a string).")
+    subparser.add_argument("--remove", action="store_true",
+                           help="Remove the clip (a whole sequence, for one of its steps).")
+    subparser.add_argument("--keep", action="store_true",
+                           help="Accept an orphan where it is (a fixed time): it stops blocking publish.")
     subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",
                            help="Let --set add a param the element does not declare (normally refused).")
     subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE",
@@ -4069,10 +4083,16 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     voice.add_argument("--gap-after", dest="gap_after", action="append", default=None, metavar="SEG=SECONDS",
                        help="Silence after line SEG (repeatable; one re-flow at the end).")
     voice.add_argument("--from-script", dest="from_script", default=None, metavar="VO.json",
-                       help="Bring the voice track in line with a VO script ({segments: [{id, text, gap_after_s}]}).")
-    voice.add_argument("--takes", default=None, metavar="DIR", help="With --from-script: where <id>.wav and <id>.words.json are.")
+                       help="Bring the voice track in line with a VO script ({segments: [{id, text, gap_after_s}]}): "
+                            "lines not in it are removed (their cuts' clips are KEPT as orphans to re-home or remove), "
+                            "new ones inserted after the line before them, changed takes swapped; then one re-flow. "
+                            "The music bed stays whole. check/publish block until every orphan is handled.")
+    voice.add_argument("--takes", default=None, metavar="DIR",
+                       help="With --from-script: the folder of <id>.wav + <id>.words.json (default: a vo/ folder "
+                            "next to the script's folder, else the script's folder).")
     voice.add_argument("--script-gaps", dest="script_gaps", action="store_true",
-                       help="With --from-script: the script's gap_after_s wins over the declared gaps.")
+                       help="With --from-script: use the script's gap_after_s for every line (default: keep each "
+                            "line's declared gap; new lines always take the script's).")
     subparser.set_defaults(handler=_cmd_edit)
 
 
@@ -4083,6 +4103,27 @@ def _configure_words(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--find", default=None, help="Only words containing this text.")
     subparser.add_argument("--range", default=None, metavar="A..B", help="Only words between two times (seconds or m:ss).")
     subparser.set_defaults(handler=_cmd_words)
+
+
+def _configure_undo(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = "Undo the last change(s) to the working copy (each edit, apply or re-flow is one step)."
+    _add_timeline_args(subparser)
+    subparser.add_argument("steps", nargs="?", type=int, default=1, help="How many steps back (default 1).")
+    subparser.set_defaults(handler=_cmd_undo)
+
+
+@_guard(2)
+def _cmd_undo(parsed: argparse.Namespace) -> int:
+    tl, existed = _working_copy(parsed, create=False)
+    if tl is None:
+        raise _VerbError(f"no working copy to undo · next: timelines checkout {parsed.timeline} --project {parsed.project}", 2)
+    steps = tl.undo(parsed.steps)
+    changes = tl.changes()
+    print(f"undid {steps} step(s); the working copy now has {len(changes)} unpublished change(s):")
+    for line in _cap(changes):
+        print(f"  {line}")
+    print(f"next: timelines status {parsed.timeline} --project {parsed.project}   ·   timelines undo {parsed.timeline} --project {parsed.project}")
+    return 0
 
 
 def _configure_apply(subparser: argparse.ArgumentParser) -> None:
@@ -4239,6 +4280,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "apply",
         help="Apply an edited cut sheet (show --as sheet) to the working copy.",
         configure=_configure_apply,
+    ),
+    CommandSpec(
+        "undo",
+        help="Undo the last change(s) to the working copy.",
+        configure=_configure_undo,
     ),
     CommandSpec(
         "words",

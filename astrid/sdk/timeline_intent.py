@@ -313,3 +313,14 @@ def set_chapters(bundle: dict[str, Any], table: list[Mapping[str, Any]]) -> None
         config["chapters"] = [dict(row) for row in table]
     else:
         config.pop("chapters", None)
+
+
+# ---- orphans: clips kept after their line was removed, waiting to be re-homed ----------
+def orphan(clip: Mapping[str, Any]) -> str | None:
+    """Why this clip is an orphan (``line s06 was removed``), or None."""
+    value = _app(clip).get("orphan")
+    return str(value) if value else None
+
+
+def set_orphan(clip: dict[str, Any], reason: str | None) -> None:
+    _set_or_drop(clip, "orphan", reason)

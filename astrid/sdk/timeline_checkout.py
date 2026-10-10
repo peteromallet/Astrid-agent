@@ -315,9 +315,31 @@ class Clip:
 
         Stored as written (seconds are only the cache), then resolved now. A plain number
         is a time: it becomes an offset from the clip's cut (or a fixed time without a cut)."""
+        for clip in self._sequence_mates():  # a new moment re-homes an orphan (a whole sequence)
+            intent.set_orphan(clip.data, None)
         self._tl._place_on(self, moment)
         self._tl.retime()  # its end follows its rule (until / for / its cut) right away
         return self
+
+    def keep(self) -> "Clip":
+        """Accept an orphan where it is (a fixed time, no moment): it stops blocking publish."""
+        for clip in self._sequence_mates():
+            intent.set_orphan(clip.data, None)
+        intent.set_on(self.data, None)
+        return self
+
+    def _sequence_mates(self) -> list["Clip"]:
+        seq = intent.sequence(self.data)
+        if seq is None:
+            return [self]
+        return [c for c in self._tl.clips() if (intent.sequence(c.data) or ("",))[0] == seq[0]]
+
+    def remove_layer(self) -> list[str]:
+        """Remove this layer (a whole sequence, when it is one of its steps). Returns the clip ids removed."""
+        mates = self._sequence_mates()
+        for clip in mates:
+            clip.remove()
+        return [c.id for c in mates]
 
     def until(self, moment: Any) -> "Clip":
         """End on a moment (``"Astrid"``, ``after "viral"``, ``c26``, ``end``); its start does not move."""
@@ -641,6 +663,12 @@ class Checkout:
         self.notes: list[str] = []
         self.report: list[str] = []  # what the last re-flow did, in plain words
         self._mcache: dict[str, Any] | None = None
+        # Re-flow keeps the music bed WHOLE (one clip, its source untouched) and reports how far the
+        # picture after an edit moved against its beats. "seams" cuts the bed on a beat instead.
+        self.music = "whole"
+        self._keep_inside = False  # a removal keeps the clips inside the window (as orphans) instead of deleting them
+        self._kept: list[str] = []
+        self._orphan_reason = "its line was removed"
 
     # ---- open / save ------------------------------------------------------
     @classmethod
@@ -659,12 +687,42 @@ class Checkout:
         tl.fps = bundle_fps(tl.bundle) or 30.0
         return tl
 
+    HISTORY = 30  # saved versions of a working copy kept for undo
+
     def save(self, path: str | Path | None = None) -> Path:
-        """Write the checkout: content pretty-printed, provenance compact, both clocks on every clip."""
+        """Write the checkout: content pretty-printed, provenance compact, both clocks on every clip.
+
+        A working copy keeps its previous versions (``undo``)."""
         target = Path(path or self.path or "timeline.checkout.json")
-        target.write_text(_serialize(self._annotated()), encoding="utf-8")
+        text = _serialize(self._annotated())
+        if target.is_file() and _is_draft(target):
+            previous = target.read_text(encoding="utf-8")
+            if previous != text:
+                history = _history_dir(target)
+                history.mkdir(parents=True, exist_ok=True)
+                stamp = f"{len(list(history.glob('*.json'))):04d}-{uuid.uuid4().hex[:6]}"
+                (history / f"{stamp}.json").write_text(previous, encoding="utf-8")
+                for old in sorted(history.glob("*.json"))[:-self.HISTORY]:
+                    old.unlink()
+        target.write_text(text, encoding="utf-8")
         self.path = target
         return target
+
+    def undo(self, steps: int = 1) -> int:
+        """Go back ``steps`` saved versions of this working copy. Returns how many steps were undone."""
+        if not self.path:
+            raise TimelineEditError("only a saved working copy can undo")
+        history = sorted(_history_dir(Path(self.path)).glob("*.json"))
+        if not history:
+            raise TimelineEditError("nothing to undo: this working copy has no earlier version")
+        steps = max(1, min(int(steps), len(history)))
+        chosen = history[-steps]
+        Path(self.path).write_text(chosen.read_text(encoding="utf-8"), encoding="utf-8")
+        for used in history[-steps:]:
+            used.unlink()
+        fresh = Checkout.load(self.path)
+        self.bundle, self._mcache = fresh.bundle, None
+        return steps
 
     # ---- working copy (draft) --------------------------------------------------
     @classmethod
@@ -686,9 +744,13 @@ class Checkout:
         return tl
 
     def discard(self) -> None:
-        """Delete this working copy (nothing published is touched)."""
+        """Delete this working copy and its undo history (nothing published is touched)."""
         if self.path and Path(self.path).is_file():
             Path(self.path).unlink()
+        if self.path:
+            import shutil
+
+            shutil.rmtree(_history_dir(Path(self.path)), ignore_errors=True)
 
     @property
     def base_revision(self) -> str:
@@ -957,7 +1019,7 @@ class Checkout:
         clip.enter_at(word if word and anchor else start)
         return clip
 
-    def ripple_delete(self, start: Any, end: Any, *, skip: Sequence[Mapping[str, Any]] = ()) -> float:
+    def ripple_delete(self, start: Any, end: Any, *, skip: Sequence[Mapping[str, Any]] = (), keep_inside: bool = False) -> float:
         """Remove the window [start, end) from the whole timeline and close it up.
 
         Clips after it move up by its length; picture clips that span it get shorter;
@@ -968,7 +1030,11 @@ class Checkout:
         a, b = self.quantize(self.time(start)), self.quantize(self.time(end))
         if b <= a:
             raise TimelineEditError("the window to remove must have start < end")
-        return self._shift_after(a, -(b - a), cut_window=(a, b), skip=skip)
+        self._keep_inside = keep_inside
+        try:
+            return self._shift_after(a, -(b - a), cut_window=(a, b), skip=skip)
+        finally:
+            self._keep_inside = False
 
     def close_gap(self, *, before: Any, keep: float = 0.0) -> float:
         """Close the silence before a word (and ripple everything after it). Returns the seconds removed."""
@@ -1075,9 +1141,24 @@ class Checkout:
                 start = max(end, min(point, _nclip.start + delta))
                 self.ripple_delete(self.quantize(start), self.quantize(start) - delta, skip=[clip.data])
             report.append(f"{nwords[0].segment} ({nwords[0].text!r}) {nwords[0].start:.3f} → {nwords[0].start + delta:.3f} s ({delta:+.3f} s, everything after it moved)")
-        report += [f"{cid}: {a:.3f} → {b:.3f} s (anchored)" for cid, a, b in self.retime()]
-        report += self.notes[notes_before:]
+        moved = self.retime()
+        notes = list(dict.fromkeys(self.notes[notes_before:]))
         del self.notes[notes_before:]
+        orphaned = [n for n in notes if " is not spoken" in n or "is spoken" in n]
+        others = [n for n in notes if n not in orphaned]
+        tail: list[str] = []
+        if orphaned:
+            tail.append(f"{len(orphaned)} moment(s) lost their word (orphans: re-home or remove; `timelines status` lists them):")
+            tail += [f"  {n}" for n in orphaned]
+        tail += others
+        if moved:
+            tail.append(f"{len(moved)} clip(s) on moments followed their words"
+                        + (": " + ", ".join(f"{cid} {a:.2f}→{b:.2f}" for cid, a, b in moved[:6]) + (" …" if len(moved) > 6 else "")))
+        music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
+        if music_end is not None and music_end < self.duration - 0.5:
+            tail.append(f"music: the bed ends at {music_end:.2f} s; the film now runs {self.duration:.2f} s "
+                        f"({self.duration - music_end:.2f} s without music: extend or re-cue)")
+        report += tail
         self.report = report
         return report
 
@@ -1120,15 +1201,22 @@ class Checkout:
         lines = self.lines()
         index = next(i for i, v in enumerate(lines) if v.segment == segment)
         before = self._piece_gaps()
-        start = line.clips[0].start
+        start = self._frame(line.clips[0].start)  # cuts open on the frame of the take's in-point
         if index + 1 < len(lines):
-            end = lines[index + 1].clips[0].start
+            end = self._frame(lines[index + 1].clips[0].start)
         else:
             end = line.speech_end + (line.gap_after or 0.0)
         for clip in line.clips:
             clip.remove()
-        removed = self.ripple_delete(start, end)
-        return [f"removed line {segment} ({removed:.3f} s)"] + self.reflow(gaps=before)
+        self._kept = []
+        self._orphan_reason = f"line {segment} was removed"
+        removed = self.ripple_delete(start, end, keep_inside=True)
+        kept = list(self._kept)
+        out = [f"removed line {segment} ({removed:.3f} s)"]
+        if kept:
+            out.append(f"kept {len(kept)} clip(s) that were on screen only for {segment}, where they were, as orphans "
+                       "to re-home (--on) or remove")
+        return out + self.reflow(gaps=before)
 
     def apply_script(self, spec: Any, *, takes: Any = None, gaps: bool = False) -> list[str]:
         """Bring the voice track in line with a VO script: ``{"segments": [{id, text, gap_after_s}, …]}``
@@ -1189,18 +1277,28 @@ class Checkout:
         self._moved_ends: dict[str, tuple[float, float]] = {}
         self._mcache = None
         groups = self._cut_groups()
+        orphan_cuts: set[str] = set()
         for g in groups:  # 1. cut starts
             pic = g["picture"]
             on = intent.on(pic.data) if pic else None
             if not on:
                 continue
             t = self._resolve_note(on, pic, in_point=True)
-            if t is not None and self._move_within_shot(pic, t, keep_end=True, moved=moved):
+            if t is None:
+                orphan_cuts.add(g["id"])  # its word is gone: the cut keeps its place and its length
+                continue
+            if self._move_within_shot(pic, t, keep_end=True, moved=moved):
                 self._mcache = None
-        cut_span = self._cut_spans()
+        cut_span = self._cut_spans(skip=orphan_cuts)
+        for cid in orphan_cuts:
+            group = next(g for g in self._cut_groups() if g["id"] == cid)
+            cut_span[cid] = (group["start"], group["picture"].end if group["picture"] else None)
+        self._orphan_cuts = orphan_cuts
         self._mcache = {"cuts": cut_span}
         for clip in self.clips():  # 2. every clip on its moments
             cut = intent.cut_of(clip.data)
+            if (cut in orphan_cuts and not intent.on(clip.data)) or intent.orphan(clip.data):
+                continue  # an orphan keeps its time and length until it is re-homed
             seq = intent.sequence(clip.data)
             later_step = seq is not None and seq[1] > 0
             on, until, length = intent.on(clip.data), intent.until(clip.data), intent.for_s(clip.data)
@@ -1255,8 +1353,50 @@ class Checkout:
         try:
             return self._moment_time(text, clip, in_point=in_point)
         except TimelineEditError as exc:
+            pinned = self._pin_nearest(text, clip)
+            if pinned is not None:
+                field = "on" if intent.on(clip.data) == text else "until"
+                (intent.set_on if field == "on" else intent.set_until)(clip.data, pinned)
+                self.notes.append(f"{clip.address}: {text} is now said more than once; pinned to {pinned}, the one nearest it")
+                try:
+                    return self._moment_time(pinned, clip, in_point=in_point)
+                except TimelineEditError:
+                    pass
             self.notes.append(str(exc))
             return None
+
+    def _pin_nearest(self, text: str, clip: "Clip") -> str | None:
+        """A word moment that became ambiguous (a new line says the same word): its scoped form for the
+        occurrence nearest the clip's current time, or None if it is not an ambiguity."""
+        try:
+            moment = mo.parse(text)
+        except mo.MomentError:
+            return None
+        if moment.kind in ("beat", "downbeat") and moment.base is not None and moment.base.kind == "word":
+            # beat 2 after "Astrid": pin the word to the occurrence just before the clip
+            base = moment.base
+            if base.n is not None or base.line is not None:
+                return None
+            hits = mo.find_words(base, self.words())
+            if len(hits) < 2:
+                return None
+            earlier = [r for r in hits if r[0].start <= clip.start + 1e-6] or hits
+            run = max(earlier, key=lambda r: r[0].start)
+            from astrid.sdk.timeline_address import _phrase_address
+
+            pinned_base = mo.parse(_phrase_address(self, base, run))
+            return mo.format_moment(mo.Moment(moment.kind, n=moment.n, direction=moment.direction, base=pinned_base,
+                                              offset_s=moment.offset_s, offset_frames=moment.offset_frames))
+        if moment.kind != "word" or moment.n is not None:
+            return None
+        hits = mo.find_words(moment, self.words())
+        if len(hits) < 2:
+            return None
+        anchor_t = clip.start - moment.offset_s - moment.offset_frames / self.fps
+        run = min(hits, key=lambda r: abs((r[-1].end if moment.edge == "end" else r[0].start) - anchor_t))
+        from astrid.sdk.timeline_address import _phrase_address
+
+        return _phrase_address(self, moment, run)
 
     def _place_on(self, clip: "Clip", moment: Any) -> None:
         if isinstance(moment, (int, float)) and not isinstance(moment, bool):
@@ -1299,7 +1439,23 @@ class Checkout:
         ``c22.rocket  on "viral": "viral" is not spoken in n20b; did you mean …``."""
         out = []
         self._mcache = None
+        sequences_seen: set[str] = set()
         for clip in self.clips():
+            reason = intent.orphan(clip.data)
+            if reason:
+                seq = intent.sequence(clip.data)
+                if seq is not None:  # a time-lapse is one orphan, not one per step
+                    if seq[0] in sequences_seen:
+                        continue
+                    sequences_seen.add(seq[0])
+                    steps = [c for c in self.clips() if (intent.sequence(c.data) or ("",))[0] == seq[0]]
+                    lo, hi = min(c.start for c in steps), max(c.end for c in steps)
+                    out.append(f"{clip.address:<16} a sequence of {len(steps)} steps kept at {lo:.2f}–{hi:.2f} s: {reason} "
+                               "(re-home its first step: --on MOMENT; --keep; or remove it)")
+                    continue
+                out.append(f"{clip.address:<16} kept at {clip.start:.2f}–{clip.end:.2f} s: {reason} "
+                           "(re-home it: --on MOMENT; keep it as is: --keep; or remove it)")
+                continue
             for field, text in (("on", intent.on(clip.data)), ("until", intent.until(clip.data))):
                 if not text:
                     continue
@@ -1321,9 +1477,11 @@ class Checkout:
                     out.append(f"{clip.address:<16} fit until {fit['land']}: {exc}")
         return out
 
-    def _cut_spans(self) -> dict[str, tuple[float, float | None]]:
-        """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last)."""
-        groups = self._cut_groups()
+    def _cut_spans(self, skip: Iterable[str] = ()) -> dict[str, tuple[float, float | None]]:
+        """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last).
+        Cuts in ``skip`` (orphans) don't end the cut before them."""
+        skip = set(skip) | set(getattr(self, "_orphan_cuts", set()) or ())
+        groups = [g for g in self._cut_groups() if g["id"] not in skip]
         return {g["id"]: (g["start"], groups[k + 1]["start"] if k + 1 < len(groups) else None) for k, g in enumerate(groups)}
 
     def _cut_groups(self) -> list[dict[str, Any]]:
@@ -1335,6 +1493,8 @@ class Checkout:
                 groups.setdefault(cid, []).append(clip)
         out = []
         for cid, clips in groups.items():
+            if all(intent.orphan(c.data) for c in clips):
+                continue  # a cut kept only as orphans is not a cut until it is re-homed
             beds = sorted((c for c in clips if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
             out.append({"id": cid, "clips": clips, "picture": beds[0] if beds else None,
                         "start": beds[0].start if beds else min(c.start for c in clips)})
@@ -1361,7 +1521,7 @@ class Checkout:
             return False
         old = clip.start
         before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.data is not clip.data
-                  and abs(c.end - old) < 1e-3 and not c.is_audio]
+                  and abs(c.end - old) < 1e-3 and not c.is_audio and not intent.orphan(c.data)]
         if not before and abs(old - lo) < 1e-3:
             # it opens its chapter: moving it would leave a hole at the chapter start (re-flow moves chapters)
             self.notes.append(f"{clip.address}: opens its chapter at {lo:.3f} s; its moment ({t:.3f} s) is kept for re-flow, not applied")
@@ -1407,7 +1567,11 @@ class Checkout:
             start, end = steps[0].start, steps[-1].end
             total = int(round((end - start) * self.fps))
             if isinstance(spec, str):  # a moment: "lifetime"
-                land_t = mo.resolve(mo.parse(spec), _MomentContext(self, steps[0]))
+                try:
+                    land_t = mo.resolve(mo.parse(spec), _MomentContext(self, steps[0]))
+                except mo.MomentError as exc:
+                    self.notes.append(f"{steps[0].address}: fit until {spec}: {exc}; the sequence is left as it is")
+                    continue
                 land_name = spec
             else:  # older form {word, text}
                 land = self._as_word(str((spec or {}).get("word") or "")) or self.word(str((spec or {}).get("text")))
@@ -1478,9 +1642,20 @@ class Checkout:
             for path, expr in formulas.items():
                 try:
                     value = self._evaluate(clip, expr, by_id, words, slots)
-                except TimelineEditError as exc:
-                    self.notes.append(f"{clip.id}.{path}: {exc}")
-                    continue
+                except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
+                    pinned = self._pin_nearest(expr.get("moment"), clip) if isinstance(expr, Mapping) and expr.get("moment") else None
+                    if pinned is not None:
+                        expr = {**expr, "moment": pinned}
+                        intent.set_formula(clip.data, path, expr)
+                        self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: now pinned to {pinned}, the one nearest it")
+                        try:
+                            value = self._evaluate(clip, expr, by_id, words, slots)
+                        except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as again:
+                            self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {again} (kept its last value)")
+                            continue
+                    else:
+                        self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {exc} (kept its last value)")
+                        continue
                 if _set_path(clip.data, path, value):
                     changes.append(f"{clip.id}.{path} = {json.dumps(value)[:60]}")
         return changes
@@ -1489,7 +1664,10 @@ class Checkout:
         if not isinstance(expr, Mapping):
             raise TimelineEditError(f"a formula must be an object, got {expr!r}")
         if "moment" in expr:  # a moment in the grammar: "lifetime" -50f, beat 2 after "Astrid", c26 …
-            t = mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))
+            try:
+                t = mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))
+            except mo.MomentError as exc:
+                raise TimelineEditError(f"{expr['moment']}: {exc}") from None
             unit = expr.get("as", "clip_seconds")
             if unit == "clip_frame":
                 return _post(int(math.floor((t - clip.start) * self.fps + 1e-6)), expr)
@@ -1637,8 +1815,16 @@ class Checkout:
         for n in cut_numbers:
             pic = self.cuts[n - 1].picture
             names.append(intent.cut_of(pic.data) if pic is not None and intent.cut_of(pic.data) else f"cut {n}")
+        # Blocking: moments whose word is gone (orphans) and clips with no length. Publish refuses until
+        # each is re-homed (a new moment) or removed.
+        blocking = [f"orphan  {line}" for line in self.orphans()]
+        blocking += [f"empty   {c.address} has no length ({c.start:.3f}–{c.end:.3f} s): give it a length or remove it"
+                     for c in self.clips() if not c.is_audio and c.duration < 0.5 / self.fps]
+        if blocking:
+            valid = False
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
-                           problems=problems + self.notes, changed_cuts=cut_numbers, diff=diff, cut_names=names)
+                           problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
+                           diff=diff, cut_names=names, blocking=blocking)
 
     def publish(self, message: str = "", *, idempotency_key: str | None = None, client: Any = None,
                 force: bool = False) -> dict[str, Any]:
@@ -1932,10 +2118,20 @@ class Checkout:
             elif cs >= rb - 1e-6:
                 clip["at"] = _r(cs - d)
                 out.append(clip)
-            elif cs >= ra - 1e-6 and ce <= rb + 1e-6:
+            elif intent.orphan(clip):  # an orphan waiting to be re-homed: never trimmed by a later edit
+                out.append(clip)
+            elif cs >= ra - 0.5 / self.fps and ce <= rb + 0.5 / self.fps:  # inside, to the frame (no sub-frame stubs)
+                if self._keep_inside:  # kept where it was, length and all: an orphan to re-home or remove
+                    intent.set_orphan(clip, self._orphan_reason)
+                    out.append(clip)
+                    self._kept.append(str(clip.get("id")))
                 continue  # wholly inside the removed window
             elif cs < ra and ce > rb:
-                if audio and self._is_music(sid, clip):
+                if audio and self._is_music(sid, clip) and self.music == "whole":
+                    self.notes.append(f"music {clip.get('id')}: the bed plays on unchanged over the cut at "
+                                      f"{self._shot_start(sid) + ra:.2f} s; what follows moved {-d:+.2f} s against its beats")
+                    out.append(clip)
+                elif audio and self._is_music(sid, clip):
                     out.extend(self._music_seam(sid, clip, ra, cut_s=d))
                 elif audio:
                     out.extend(_split_audio(clip, ra - cs, cut=d))
@@ -1963,6 +2159,11 @@ class Checkout:
             if cs >= ra - 1e-6:
                 clip["at"] = _r(cs + d)
             elif ce > ra + 1e-6:
+                if self._is_music(sid, clip) and self.music == "whole":
+                    self.notes.append(f"music {clip.get('id')}: the bed plays on unchanged over the {d:.2f} s opened at "
+                                      f"{self._shot_start(sid) + ra:.2f} s; what follows moved {d:+.2f} s against its beats")
+                    out.append(clip)
+                    continue
                 if self._is_music(sid, clip):
                     out.extend(self._music_seam(sid, clip, ra, open_s=d))
                     continue
@@ -2065,14 +2266,18 @@ class CheckReport:
     changed_cuts: list[int]
     diff: Mapping[str, Any]
     cut_names: list[str] = dataclasses.field(default_factory=list)
+    blocking: list[str] = dataclasses.field(default_factory=list)
 
     def brief(self) -> list[str]:
-        """Two calm lines for after an edit: valid or not, and lint on the cuts it touched."""
+        """Calm lines for after an edit: valid or not, what blocks publishing, and lint on the cuts it touched."""
         where = ", ".join(self.cut_names or [f"cut {n}" for n in self.changed_cuts])
         head = "check   " + ("valid" if self.valid else "NOT VALID")
+        if self.blocking:
+            head += f" · {len(self.blocking)} to fix before publishing (re-home each orphan with a new moment, or remove it)"
         if where:
             head += f" · lint on {where}: " + ("clean" if not self.lint else f"{len(self.lint)} finding(s)")
-        return [head] + [f"  ! {p}" for p in self.problems] + [f"  {line}" for line in self.lint]
+        notes = [p for p in self.problems if p not in self.blocking and not p.startswith("resolved ")]
+        return [head] + [f"  ! {p}" for p in self.blocking] + [f"  · {p}" for p in notes] + [f"  {line}" for line in self.lint]
 
     def __str__(self) -> str:
         lines = [("valid" if self.valid else "INVALID") + " · " + (self.summary[0] if self.summary else "no changes")]
@@ -2368,6 +2573,17 @@ def drafts_root() -> Path:
     """Where working copies live: Astrid's data root (``BANODOCO_LOCAL_DATA_ROOT``) / drafts."""
     base = os.environ.get("BANODOCO_LOCAL_DATA_ROOT")
     return (Path(base) if base else Path.home() / ".astrid") / "drafts"
+
+
+def _is_draft(path: Path) -> bool:
+    try:
+        return drafts_root().resolve() in Path(path).resolve().parents
+    except OSError:
+        return False
+
+
+def _history_dir(path: Path) -> Path:
+    return Path(path).with_suffix(".history")
 
 
 def draft_path(project_id: str, timeline_id: str, name: str = "main") -> Path:
