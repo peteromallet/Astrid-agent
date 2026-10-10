@@ -433,6 +433,18 @@ def apply_sheet(tl: Any, text: str) -> list[str]:
 
     sheet = parse_sheet(text)
     before = Checkout(copy.deepcopy(tl.bundle))
+    try:
+        return _apply_parsed(tl, sheet, before)
+    except Exception:
+        tl.bundle = before.bundle  # all or nothing: a sheet that cannot be applied changes nothing
+        tl._mcache = None
+        raise
+
+
+def _apply_parsed(tl: Any, sheet: dict[str, Any], before: Any) -> list[str]:
+    from astrid.sdk.timeline_checkout import TimelineEditError, describe_changes
+
+    before = type(before)(copy.deepcopy(before.bundle))
     reflow = False
     for seg, entry in sheet["lines"].items():
         voice = tl.voice(seg)
@@ -452,6 +464,13 @@ def apply_sheet(tl: Any, text: str) -> list[str]:
         if cut["why"] is not None and pic is not None and cut["why"] != intent.why(pic.data):
             intent.set_why(pic.data, cut["why"])
         existing = {(intent.layer_of(c.data) or c.id): c for c in _ordered(group["clips"])}
+        named: dict[str, int] = {}
+        for layer in cut["layers"]:  # one name, one layer: never merge two lines into one clip
+            if layer["name"] in named:
+                raise SheetError(_with_text(
+                    f"line {layer['line']}: {cut['id']} already has a layer named {layer['name']!r} (line {named[layer['name']]}); "
+                    f"give each its own name ({layer['name']}, {layer['name']}-2, …)", layer["line"], layer.get("text_line", "")))
+            named[layer["name"]] = layer["line"]
         seen = set()
         for layer in cut["layers"]:
             name = layer["name"]

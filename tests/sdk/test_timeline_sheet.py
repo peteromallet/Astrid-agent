@@ -102,3 +102,13 @@ def test_an_error_echoes_the_line_and_says_what_to_write():
     text = str(err.value)
     assert "«" in text and 'on "virl"' in text  # the offending line itself
     assert "did you mean viral" in text
+
+
+def test_two_lines_with_one_layer_name_are_an_error_never_a_silent_merge():
+    tl = Checkout(named())
+    tl.resolve()
+    sheet = render_sheet(tl)
+    sheet += '         type  dot  type  "•"  size=10  on "now"\n         type  dot  type  "•"  size=12  on "Live"\n'
+    with pytest.raises(SheetError, match="already has a layer named 'dot'"):
+        apply_sheet(tl, sheet)
+    assert not [c for c in tl.clips() if c.layer_name == "dot"]  # nothing was applied

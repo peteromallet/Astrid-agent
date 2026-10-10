@@ -3867,6 +3867,8 @@ def _cmd_words(parsed: argparse.Namespace) -> int:
         tl = Checkout.open(_need_project(parsed), parsed.timeline, client=parsed.client)
     else:
         tl, _existed = _working_copy(parsed, create=True)
+    if getattr(parsed, "word", None):
+        return _print_word(tl, parsed)
     between = None
     if parsed.range:
         lo, hi = _parse_range(parsed.range)
@@ -4034,7 +4036,7 @@ def _add_timeline_args(subparser: argparse.ArgumentParser, *, required_timeline:
     else:
         subparser.add_argument("timeline", nargs="?", default=None, help="Timeline UUID, ULID, or slug (or use --file).")
     _add_project_arg(subparser, required=False)
-    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
 
 
 def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
@@ -4117,8 +4119,58 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_edit)
 
 
+def _print_word(tl: Any, parsed: argparse.Namespace) -> int:
+    """``timelines words TL Live``: the word's record, the clips anchored to it, and (--beats) the beats near it."""
+    from astrid.core.timeline import moments as mo
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline_address import AddressError, describe_target, resolve
+
+    try:
+        target = resolve(tl, parsed.word, prefer="time")
+    except AddressError as exc:
+        raise _VerbError(str(exc), 2) from None
+    print(describe_target(tl, target, timeline=str(parsed.timeline), project=str(parsed.project)).split("\nnext:")[0])
+    if target.kind == "word":
+        word = target.word
+        anchored = []
+        for clip in tl.clips():
+            for field, text in (("on", intent.on(clip.data)), ("until", intent.until(clip.data))):
+                if not text:
+                    continue
+                try:
+                    moment = mo.parse(text)
+                except mo.MomentError:
+                    continue
+                base = moment.base if moment.kind in ("beat", "downbeat") else moment
+                if base is None or base.kind != "word":
+                    continue
+                hits = mo.find_words(base, tl.words())
+                if base.n is not None:
+                    hits = hits[base.n - 1:base.n]
+                if any(run[0].segment == word.segment and run[0].index <= word.index <= run[-1].index for run in hits):
+                    anchored.append(f"{clip.address} {field} {text}")
+        print("  anchored to it: " + (", ".join(anchored) if anchored else "nothing"))
+    if getattr(parsed, "beats", False):
+        from astrid.sdk.timeline_checkout import _MomentContext
+
+        ctx = _MomentContext(tl, None)
+        beats, downs = ctx.beats("beat"), set(round(b, 3) for b in ctx.beats("downbeat"))
+        t = target.start
+        after = [b for b in beats if b > t + 1e-3]
+        print(f"  beats near {t:.2f} s:")
+        for b in [b for b in beats if t - 1.0 <= b <= t + 2.5]:
+            n = after.index(b) + 1 if b in after else None
+            label = f"beat {n} after {target.address}" if n else ("on it" if abs(b - t) < 0.02 else "before it")
+            print(f"    {b:7.3f} s  {'downbeat' if round(b, 3) in downs else 'beat':<8}  {label}")
+    return 0
+
+
 def _configure_words(subparser: argparse.ArgumentParser) -> None:
     _add_timeline_args(subparser, required_timeline=False)
+    subparser.add_argument("word", nargs="?", default=None,
+                           help='One word: its scoped form, time, cut, what is on screen and what is anchored to it '
+                                '(Live, \'"Building" in v27\'); a word said more than once lists its scoped forms.')
+    subparser.add_argument("--beats", action="store_true", help="With a word: the music beats near it, with their moments.")
     subparser.add_argument("--file", default=None, help="Read a local checkout file instead.")
     subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
     subparser.add_argument("--find", default=None, help="Only words containing this text.")
@@ -4191,7 +4243,7 @@ def _configure_status(subparser: argparse.ArgumentParser) -> None:
 def _configure_check(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("ref", help="Timeline (UUID, ULID or slug) or a checkout file.")
     _add_project_arg(subparser, required=False)
-    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.set_defaults(handler=_cmd_check)
 
 
@@ -4199,7 +4251,7 @@ def _configure_publish(subparser: argparse.ArgumentParser) -> None:
     subparser.description = "Publish the working copy (or a checkout file) as one revision; the working copy is then discarded."
     subparser.add_argument("ref", help="Timeline (UUID, ULID or slug) or a checkout file.")
     _add_project_arg(subparser, required=False)
-    subparser.add_argument("--draft", default=None, help='Working copy name (default "main").')
+    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.add_argument("-m", "--message", dest="message", required=True, help="What changed (the revision message).")
     subparser.add_argument("--force", action="store_true", help="Overwrite a conflicting change on the head.")
     _add_idempotency_key(subparser)
