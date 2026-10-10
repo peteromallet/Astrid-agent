@@ -1544,7 +1544,9 @@ def _static_png(cards, out_root, columns, page_size, timeline_name, render_run_i
         page_title_font, chrome_font = _png_font(20), _png_font(12)
         chrome_width = width - 32
         title_lines = _png_chrome_lines(measure_draw, f'{timeline_name} · page {page} · rendered frames', page_title_font, chrome_width, 2)
-        provenance_lines = _png_chrome_lines(measure_draw, f'Render {render_run_id} · selection: {render_selection}', chrome_font, chrome_width, 2)
+        from .contact_sheet import selection_gloss
+        provenance_lines = _png_chrome_lines(measure_draw, f'Render {render_run_id} · selection: {render_selection} '
+                                             f'({selection_gloss(render_selection)})', chrome_font, chrome_width, 2)
         disclaimer_lines = _png_chrome_lines(measure_draw, 'Timed speech uses frozen intervals; shot scripts are shown once per occurrence. Missing timed text does not imply silence.', chrome_font, chrome_width, 2)
         chrome_bottom = 10 + 22 * len(title_lines) + 4 + 16 * len(provenance_lines) + 4 + 16 * len(disclaimer_lines)
         card_origin = max(96, chrome_bottom + 8)
@@ -1708,7 +1710,9 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
     if options.get('view') == 'contact' and video_path is not None:
         # Render review: sample the rendered file itself and measure its audio.
         from .render_review import review_render
-        review = review_render(video_path, out_root, every=float(options.get('render_every') or 5.0))
+        density = options.get('density') or {}
+        every = options.get('render_every') or (density.get('value') if density.get('mode') == 'every_seconds' else None) or 5.0
+        review = review_render(video_path, out_root, every=float(every))
         index['render_review'] = review
         index['provenance']['render_review'] = {'contact': review['contact'], 'json': 'render-review.json'}
     media_record = None

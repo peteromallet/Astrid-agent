@@ -989,3 +989,48 @@ def prepare_filmstrip(inputs: Mapping, *, project: str, client: Any = None) -> d
         'project_id': project_id, 'timeline_id': authority['timeline_id'],
         'include_media': bool(inputs.get('include_media', False)),
         'transcript_input': transcript_input}
+
+
+def latest_render(client: Any, *, project_id: str, timeline_id: str, scan: int = 12) -> dict[str, Any] | None:
+    """The newest successful ``rendering.render`` run of one timeline: ``{run_id, revision, created_at,
+    candidate}`` (bounded: the last ``scan`` render runs), or None. Read-only; used by ``timelines status``."""
+    remote = getattr(client, "_remote", client)
+    client = getattr(remote, "_transport", remote)
+    list_runs = getattr(client, "list_project_runs", None)
+    if not callable(list_runs):
+        return None
+    rows: list[Mapping[str, Any]] = []
+    cursor = None
+    for _page in range(20):  # the list is oldest first: read every page (bounded), then take the newest
+        try:
+            page_value = list_runs(project_id, cursor=cursor, limit=50)
+            if hasattr(page_value, "ok") and hasattr(page_value, "data"):
+                page_value = page_value.data if page_value.ok else None
+            page = page_pair(page_value) if page_value is not None else None
+        except Exception:  # noqa: BLE001 - status must never fail on this
+            return None
+        if page is None:
+            break
+        rows += [r for r in page[0] if isinstance(r, Mapping) and _render_capability(r) == "rendering.render"
+                 and _state(r) in _SUCCESS_STATES]
+        cursor = page[1]
+        if not cursor:
+            break
+    rows.sort(key=lambda r: str(r.get("created_at") or r.get("updated_at") or ""), reverse=True)
+    for listed in rows[:scan]:
+        try:
+            run = client.get_run(_identifier(listed, "run_id", "id"))
+            for task_id in (run.get("task_ids") or [])[:20]:
+                task = client.get_task(str(task_id))
+                if not (isinstance(task, Mapping) and _render_capability(task) == "rendering.render"):
+                    continue
+                envelope = _envelope(task)
+                authority = _authority(envelope)
+                if _identifier(authority, "timeline_id") != timeline_id:
+                    break
+                return {"run_id": _identifier(run, "run_id", "id"), "created_at": run.get("created_at"),
+                        "revision": _identifier(authority, "parent_revision_id", "head_revision_id", "revision_id", "head_event_id"),
+                        "candidate": _is_candidate_render(envelope, authority)}
+        except Exception:  # noqa: BLE001
+            continue
+    return None

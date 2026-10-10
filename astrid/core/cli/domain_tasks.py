@@ -191,8 +191,16 @@ def _cmd_create(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
-    result = parsed.client.tasks.list(parsed.project)
-    return print_result(result, as_json=parsed.json)
+    from astrid.core.cli.list_narrow import narrow
+
+    if parsed.capability or parsed.limit is not None:
+        from astrid.core.cli.list_narrow import all_pages
+
+        result = all_pages(parsed.client.tasks.list, parsed.project)  # the list is oldest first: read it all
+    else:
+        result = parsed.client.tasks.list(parsed.project)
+    return print_result(narrow(result, capability=parsed.capability, limit=parsed.limit, as_json=parsed.json),
+                        as_json=parsed.json)
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
@@ -317,6 +325,10 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
+    subparser.add_argument("--capability", default=None, metavar="ID",
+                           help="Only tasks of this capability (e.g. rendering.render; a prefix like pixel. works too).")
+    subparser.add_argument("--limit", type=int, default=None,
+                           help="The newest N (default 50 for the human view, everything with --json; 0 = everything).")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_list)
 

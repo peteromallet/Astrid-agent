@@ -51,7 +51,7 @@ def contact_silence_findings(audio, *, minimum: float = 1.0) -> list[str]:
     for begin, finish in audio.silences('vo', minimum=minimum):
         music = audio.level_db('music', begin, finish)
         under = f'music under it at {music:.0f} dBFS' if music > -60 else 'no music: dead air'
-        lines.append(f'SILENCE {begin:.2f}–{finish:.2f}s ({finish - begin:.2f} s) no VO; {under}')
+        lines.append(f'NO-VO   {begin:.2f}–{finish:.2f}s ({finish - begin:.2f} s) no narration; {under}')
     for begin, finish in audio.dead_air():
         lines.append(f'DEADAIR {begin:.2f}–{finish:.2f}s ({finish - begin:.2f} s) no VO, music or sfx')
     return lines[:24] + audio.notes[:3]
@@ -178,7 +178,7 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
     if thinned_from:
         title += f' · {thinned_from} cuts, thinned to fit'
     title_lines = _png_chrome_lines(measure, title, title_font, width - 2 * CONTACT_MARGIN, 2)
-    provenance = (f'Render {render_run_id} · selection: {render_selection} · '
+    provenance = (f'Render {render_run_id} · selection: {render_selection} ({selection_gloss(render_selection)}) · '
                   '#N = cut number (timelines show); each tile is the cut once its layers have entered; '
                   'words are word-aligned only when VO app.words exist, else the shot script.')
     provenance_lines = _png_chrome_lines(measure, provenance, chrome_font, width - 2 * CONTACT_MARGIN, 2)
@@ -288,3 +288,17 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
 
 
 __all__ = ['CONTACT_MAX_TILES', 'contact_reasons', 'static_contact_png']
+
+
+SELECTION_GLOSS = {
+    "explicit_current_render": "the run you named; it renders the current head",
+    "explicit_historical_render": "the run you named; it renders an earlier revision",
+    "explicit_candidate_preview": "the run you named; it renders an unpublished working copy",
+    "explicit_unverified_legacy_render": "the run you named; it predates render authority records, so its revision is not verified",
+}
+
+
+def selection_gloss(selection: str) -> str:
+    """One plain clause for a render selection label."""
+    return SELECTION_GLOSS.get(str(selection), "how the render was chosen")
+

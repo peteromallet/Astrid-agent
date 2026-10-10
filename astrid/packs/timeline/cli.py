@@ -1869,7 +1869,7 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     inputs: dict[str, Any] = {"formats": formats}
     timeline_slug = parsed.timeline_slug or parsed.timeline_ref
     for name in (
-        "shot", "view", "sample", "every", "every_frames", "include_cuts",
+        "shot", "view", "sample", "every", "every_frames", "render_every", "include_cuts",
         "render_run", "columns", "page_size", "resolution", "include_media",
         "range", "at", "frame", "clip", "asset", "context", "neighbors", "show", "hide",
         "track", "detail", "occurrence", "revision_id",
@@ -2386,6 +2386,19 @@ def _read_beats(path: str) -> str:
     return json.dumps(compact, separators=(",", ":"))
 
 
+def _render_review_beside(page: Any) -> dict[str, Any] | None:
+    """render-review.json written next to a contact page of a render (loudness, silences), if any."""
+    if not page:
+        return None
+    try:
+        from pathlib import Path as _Path
+
+        path = _Path(str(page)).parent / "render-review.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
 def _seconds(value: Any) -> str:
     return f"{float(value):.0f} s" if isinstance(value, (int, float)) and not isinstance(value, bool) else "?"
 
@@ -2425,6 +2438,13 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
         )
     else:
         lines.append(f"  wall {_seconds(timing.get('wall_s'))} (executor timing unavailable: the host predates timing.json)")
+    review = _render_review_beside(primary)
+    if review:
+        lufs, lra, peak = review.get("integrated_lufs"), review.get("lra_lu"), review.get("true_peak_dbtp")
+        if lufs is not None:
+            over = " (over -1 dBTP)" if isinstance(peak, (int, float)) and peak > -1.0 else ""
+            lines.append(f"  loudness {lufs:.1f} LUFS integrated · LRA {lra:.1f} LU · true peak {peak:+.1f} dBTP{over}"
+                         f" · {len(review.get('silences') or [])} silent span(s) in the file · sampled every {review.get('every_s')} s")
     findings = [str(line) for line in outputs.get("findings") or []]
     named = getattr(parsed, "_named", None)
     if findings and named is not None:
@@ -3457,6 +3477,10 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
                           help="Sample every N seconds (overrides the preset: scan 0.5 s; filmstrip 0.5 s).")
     sampling.add_argument("--every-frames", type=int, default=None,
                           help="Sample every N frames (overrides the preset: motion 2); replaces --every.")
+    sampling.add_argument("--render-every", dest="render_every", type=float, default=None,
+                          help="With --view contact --render-run RUN: sample the rendered file every N seconds (default "
+                               "--every, else 5). The review also prints the render's loudness (LUFS, LRA, true peak) and "
+                               "its silences (render-review.json).")
     subparser.add_argument(
         "--include-cuts", action="store_true", default=None,
         help="With interval sampling, also capture visual cut-neighbor frames.",
@@ -3901,6 +3925,12 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     name = _draft_name(parsed)
     if tl is None:
         print(f"no working copy · next: timelines checkout {parsed.timeline} --project {parsed.project}")
+        if getattr(parsed, "render", False):
+            try:
+                project_id, timeline_id, head = resolve_ids(parsed.project, parsed.timeline, client=parsed.client)
+                print(_render_line(parsed, project_id, timeline_id, head))
+            except Exception:  # noqa: BLE001 - status never fails on the render lookup
+                pass
         return 0
     changes = tl.changes()
     edits = {"changes": changes}
@@ -3911,12 +3941,40 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     report = tl.check()
     for line in _check_lines(report):
         print(line)
-    head = resolve_ids(parsed.project, parsed.timeline, client=parsed.client)[2]
+    project_id, timeline_id, head = resolve_ids(parsed.project, parsed.timeline, client=parsed.client)
     if head != tl.base_revision:
         print(f"the published head moved to {head}; publish will merge (three-way) or report conflicts")
+    print(_render_line(parsed, project_id, timeline_id, head) if getattr(parsed, "render", False)
+          else "latest render: --render to look it up (it scans the run history, ~10 s)")
     print(f'next: timelines publish {parsed.timeline} --project {parsed.project} -m "…"' if edits["changes"]
           else f"next: timelines show {parsed.timeline} --project {parsed.project} --as sheet   ·   timelines edit {parsed.timeline} --project {parsed.project} --clip c22.rocket --on viral")
     return 0 if report.valid else 1
+
+
+def _render_line(parsed: argparse.Namespace, project_id: str, timeline_id: str, head: str) -> str:
+    """``latest render RUN (date) renders the head`` / ``… N revision(s) behind the head``."""
+    from astrid.sdk.timeline_filmstrip import latest_render
+
+    found = latest_render(parsed.client, project_id=project_id, timeline_id=timeline_id)
+    if not found:
+        return "latest render: none found (timelines render TL --project P)"
+    when = str(found.get("created_at") or "")[:16].replace("T", " ")
+    what = "a working copy (draft)" if found.get("candidate") else None
+    if what is None and found.get("revision") == head:
+        what = "the published head"
+    elif what is None:
+        behind = None
+        try:
+            history = parsed.client.timelines.history(parsed.project, parsed.timeline, limit=50)
+            rows = history.data if getattr(history, "ok", False) else []
+            rows = rows[0] if rows and isinstance(rows[0], list) else rows
+            ids = [str(r.get("revision_id") or r.get("head_revision_id") or "") for r in rows or [] if isinstance(r, Mapping)]
+            if found.get("revision") in ids:
+                behind = ids.index(found["revision"])
+        except Exception:  # noqa: BLE001
+            behind = None
+        what = (f"revision {_short_rev(found.get('revision'))}, " + (f"{behind} revision(s) behind the head" if behind else "older than the head"))
+    return f"latest render: {found['run_id']} ({when}) renders {what}"
 
 
 def _edit_lines_from(edits: Mapping[str, Any], tl: Any) -> list[str]:
@@ -4239,6 +4297,9 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
 
 def _configure_status(subparser: argparse.ArgumentParser) -> None:
     _add_timeline_args(subparser)
+    subparser.add_argument("--render", action="store_true",
+                           help="Also name the latest render of this timeline and how far behind the head it is.")
+    subparser.add_argument("--all", action="store_true", help="Every orphan and change, not the summary.")
     subparser.set_defaults(handler=_cmd_status)
 
 

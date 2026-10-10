@@ -438,7 +438,7 @@ def test_contact_and_motion_draw_audio_and_preview(tmp_path, monkeypatch):
     }}))
     contact = _execute(tmp_path / "c", snapshot, {"view": "contact", "assets_registry": registry}, monkeypatch)
     lines = contact["outputs"]["findings"]
-    assert any(line.startswith("DEADAIR") for line in lines) and any(line.startswith("SILENCE") for line in lines)
+    assert any(line.startswith("DEADAIR") for line in lines) and any(line.startswith("NO-VO") for line in lines)
     motion = _execute(tmp_path / "m", snapshot, {"view": "motion", "cut": "1", "preview": True,
                                                  "assets_registry": registry}, monkeypatch)
     outputs = motion["outputs"]
