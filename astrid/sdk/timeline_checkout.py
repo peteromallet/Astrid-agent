@@ -2062,13 +2062,20 @@ class Checkout:
             path = Path(asset).expanduser()
             if path.is_file():
                 entry = import_media(path, self.bundle.get("project_id"))
-                key = re.sub(r"[^A-Za-z0-9_-]+", "-", path.stem).strip("-") or "asset"
+                key = _free_key(assets, re.sub(r"[^A-Za-z0-9_-]+", "-", path.stem).strip("-") or "asset", entry)
                 assets[key] = entry
+                return key
+            from astrid.sdk.media_handles import is_media_handle
+
+            if is_media_handle(asset):  # run:…#n, task:…, ref:NAME, sha256:… (media already in the project)
+                entry = resolve_handle_entry(str(self.bundle.get("project_id")), asset)
+                key = _free_key(assets, str(entry.pop("key")), entry)
+                assets[key] = {k: v for k, v in entry.items() if k in ("media_id", "content_sha256", "type", "resolution")}
                 return key
             known = sorted({k for sid in self._shot_ids() for k in self._registry(sid)})
             close = difflib.get_close_matches(asset, known, n=5)
             raise TimelineEditError(f"no asset {asset!r} in this timeline" + (f"; did you mean {', '.join(close)}?" if close else "")
-                                    + " (or pass a local file to import, or a {media_id, content_sha256, type} entry)")
+                                    + " (or a local file to import, or a media handle: run:RUN/PORT#n, ref:NAME, sha256:…)")
         if isinstance(asset, Mapping):
             entry = dict(asset)
             media_id = entry.get("media_id") or entry.get("digest") or entry.get("object_id")
@@ -2608,6 +2615,38 @@ def drafts_root() -> Path:
     """Where working copies live: Astrid's data root (``BANODOCO_LOCAL_DATA_ROOT``) / drafts."""
     base = os.environ.get("BANODOCO_LOCAL_DATA_ROOT")
     return (Path(base) if base else Path.home() / ".astrid") / "drafts"
+
+
+def _free_key(assets: Mapping[str, Any], key: str, entry: Mapping[str, Any]) -> str:
+    """A registry key for new media: its name (``robot-native.png`` → ``robot-native``); ``-2`` if that
+    name is already taken by other media."""
+    base, k, n = key, key, 2
+    while k in assets and (assets[k] or {}).get("media_id") != entry.get("media_id"):
+        k, n = f"{base}-{n}", n + 1
+    return k
+
+
+def resolve_handle_entry(project: str, handle: str, *, client: Any = None) -> dict[str, Any]:
+    """A media handle → a registry entry ``{key, media_id, content_sha256, type, resolution}`` (read-only)."""
+    from astrid.sdk import AstridClient
+    from astrid.sdk import media_handles as mh
+
+    def run(c: Any) -> dict[str, Any]:
+        resolver = getattr(mh, "resolve_timeline_asset", None)
+        try:
+            if callable(resolver):
+                return dict(resolver(c, project, handle))
+            descriptor, _lineage = mh.resolve_media_handle(c, project, handle)
+        except mh.MediaHandleError as exc:
+            raise TimelineEditError(f"{handle}: {exc}") from None
+        name = Path(str(descriptor.get("filename") or "media")).stem
+        return {"key": re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or "media", "media_id": descriptor["digest"],
+                "content_sha256": descriptor["digest"], "type": descriptor.get("media_type")}
+
+    if client is not None:
+        return run(client)
+    with AstridClient.open_from_launcher(start_pack_host=False) as c:
+        return run(c)
 
 
 def _is_draft(path: Path) -> bool:

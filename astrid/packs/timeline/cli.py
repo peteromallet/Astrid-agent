@@ -4086,8 +4086,10 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                            help="Take the asset off the clip (e.g. an am-footage slot that should draw its slot card again).")
     subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",
                            help="Let --set add a param the element does not declare (normally refused).")
-    subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE",
-                           help="Point the clip at another asset key or a local file.")
+    subparser.add_argument("--swap-asset", dest="swap_asset", default=None, metavar="KEY|FILE|HANDLE",
+                           help="Point the clip at an asset: a registry key, a local file (imported), or media already in "
+                                "the project: run:RUN/PORT#n, task:TASK/PORT#n, ref:NAME, sha256:DIGEST. New media gets the "
+                                "key of its file name without the extension (robot-native.png → robot-native; -2 if taken).")
     timeline_ops = subparser.add_argument_group("timeline-level (no clip selector)")
     timeline_ops.add_argument("--retime", action="store_true", help="Move every anchored clip back onto its word.")
     timeline_ops.add_argument("--close-gap-before", dest="close_gap_before", default=None, metavar="WORD",

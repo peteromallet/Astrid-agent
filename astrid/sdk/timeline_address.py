@@ -126,11 +126,36 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
         if raw[0] in "\"“":  # a quoted phrase nobody says: on-screen text?
             return _text(tl, raw.strip('"“”'))
         return []
+    if prefer == "thing" and _registry_entry(tl, raw) is not None:
+        users = [c for c in tl.clips() if c.asset == raw]
+        return [Target("asset", raw, min((c.start for c in users), default=0.0), max((c.end for c in users), default=0.0),
+                       note=f"used by {len(users)} clip(s)")]
     names = _names(tl, raw)
     spoken = _moment(tl, f'"{raw}"')
     text_hits = _text(tl, raw)
     tiers = [spoken, names, text_hits] if prefer == "time" else [names, spoken, text_hits]
     return next((tier for tier in tiers if tier), [])
+
+
+def _registry_entry(tl: Any, key: str) -> dict[str, Any] | None:
+    for sid in tl._shot_ids():
+        entry = tl._registry(sid).get(key)
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _drawn_size(clip: Any, entry: dict[str, Any]) -> str:
+    """How big an asset is drawn by this clip, in canvas px (am-sprite draws each art px scale×scale)."""
+    res = str(entry.get("resolution") or "")
+    m = re.fullmatch(r"(\d+)x(\d+)", res)
+    if not m:
+        return ""
+    w, h = int(m.group(1)), int(m.group(2))
+    if clip.element == "am-sprite":
+        scale = int((clip.data.get("params") or {}).get("scale") or element_schema(clip.element).get("defaults", {}).get("scale") or 6)
+        return f"drawn {w * scale}×{h * scale} canvas px (scale {scale}: one art px = {scale}×{scale} canvas px)"
+    return ""
 
 
 def _clip_address(tl: Any, cut_id: str, layer: str) -> list[Target]:
@@ -321,7 +346,9 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         if clip.asset:
             entry = tl._registry(clip.shot_id).get(clip.asset) or {}
             media = entry.get("media_id") or entry.get("content_sha256") or ""
-            out.append(f"  asset   {clip.asset}" + (f"   media {media}" if media else ""))
+            size = f" · {entry['resolution'].replace('x', '×')} px" if entry.get("resolution") else ""
+            drawn = _drawn_size(clip, entry)
+            out.append(f"  asset   {clip.asset}{size}" + (f" · {drawn}" if drawn else "") + (f"   media {media}" if media else ""))
         if intent.standin(clip.data):
             out.append(f"  stand-in for {intent.standin(clip.data)[0]}")
         if intent.slot(clip.data):
@@ -365,6 +392,17 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         if said:
             out.append(f'  while it is on: "{" ".join(w.text for w in said)}"')
         out.append(f"next: timelines edit {where} --clip {clip.address} --set KEY=VALUE  ·  --on MOMENT  ·  --until MOMENT")
+    elif target.kind == "asset":
+        entry = _registry_entry(tl, target.address) or {}
+        res = str(entry.get("resolution") or "?").replace("x", "×")
+        out.append(f"{target.address} · {entry.get('type', '?')} · {res} px · media {entry.get('media_id') or entry.get('content_sha256') or '?'}")
+        users = [c for c in tl.clips() if c.asset == target.address]
+        for c in users:
+            drawn = _drawn_size(c, entry)
+            out.append(f"  used by {c.address:<16} {c.element:<14} {c.start:7.2f}–{c.end:.2f} s" + (f"  {drawn}" if drawn else ""))
+        if not users:
+            out.append("  used by nothing (it is in the registry only)")
+        out.append(f"next: timelines edit {where} --clip ADDRESS --swap-asset {target.address}   ·   timelines show {where} ADDRESS")
     elif target.kind == "param":
         from astrid.sdk.timeline_checkout import formula_short, to_canvas
 

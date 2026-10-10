@@ -439,3 +439,20 @@ def test_positions_are_canvas_px_for_every_element():
     assert rocket.params["x"] == 215 and rocket.get("x") == 1290
     card = tl.clip("b-type").set(x=900)  # am-type: stored as canvas px
     assert card.params["x"] == 900 and card.get("x") == 900
+
+
+def test_swap_asset_takes_a_media_handle(monkeypatch):
+    import astrid.sdk.timeline_checkout as tc
+
+    seen = {}
+
+    def fake(project, handle, client=None):
+        seen["handle"] = handle
+        return {"key": "robot-native", "media_id": "sha256:" + "a" * 64, "content_sha256": "sha256:" + "a" * 64, "type": "image/png"}
+
+    monkeypatch.setattr(tc, "resolve_handle_entry", fake)
+    tl = Checkout(bundle())
+    tl.clip("R").swap_asset("run:01ABC/images#0")
+    assert seen["handle"] == "run:01ABC/images#0" and tl.clip("a-rocket").asset == "robot-native"
+    tl.clip("a-rocket").clear_asset()
+    assert tl.clip("a-rocket").asset is None
