@@ -213,3 +213,22 @@ def test_a_clip_in_no_cut_shows_in_the_sheet_and_applying_never_duplicates_it():
     with pytest.raises(SheetError):
         apply_sheet(tl, sheet.replace('on "viral"', 'on "virl"'))
     assert len(tl.clips()) == before  # a refused apply changes nothing
+
+
+def test_a_words_of_formula_round_trips_and_can_be_set():
+    """Acceptance fix 2: c09.we-shape words=ƒ(words of n05b) must apply unchanged (it read as a spoken word)."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    card = tl.clip("c2.card")
+    card.data["params"]["words"] = []
+    intent.set_formula(card.data, "params.words", {"words_of": "s2"})
+    tl.resolve()
+    sheet = render_sheet(tl)
+    assert "words=ƒ(words of s2)" in sheet and apply_sheet(tl, sheet) == []
+    card.set(words="ƒ(words of s1)")
+    assert intent.formulas(card.data)["params.words"] == {"words_of": "s1"}
+    with pytest.raises(Exception, match="no VO line 'zz'"):
+        card.set(words="ƒ(words of zz)")

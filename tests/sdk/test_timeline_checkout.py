@@ -652,3 +652,25 @@ def test_time_valued_params_take_their_unit_from_the_element_declaration():
     term.set(**{"lines[0].at": '"Live"'})
     assert intent.formulas(term.data)["params.lines[0].at"]["as"] == "clip_frame"
     assert isinstance(term.params["lines"][0]["at"], int)
+
+
+def test_python_setters_are_discoverable_and_refuse_what_is_not_a_param():
+    """Acceptance fixes 1 and 3: .until("for 0.6s"), .for_("0.6s"), did-you-mean, and set() refusing junk keys."""
+    tl = Checkout(bundle())
+    card = tl.clip("b-type")
+    card.until("for 0.6s")
+    assert card.duration == pytest.approx(0.6)
+    card.for_("18f")
+    assert card.duration == pytest.approx(0.6)
+    with pytest.raises(TimelineEditError, match=r"for is not a param: use for → \.hold_for"):
+        card.set(**{"for": "0.6s"})
+    with pytest.raises(TimelineEditError, match="has no param colour .*did you mean color"):
+        card.set(colour="#fff")
+    card.set(text="Now.")
+    assert card.text == "Now."
+    with pytest.raises(AttributeError, match="for that use hold_for"):
+        card.lasting(0.6)
+    with pytest.raises(AttributeError, match="did you mean hold_for"):
+        card.holdfor(0.6)
+    card.set(brand_new=1, _allow_new=True)
+    assert card.params["brand_new"] == 1

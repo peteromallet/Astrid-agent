@@ -809,12 +809,15 @@ def _update_layer(tl: Any, clip: Any, layer: dict[str, Any], *, is_picture: bool
     if bad:
         props = sorted(element_schema(element).get("properties") or {})
         raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
-    from astrid.sdk.timeline_checkout import formula_from_spec, parse_formula_value, to_canvas
+    from astrid.sdk.timeline_checkout import formula_from_spec, formula_short, parse_formula_value, to_canvas
 
     formulas = intent.formulas(data)
     for key, value in wanted.items():
         if value is ELIDED:
             continue
+        exact = formulas.get(f"params.{key}")
+        if exact is not None and isinstance(value, str) and value.strip() == formula_short(exact, element):
+            continue  # the formula as the sheet printed it: unchanged (a sheet always round-trips)
         spec = parse_formula_value(value)
         if spec is not None:
             current_expr = formulas.get(f"params.{key}") or {}

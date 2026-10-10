@@ -160,6 +160,8 @@ def parse_moment_value(value: Any, current_expr: Mapping[str, Any] | None = None
     explicit = m is not None
     if explicit:
         text = m.group(1).strip()
+        if re.fullmatch(r"words of \S+", text):
+            return None  # ƒ(words of LINE) is a words formula, not a moment
     looks = explicit or text.startswith(('"', "“", "after ", "beat ", "downbeat ")) or bool(current_expr and current_expr.get("moment"))
     if not looks:
         return None
@@ -214,6 +216,35 @@ def formula_short(expr: Any, element: str) -> str:
 
 class TimelineEditError(ValueError):
     """An edit that cannot be applied; the message says what to do instead."""
+
+
+def _length_seconds(value: Any, fps: float) -> float:
+    """``0.6`` · ``"0.6s"`` · ``"18f"`` → seconds."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(s|f)?\s*", str(value))
+    if not m:
+        raise TimelineEditError(f"a length is seconds or frames: 0.6, \"0.6s\" or \"18f\" (got {value!r})")
+    return float(m.group(1)) / fps if m.group(2) == "f" else float(m.group(1))
+
+
+class _Suggest:
+    """``AttributeError`` that names the nearest methods (and what timing words mean)."""
+
+    _SYNONYMS = {"hold": "hold_for", "lasting": "hold_for", "length": "hold_for", "for_seconds": "hold_for",
+                 "duration_s": "hold_for", "set_text": "set(text=…)", "text_": "set(text=…)", "move": "nudge / on / enter_at",
+                 "start_at": "on / enter_at", "end": "until / end_at", "starts": "on", "ends": "until",
+                 "delete": "remove", "rename": "the sheet's layer name (or add(layer=…))", "split_at": "split"}
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        names = sorted(n for n in dir(type(self)) if not n.startswith("_"))
+        close = difflib.get_close_matches(name, names, n=3, cutoff=0.5)
+        hint = self._SYNONYMS.get(name)
+        said = (f"; for that use {hint}" if hint else "") + (f"; did you mean {', '.join(close)}?" if close else "")
+        raise AttributeError(f"{type(self).__name__} has no {name!r}{said} (all of them: references/editing.md, "
+                             "the method table)")
 
 
 def _norm(text: Any) -> str:
@@ -274,7 +305,7 @@ class _LazyParams(dict):
         return self._attach().setdefault(key, default)
 
 
-class Clip:
+class Clip(_Suggest):
     """A live view of one clip. Reads and writes go straight to the checkout document."""
 
     def __init__(self, tl: "Checkout", shot_id: str, data: dict[str, Any]):
@@ -384,6 +415,7 @@ class Clip:
 
         Stored as written (seconds are only the cache), then resolved now. A plain number
         is a time: it becomes an offset from the clip's cut (or a fixed time without a cut)."""
+        self._tl._note_bare_word(moment, self)
         orphan_cut = intent.cut_of(self.data) if intent.orphan(self.data) and self.track == "plate" else None
         old_start = self.start
         for clip in self._sequence_mates():  # a new moment re-homes an orphan (a whole sequence)
@@ -445,7 +477,11 @@ class Clip:
         return [c.id for c in mates]
 
     def until(self, moment: Any) -> "Clip":
-        """End on a moment (``"Astrid"``, ``after "viral"``, ``c26``, ``end``); its start does not move."""
+        """End on a moment (``"Astrid"`` = when the word STARTS, ``after "viral"`` = when it ends, ``c26``,
+        ``end of c30``, ``end`` = its cut's end); its start does not move. The sheet's ``for 0.6s`` works too."""
+        if isinstance(moment, str) and re.match(r"^\s*for\s+", moment):
+            return self.hold_for(moment.strip()[3:].strip())
+        self._tl._note_bare_word(moment, self)
         text = self._tl._moment_text(moment)
         t = self._tl._moment_time(text, self)
         if t <= self.start + 0.5 / self._tl.fps:
@@ -477,9 +513,14 @@ class Clip:
         self._set_start(self._tl.quantize(self.start + delta))
         return self
 
-    def hold_for(self, seconds: float) -> "Clip":
-        """A literal length (no moment behind it). Prefer ``until`` when the end means something."""
-        return self.set_duration(seconds)
+    def hold_for(self, seconds: Any) -> "Clip":
+        """A literal length (no moment behind it): ``0.6``, ``"0.6s"``, ``"18f"``. Prefer ``until`` when the
+        end means something."""
+        return self.set_duration(_length_seconds(seconds, self._tl.fps))
+
+    def for_(self, seconds: Any) -> "Clip":
+        """The sheet's ``for 0.6s``: the same as ``hold_for``."""
+        return self.hold_for(seconds)
 
     def set_duration(self, seconds: float) -> "Clip":
         if seconds <= 0:
@@ -515,10 +556,37 @@ class Clip:
         is never silently recomputed over your value: a plain value replaces the formula (and
         ``changes()`` says so); ``x="ƒ(B2-HAND -60)"`` edits a mark, and a moment
         (``'"adapt" in w05c'``, ``'ƒ(beat 2 after "Astrid")'``) puts a time-valued param on that moment.
-        Nested params take their address: ``clip.set(**{"states[3].at": '"adapt" in w05c'})``."""
+        Nested params take their address: ``clip.set(**{"states[3].at": '"adapt" in w05c'})``.
+
+        A key the element does not declare (its element.yaml) is refused with the keys it takes; timing is
+        not a param (``.hold_for(0.6)``, ``.until(…)``, ``.on(…)``). ``_allow_new=True`` adds one on purpose."""
+        allow_new = bool(params.pop("_allow_new", False))
+        if not allow_new:
+            self._check_param_keys(list(params))
         for key, value in params.items():
             self.set_param(key, value)
         return self
+
+    _TIMING_WORDS = {"for": ".hold_for(0.6) (or .for_(\"0.6s\"))", "hold": ".hold_for(0.6)", "duration": ".hold_for(0.6)",
+                     "length": ".hold_for(0.6)", "lasting": ".hold_for(0.6)", "until": ".until(MOMENT)",
+                     "on": ".on(MOMENT)", "at": ".on(MOMENT) or .enter_at(TIME)", "start": ".on(MOMENT)",
+                     "end": ".until(MOMENT)", "asset": ".swap_asset(KEY)"}
+
+    def _check_param_keys(self, keys: list[str]) -> None:
+        from astrid.sdk.timeline_address import element_schema, unknown_params
+
+        tops = [re.split(r"[.\[]", k, maxsplit=1)[0] for k in keys]
+        timing = [k for k in tops if k in self._TIMING_WORDS and k not in (element_schema(self.element).get("properties") or {})]
+        if timing:
+            raise TimelineEditError(f"{self.address}: {', '.join(timing)} is not a param: use "
+                                    + "; ".join(f"{k} → {self._TIMING_WORDS[k]}" for k in timing))
+        bad = unknown_params(self.element, tops, existing=self.params)
+        if bad:
+            props = sorted(element_schema(self.element).get("properties") or {})
+            hints = [f"{k} (did you mean {', '.join(difflib.get_close_matches(k, props, n=2))}?)"
+                     if difflib.get_close_matches(k, props, n=2) else k for k in bad]
+            raise TimelineEditError(f"{self.address} is an {self.element}, which has no param {', '.join(hints)}. It takes: "
+                                    f"{', '.join(props)} (an undeclared param on purpose: .set(..., _allow_new=True))")
 
     def set_param(self, path: str, value: Any) -> "Clip":
         """Set one param by its address inside the clip (``x``, ``states[3].at``, ``stamp.at``)."""
@@ -528,6 +596,13 @@ class Clip:
         current_expr = formulas.get(full) or {}
         spec = parse_formula_value(value)
         moment = None
+        words_of = re.fullmatch(r"\s*(?:ƒ|f)\(\s*words of (\S+)\s*\)\s*", value) if isinstance(value, str) else None
+        if words_of:  # ƒ(words of n05b): the line's words, clip-relative (presenter lip-sync)
+            expr = {"words_of": words_of.group(1)}
+            self._tl.voice(words_of.group(1)).clips  # an unknown line says so (and lists the lines)
+            intent.set_formula(self.data, full, expr)
+            _set_path(self.data, full, self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots, full))
+            return self
         if spec is None:
             moment = parse_moment_value(value, current_expr)
         if spec is not None:  # a slot mark: ƒ(B2-HAND -42)
@@ -617,7 +692,7 @@ class Clip:
         self.data["at"] = _r(seconds - self._tl._shot_start(self.shot_id))
 
 
-class Cut:
+class Cut(_Suggest):
     """One picture cut (the numbering show/lint/visualize print)."""
 
     def __init__(self, tl: "Checkout", raw: Mapping[str, Any]):
@@ -693,7 +768,7 @@ class Cut:
         return f"<Cut {self.n} {self.start:.3f}–{self.end:.3f} s {self.shot} · {pic.asset if pic else '-'} · {len(self.layers)} layer(s)>"
 
 
-class Voice:
+class Voice(_Suggest):
     """One VO line (all its audio clips), with its words and the silence declared after it."""
 
     def __init__(self, tl: "Checkout", segment: str):
@@ -835,7 +910,7 @@ def tl_cache(tl: "Checkout") -> dict[str, Any]:
 
 # ------------------------------------------------------------------ checkout
 
-class Checkout:
+class Checkout(_Suggest):
     """A complete, editable copy of one timeline head (parent → shots → internal timelines)."""
 
     def __init__(self, bundle: dict[str, Any], *, path: Path | None = None):
@@ -1490,6 +1565,22 @@ class Checkout:
                                                     f"since removed {', '.join(gone)}" if gone else "") if x)
                            + f"); still true? \"{intent.why(pic.data)}\" (edit --cut {g['id']} --why …)")
         return out
+
+    def _note_bare_word(self, moment: Any, clip: Clip) -> None:
+        """A bare word that is also a layer's name (``live`` vs c11.live) is read as the spoken word: say so."""
+        if not isinstance(moment, str) or not re.fullmatch(r"[\w'-]+", moment.strip()):
+            return
+        name = moment.strip()
+        layers = sorted({c.address for c in self.clips() if intent.layer_of(c.data) == name})
+        if layers:
+            self.notes.append(f"{clip.address}: {name} is read as the spoken word \"{name}\" (there is also a layer "
+                              f"{', '.join(layers[:3])}; for where it ends write until end of its cut, or quote the word)")
+
+    def find(self, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Any]:
+        """What you hear or see → addresses and times (``timelines find``): ``tl.find("the conclusion")``."""
+        from astrid.sdk.timeline_address import find
+
+        return find(self, query, text=text, asset=asset)
 
     def cut_count(self) -> str:
         """One way to count cuts everywhere: the named cuts (what you address), and the pictures if a

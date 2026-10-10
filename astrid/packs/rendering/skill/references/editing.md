@@ -66,6 +66,20 @@ tl.clip("c30.cover").until("Astrid"); tl.clip("c41.tool-16").set(x=1200)   # can
 print("\n".join(tl.changes() + tl.check().brief())); tl.save()
 ```
 
+## Python: the method table
+```
+tl = Checkout.draft(P, TL)   tl.save()  tl.undo()  tl.changes()  tl.check().brief()  tl.publish("msg")
+tl.clip("c30.cover")  tl.cut("c33")  tl.voice("n21")  tl.find("the conclusion")  tl.time('end of c30')  tl.words()
+tl.add("am-type", at='"Building" in v27', layer="title", hold=1.2, params={"text": "…"})   tl.add_cut('"word"')
+tl.adopt("round2")   tl.set_cut_note("c33", why="…", hold="deliberate")   tl.cut("c33").split('"word"')
+clip.on(MOMENT)  clip.until(MOMENT) / clip.until("for 0.6s")  clip.hold_for(0.6) = clip.for_("0.6s")  clip.nudge(0.1)
+clip.set(text="Now.", x=1200, **{"states[3].at": '"adapt" in w05c'})  clip.get("x")  clip.swap_asset(KEY|FILE|HANDLE)
+clip.set_beats("run:<id>/beats")  clip.remove()  clip.keep()   clip.start .end .duration .address .text .params
+voice.replace(take, words=…)  voice.set_gap_after(1.2)  tl.apply_script("vo.json")  tl.remove_line("w05")
+```
+`on`/`until` a word mean its START (`after "word"` = its end); `until end of c30` ends with that cut. A moment
+lands on the frame it falls in (148.13 s → frame 4443 = 148.10 s at 30 fps), so a clip on it starts there.
+
 ## The narration (re-flow)
 `timelines edit TL --project P --from-script vo.json --takes DIR` (DIR has `<id>.wav` + `<id>.words.json`;
 `--script-gaps` uses the script's gaps) · `--line ID --take … --words …` · `--insert-line` · `--remove-line`.
