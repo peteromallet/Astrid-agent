@@ -764,6 +764,8 @@ python3 -m astrid timelines render <slug-or-id> --project <project> \
   --expected-version <version> --review --output-name <name>-review.mp4 --json
 ```
 
+Delivery audio (opt-in, off by default): `--audio-target -14 --true-peak -1` on `rendering.render` (or SDK input `delivery_audio`) masters the final mix to that LUFS with a true-peak ceiling (ffmpeg loudnorm, alimiter fallback; video stream-copied; AAC 320k). The render receipt (provenance `backend_fragments['rendering.delivery-audio']`) records before/after I, LRA and TP. A render whose ceiling cannot be met is refused, not published.
+
 Review mode shows the registered shot name and running timeline time in the top-right corner in Remotion and Three.js, plus a readable bottom caption showing one phrase at a time, never the whole shot script. When the shot's VO clips carry word timings (`app.words`), phrases are timed to those words (breaks at sentence punctuation or silences of 0.25 s or more, at most two lines of 42 characters); without word timing, the script's sentences are distributed over the shot and marked non-word-aligned. No ASR timing is invented. Names and captions are pinned from canonical shot references and text bindings before expansion. Gaps show `No shot`; overlapping shots show all active names. The overlay exists only in this render; saved timeline documents are unchanged. FFmpeg rejects review mode explicitly; choose a review-capable backend for editorial previews rather than silently dropping the flag. SDK inputs use `"review": true`.
 
 Remotion review renders default to a backend-native low resolution that fits the

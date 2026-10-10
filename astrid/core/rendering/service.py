@@ -44,6 +44,14 @@ from .contracts import (
     SupportReport,
     compute_request_digest,
 )
+from .delivery_audio import (
+    FRAGMENT_NAMESPACE,
+    METADATA_KEY,
+    DeliveryAudioError,
+    DeliveryAudioTarget,
+    apply_delivery_audio,
+    find_ffmpeg,
+)
 from .errors import (
     RendererException,
     raise_internal_error,
@@ -559,6 +567,16 @@ class RenderService:
 
         source_video = self._artifact_path(final_result, workspace)
         fragments = self._merge_backend_fragments(fragment_results)
+        delivery_target = self._delivery_audio_target(request)
+        if delivery_target is not None:
+            source_video, delivery_receipt = self._master_delivery_audio(
+                final_result,
+                source_video,
+                workspace=workspace,
+                target=delivery_target,
+                backend=selected.candidate.id,
+            )
+            fragments[FRAGMENT_NAMESPACE] = delivery_receipt
         provenance = self._provenance_builder(
             engine=policy.requested,
             output=out_path,
@@ -2134,6 +2152,50 @@ class RenderService:
             candidate = base / f"{name}-{suffix}"
             suffix += 1
         return candidate
+
+    @staticmethod
+    def _delivery_audio_target(request: RenderRequest) -> DeliveryAudioTarget | None:
+        """The opt-in delivery audio master requested in request metadata, if any."""
+        raw = request.metadata.get(METADATA_KEY)
+        if raw is None:
+            return None
+        try:
+            return DeliveryAudioTarget.from_mapping(json.loads(raw))
+        except (TypeError, ValueError) as exc:
+            raise_protocol_error(
+                backend=_CORE_BACKEND_ID,
+                message=f"invalid delivery audio target: {exc}",
+                recovery_command="pass --audio-target LUFS and --true-peak DBTP with sane values",
+            )
+
+    @staticmethod
+    def _master_delivery_audio(
+        result: RenderResult,
+        source_video: Path,
+        *,
+        workspace: Path,
+        target: DeliveryAudioTarget,
+        backend: str,
+    ) -> tuple[Path, dict[str, Any]]:
+        """Apply the delivery audio master to the final mix; video is stream-copied."""
+        if not result.video.profile.has_audio:
+            raise_unsupported_error(
+                backend=backend,
+                message="a delivery audio target needs a rendered audio track; this output has none",
+                recovery_command="render with audio, or drop the delivery audio target",
+            )
+        dest = workspace / "delivery-audio.mp4"
+        try:
+            receipt = apply_delivery_audio(source_video, dest, target, ffmpeg=find_ffmpeg())
+        except DeliveryAudioError as exc:
+            raise_unsupported_error(
+                backend=backend,
+                message=f"delivery audio master failed: {exc}",
+                recovery_command="check ffmpeg (loudnorm, alimiter, ebur128) and the target values",
+                details={"target": target.to_dict()},
+            )
+        receipt["source_sha256"] = result.video.sha256
+        return dest, receipt
 
     @staticmethod
     def _artifact_path(result: RenderResult, workspace: Path) -> Path:
