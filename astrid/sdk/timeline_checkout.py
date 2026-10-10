@@ -2514,7 +2514,8 @@ class Checkout(_Suggest):
                             f"({self.duration - music_end:.1f} s without music)")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
                            problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
-                           diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old)
+                           diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old,
+                           addresses={c.id: c.address for c in self.clips() if c.address != c.id})
 
     def publish(self, message: str = "", *, idempotency_key: str | None = None, client: Any = None,
                 force: bool = False) -> dict[str, Any]:
@@ -3057,6 +3058,7 @@ class CheckReport:
     blocking: list[str] = dataclasses.field(default_factory=list)
     lint_new: list[str] | None = None   # lint findings the published head does not have (None: not computed)
     lint_old: int = 0                    # findings on the changed cuts that were already there
+    addresses: Mapping[str, str] = dataclasses.field(default_factory=dict)  # clip id → its address (c30.cover)
 
     def brief(self, *, full: bool = False, cuts: Iterable[str] | None = None) -> list[str]:
         """Calm lines for after an edit: valid or not, what blocks publishing, and NEW lint (findings the
@@ -3139,7 +3141,10 @@ class CheckReport:
                 rest.append(line)
         if kinds:
             lines.append("  cut points: " + " · ".join(f"{n} {what}" for what, n in kinds.items()))
-        lines += rest[:10] + ([f"  … {len(rest) - 10} more clip lines"] if len(rest) > 10 else [])
+        def plain(line: str) -> str:  # addresses, not clip ids; "app" is the clip's intent
+            line = re.sub(r"\b[\w.-]+\b", lambda m: self.addresses.get(m.group(0), m.group(0)), line)
+            return line.replace("app changed", "intent changed: moments, cut, words").replace(", app,", ", intent,")
+        lines += [plain(line) for line in rest[:10]] + ([f"  … {len(rest) - 10} more clip lines"] if len(rest) > 10 else [])
         if kinds or len(rest) > 10:
             lines.append("  (every line: timelines check TL --all · timelines diff TL)")
         orphans = sum(1 for p in self.blocking if p.startswith("orphan"))

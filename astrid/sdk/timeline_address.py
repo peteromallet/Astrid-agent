@@ -614,7 +614,8 @@ def _cut_at(tl: Any, t: float) -> str | None:
     return next((cid for lo, hi, cid in reversed(spans) if lo - 1e-6 <= t < hi - 1e-6), None)
 
 
-def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Found]:
+def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: str | None = None,
+         line: str | None = None, cut: str | None = None, last: bool = False) -> list[Found]:
     """Everything that matches what you SEE or HEAR, with its address and place.
 
     ``query``: a spoken phrase (``the conclusion``, or a moment like ``"tool" in v20a``), a layer name
@@ -627,6 +628,18 @@ def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: s
         found += _find_text(tl, text)
     if asset:
         found += _find_assets(tl, asset)
+    if line:  # only what is said in (or on screen during) that line
+        voice = tl.voice(line)
+        words = voice.words
+        lo, hi = (words[0].start, words[-1].end) if words else (voice.clips[0].start, voice.clips[-1].end)
+        found = [f for f in found if (f.line == line) if f.kind == "spoken"] + \
+                [f for f in found if f.kind != "spoken" and f.start < hi and f.end > lo]
+    if cut:
+        cid = tl._cut_id(cut) or cut
+        found = [f for f in found if f.cut == cid or (f.kind == "asset" and any(intent.cut_of(c.data) == cid for c in f.clips))]
+    found.sort(key=lambda f: (f.start, f.kind))
+    if last and found:
+        found = [max(found, key=lambda f: f.start)]
     seen, out = set(), []
     for item in found:  # one thing, said once (a layer named like its asset is one hit)
         key = ("clip", item.address) if item.kind in ("layer", "text") else (item.kind, item.address)
@@ -669,13 +682,42 @@ def _find_layers(tl: Any, raw: str) -> list[Found]:
                   + (f" · {c.asset}" if c.asset else ""), clips=[c]) for c in sorted(hits, key=lambda c: c.start)]
 
 
+def _strings(value: Any, path: str = "") -> list[tuple[str, str]]:
+    """Every text value inside params, with its address inside the clip (values[2], badges[0].text)."""
+    if isinstance(value, str):
+        return [(path, value)]
+    if isinstance(value, list):
+        return [hit for i, item in enumerate(value) for hit in _strings(item, f"{path}[{i}]")]
+    if isinstance(value, dict):
+        return [hit for key, item in value.items() for hit in _strings(item, f"{path}.{key}" if path else str(key))]
+    return []
+
+
+_NOT_TEXT = {"enter", "slideFrom", "shape", "kind", "color", "ink", "fill", "outline", "background", "src", "align", "font"}
+
+
 def _find_text(tl: Any, raw: str) -> list[Found]:
+    """On-screen text: a clip's text, and text inside its params (a flap's values, a terminal's lines, badges)."""
     needle = re.sub(r"\s+", " ", raw.strip().strip('"“”')).lower()
     if not needle:
         return []
-    hits = [c for c in tl.clips() if c.text and needle in re.sub(r"\s+", " ", c.text).lower()]
-    return [Found("text", c.address, c.start, c.end, cut=intent.cut_of(c.data), detail=f'on screen: "{c.text}" · {c.element}',
-                  clips=[c]) for c in sorted(hits, key=lambda c: c.start)]
+    out = []
+    for c in sorted(tl.clips(), key=lambda c: c.start):
+        if c.is_audio:
+            continue
+        if c.text and needle in re.sub(r"\s+", " ", c.text).lower():
+            out.append(Found("text", c.address, c.start, c.end, cut=intent.cut_of(c.data),
+                             detail=f'on screen: "{c.text}" · {c.element}', clips=[c]))
+            continue
+        params = {k: v for k, v in (c.params or {}).items() if k != "text"}
+        hits = [(p, v) for p, v in _strings(params) if p.rsplit(".", 1)[-1].split("[")[0] not in _NOT_TEXT
+                and needle in re.sub(r"\s+", " ", v).lower()]
+        if hits:
+            where, value = hits[0]
+            out.append(Found("text", c.address, c.start, c.end, cut=intent.cut_of(c.data),
+                             detail=f'on screen: {where} = "{value[:60]}" · {c.element}'
+                                    + (f" (+{len(hits) - 1} more)" if len(hits) > 1 else ""), clips=[c]))
+    return out
 
 
 def _find_assets(tl: Any, raw: str) -> list[Found]:
@@ -699,9 +741,14 @@ def describe_found(tl: Any, found: list[Found], *, timeline: str = "TL", project
     """Plain lines: each hit's address and place, and the clips there (address, element, start–end)."""
     lines: list[str] = []
     where = f"{timeline} --project {project}"
+    chapter_of = {}
+    for item in found:
+        if item.cut and item.cut not in chapter_of:
+            chapter_of[item.cut] = _chapter_of(tl, item.cut)
     for item in found:
         span = f"{item.start:.2f}–{item.end:.2f} s"
-        cut = f" · in {item.cut}" if item.cut else ""
+        chapter = chapter_of.get(item.cut) if item.cut else None
+        cut = (f" · in {item.cut}" + (f" ({chapter})" if chapter else "")) if item.cut else ""
         if item.kind == "spoken":
             lines.append(f'heard  {item.address}  · {span} · line {item.line}, words {item.words}{cut}')
         elif item.kind == "asset":

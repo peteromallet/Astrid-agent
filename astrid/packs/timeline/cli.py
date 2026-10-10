@@ -1261,15 +1261,18 @@ def _show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any,
 def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
     from astrid.sdk.timeline_address import AddressError, resolve
-    from astrid.sdk.timeline_sheet import SheetError, moment_range, render_sheet
+    from astrid.sdk.timeline_sheet import SheetError, moment_range, range_cuts, render_sheet
 
     got = _show_checkout(parsed, bundle_opener)
     if isinstance(got, int):
         return got
     tl, banner = got
     start = end = None
+    cuts = None
     try:
-        if parsed.range:
+        if parsed.range and "," in parsed.range:  # a list (or repeated --range): exactly those cuts
+            cuts = range_cuts(tl, parsed.range)
+        elif parsed.range:
             start, end = moment_range(tl, parsed.range)
         elif getattr(parsed, "at", None):
             # --at scopes the sheet to the cut on screen then
@@ -1284,7 +1287,7 @@ def _print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     except (SheetError, AddressError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project)), end="")
+    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts), end="")
     where = f"{parsed.ref} --project {parsed.project}"
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
     if sys.stdout.isatty():
@@ -1342,6 +1345,14 @@ def _preset_max() -> dict[str, float]:
         return {k: float(v["max_window_s"]) for k, v in PRESETS.items() if k in ("motion", "beat", "scan") and v.get("max_window_s")}
     except Exception:  # noqa: BLE001 - the hint is optional
         return {}
+
+
+class _JoinRanges(argparse.Action):
+    """``--range A --range B`` = ``A,B`` (never silently the last one)."""
+
+    def __call__(self, parser: Any, namespace: Any, values: Any, option_string: Any = None) -> None:
+        current = getattr(namespace, self.dest, None)
+        setattr(namespace, self.dest, f"{current},{values}" if current else values)
 
 
 def _clips_changed(n: int) -> str:
@@ -2185,8 +2196,14 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
         at = getattr(parsed, "at", None)
         if isinstance(at, str) and at.strip() and not re.fullmatch(r"\s*@?[\d.:]+s?\s*", at):
             target = resolve(tl, at, prefer="time")
-            parsed.at = f"{target.start:.3f}"
-            notes.append(f"--at {at!r}: {target.address} = {target.start:.2f} s")
+            limit = _preset_max().get(str(getattr(parsed, "preset", None) or "scan"), 30.0)
+            if target.kind == "clip" and not getattr(parsed, "range", None) and target.end - target.start <= limit + 1e-6:
+                # a layer: show its whole span (where it enters, holds and leaves), not one frame at its entrance
+                parsed.at, parsed.range = None, f"{target.start:.3f}..{target.end:.3f}"
+                notes.append(f"--at {at!r}: the layer {target.address}, {target.start:.2f}–{target.end:.2f} s")
+            else:
+                parsed.at = f"{target.start:.3f}"
+                notes.append(f"--at {at!r}: {target.address} = {target.start:.2f} s")
         rng = getattr(parsed, "range", None)
         if isinstance(rng, str) and rng.strip() and not re.fullmatch(r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*", rng):
             target = resolve(tl, rng, prefer="time")
@@ -3232,7 +3249,9 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--shot", default=None, help="Restrict the inspection projection to one authored shot id.")
     subparser.add_argument("--track", action="append", default=None, help="Restrict the inspection projection to one or more tracks.")
     subparser.add_argument("--asset", default=None, help="Restrict the inspection projection to one canonical asset key.")
-    subparser.add_argument("--range", dest="range", default=None, help="Half-open START..END seconds window.")
+    subparser.add_argument("--range", dest="range", default=None, action=_JoinRanges,
+                           help="START..END (seconds, cut ids c10..c12 by time, or words); with --as sheet also a list "
+                                "c10,c29,c33a (repeating --range adds to it).")
     subparser.add_argument("--limit", type=int, default=50, help="Maximum bounded inspection rows (1–100).")
     subparser.add_argument("--cursor", default=None, help="Continue a bounded inspection page from its cursor.")
     subparser.add_argument("--revision-id", default=None, help="Inspect an exact immutable timeline revision.")
@@ -4057,6 +4076,8 @@ def _cmd_words(parsed: argparse.Namespace) -> int:
 
 
 def _parse_range(value: str) -> tuple[str, str]:
+    if "," in value:
+        raise _VerbError(f"--range {value!r}: one window here (a list of ranges works with show --as sheet)", 2)
     lo, sep, hi = value.partition("..")
     if not sep or not lo or not hi:
         raise _VerbError("--range takes START..END (seconds or m:ss)", 2)
@@ -4440,6 +4461,9 @@ def _configure_find(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("query", nargs="?", default=None, help="What you heard or saw (every kind that matches).")
     subparser.add_argument("--text", default=None, help="Only on-screen text containing this.")
     subparser.add_argument("--asset", default=None, help="Only assets whose key is (or contains) this, any case.")
+    subparser.add_argument("--line", default=None, metavar="ID", help="Only in (or on screen during) narration line ID.")
+    subparser.add_argument("--cut", default=None, metavar="CUT", help="Only in cut CUT (c32).")
+    subparser.add_argument("--last", action="store_true", help="Only the last hit (in time).")
     subparser.add_argument("--file", default=None, help="Read a local checkout file instead.")
     subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
     subparser.set_defaults(handler=_cmd_find)
@@ -4460,7 +4484,7 @@ def _cmd_find(parsed: argparse.Namespace) -> int:
         tl, _existed = _working_copy(parsed, create=True)
     if not (parsed.query or parsed.text or parsed.asset):
         raise _VerbError('say what to find: timelines find TL "the conclusion" · --text "Astrid." · --asset ROCKET', 2)
-    hits = find(tl, parsed.query, text=parsed.text, asset=parsed.asset)
+    hits = find(tl, parsed.query, text=parsed.text, asset=parsed.asset, line=parsed.line, cut=parsed.cut, last=parsed.last)
     if not hits:
         raise _VerbError(_nothing(tl, parsed.query or parsed.text or parsed.asset), 1)
     for line in describe_found(tl, hits, timeline=str(parsed.timeline or "TL"), project=str(parsed.project or "P")):
@@ -4782,6 +4806,22 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 
+class _TimelinesParser(argparse.ArgumentParser):
+    """``show TL --project P c41.mink``: a positional after the flags fills the verb's open positional
+    (address, word, query, sheet) instead of failing with "unrecognized arguments"."""
+
+    def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        parsed, extras = self.parse_known_args(args, namespace)
+        loose = [e for e in extras if not e.startswith("-")]
+        if extras and len(loose) == len(extras):
+            for dest in ("address", "word", "query", "sheet"):
+                if loose and getattr(parsed, dest, "absent") is None:
+                    setattr(parsed, dest, loose.pop(0))
+        if loose or len(extras) != len([e for e in extras if not e.startswith("-")]):
+            self.error(f"unrecognized arguments: {' '.join(extras)}")
+        return parsed
+
+
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``timelines`` product-family parser stamped with *client*.
 
@@ -4797,7 +4837,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
         nested = subparser.add_subparsers(dest="shot_command", required=True)
         register_product_commands(nested, shots_cli.COMMANDS, family="shots", client=client)
 
-    parser = argparse.ArgumentParser(
+    parser = _TimelinesParser(
         prog="astrid timelines",
         description=(
             "Timeline create/list/show/replace-parent-media/archive/recover/history/diff/lint/visualize/render "

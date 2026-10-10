@@ -41,14 +41,18 @@ class SheetError(ValueError):
 # ---------------------------------------------------------------- render
 
 def render_sheet(tl: Any, *, start: float | None = None, end: float | None = None, banner: str | None = None,
-                 film: str | None = None) -> str:
-    """The cut sheet for the cuts that overlap [start, end) (all cuts by default)."""
+                 film: str | None = None, cuts: Iterable[str] | None = None) -> str:
+    """The cut sheet for the cuts that overlap [start, end) (all cuts by default), or exactly ``cuts``."""
     groups = tl._cut_groups()
     if not groups:
         return "this timeline has no named cuts yet (import its intent first)\n"
     spans = tl._cut_spans()
+    wanted = set(cuts) if cuts is not None else None
     picked = [g for g in groups
-              if (end is None or g["start"] < end - 1e-6) and (start is None or (spans[g["id"]][1] or tl.duration) > start + 1e-6)]
+              if (wanted is not None and g["id"] in wanted) or (wanted is None
+              and (end is None or g["start"] < end - 1e-6) and (start is None or (spans[g["id"]][1] or tl.duration) > start + 1e-6))]
+    if wanted is not None:
+        start = min((spans[g["id"]][0] for g in picked), default=0.0)
     fps = tl.fps
     canvas = _canvas(tl)
     version = sheet_version(tl)
@@ -63,7 +67,8 @@ def render_sheet(tl: Any, *, start: float | None = None, end: float | None = Non
         out.append(banner)
     if start is not None or end is not None:
         ids = [g["id"] for g in picked]
-        out.append(f"scope {ids[0]}..{ids[-1]} ({len(ids)} cuts): apply changes only these cuts" if ids else "scope: no cuts")
+        named = ", ".join(ids) if wanted is not None else f"{ids[0]}..{ids[-1]}" if ids else ""
+        out.append(f"scope {named} ({len(ids)} cuts): apply changes only these cuts" if ids else "scope: no cuts")
     lines_used = []
     for g in picked:
         lo, hi = spans[g["id"]]
@@ -876,6 +881,23 @@ def _add_layer(tl: Any, cut_id: str, group: dict[str, Any], layer: dict[str, Any
         clip.hold_for(layer["for"])
     for key, value in computed.items():  # x=ƒ(B2-HAND -42), at=ƒ("adapt" in w05c): a formula, not text
         clip.set_param(key, value)
+
+
+def range_cuts(tl: Any, text: str) -> list[str]:
+    """The cut ids a range list names: ``c10,c29,c33a`` · ``c10..c12,c29`` · ``"viral"..c05`` (comma-separated
+    windows; each window is every cut it overlaps, by time). In time order, each once."""
+    spans = tl._cut_spans()
+    order = [g["id"] for g in tl._cut_groups()]
+    chosen: set[str] = set()
+    for part in re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', text):
+        if not part.strip():
+            continue
+        lo, hi = moment_range(tl, part.strip())
+        for cid in order:
+            a, b = spans[cid][0], spans[cid][1] if spans[cid][1] is not None else tl.duration
+            if (hi is None or a < hi - 1e-6) and (lo is None or b > lo + 1e-6):
+                chosen.add(cid)
+    return [c for c in order if c in chosen]
 
 
 def moment_range(tl: Any, text: str) -> tuple[float | None, float | None]:

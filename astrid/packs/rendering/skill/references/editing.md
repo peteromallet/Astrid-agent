@@ -23,7 +23,9 @@ round2[@rev]`, then publish. Narration, cuts, clips and intent, assets and beats
 `c41.mink` (cut.layer; a layer carried into a later cut also answers to it: c30.cover = c29.cover) ·
 `c41.mink.x` (one param) · `c30` (a cut; `c30..c31` inclusive) · `"Building" in v27 #2` (a spoken word) ·
 `93.5` · an asset key · a layer name. Ambiguous names list their choices; outputs print the canonical address.
-`c1` and `c01` are the same cut. In Python, `tl.time(X)` gives the seconds of any of these, or of a moment.
+`c1` and `c01` are the same cut; `c10..c41` runs by time (c10's start to c41's end); with `--as sheet`,
+`--range c10,c29,c33a` (or repeated `--range`) is exactly those cuts. `·` in outputs only separates fields.
+In Python, `tl.time(X)` gives the seconds of any of these, or of a moment.
 
 ## Moments
 `"viral"` · `after "Astrid"` (word end) · `"tool" in v20a #2` · `beat 2 after "Astrid"` · `c22` · `end of c30` (=`c30.end`) ·

@@ -232,3 +232,18 @@ def test_a_words_of_formula_round_trips_and_can_be_set():
     assert intent.formulas(card.data)["params.words"] == {"words_of": "s1"}
     with pytest.raises(Exception, match="no VO line 'zz'"):
         card.set(words="ƒ(words of zz)")
+
+
+def test_a_range_list_picks_exactly_those_cuts():
+    import json
+    from pathlib import Path
+
+    from astrid.sdk.timeline_sheet import range_cuts
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    tl.cut("c1").split('"viral"')
+    assert range_cuts(tl, "c2,c1") == ["c1", "c2"] and range_cuts(tl, "c1..c1a") == ["c1", "c1a"]
+    sheet = render_sheet(tl, cuts=range_cuts(tl, "c1,c2"))
+    assert "┃ c1 " in sheet and "┃ c2 " in sheet and "┃ c1a" not in sheet
+    assert apply_sheet(tl, sheet) == []
