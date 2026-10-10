@@ -35,7 +35,7 @@ inputs:
   - name: palette
     type: string
     required: false
-    description: Preset name (astrid) or comma-separated hex colours, applied to every frame so the strip shares one palette.
+    description: "Preset name (astrid), comma-separated hex colours, or a list of hex colours, applied to every frame so the strip shares one palette."
   - name: max_colors
     type: integer
     required: false
@@ -85,6 +85,7 @@ command:
     - input: palette
       flag: "--palette"
       optional: true
+      repeatable: true
     - input: max_colors
       flag: "--max-colors"
       optional: true

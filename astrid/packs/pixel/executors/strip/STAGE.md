@@ -13,7 +13,7 @@ by regenerating art.
   `"run:<run_id>/<port>#n"`, `result.output("native")`, `"ref:<name>"` or `"sha256:<digest>"`. Repeats are fine (ping-pong).
 - `grid_width` / `grid_height` (integer, default 0): the shared logical grid. Set both to snap every frame to that grid (as `pixel.snap`). At 0 the frames' own size is used, and they must all match.
 - `fit` (`cover` | `contain` | `none`, default `cover`): how a frame fits an explicit grid.
-- `palette` (string, optional): `astrid` or hex colours, applied to every frame.
+- `palette` (string or list, optional): `astrid`, comma-separated hex colours (`"#25241F,#ED6B23"`), or a list (`["#25241F", "#ED6B23"]`), applied to every frame.
 - `max_colors` (integer, optional, 2-256): one quantisation across frames when no palette is given.
 - `fps` (number, default 8): playback rate written to the metadata.
 - `align` (`bottom` | `center` | `top`, default `bottom`): frames of different sizes (pixel.cutout trims each pose

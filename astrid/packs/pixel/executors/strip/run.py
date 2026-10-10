@@ -35,7 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grid-width", type=int, default=0, help="Shared grid width (0 = frame size).")
     parser.add_argument("--grid-height", type=int, default=0, help="Shared grid height (0 = frame size).")
     parser.add_argument("--fit", choices=("cover", "contain", "none"), default="cover")
-    parser.add_argument("--palette", default=None, help="Preset (astrid) or comma-separated hex colours.")
+    parser.add_argument(
+        "--palette",
+        action="append",
+        default=None,
+        help="Preset (astrid), comma-separated hex colours, or one hex colour per repeated flag.",
+    )
     parser.add_argument("--max-colors", type=int, default=0, help="Quantise all frames to N colours when no palette.")
     parser.add_argument("--fps", type=float, default=8.0, help="Playback rate for am-sprite.")
     parser.add_argument("--align", choices=ALIGNS, default="bottom",
@@ -44,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 ALIGNS = ("bottom", "center", "top")
+
+
+def _palette_text(values: list[str] | None) -> str | None:
+    """Join repeated ``--palette`` flags (one list of hex colours) into one comma string."""
+    if not values:
+        return None
+    return ",".join(item for value in values for item in value.split(",") if item.strip())
 
 
 def align_frames(frames: list[np.ndarray], *, align: str = "bottom") -> tuple[list[np.ndarray], list[dict]]:
@@ -146,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = args.out.expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        palette = _palette_text(args.palette)
         frames = [px.load_rgba(str(source)) for source in sources]
         _aligned, placements = align_frames(frames, align=args.align) if len(frames) > 1 else (frames, [])
         strip = build_strip(
@@ -153,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             grid_width=int(args.grid_width),
             grid_height=int(args.grid_height),
             fit=args.fit,
-            palette=args.palette,
+            palette=palette,
             max_colors=int(args.max_colors or 0),
             align=args.align,
         )
@@ -179,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 "frames": [source.name for source in sources],
                 "grid": [args.grid_width, args.grid_height],
                 "fit": args.fit,
-                "palette": args.palette,
+                "palette": palette,
                 "max_colors": int(args.max_colors or 0),
                 "fps": float(args.fps),
                 "align": args.align,
