@@ -144,7 +144,10 @@ it. It advances one block set per frame over `frames`, then holds.
 
 A hard-edged pixel mark drawn with no asset, on the sticker grid (`px_scale` 6
 matches `am-sprite` at scale 6). Use it instead of drawing a PNG for a ring
-around a word, a pixel full stop, an underline or an arrow. Static.
+around a word, a pixel full stop, an underline or an arrow. Static, except `blinkAt`.
+Params: `shape`, `color`, `px_scale`, `x`, `y`, `w`, `h`, `stroke`, `blinkAt` (table below). Full schema:
+`python3 -m astrid.core.element.cli inspect effects am-pixel-shape --json`.
+`blinkAt` matches `am-sprite` (hides two frames at each listed clip frame), so one clip replaces four.
 
 | param | default | meaning |
 |---|---|---|
@@ -153,7 +156,8 @@ around a word, a pixel full stop, an underline or an arrow. Static.
 | `px_scale` | 6 | screen px per cell. |
 | `x`, `y` | 0 | logical px of the top-left, as `am-sprite`. |
 | `w`, `h` | 24 | box size in cells. |
-| `stroke` | 2 | stroke thickness in cells. |
+| `stroke` | 2 | stroke thickness in cells (ring, underline, arrow shaft). |
+| `blinkAt` | none | clip frame or frames where the shape hides for two frames, as `am-sprite`. Use it for a blinking Live dot in one clip. |
 
 ```json
 {"id":"ring-tomorrow","at":3.0,"track":"fx","clipType":"am-pixel-shape","hold":2.0,"params":{"shape":"ring","color":"#A94714","px_scale":6,"x":120,"y":60,"w":60,"h":24,"stroke":2}}
@@ -196,15 +200,9 @@ match the render.
 
 ## Known limits
 
-- **Render alias (blocks timeline renders).** `scripts/gen_effect_registry.py`
-  imports pack elements as `@pack-astrid_motion-elements-effects/<id>/component`.
-  `remotion/remotion.config.ts` and `remotion/webpack-alias.mjs` alias only the
-  `local` and `rendering` packs (`remotion.config.ts:67-68` for effects). Any other pack needs
-  `ASTRID_PACKS_PATH` to add its alias. So a timeline that uses `am-*` clips will
-  not bundle until the config aliases in-tree pack element roots. Use the preview
-  loop for stills and mp4 until that change lands.
-- `am-snap-plate` zoom is fixed per clip. For a stepped zoom punch, split the
-  plate into two clips.
+- `am-snap-plate` zoom is fixed per clip, except `punchAt` (zoom lifts one step
+  for 6 frames) and `push` (a slow linear zoom to `to`). Use those rather than
+  splitting the plate into two clips.
 - `am-sprite` `slideIn` moves from the rest position by `slideDistance`, not from
   the canvas edge.
 - Only Gelasio 400 and 700 are vendored, so `am-callout` weight 650 renders at 700.
