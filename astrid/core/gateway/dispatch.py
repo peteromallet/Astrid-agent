@@ -246,6 +246,13 @@ def _dispatch_doctor(args: list[str]) -> int:
     report.setdefault("effects", ["observe"])
     report.setdefault("authorization_required", False)
     report["diagnostic"] = diagnostic
+    try:
+        from astrid.sdk import visualize_cache
+        from astrid.sdk.invocation import _visualize_cache_base
+
+        report["visualize_cache"] = visualize_cache.cache_size(_visualize_cache_base())
+    except (OSError, ValueError) as exc:
+        report["visualize_cache"] = {"error": str(exc)}
     from pathlib import Path
 
     from astrid.core.execution.process_group import (
@@ -480,7 +487,21 @@ def _dispatch_dev(args: list[str]) -> int:
     promote.add_argument("--ref", default=None, help="commit-ish to serve (default: the dev tree's HEAD)")
     promote.add_argument("--force", action="store_true", help="promote even with in-flight work (abandons it)")
     promote.add_argument("--json", action="store_true")
+    cache = operations.add_parser("cache", help="reclaim durable evidence caches (timelines visualize)")
+    cache_operations = cache.add_subparsers(dest="cache_operation", required=True)
+    cache_prune = cache_operations.add_parser(
+        "prune",
+        help="evict least-recently-used visualize captures until within the cache limit",
+    )
+    cache_prune.add_argument("--visualize", action="store_true", required=True,
+                             help="prune the timelines visualize evidence cache")
+    cache_prune.add_argument("--keep-mb", type=float, default=None,
+                             help="byte cap for this run in MB (default: ASTRID_VISUALIZE_CACHE_MB or 500)")
+    cache_prune.add_argument("--json", action="store_true")
     parsed = parser.parse_args(args)
+
+    if parsed.operation == "cache":
+        return _dev_cache_prune(parsed)
 
     from astrid.core.gateway.dev_operator import (
         DevOperatorError,
@@ -513,6 +534,38 @@ def _dispatch_dev(args: list[str]) -> int:
         if payload.get("next_action"):
             print(f"next action: {payload['next_action']}", file=sys.stderr)
     return 0 if payload.get("ok") else 1
+
+
+def _dev_cache_prune(parsed: Any) -> int:
+    """`astrid dev cache prune --visualize`: reclaim the visualize evidence cache.
+
+    Filesystem-only: it never connects to or starts the runtime.
+    """
+    import json
+    import sys
+    from astrid.sdk import visualize_cache
+    from astrid.sdk.invocation import _visualize_cache_base
+
+    try:
+        limit = visualize_cache.max_cache_bytes(override_mb=parsed.keep_mb)
+        report = visualize_cache.prune_visualize_cache(
+            _visualize_cache_base(),
+            max_bytes=limit,
+            max_dirs=visualize_cache.DEFAULT_MAX_DIRS,
+        )
+    except (OSError, ValueError) as exc:
+        payload = {"ok": False, "error": str(exc)}
+        if parsed.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Astrid dev cache prune: {exc}", file=sys.stderr)
+        return 1
+    if parsed.json:
+        print(json.dumps({"ok": True, **report.as_dict()}, indent=2, sort_keys=True))
+    else:
+        for line in visualize_cache.format_report(report):
+            print(line)
+    return 0
 
 
 def _product_command_needs_pack_host(family: str, args: list[str]) -> bool:
