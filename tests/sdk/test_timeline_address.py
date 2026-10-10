@@ -84,3 +84,19 @@ def test_a_bare_layer_name_used_in_several_cuts_lists_each_with_its_time(tl):
         resolve(tl, "claw")
     for clip in claws:
         assert f"{clip.address} ({clip.start:.2f}" in str(err.value)
+
+
+def test_find_maps_what_you_hear_see_or_name_to_addresses_and_times(tl):
+    """P5: one call from a spoken phrase, on-screen text, a layer name or an asset to addresses."""
+    from astrid.sdk.timeline_address import describe_found, find
+
+    heard = [f for f in find(tl, "back") if f.kind == "spoken"]
+    assert heard and heard[0].line == "s3" and heard[0].cut and heard[0].clips
+    assert heard[0].address == '"back"' or heard[0].address.startswith('"back" in')
+    seen = find(tl, text=tl.clips(element="am-type")[0].text.split()[0]) if tl.clips(element="am-type") else []
+    assert all(f.kind == "text" for f in seen)
+    asset = find(tl, asset="r")
+    assert asset and asset[0].kind == "asset" and asset[0].clips
+    lines = describe_found(tl, heard + asset)
+    assert lines[0].startswith("heard") and any(line.startswith("asset") for line in lines) and lines[-1].startswith("next:")
+    assert find(tl, "nobody says this") == []

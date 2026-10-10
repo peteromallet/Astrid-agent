@@ -147,18 +147,22 @@ def formula_from_spec(spec: Mapping[str, Any], element: str, key: str, current: 
     if not mark:
         raise TimelineEditError(f"{key}: name the slot mark, e.g. {key}=ƒ(B2-HAND -42)")
     axis = current.get("axis") or (key if key in POSITION_KEYS else "x")
-    logical = element in LOGICAL_GRID_ELEMENTS
-    offset = float(spec["offset"]) / LOGICAL_PX if logical else float(spec["offset"])
-    return {"mark": mark, "axis": axis, "offset": round(offset, 3), "unit": "logical" if logical else "px"}
+    if current.get("mark") == mark and abs(mark_offset_canvas(current) - float(spec["offset"])) < 0.005:
+        return dict(current)  # the same formula, however it was stored: unchanged
+    offset = round(float(spec["offset"]), 2)  # stored as written, in canvas px: no ÷6 round-trip noise
+    return {"mark": mark, "axis": axis, "offset": int(offset) if offset == int(offset) else offset, "unit": "canvas"}
+
+
+def mark_offset_canvas(expr: Mapping[str, Any]) -> float:
+    """A mark formula's offset in canvas px, whatever unit it was stored in."""
+    offset = _num(expr.get("offset"))
+    return offset * LOGICAL_PX if expr.get("unit", "logical") == "logical" else offset
 
 
 def formula_short(expr: Any, element: str) -> str:
     """A formula as the sheet writes it, in canvas px: ``ƒ(B2-HAND -42)``; a moment: ``ƒ("viral" …)``."""
     if isinstance(expr, Mapping) and "mark" in expr:
-        offset = _num(expr.get("offset"))
-        if expr.get("unit", "logical") == "logical":
-            offset *= LOGICAL_PX
-        return f"ƒ({expr['mark']} {offset:+g})"
+        return f"ƒ({expr['mark']} {round(mark_offset_canvas(expr), 2):+g})"
     if isinstance(expr, Mapping) and expr.get("moment"):
         return f"ƒ({expr['moment']})"
     if isinstance(expr, Mapping) and "words_of" in expr:
@@ -1912,7 +1916,8 @@ class Checkout:
           (``edge: "end"`` for the word's end; then, in order: ``offset_frames``, ``min``/``max``, ``step``
           (down to a multiple, e.g. 2 for stepFrames 2); ``snap: "floor"|"round"`` puts seconds on a frame)
         - ``{"words_of": "n20b"}``: ``[[start, end], …]`` of that line's words, clip-relative (presenter lip-sync)
-        - ``{"mark": "B2-HAND", "axis": "x"|"y", "offset": -16, "unit": "logical"|"px"}``: a slot's hand mark
+        - ``{"mark": "B2-HAND", "axis": "x"|"y", "offset": -96, "unit": "canvas"}``: a slot's hand mark plus an
+          offset in canvas px (older ``"logical"``/``"px"`` offsets still read)
 
         Paths look like ``params.words``, ``params.punchAt[0]``, ``params.keyframes[2].frame``. Returns what changed.
         """
@@ -2005,8 +2010,11 @@ class Checkout:
             axis = str(expr.get("axis", "x"))
             if axis not in mark:
                 raise TimelineEditError(f"slot {expr['mark']!r} has no hand_mark.{axis}")
-            value = _num(mark[axis]) + _num(expr.get("offset"))
-            return round(_num(mark[axis]) / 6 + _num(expr.get("offset"))) if expr.get("unit", "logical") == "logical" else round(value)
+            # one arithmetic for every unit: canvas px (the mark + the offset), then the element's grid
+            canvas = _num(mark[axis]) + mark_offset_canvas(expr)
+            if clip.element in LOGICAL_GRID_ELEMENTS or expr.get("unit", "logical") == "logical":
+                return round(canvas / LOGICAL_PX)
+            return round(canvas)
         raise TimelineEditError(f"unknown formula {expr!r}")
 
     # ---- slots (real footage to film) and stand-ins ---------------------------

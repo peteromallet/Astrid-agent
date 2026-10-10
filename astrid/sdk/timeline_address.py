@@ -298,8 +298,9 @@ def formula_text(expr: Any) -> str:
     if not isinstance(expr, dict):
         return str(expr)
     if "mark" in expr:
-        offset = float(expr.get("offset") or 0)
-        return f"mark {expr['mark']} {expr.get('axis', 'x')} {offset:+g}" + (" px" if expr.get("unit") == "px" else "")
+        from astrid.sdk.timeline_checkout import mark_offset_canvas
+
+        return f"mark {expr['mark']} {expr.get('axis', 'x')} {round(mark_offset_canvas(expr), 2):+g} canvas px"
     if "words_of" in expr:
         return f"words of line {expr['words_of']}"
     what = expr.get("moment") or (f'"{expr.get("text")}"' if expr.get("text") else str(expr.get("word")))
@@ -581,3 +582,138 @@ def ordinals_to_ids(text: str, tl: Any, mapping: dict[int, str] | None = None) -
     text = re.sub(r"\bcuts (\d+)[–-](\d+)\b",
                   lambda m: f"cuts {ids.get(int(m.group(1)), m.group(1))}–{ids.get(int(m.group(2)), m.group(2))}", text)
     return re.sub(r"\bcut #?(\d+)\b", lambda m: ids.get(int(m.group(1)), m.group(0)), text)
+
+
+# ---------------------------------------------------------------- find by what you see or hear
+
+@dataclass
+class Found:
+    """One thing a search found: where it is, and its address to paste into show/edit/visualize."""
+    kind: str                        # spoken | text | asset | layer
+    address: str                     # "the conclusion" in n21 · c30.cover · ROCKET
+    start: float
+    end: float
+    cut: str | None = None
+    line: str | None = None          # spoken: the narration line id
+    words: str | None = None         # spoken: word ids, n21:1–2
+    detail: str = ""                 # text on screen, element, asset size …
+    clips: list[Any] = dataclasses.field(default_factory=list)   # what is on screen then (Clip objects)
+
+
+def _cut_at(tl: Any, t: float) -> str | None:
+    spans = sorted(((lo, hi if hi is not None else tl.duration, cid) for cid, (lo, hi) in tl._cut_spans().items()))
+    return next((cid for lo, hi, cid in reversed(spans) if lo - 1e-6 <= t < hi - 1e-6), None)
+
+
+def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Found]:
+    """Everything that matches what you SEE or HEAR, with its address and place.
+
+    ``query``: a spoken phrase (``the conclusion``, or a moment like ``"tool" in v20a``), a layer name
+    (``claw``), on-screen text, or an asset key: every kind that matches. ``text=``: only on-screen text.
+    ``asset=``: only assets (key, or part of it, any case)."""
+    found: list[Found] = []
+    if query:
+        found += _find_spoken(tl, query) + _find_layers(tl, query) + _find_text(tl, query) + _find_assets(tl, query)
+    if text:
+        found += _find_text(tl, text)
+    if asset:
+        found += _find_assets(tl, asset)
+    seen, out = set(), []
+    for item in found:  # one thing, said once (a layer named like its asset is one hit)
+        key = ("clip", item.address) if item.kind in ("layer", "text") else (item.kind, item.address)
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _on_screen(tl: Any, lo: float, hi: float) -> list[Any]:
+    return sorted((c for c in tl.clips() if not c.is_audio and c.start < max(hi, lo + 1e-3) - 1e-6 and c.end > lo + 1e-6),
+                  key=lambda c: (c.start, c.address))
+
+
+def _find_spoken(tl: Any, raw: str) -> list[Found]:
+    phrase = raw.strip()
+    try:
+        moment = mo.parse(phrase if MOMENT_HINT.search(phrase) else f'"{phrase.strip(chr(34))}"')
+    except mo.MomentError:
+        return []
+    if moment.kind != "word":
+        return []
+    runs = mo.find_words(moment, tl.words())
+    if moment.n is not None:
+        runs = runs[moment.n - 1:moment.n] if 1 <= moment.n <= len(runs) else []
+    out = []
+    for run in runs:
+        lo, hi = run[0].start, run[-1].end
+        ids = run[0].id if len(run) == 1 else f"{run[0].id}–{run[-1].index}"
+        cut = _cut_at(tl, lo)
+        out.append(Found("spoken", _phrase_address(tl, moment, run), lo, hi, cut=cut, line=run[0].segment, words=ids,
+                         detail=" ".join(w.text for w in run), clips=_on_screen(tl, lo, hi)))
+    return out
+
+
+def _find_layers(tl: Any, raw: str) -> list[Found]:
+    name = raw.strip().strip('"')
+    hits = [c for c in tl.clips() if intent.layer_of(c.data) == name or c.id == name]
+    return [Found("layer", c.address, c.start, c.end, cut=intent.cut_of(c.data), detail=f"{c.element} · track {c.track}"
+                  + (f" · {c.asset}" if c.asset else ""), clips=[c]) for c in sorted(hits, key=lambda c: c.start)]
+
+
+def _find_text(tl: Any, raw: str) -> list[Found]:
+    needle = re.sub(r"\s+", " ", raw.strip().strip('"“”')).lower()
+    if not needle:
+        return []
+    hits = [c for c in tl.clips() if c.text and needle in re.sub(r"\s+", " ", c.text).lower()]
+    return [Found("text", c.address, c.start, c.end, cut=intent.cut_of(c.data), detail=f'on screen: "{c.text}" · {c.element}',
+                  clips=[c]) for c in sorted(hits, key=lambda c: c.start)]
+
+
+def _find_assets(tl: Any, raw: str) -> list[Found]:
+    want = raw.strip().strip('"').lower()
+    if not want:
+        return []
+    keys = sorted({k for sid in tl._shot_ids() for k in tl._registry(sid)})
+    exact = [k for k in keys if k.lower() == want]
+    chosen = exact or [k for k in keys if want in k.lower()]
+    out = []
+    for key in chosen:
+        users = sorted((c for c in tl.clips() if c.asset == key), key=lambda c: c.start)
+        entry = _registry_entry(tl, key) or {}
+        size = f" · {str(entry['resolution']).replace('x', '×')} px" if entry.get("resolution") else ""
+        out.append(Found("asset", key, min((c.start for c in users), default=0.0), max((c.end for c in users), default=0.0),
+                         detail=f"{entry.get('type', '?')}{size} · used by {len(users)} clip(s)", clips=users))
+    return out
+
+
+def describe_found(tl: Any, found: list[Found], *, timeline: str = "TL", project: str = "P") -> list[str]:
+    """Plain lines: each hit's address and place, and the clips there (address, element, start–end)."""
+    lines: list[str] = []
+    where = f"{timeline} --project {project}"
+    for item in found:
+        span = f"{item.start:.2f}–{item.end:.2f} s"
+        cut = f" · in {item.cut}" if item.cut else ""
+        if item.kind == "spoken":
+            lines.append(f'heard  {item.address}  · {span} · line {item.line}, words {item.words}{cut}')
+        elif item.kind == "asset":
+            lines.append(f"asset  {item.address}  · {item.detail}" + (f" · {span}" if item.clips else ""))
+        else:
+            lines.append(f"{'seen ' if item.kind == 'text' else 'layer'}  {item.address}  · {span}{cut} · {item.detail}")
+        width = max([len(c.address) for c in item.clips] + [8])
+        shown = item.clips if item.kind in ("spoken", "asset") else []  # a layer or text hit IS its clip
+        for clip in shown[:12]:
+            lines.append(f"         {clip.address:<{width}}  {clip.element:<14} {clip.start:7.2f}–{clip.end:.2f} s"
+                         + (f"  {clip.asset}" if clip.asset else "") + (f'  "{clip.text[:30]}"' if clip.text else ""))
+        if len(shown) > 12:
+            lines.append(f"         … {len(shown) - 12} more")
+    if found:
+        first = found[0]
+        target = first.clips[0].address if first.kind != "spoken" and first.clips else first.address
+        lines.append(f"next: timelines show {where} {shlex_quote(target)}   ·   timelines visualize {where} --at {shlex_quote(first.address if first.kind == 'spoken' else target)}")
+    return lines
+
+
+def shlex_quote(text: str) -> str:
+    import shlex
+
+    return shlex.quote(text)

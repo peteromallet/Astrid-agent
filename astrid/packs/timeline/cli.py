@@ -1334,6 +1334,16 @@ def _working_banner(working: Mapping[str, Any]) -> str:
             "--published for the live version")
 
 
+def _preset_max() -> dict[str, float]:
+    """The window presets' widest window (motion/window.py), for the hint after a visualize."""
+    try:
+        from astrid.packs.rendering.executors.timeline_visualize.motion.window import PRESETS
+
+        return {k: float(v["max_window_s"]) for k, v in PRESETS.items() if k in ("motion", "beat", "scan") and v.get("max_window_s")}
+    except Exception:  # noqa: BLE001 - the hint is optional
+        return {}
+
+
 def _clips_changed(n: int) -> str:
     """The one count every verb prints for a working copy: clips added, removed, moved or edited."""
     return f"{n} clip{'s' if n != 1 else ''} changed"
@@ -1999,7 +2009,9 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
             if here and here in changed_ids:
                 cut_line = f"✎ {here} is changed in the working copy (before/after: --compare published)"
             elif here:
-                cut_line = f"{here} is unchanged in the working copy"
+                elsewhere = ", ".join(changed_ids[:8]) + (" …" if len(changed_ids) > 8 else "")
+                cut_line = (f"{here}: no clip of it differs from the published head (same place, same params)"
+                            + (f"; your changes are in {elsewhere} (--cut {changed_ids[0]})" if changed_ids else ""))
         if not parsed.json:
             print(banner)
             if cut_line:
@@ -2443,7 +2455,9 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
         "contact": f"{tiles} tiles, one per picture cut (#N = cut number in timelines show)",
         "motion": (f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance" if preset == "cut" else
                    f"{preset} {float(window_info.get('start', 0)):.2f}–{float(window_info.get('end', 0)):.2f} s: "
-                   f"{frames} frames on one page"),
+                   f"{frames} frames on one page"
+                   + (f" (window {float(window_info.get('end', 0)) - float(window_info.get('start', 0)):.2f} s: "
+                      f"--window S widens it, up to {_preset_max()[str(preset)]:g} s)" if str(preset) in _preset_max() else "")),
     }.get(view, f"{frames} frames")
     lines.append(f"  {what}" + (f" · frames {resolution}" if resolution else ""))
     if timing.get("capture_s") is not None:
@@ -3534,7 +3548,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
                                 "frame 1280x720 by default). The page stays ONE page, so many frames shrink: for the "
                                 "biggest frames show fewer (a shorter --window/--range, or larger --every-frames).")
     subparser.add_argument("--window", dest="window_s", type=float, default=None, metavar="SECONDS",
-                           help="With --at: the window width centred on it (motion 3 s, scan 10 s, beat 6 s).")
+                           help="With --at: the window width centred on it. Defaults (and the most each takes): motion 1 s "
+                                "(3 s), beat 6 s (20 s), scan 10 s (30 s). --at alone shows one frame; --at with --window "
+                                "is the motion preset. Wider still: --range A..B.")
     subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
                            help="Frame resolution, e.g. 960x540 (default: 480x270 for contact and motion, "
                                 "the canvas for filmstrip); applied exactly by the executor.")
@@ -4339,6 +4355,44 @@ def _configure_words(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_words)
 
 
+def _configure_find(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Find what you see or hear: a spoken phrase (the conclusion; '\"tool\" in v20a'), a layer name (claw), "
+        "on-screen text or an asset key. Each hit prints its address (paste it into show/edit/visualize), its time, "
+        "its narration line and words, its cut, and the clips on screen then."
+    )
+    _add_timeline_args(subparser, required_timeline=False)
+    subparser.add_argument("query", nargs="?", default=None, help="What you heard or saw (every kind that matches).")
+    subparser.add_argument("--text", default=None, help="Only on-screen text containing this.")
+    subparser.add_argument("--asset", default=None, help="Only assets whose key is (or contains) this, any case.")
+    subparser.add_argument("--file", default=None, help="Read a local checkout file instead.")
+    subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
+    subparser.set_defaults(handler=_cmd_find)
+
+
+@_guard(2)
+def _cmd_find(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline_address import _nothing, describe_found, find
+    from astrid.sdk.timeline_checkout import Checkout
+
+    if parsed.file:
+        if parsed.timeline and not parsed.query:  # `find --file F QUERY`
+            parsed.query, parsed.timeline = parsed.timeline, None
+        tl = Checkout.load(parsed.file)
+    elif parsed.published:
+        tl = Checkout.open(_need_project(parsed), parsed.timeline, client=parsed.client)
+    else:
+        tl, _existed = _working_copy(parsed, create=True)
+    if not (parsed.query or parsed.text or parsed.asset):
+        raise _VerbError('say what to find: timelines find TL "the conclusion" · --text "Astrid." · --asset ROCKET', 2)
+    hits = find(tl, parsed.query, text=parsed.text, asset=parsed.asset)
+    if not hits:
+        raise _VerbError(_nothing(tl, parsed.query or parsed.text or parsed.asset), 1)
+    for line in describe_found(tl, hits, timeline=str(parsed.timeline or "TL"), project=str(parsed.project or "P")):
+        print(line)
+    return 0
+
+
 def _configure_lines(subparser: argparse.ArgumentParser) -> None:
     subparser.description = "The narration line by line: id, when it is spoken, the silence after it, its text and take."
     _add_timeline_args(subparser)
@@ -4581,6 +4635,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "lines",
         help="The narration line by line: id, spoken span, gap after, text, take.",
         configure=_configure_lines,
+    ),
+    CommandSpec(
+        "find",
+        help="Find what you see or hear (a spoken phrase, on-screen text, a layer, an asset) → addresses and times.",
+        configure=_configure_find,
     ),
     CommandSpec(
         "undo",

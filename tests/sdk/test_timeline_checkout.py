@@ -413,8 +413,12 @@ def test_a_formula_can_be_edited_in_place():
     tl = Checkout(_formula_bundle())
     tl.clip("c1.rocket").set(x="ƒ(HAND -60)")
     tl.resolve()
-    assert intent.formulas(tl.clip("c1.rocket").data)["params.x"]["offset"] == -10  # canvas -60 = 10 sprite px
-    assert tl.clip("c1.rocket").get("x") == (round(1200 / 6) - 10) * 6
+    assert intent.formulas(tl.clip("c1.rocket").data)["params.x"] == {"mark": "HAND", "axis": "x", "offset": -60, "unit": "canvas"}
+    assert tl.clip("c1.rocket").get("x") == (round(1200 / 6) - 10) * 6  # stored as written: no ÷6 noise
+    tl.clip("c1.rocket").set(x="ƒ(HAND -124)")
+    tl.resolve()
+    assert intent.formulas(tl.clip("c1.rocket").data)["params.x"]["offset"] == -124  # not -124.002
+    assert tl.clip("c1.rocket").get("x") == round((1200 - 124) / 6) * 6  # canvas first, then the 6 px grid
 
 
 def test_the_sheet_and_the_verb_show_and_replace_formulas_the_same_way():
@@ -430,7 +434,7 @@ def test_the_sheet_and_the_verb_show_and_replace_formulas_the_same_way():
     tl2 = Checkout(_formula_bundle())
     tl2.resolve()
     apply_sheet(tl2, render_sheet(tl2).replace("x=ƒ(HAND -42)", "x=ƒ(HAND -60)"))
-    assert intent.formulas(tl2.clip("c1.rocket").data)["params.x"]["offset"] == -10
+    assert intent.formulas(tl2.clip("c1.rocket").data)["params.x"]["offset"] == -60
 
 
 def test_positions_are_canvas_px_for_every_element():
