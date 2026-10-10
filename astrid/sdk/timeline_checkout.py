@@ -1066,6 +1066,8 @@ class Checkout(_Suggest):
             if now != self._disk:
                 self._merge_writer(target, now, force=force)
         text = _serialize(self._annotated())
+        staged: list[tuple[Path, Path]] = []  # undo steps: written under a temp name now, committed after the file
+        clear_redo = False
         if target.is_file() and _is_draft(target):
             previous = target.read_text(encoding="utf-8")
             journal = list(self._journal)
@@ -1074,17 +1076,26 @@ class Checkout(_Suggest):
             if journal:
                 history = _history_dir(target)
                 history.mkdir(parents=True, exist_ok=True)
+                _discard_half_written(history)
                 for k, (label, snapshot) in enumerate(journal):
                     # the first edit's "before" is exactly what was saved; later ones are in-memory snapshots
-                    _write_step(history, label, previous if (k == 0 or snapshot is None) else _draft_text(snapshot))
-                for old in sorted(history.glob("*.json"))[:-self.HISTORY]:
-                    old.unlink()
-                import shutil
-
-                shutil.rmtree(_redo_dir(target), ignore_errors=True)  # a new edit ends the redo chain
+                    staged.append(_stage_step(history, label, previous if (k == 0 or snapshot is None) else _draft_text(snapshot)))
+                clear_redo = True
         tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, target)  # a reader never sees half a file
+        # A step is committed only now that the file it describes is in place. A crash before this point leaves a
+        # temp step (ignored, and cleared by the next save), never a step whose state is the file on disk: that
+        # would make the next undo a silent no-op.
+        for step_tmp, step in staged:
+            os.replace(step_tmp, step)
+        if staged:
+            for old in sorted(_history_dir(target).glob("*.json"))[:-self.HISTORY]:
+                old.unlink()
+        if clear_redo:
+            import shutil
+
+            shutil.rmtree(_redo_dir(target), ignore_errors=True)  # a new edit ends the redo chain
         self._journal = []
         self.path = target
         self._disk = text
@@ -4049,12 +4060,26 @@ def _draft_text(snapshot: str) -> str:
     return _serialize(Checkout(json.loads(snapshot))._annotated())
 
 
-def _write_step(folder: Path, label: str, state: str) -> None:
+def _stage_step(folder: Path, label: str, state: str) -> tuple[Path, Path]:
+    """Write an undo step under a temp name. Returns (temp, final): ``os.replace(temp, final)`` commits it."""
     import time as _time
 
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{_time.time_ns():020d}-{uuid.uuid4().hex[:4]}.json"  # monotonic: undo order never depends on a count
-    (folder / name).write_text(json.dumps({"label": label, "state": state}), encoding="utf-8")
+    temp = folder / f".{name}.tmp"  # not "*.json", so readers never see a half-written step
+    temp.write_text(json.dumps({"label": label, "state": state}), encoding="utf-8")
+    return temp, folder / name
+
+
+def _write_step(folder: Path, label: str, state: str) -> None:
+    temp, final = _stage_step(folder, label, state)
+    os.replace(temp, final)
+
+
+def _discard_half_written(folder: Path) -> None:
+    """Remove temp steps a crashed save left behind (they were never committed)."""
+    for stale in folder.glob(".*.tmp"):
+        stale.unlink(missing_ok=True)
 
 
 def _read_step(path: Path) -> tuple[str, str]:
@@ -4089,9 +4114,30 @@ def _journaled(fn: Any, kind: str) -> Any:
     return wrapper
 
 
+LOCK_WAIT_ENV = "ASTRID_TIMELINE_LOCK_TIMEOUT"  # seconds a save waits for another writer's lock (tests shorten it)
+LOCK_WAIT_SECONDS = 30.0
+
+
+def _lock_wait() -> float:
+    raw = os.environ.get(LOCK_WAIT_ENV)
+    try:
+        return max(0.0, float(raw)) if raw not in (None, "") else LOCK_WAIT_SECONDS
+    except ValueError:
+        return LOCK_WAIT_SECONDS
+
+
+def _lock_holder(lock: Path) -> int | None:
+    try:
+        return int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
 @contextlib.contextmanager
 def _file_lock(target: Path):
-    """One writer at a time for the read-compare-write of a save (other processes wait, briefly)."""
+    """One writer at a time for the read-compare-write of a save. A writer waits up to ``LOCK_WAIT_ENV`` seconds
+    (30 by default) and then refuses, naming the lock file and the holder's pid. The kernel frees the lock when
+    its holder exits, so a crashed writer never blocks the next one."""
     try:
         import fcntl
     except ImportError:  # not POSIX: the merge still guards, without the lock
@@ -4100,18 +4146,42 @@ def _file_lock(target: Path):
     lock = target.with_name(f".{target.name}.lock")
     try:
         lock.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(lock, "w")
+        handle = open(lock, "a+", encoding="utf-8")  # not "w": a waiting writer must not erase the holder's pid
     except OSError:
         yield
         return
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        _acquire_lock(handle, fcntl, lock)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
         yield
     finally:
         try:
             fcntl.flock(handle, fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def _acquire_lock(handle: Any, fcntl: Any, lock: Path) -> None:
+    import time as _time
+
+    wait = _lock_wait()
+    deadline = _time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if _time.monotonic() >= deadline:
+                break
+            _time.sleep(0.05)
+    holder = _lock_holder(lock)
+    who = f"another writer (pid {holder})" if holder else "another writer"
+    raise TimelineEditError(
+        f"{who} has held this working copy's lock for {wait:g} s, so nothing was saved. The lock is {lock}. "
+        "Wait for that process to finish (the lock frees when it exits); if it is stuck, stop it and save again.")
 
 
 def _is_draft(path: Path) -> bool:

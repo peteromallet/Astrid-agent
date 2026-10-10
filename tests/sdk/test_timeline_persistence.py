@@ -10,25 +10,24 @@ until it exits, so the only thing two writers share is the working-copy file on 
 """
 from __future__ import annotations
 
-import copy
 import json
 import os
 import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 THIS_FILE = Path(__file__).resolve()
-sys.path.insert(0, str(THIS_FILE.parent))  # test_timeline_checkout's fixtures, in the parent and in workers
 REPO = THIS_FILE.parents[2]
+PUBLISHABLE = REPO / "tests" / "fixtures" / "timeline_editing" / "tiny_publishable.json"
 TIMEOUT = 120  # seconds a worker may take to answer one request before the test calls it hung
 CRASH_EXIT = 9
 
-from test_timeline_checkout import bundle  # noqa: E402  (the same two-shot timeline the checkout tests use)
-from astrid.sdk.timeline_checkout import Checkout, draft_path  # noqa: E402
+from astrid.sdk.timeline_checkout import Checkout, TimelineEditError, draft_path  # noqa: E402
 
 CUT_A = "c1"  # the first cut, named as the sheet and show print it
 BOOT = (
@@ -138,7 +137,7 @@ def worker_main() -> None:
             h.discard()
             return None
         if op == "publish":
-            receipt = tc.publish_bundle(h.document(), "persistence-test", client=client, force=bool(req.get("force")))
+            receipt = h.publish("persistence test", client=client, force=bool(req.get("force")))
             return {"merged": receipt.get("merged"), "new_head": receipt.get("new_head"),
                     "candidate": publish_seen["candidate"], "runtime_touched": publish_seen["runtime_touched"]}
         raise ValueError(f"unknown op {op!r}")
@@ -149,6 +148,9 @@ def worker_main() -> None:
         try:
             reply = {"ok": True, "result": handle(op, req)}
         except Exception as exc:  # the parent reads this as a refusal or failure
+            import traceback
+
+            traceback.print_exc()  # into the worker's stderr log, which a failing test shows
             reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         proto.write(json.dumps(reply, default=str) + "\n")
         proto.flush()
@@ -220,7 +222,7 @@ def world(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(root))  # the parent computes draft paths from the same root
     head = tmp_path / "head.json"
-    head.write_text(json.dumps({"revision_id": "rev-0", "bundle": pinned(timeline())}), encoding="utf-8")
+    head.write_text(json.dumps({"revision_id": "rev-0", "bundle": timeline()}), encoding="utf-8")
     w = SimpleNamespace(tmp=tmp_path, root=root, head=head, writers=[])
     w.writer = lambda name: Writer(w, name)
     w.working_copy = lambda: draft_path("p", "t", "main")
@@ -236,32 +238,24 @@ def world(tmp_path, monkeypatch):
 
 
 def timeline() -> dict:
-    """The fixture timeline with its two cuts named as the sheet names them (c1, c2), on their picture clips."""
-    doc = bundle()
-    doc["shots"]["A"]["internal_timeline"]["clips"][0]["app"] = {"cut": "c1", "layer": "plate"}
-    doc["shots"]["B"]["internal_timeline"]["clips"][0]["app"] = {"cut": "c2", "layer": "plate"}
-    return doc
+    """A publishable timeline (tiny_publishable.json): schema 1, a music bed under both shots, the pinned base a
+    real head carries, cuts named c1 and c2. Publish runs its real check and three-way guard on it."""
+    return json.loads(PUBLISHABLE.read_text(encoding="utf-8"))
 
 
-def pinned(bundle_doc: dict) -> dict:
-    """A published head carries its pinned base, as the authoring bundle does (core/timeline/authoring_bundle.py).
-    Without it a checkout cannot tell its own edits from the base, and publish would merge nothing."""
-    doc = copy.deepcopy(bundle_doc)
-    doc["schema_version"] = 1
-    doc["base_parent_payload"] = copy.deepcopy(doc["parent"])
-    doc["base_placements"] = {row["occurrence_id"]: copy.deepcopy(row) for row in doc["placements"]}
-    doc["source_mapping"] = {"placements": copy.deepcopy(doc["base_placements"]), "shots": {}}
-    for shot in doc["shots"].values():
-        shot["base_payload"] = copy.deepcopy(shot["payload"])
-        shot["base_internal_timeline"] = copy.deepcopy(shot["internal_timeline"])
-    return doc
+HOLD = ("import sys, time\n"
+        "from pathlib import Path\n"
+        "from astrid.sdk.timeline_checkout import _file_lock\n"
+        "lock = _file_lock(Path(sys.argv[1])); lock.__enter__()\n"
+        "print('held', flush=True)\n"
+        "time.sleep(120)\n")
 
 
 def _move_head(head: Path, rev: str, edit) -> None:
     """Someone else published: the head is now ``rev``, the fixture timeline with ``edit`` applied."""
     doc = timeline()
     edit(doc)
-    head.write_text(json.dumps({"revision_id": rev, "bundle": pinned(doc)}), encoding="utf-8")
+    head.write_text(json.dumps({"revision_id": rev, "bundle": doc}), encoding="utf-8")
 
 
 def _read_state(w) -> dict:
@@ -295,19 +289,19 @@ def test_restart_a_fresh_process_sees_every_edit_and_the_undo_history(world):
         state = b.do("state")
         assert Path(opened["path"]) == world.working_copy()
         assert state["base"] == "rev-0"
-        assert state["clips"]["a-rocket"]["start"] == 1.5
+        assert state["clips"]["a-rocket"]["start"] == 1.8
         assert state["clips"]["b-type"]["params"]["text"] == "Now live."
-        assert [note["why"] for note in state["notes"].values()] == ["the rocket lands on Viral"]
+        assert "the rocket lands on Viral" in [note["why"] for note in state["notes"].values()]
 
         assert len(b.do("undo")) == 1  # one edit taken back
         state = b.do("state")
-        assert state["notes"] == {}  # undo took back the last edit: the cut note
+        assert "the rocket lands on Viral" not in [note["why"] for note in state["notes"].values()]  # undone
         assert state["clips"]["b-type"]["params"]["text"] == "Now live."
 
         b.do("undo")  # the edit before that: the text goes back to A's previous value
         state = b.do("state")
         assert state["clips"]["b-type"]["params"]["text"] == "Live."
-        assert state["clips"]["a-rocket"]["start"] == 1.5  # the move is an earlier edit and stays
+        assert state["clips"]["a-rocket"]["start"] == 1.8  # the move is an earlier edit and stays
 
 
 # ---------------------------------------------------------------- 2. crash mid-save
@@ -344,6 +338,58 @@ def test_a_writer_that_dies_holding_the_lock_does_not_block_the_next_writer(worl
     assert _read_state(world)["clips"]["b-type"]["params"]["text"] == "from D"
 
 
+def test_a_failed_working_copy_write_leaves_no_undo_step_for_the_edit_it_did_not_save(world, monkeypatch):
+    """Regression: the undo step used to be written before the working copy. A save that died between the two left
+    a step equal to the file on disk, so the first undo changed nothing and a second was needed."""
+    path = world.working_copy()
+    Checkout(timeline()).save(path, quiet=True)
+    tl = Checkout.load(path)
+    tl.clip("b-type").set(text="edit one")
+    tl.save(quiet=True)
+    tl.clip("b-type").set(text="edit two (its write fails)")
+
+    real_replace = os.replace
+
+    def failing_working_copy_write(src, dst, *args, **kwargs):
+        if Path(dst) == path:
+            raise OSError("simulated: the working copy could not be written")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_working_copy_write)
+    with pytest.raises(OSError, match="simulated"):
+        tl.save(quiet=True)
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert Checkout.load(path).clip("b-type").params["text"] == "edit one"  # the file still holds the last good save
+    reopened = Checkout.load(path)
+    assert reopened.undo(1) == ["c2.card.set(text='edit one')"]  # the one real step: it changes something
+    assert Checkout.load(path).clip("b-type").params["text"] == "Live."
+    with pytest.raises(TimelineEditError, match="nothing to undo"):
+        reopened.undo(1)  # and there is no phantom second step
+
+
+def test_a_live_holder_that_never_exits_is_waited_for_then_refused_by_name(world, monkeypatch):
+    path = world.working_copy()
+    Checkout(timeline()).save(path, quiet=True)
+    holder = subprocess.Popen([sys.executable, "-c", HOLD, str(path)], cwd=str(REPO),
+                              stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert holder.stdout.readline().strip() == "held"  # the holder has the lock and its pid on it
+        monkeypatch.setenv("ASTRID_TIMELINE_LOCK_TIMEOUT", "0.5")  # the real wait is 30 s; this test shortens it
+        tl = Checkout.load(path)
+        tl.clip("b-type").set(text="blocked edit")
+        started = time.monotonic()
+        with pytest.raises(TimelineEditError, match=rf"another writer \(pid {holder.pid}\) has held") as refused:
+            tl.save(quiet=True)
+        assert time.monotonic() - started < 10  # it gave up at the bound, it did not hang
+        assert "nothing was saved" in str(refused.value)
+        assert str(path.with_name(f".{path.name}.lock")) in str(refused.value)  # names the lock file
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+    assert Checkout.load(path).clip("b-type").params["text"] == "Live."  # the refused edit never reached the file
+
+
 # ---------------------------------------------------------------- 3. partial write
 
 def test_a_truncated_temp_file_is_never_read_as_the_working_copy(world):
@@ -358,11 +404,11 @@ def test_a_truncated_temp_file_is_never_read_as_the_working_copy(world):
     (target.parent / f".{target.name}.515151.tmp").write_text("", encoding="utf-8")  # or never written at all
 
     loaded = Checkout.load(target)  # the library reads the target, never a temp file
-    assert loaded.clip("a-rocket").start == pytest.approx(1.5)
+    assert loaded.clip("a-rocket").start == pytest.approx(1.8)
     assert target.read_text(encoding="utf-8") == good
 
     state = _read_state(world)
-    assert state["clips"]["a-rocket"]["start"] == 1.5 and state["clips"]["a-rocket"]["params"]["x"] == 10
+    assert state["clips"]["a-rocket"]["start"] == 1.8 and state["clips"]["a-rocket"]["params"]["x"] == 10
 
 
 # ---------------------------------------------------------------- 4. two writers across processes
@@ -380,7 +426,7 @@ def test_two_writers_in_separate_processes_merge_different_clips_and_refuse_the_
         assert any("merged with another writer's save" in m for m in b.do("state")["merged"])
 
         state = world.read_state()
-        assert state["clips"]["a-rocket"]["start"] == 1.5  # A's move survived B's save
+        assert state["clips"]["a-rocket"]["start"] == 1.8  # A's move survived B's save
         assert state["clips"]["b-type"]["params"]["text"] == "Now live."  # and B's text survived A's
 
         a.do("draft")  # A reloads what B saved, then edits the SAME param B is about to edit, differently
@@ -412,7 +458,7 @@ def test_publish_after_a_restart_merges_other_clips_onto_the_moved_head(world):
     assert published["runtime_touched"] is True  # the write is the stubbed transport, not the runtime
     assert published["merged"] and "merged onto head rev-1" in published["merged"]
     merged = Checkout(published["candidate"])
-    assert merged.clip("a-rocket").start == pytest.approx(1.5)  # our move
+    assert merged.clip("a-rocket").start == pytest.approx(1.8)  # our move
     assert merged.clip("b-type").params["text"] == "LIVE!"  # their change, kept
 
 
@@ -427,7 +473,7 @@ def test_publish_after_a_restart_refuses_a_clip_both_sides_changed(world):
         b.do("draft")
         with pytest.raises(Refused, match="not published: someone published"):
             b.do("publish")
-        assert b.do("state")["clips"]["a-rocket"]["start"] == 1.5  # the working copy is untouched by the refusal
+        assert b.do("state")["clips"]["a-rocket"]["start"] == 1.8  # the working copy is untouched by the refusal
     assert json.loads(world.head.read_text(encoding="utf-8"))["revision_id"] == "rev-1"  # nothing was written
 
 
@@ -446,5 +492,5 @@ def test_a_discard_in_one_process_leaves_the_next_process_with_no_working_copy(w
         assert b.do("find") is None  # no working copy to see
         b.do("draft")  # a new one starts from the published head, not from A's discarded edit
         state = b.do("state")
-    assert state["clips"]["a-rocket"]["start"] == 1.0
+    assert state["clips"]["a-rocket"]["start"] == 1.3
     assert state["clips"]["a-rocket"]["params"]["x"] == 10
