@@ -6,7 +6,7 @@ version: 1.0.0
 short_description: "Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking."
 description: >-
   Generates an original stereo 48 kHz cue from numpy alone: two pulse channels (12.5, 25 and 50 percent duty),
-  a triangle bass and a noise drum channel. Sections of {start_s, end_s, energy, mood} snap to bar lines.
+  a triangle bass and a noise drum channel. Sections of {start_s, end_s, energy, mood} start exactly at start_s (each begins its own bar grid; the last bar may be partial).
   Energy sets density (drums, arpeggio rate, octave); mood sets the chord progression and timbre. A seeded
   motif returns with variation. Outputs music.wav and beats.json (beats, downbeats, bars, per-section levels).
 keywords: [chiptune, music, nes, 8-bit, soundtrack, bgm, procedural-audio, beat-grid]
