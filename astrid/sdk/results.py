@@ -158,6 +158,25 @@ class InvocationResult:
             lines.append(f"  {label:<22} {row.get('handle') or row.get('digest')}  {row.get('path') or ''}".rstrip())
         return "\n".join(lines)
 
+    def raise_for_error(self) -> InvocationResult:
+        """Raise a :class:`CapabilityRuntimeError` when the task did not succeed.
+
+        ``sdk.invoke(..., wait=True)`` returns normally for a failed task (``ok`` is
+        False); call this right after the invoke so a failure stops the script.
+        Returns ``self`` on success so it can be chained.
+        """
+        if self.ok:
+            return self
+        message = (self.error or {}).get("message") if isinstance(self.error, Mapping) else None
+        if not message:
+            raw_error = self.raw_result.get("error")
+            if isinstance(raw_error, Mapping):
+                message = raw_error.get("message")
+        if not isinstance(message, str) or not message:
+            message = "task did not succeed; inspect it with python3 -m astrid tasks"
+        where = f" (run {self.run_id})" if self.run_id else ""
+        raise CapabilityRuntimeError(f"{self.capability_id} FAILED{where}: {message}")
+
     def output_rows(self, port: str | None = None) -> list[dict[str, Any]]:
         """Managed output rows of *port* by ordinal; thumbnails only when asked for.
 

@@ -17,7 +17,7 @@ the modal colour of its source region, not a bilinear average.
 - `grid_width` / `grid_height` (integer, default 320 / 180): explicit logical grid. Ignored when `auto_grid` is true.
 - `fit` (`cover` | `contain` | `none`, default `cover`): `cover` crops to the grid aspect,
   `contain` pads to it, `none` stretches the source as-is.
-- `palette` (string, optional): `astrid` or comma-separated hex colours. Cells map to the nearest colour.
+- `palette` (string or list, optional): `astrid`, comma-separated hex colours (`"#25241F,#ED6B23"`), or a list (`["#25241F", "#ED6B23"]`). Cells map to the nearest colour.
 - `max_colors` (integer, optional, 2-256): deterministic k-means quantisation when no palette is given.
 - `scale` (integer, default 6): nearest-neighbour factor for the preview.
 - `dither` (boolean, default `false`): Floyd-Steinberg, only with a palette or `max_colors`.
@@ -46,6 +46,7 @@ result = sdk.invoke(  # opens the runtime client itself; pass client= to reuse o
         "fit": "none",
     },
 )
+result.raise_for_error()  # sdk.invoke returns normally for a FAILED task; this raises with the reason
 print(result)  # each output: its handle and a viewable local path
 ```
 

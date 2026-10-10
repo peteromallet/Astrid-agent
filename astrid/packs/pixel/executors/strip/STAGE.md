@@ -33,6 +33,7 @@ by regenerating art.
 import astrid.sdk as sdk
 strip = sdk.invoke("pixel.strip", kind="executor", project="almost-ready", wait=True,
                    inputs={"frame": [claw_a.output("native"), "run:<run_id>/native#0"], "fps": 6})
+strip.raise_for_error()  # a FAILED task returns normally from sdk.invoke; this raises
 print(strip)  # strip[0]  run:<run_id>/strip#0  <viewable local path>; pass strip.output("strip") on
 ```
 
