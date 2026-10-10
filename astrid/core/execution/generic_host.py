@@ -51,6 +51,7 @@ from astrid.core.env_vars import (
     ASTRID_PACKS_PATH,
 )
 from astrid.core.execution.capability_ledger import load_capability_ledger
+from astrid.core.execution.host_log import start_stdio_rotator
 from astrid.core.execution.guards import (
     EVIDENCE_STATUS_NAME,
     EvidenceCapError,
@@ -7102,6 +7103,8 @@ def _cli() -> int:
             parser.error("--support-root must be an absolute non-symlink directory")
     else:
         support_root = None
+    if support_root is not None and args.command in ("run", "supervise"):
+        start_stdio_rotator(support_root)
 
     if args.execution_target_json is not None:
         os.environ["ASTRID_EXECUTION_TARGET_JSON"] = args.execution_target_json

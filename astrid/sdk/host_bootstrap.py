@@ -24,6 +24,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from astrid.core.execution.host_log import rotate_if_needed
 from astrid.core.execution.process_group import _process_snapshot, popen_owned_group, terminate_group
 from astrid.core.generation.vibecomfy_dependency import (
     VibeComfyDependencyError,
@@ -816,6 +817,11 @@ def ensure_pack_host(value: Mapping[str, Any], *, reconfigure_action: str) -> Ma
             _terminate_old_host(current)
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
+        try:
+            # Each host start begins on a fresh, size-capped log.
+            rotate_if_needed(log_path)
+        except OSError:
+            pass
         matrix = source_path / "config" / "astrid-beta-capabilities.json"
         argv = [
             host_python,
