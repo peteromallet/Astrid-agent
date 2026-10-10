@@ -56,7 +56,7 @@ async function warmBrowser(browserExecutable) {
   }
 }
 
-export const _test = { connectBrowser, takeNotes: () => notes.splice(0), linkOverlay, unlinkOverlay };
+export const _test = { connectBrowser, takeNotes: () => notes.splice(0), linkOverlay, unlinkOverlay, ownerFiles, processAlive };
 
 function reply(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -227,17 +227,48 @@ function idleSeconds() {
   return Number.isFinite(configured) ? Math.max(0, configured) : 300;
 }
 
+// An owner belongs to the process that serves it: the pack host (or, with no host,
+// the process that started it). It exits when that process is gone (a host exit or
+// a promote), after `idleSeconds()` without a request, or when one request runs past
+// `requestLimitSeconds()`; on exit it removes its socket, record (.json) and lock.
+export function ownerFiles(socketPath) {
+  const stem = socketPath.replace(/\.sock$/, '');
+  return [socketPath, `${stem}.json`, `${stem}.lock`];
+}
+
+export function processAlive(pid) {
+  if (!(pid > 0)) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error && error.code === 'EPERM';
+  }
+}
+
+function requestLimitSeconds() {
+  const configured = Number(process.env.ASTRID_FRAME_OWNER_REQUEST_LIMIT_S ?? 900);
+  return Number.isFinite(configured) && configured > 0 ? configured : 900;
+}
+
 async function runServer(socketPath) {
   try { unlinkSync(socketPath); } catch { /* stale socket */ }
+  const hostPid = Number(process.env.ASTRID_FRAME_OWNER_HOST_PID ?? 0);
   let idleTimer = null;
+  let requestTimer = null;
   let closing = false;
   let server;
   const closeServer = async () => {
     if (closing) return;
     closing = true;
+    // A browser that will not close must not keep the owner alive.
+    setTimeout(() => process.exit(0), 10_000).unref?.();
     if (idleTimer) clearTimeout(idleTimer);
+    if (requestTimer) clearTimeout(requestTimer);
     await closeSession();
-    try { unlinkSync(socketPath); } catch { /* already removed */ }
+    for (const path of ownerFiles(socketPath)) {
+      try { unlinkSync(path); } catch { /* already removed */ }
+    }
     removeLaunchdJob(socketPath);
     server.close(() => process.exit(0));
   };
@@ -250,6 +281,10 @@ async function runServer(socketPath) {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
   };
+  if (hostPid > 0) {
+    const poll = Number(process.env.ASTRID_FRAME_OWNER_POLL_MS ?? 5000);
+    setInterval(() => { if (!processAlive(hostPid)) closeServer(); }, poll > 0 ? poll : 5000).unref?.();
+  }
   let queue = Promise.resolve();
   server = net.createServer((connection) => {
     let buffer = '';
@@ -265,9 +300,12 @@ async function runServer(socketPath) {
         request = JSON.parse(line);
       } catch (error) {
         connection.end(JSON.stringify({ ok: false, error: String(error) }) + '\n');
+        armIdle();
         return;
       }
       queue = queue.then(async () => {
+        requestTimer = setTimeout(closeServer, requestLimitSeconds() * 1000);
+        requestTimer.unref?.();
         try {
           const response = await handleRequest(request);
           connection.end(JSON.stringify({ ok: true, ...response }) + '\n');
@@ -277,6 +315,9 @@ async function runServer(socketPath) {
           await closeSession();
           connection.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }) + '\n');
           armIdle();
+        } finally {
+          clearTimeout(requestTimer);
+          requestTimer = null;
         }
       });
     });

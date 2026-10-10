@@ -154,7 +154,68 @@ OWNER_IDENTITY_ENV = (
 )
 
 
-def write_owner_record(socket_path: Path, *, project_dir: Path) -> None:
+OWNER_HOST_ENV = "ASTRID_FRAME_OWNER_HOST_PID"
+OWNER_FILE_MAX_AGE_S = 3600.0
+
+
+def owning_host_pid() -> int:
+    """Whose frame owner this is: the pack host above this process, else this process.
+
+    An owner exits when that process is gone, so an owner started by the host stops with
+    the host (exit or promote) and one started by a client never outlives it.
+    ``ASTRID_FRAME_OWNER_HOST_PID`` names it explicitly (the fast lane passes the host's pid).
+    """
+    raw = os.environ.get(OWNER_HOST_ENV, "").strip()
+    if raw.isdigit() and int(raw) > 1:
+        return int(raw)
+    pid = os.getpid()
+    for _ in range(8):
+        try:
+            line = subprocess.run(["ps", "-o", "ppid=", "-o", "command=", "-p", str(pid)], capture_output=True,
+                                  text=True, timeout=5, check=False).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            break
+        if not line:
+            break
+        ppid_text, _, command = line.partition(" ")
+        if "astrid.core.execution.generic_host" in command:
+            return pid
+        if not ppid_text.strip().isdigit() or int(ppid_text) <= 1:
+            break
+        pid = int(ppid_text)
+    return os.getpid()
+
+
+def sweep_owner_files(root: Path = Path("/tmp") / "astrid-rfo", *, keep: Path | None = None,
+                      max_age_s: float = OWNER_FILE_MAX_AGE_S) -> list[str]:
+    """Remove owners' leftover .lock/.json files (no live socket, older than ``max_age_s``)."""
+    removed: list[str] = []
+    if not Path(root).is_dir():
+        return removed
+    now = time.time()
+    for path in sorted(Path(root).glob("owner-*.*")):
+        if path.suffix not in (".lock", ".json") or (keep is not None and path.stem == keep.stem):
+            continue
+        sock = path.with_suffix(".sock")
+        try:
+            if sock.exists() or now - path.stat().st_mtime < max_age_s:
+                continue
+            if path.suffix == ".lock":
+                with path.open("a+") as handle:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        continue  # someone holds it: not stale
+                    path.unlink(missing_ok=True)
+            else:
+                path.unlink(missing_ok=True)
+            removed.append(path.name)
+        except OSError:
+            continue
+    return removed
+
+
+def write_owner_record(socket_path: Path, *, project_dir: Path, host_pid: int | None = None) -> None:
     """Note beside an owner's socket which renderer it serves (no secrets: paths only).
 
     A client-side capture (the fast lane) reads it to reproduce the pack host's
@@ -162,6 +223,7 @@ def write_owner_record(socket_path: Path, *, project_dir: Path) -> None:
     """
     record = {
         "project_dir": str(Path(project_dir).resolve(strict=False)),
+        "host_pid": host_pid,
         "checkout": str(REPO_ROOT),
         "env": {name: os.environ[name] for name in OWNER_IDENTITY_ENV if name in os.environ},
         "written": time.time(),
@@ -270,6 +332,8 @@ class PersistentRemotionFrameSession:
                 stderr=subprocess.DEVNULL,
             )
             env_assignments = [f"ASTRID_FRAME_WORKER_ROOT={worker_root}"]
+            if child_environment.get(OWNER_HOST_ENV):
+                env_assignments.append(f"{OWNER_HOST_ENV}={child_environment[OWNER_HOST_ENV]}")
             if configured_idle is not None:
                 env_assignments.append(f"ASTRID_TIMELINE_FRAME_IDLE_SECONDS={configured_idle}")
             command = [
@@ -367,6 +431,9 @@ class PersistentRemotionFrameSession:
                     Path(child_environment["ASTRID_FRAME_WORKER_ROOT"]).mkdir(
                         parents=True, exist_ok=True
                     )
+                    host_pid = owning_host_pid()
+                    child_environment[OWNER_HOST_ENV] = str(host_pid)
+                    sweep_owner_files(socket_path.parent, keep=socket_path)
                     self._launch_owner(
                         socket_path=socket_path,
                         project_dir=project_dir,
@@ -374,7 +441,7 @@ class PersistentRemotionFrameSession:
                         helper=helper,
                         child_environment=child_environment,
                     )
-                    write_owner_record(socket_path, project_dir=project_dir)
+                    write_owner_record(socket_path, project_dir=project_dir, host_pid=host_pid)
                 else:
                     connection.close()
                 self._wait_for_owner(socket_path)

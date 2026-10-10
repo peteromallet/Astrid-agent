@@ -300,6 +300,13 @@ def _dispatch_doctor(args: list[str]) -> int:
     from astrid.core.execution.host_log import host_log_section
 
     report["host_log"] = host_log_section(support_root)
+    from astrid.core.rendering.node_pin import doctor_section
+
+    report["renderer_node"] = renderer_node = doctor_section(support_root)
+    if renderer_node.get("status") in ("mismatch", "broken"):
+        report["healthy"] = False
+        report["issues"] = [*report.get("issues", []), f"renderer node: {renderer_node['detail']}; fix: {renderer_node['fix']}"]
+        result_code = 1
     if parsed.diagnostic:
         print(json.dumps(diagnostic, indent=2, sort_keys=True))
         return 0 if diagnostic["problemCode"] is None else 1
@@ -329,6 +336,9 @@ def _dispatch_doctor(args: list[str]) -> int:
             )
         else:
             print("evidence budget: no pack host has reported yet")
+        renderer_node = report.get("renderer_node") or {}
+        print(f"renderer node: {renderer_node.get('status', 'unknown')} · {renderer_node.get('detail', '')}"
+              + (f"; fix: {renderer_node['fix']}" if renderer_node.get("fix") else ""))
         print(f"runtime compatibility: {compatibility['status']}")
         if compatibility["status"] != "ok":
             print(f"compatibility detail: {compatibility['reason']}")
