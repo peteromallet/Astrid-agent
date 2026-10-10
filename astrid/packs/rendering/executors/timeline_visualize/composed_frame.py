@@ -38,9 +38,8 @@ def _close_renderer(renderer: object, *, force: bool = False) -> None:
         close()
 
 
-def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
-    """Digest admitted renderer inputs that can change rendered pixels."""
-    digest = hashlib.sha256()
+def _digest_candidates(paths: Sequence[tuple[str, Path]]) -> list[tuple[str, Path, Path]]:
+    found: list[tuple[str, Path, Path]] = []
     seen: set[Path] = set()
     for label, root in paths:
         root = root.expanduser()
@@ -58,13 +57,46 @@ def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
             ):
                 continue
             seen.add(path)
-            try:
-                relative = path.relative_to(root) if root.is_dir() else Path(path.name)
-                digest.update(f"{label}/{relative.as_posix()}\0".encode("utf-8"))
-                digest.update(path.read_bytes())
-            except OSError:
-                digest.update(f"{label}/{path.name}\0missing".encode("utf-8"))
-    return digest.hexdigest()
+            found.append((label, root, path))
+    return found
+
+
+# {stat signature: content digest}: hashing every renderer source per frame cost
+# 30-120 ms a call; a stat walk tells whether anything changed since the last digest.
+_DIGEST_MEMO: dict[str, str] = {}
+
+
+def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
+    """Digest admitted renderer inputs that can change rendered pixels."""
+    candidates = _digest_candidates(paths)
+    signature = hashlib.sha256()
+    for label, root, path in candidates:
+        try:
+            stat = path.stat()
+            signature.update(f"{label}|{path}|{stat.st_size}|{stat.st_mtime_ns}\0".encode("utf-8"))
+        except OSError:
+            signature.update(f"{label}|{path}|missing\0".encode("utf-8"))
+    memo_key = signature.hexdigest()
+    if memo_key in _DIGEST_MEMO:
+        return _DIGEST_MEMO[memo_key]
+    digest = hashlib.sha256()
+    for label, root, path in candidates:
+        try:
+            relative = path.relative_to(root) if root.is_dir() else Path(path.name)
+            digest.update(f"{label}/{relative.as_posix()}\0".encode("utf-8"))
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(f"{label}/{path.name}\0missing".encode("utf-8"))
+    if len(_DIGEST_MEMO) > 16:
+        _DIGEST_MEMO.clear()
+    _DIGEST_MEMO[memo_key] = digest.hexdigest()
+    return _DIGEST_MEMO[memo_key]
+
+
+def element_source_roots(checkout: Path) -> list[tuple[str, Path]]:
+    """Every pack's elements: a component or motion change must change the frame cache key."""
+    packs = Path(checkout) / "astrid" / "packs"
+    return [(f"elements:{root.parent.name}", root) for root in sorted(packs.glob("*/elements")) if root.is_dir()]
 
 
 def renderer_environment_identity() -> str:
@@ -73,9 +105,10 @@ def renderer_environment_identity() -> str:
     project_dir = os.environ.get("ASTRID_REMOTION_PROJECT_DIR")
     source_root = os.environ.get("ASTRID_RENDERER_SOURCE_ROOT")
     paths: list[tuple[str, Path]] = [
-        ("local-elements", checkout / "astrid/packs/local/elements"),
+        # every pack's elements, not only local/ and rendering/: an astrid_motion
+        # component change used to return cached frames ("capture 0 s")
+        *element_source_roots(checkout),
         ("renderer-backend", checkout / "astrid/packs/rendering/backends/remotion/run.py"),
-        ("rendering-elements", checkout / "astrid/packs/rendering/elements"),
         ("capture-provider", checkout / "astrid/packs/rendering/executors/timeline_visualize/composed_frame.py"),
         ("element-catalog", checkout / "astrid/packs/rendering/elements/catalog.ts"),
         ("rendering-core", checkout / "astrid/core/rendering"),
@@ -87,6 +120,9 @@ def renderer_environment_identity() -> str:
         paths.append(("explicit-source-root", Path(source_root)))
     if project_dir:
         project = Path(project_dir)
+        if project.resolve(strict=False).parent != checkout.resolve(strict=False):
+            # the bundle imports the elements beside the project, not this checkout's
+            paths.extend((f"project-{label}", root) for label, root in element_source_roots(project.parent))
         paths.append(("remotion-project-source", project / "src"))
         paths.append(("remotion-project-config", project / "remotion.config.ts"))
         paths.append(("package-lock", project / "package-lock.json"))

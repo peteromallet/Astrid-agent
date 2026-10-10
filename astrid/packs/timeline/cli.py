@@ -3912,11 +3912,27 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         print(line)
     if not changes:
         print("no change")
-    for line in _cap(_check_lines(report, cuts=_edit_cuts(before, tl))):
+    check_lines = _check_lines(report, cuts=_edit_cuts(before, tl))
+    for line in _cap(check_lines):
         print(line)
     tl.save(target)
     for line in tl.merged:
         print(line)
+    if getattr(parsed, "verify", False) and target is None:
+        from astrid.packs.rendering.executors.timeline_visualize.fast_lane import moments_from_changes
+        from astrid.sdk.timeline_cuts import diff_bundles
+
+        diff = diff_bundles(before, tl.document())
+        names = {}
+        for clip in tl.clips():
+            names[str(clip.id)] = names[str(clip.id).rsplit(":", 1)[-1]] = str(getattr(clip, "address", None) or clip.id)
+        moments = moments_from_changes(diff["changes"], float(diff.get("fps") or 30), names=names)
+        if moments:
+            _print_verify(parsed, tl, moments, footer=check_lines)
+        else:
+            print("verify  nothing on screen changed (no frame to compare)")
+    elif getattr(parsed, "verify", False):
+        print("verify  needs a working copy of a timeline (timelines edit TL --project P …), not --file")
     if target is not None:
         print(f'next: timelines check {target}   ·   timelines publish {target} -m "…"')
     else:
@@ -3925,6 +3941,21 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
               f'timelines publish {parsed.timeline} --project {parsed.project} -m "…"')
     # the edit was applied and saved: exit 0. Whether the working copy can be published is check's state,
     # printed above (and `timelines check` exits 1 while it is not valid).
+    return 0
+
+
+def _print_verify(parsed: argparse.Namespace, tl: Any, moments: list[Any], footer: list[str] | tuple = ()) -> int:
+    """One-shot verify (the rendering pack's fast lane): published vs working copy at the moments, one page."""
+    from astrid.packs.rendering.executors.timeline_visualize.fast_lane import FastLaneError, verify
+
+    try:
+        result = verify(parsed.client, parsed.project, parsed.timeline, moments, draft=tl, footer=list(footer))
+    except FastLaneError as exc:
+        print(f"verify  not captured: {exc} · next: timelines visualize {parsed.timeline} --project {parsed.project} "
+              f"--preset frame --at {moments[0].t:.2f}")
+        return 1
+    for line in result["lines"]:
+        print(line)
     return 0
 
 
@@ -4165,11 +4196,17 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
         return 0 if report.valid else 1
     parsed.timeline = parsed.ref
     tl, _ = _working_copy(parsed, create=False)
+    at = list(getattr(parsed, "at", None) or [])
     if tl is None:
         print(f"no working copy · next: timelines checkout {parsed.ref} --project {parsed.project}")
         return 0
     report = tl.check()
-    print(report.full_text() if getattr(parsed, "all", False) else str(report))
+    text = report.full_text() if getattr(parsed, "all", False) else str(report)
+    print(text)
+    if at:
+        from astrid.packs.rendering.executors.timeline_visualize.fast_lane import Moment
+
+        _print_verify(parsed, tl, [Moment(tl.time(m), str(m)) for m in at], footer=text.splitlines()[:6])
     print(f'next: timelines publish {parsed.ref} --project {parsed.project} -m "what changed"')
     return 0 if report.valid else 1
 
@@ -4296,6 +4333,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
         "  --clip ADDRESS --set KEY=VALUE      a param (canvas px; 'states[3].at=\"adapt\" in w05c'; x='ƒ(B2-HAND -42)')\n"
         "  --clip ADDRESS --swap-asset KEY     another asset (a key, a file, run:<id>/music …); --remove / --keep\n"
         "  --split c33 --on MOMENT             a new cut (also --add-cut --on MOMENT [--after c33])\n"
+        "Add --verify to see published vs working copy at the changed moments in the same call.\n"
         "The narration: --from-script VO.json (then re-home orphans), --line/--insert-line/--remove-line, --gap-after.\n"
         "Operations apply in order: retime, move, nudge, length, set, swap."
     )
@@ -4382,6 +4420,9 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     voice.add_argument("--script-gaps", dest="script_gaps", action="store_true",
                        help="With --from-script: use the script's gap_after_s for every line (default: keep each "
                             "line's declared gap; new lines always take the script's).")
+    subparser.add_argument("--verify", action="store_true",
+                           help="After saving: the published and working-copy frames at the moments this edit changed, "
+                                "on one page with the new lint (a few seconds, no host queue). Then publish.")
     subparser.set_defaults(handler=_cmd_edit)
 
 
@@ -4643,6 +4684,9 @@ def _configure_check(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--all", action="store_true",
                            help="Everything: the whole diff, every lint finding (by default only findings new since checkout, "
                                 "with a count of the ones already there).")
+    subparser.add_argument("--at", action="append", default=None, metavar="MOMENT",
+                           help="Also show the published and working-copy frames at this moment (repeatable; "
+                                "'\"Astrid\"', c30.cover, 93.5): one page, a few seconds, no host queue.")
     subparser.set_defaults(handler=_cmd_check)
 
 

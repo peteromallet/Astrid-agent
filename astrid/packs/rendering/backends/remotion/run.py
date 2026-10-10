@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -143,6 +143,53 @@ class _ExecutionDetails:
     runtime: dict[str, str] = field(default_factory=dict)
 
 
+# The environment that decides a frame owner's identity (composed_frame.renderer_environment_identity).
+OWNER_IDENTITY_ENV = (
+    "ASTRID_NODE_EXECUTABLE",
+    "ASTRID_REMOTION_PROJECT_DIR",
+    "ASTRID_RENDERER_SOURCE_ROOT",
+    "ASTRID_ACTIVE_THEME",
+    "ASTRID_FONT_BUNDLE_ID",
+    "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
+)
+
+
+def write_owner_record(socket_path: Path, *, project_dir: Path) -> None:
+    """Note beside an owner's socket which renderer it serves (no secrets: paths only).
+
+    A client-side capture (the fast lane) reads it to reproduce the pack host's
+    renderer identity, so both reach the same warm owner and one Chrome.
+    """
+    record = {
+        "project_dir": str(Path(project_dir).resolve(strict=False)),
+        "checkout": str(REPO_ROOT),
+        "env": {name: os.environ[name] for name in OWNER_IDENTITY_ENV if name in os.environ},
+        "written": time.time(),
+    }
+    try:
+        path = Path(socket_path).with_suffix(".json")
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def owner_records(project_dir: Path, *, root: Path = Path("/tmp") / "astrid-rfo") -> list[dict[str, Any]]:
+    """Owner records for one Remotion project, newest first."""
+    wanted = str(Path(project_dir).resolve(strict=False))
+    found = []
+    for path in root.glob("owner-*.json") if root.is_dir() else ():
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("project_dir") == wanted:
+            found.append({**record, "socket": str(path.with_suffix(".sock"))})
+    return sorted(found, key=lambda r: float(r.get("written") or 0), reverse=True)
+
+
 class PersistentRemotionFrameSession:
     """Lease the process-independent Remotion frame owner for one batch.
 
@@ -153,11 +200,16 @@ class PersistentRemotionFrameSession:
     exits, so a successful capture leaves only the bounded configured lease.
     """
 
+    # The owner takes a request's effect assets as a private overlay (no shared
+    # public/ staging, no rebundle per request): see astrid-frame-worker.mjs.
+    supports_public_overlay = True
+
     def __init__(self) -> None:
         self._socket_path: Path | None = None
         self._identity: str | None = None
         # Lines the owner asks to surface in findings (e.g. a cold-browser retry).
         self.notes: list[str] = []
+        self.last_timing: dict[str, Any] = {}
 
     @staticmethod
     def _owner_paths(identity: str) -> tuple[Path, Path]:
@@ -322,6 +374,7 @@ class PersistentRemotionFrameSession:
                         helper=helper,
                         child_environment=child_environment,
                     )
+                    write_owner_record(socket_path, project_dir=project_dir)
                 else:
                     connection.close()
                 self._wait_for_owner(socket_path)
@@ -375,6 +428,7 @@ class PersistentRemotionFrameSession:
         port: int,
         environment: Mapping[str, str],
         identity: str,
+        public_overlay: Path | None = None,
     ) -> None:
         socket_path, _lock_path = self._owner_paths(identity)
         self._ensure_owner(
@@ -398,12 +452,15 @@ class PersistentRemotionFrameSession:
             "port": int(port),
             "environment": dict(environment),
         }
+        if public_overlay is not None:
+            request["publicOverlay"] = str(public_overlay)
         try:
             response = self._request(request)
         except BaseException:
             self.close(force=True)
             raise
         self.notes.extend(str(note) for note in response.get("notes") or () if isinstance(note, str))
+        self.last_timing = dict(response.get("timing") or {}) if isinstance(response.get("timing"), Mapping) else {}
 
     def retain_staged_public_root(self, root: Path) -> None:
         # The owner consumes each invocation's staged files before replying;
@@ -598,8 +655,27 @@ def _regenerate_element_registries(
     if remotion_lock.remotion_render_lock_held():
         _regenerate_element_registries_locked(project_dir, theme_path)
         return
+    if _element_registries_current(project_dir, theme_path):
+        # Nothing to write: a reader need not wait for a render that holds the lock.
+        return
     with remotion_lock.remotion_render_lock():
         _regenerate_element_registries_locked(project_dir, theme_path)
+
+
+def _element_registries_current(project_dir: Path, theme_path: Path | None) -> bool:
+    """Read-only: do the generated registries already match this checkout's elements?"""
+    if gen_effect_registry is None:
+        return _registry_outputs_exist(project_dir)
+    try:
+        state = _effective_registry_state(theme_path)
+        cached_state = _read_registry_state(project_dir)
+        return (
+            cached_state is not None
+            and cached_state.get("hash") == state.get("hash")
+            and _registry_outputs_match_state(project_dir, cached_state)
+        )
+    except Exception:  # noqa: BLE001 - any doubt means "regenerate under the lock"
+        return False
 
 
 def _regenerate_element_registries_locked(
@@ -868,6 +944,7 @@ def _stage_effect_assets_for_timeline(
     theme_path: Path | None,
     render_hash: str,
     composition_clip_types: frozenset[str] = frozenset(),
+    public_root: Path | None = None,
 ) -> dict[str, Any]:
     # Resolve one immutable element registry for this render. Effects and
     # animation/transition references must agree even if the filesystem pack
@@ -931,7 +1008,9 @@ def _stage_effect_assets_for_timeline(
     if not used_effect_ids:
         return {"root": None, "effects": [], **resolved_elements}
 
-    public_root = project_dir / "public" / "astrid-effects" / render_hash
+    # The props always name astrid-effects/<hash>/…; a frame owner may serve them
+    # from a private overlay (public_root) instead of the shared project public/.
+    public_root = public_root or (project_dir / "public" / "astrid-effects" / render_hash)
     staged_by_effect: dict[str, dict[str, str]] = {}
     for effect_id in sorted(used_effect_ids):
         element = effects[effect_id]
@@ -1152,6 +1231,11 @@ def _execute_remotion_locked(
         provenance_out_path,
     )
     staged_public_root = project_dir / "public" / "astrid-effects" / render_hash
+    overlay_capture = (
+        frame_numbers is not None
+        and frame_session is not None
+        and bool(getattr(frame_session, "supports_public_overlay", False))
+    )
     with ExitStack() as asset_lifecycle:
         try:
             temp_parent = (staging_parent or provenance_out_path.parent).resolve()
@@ -1243,12 +1327,18 @@ def _execute_remotion_locked(
                 # resolved theme dict is built fresh for this render.
                 theme_color = merged_props["theme"].setdefault("visual", {}).setdefault("color", {})
                 theme_color["bg"] = "transparent"
+            public_overlay = None
+            if overlay_capture:
+                public_overlay = remotion_temp_root / "public-overlay"
+                public_overlay.mkdir(parents=True, exist_ok=True)  # empty when no effect has assets
+                staged_public_root = public_overlay / "astrid-effects" / render_hash
             stage_summary = _stage_effect_assets_for_timeline(
                 merged_props["timeline"],
                 project_dir=project_dir,
                 theme_path=theme_path,
                 render_hash=render_hash,
                 composition_clip_types=composition_clip_types,
+                public_root=staged_public_root if overlay_capture else None,
             )
             staged_video.parent.mkdir(parents=True, exist_ok=True)
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")
@@ -1380,6 +1470,7 @@ def _execute_remotion_locked(
                     port=remotion_port,
                     environment=remotion_env_additions,
                     identity=frame_session_identity or render_hash,
+                    **({"public_overlay": public_overlay} if public_overlay is not None else {}),
                 )
                 frame_session.retain_staged_public_root(staged_public_root)
             else:
@@ -1478,8 +1569,13 @@ def capture_remotion_frames(
     for stale in output_dir.glob("frame-*.png"):
         stale.unlink(missing_ok=True)
     marker = output_dir / ".capture-placeholder.mp4"
+    # A warm frame owner renders from its own bundle and a private overlay, so the
+    # capture writes nothing shared: it takes the global Remotion lock only if the
+    # generated registries must be rewritten (_regenerate_element_registries), and
+    # never waits for a full render. Other callers keep the old, fully locked path.
+    unlocked = frame_session is not None and bool(getattr(frame_session, "supports_public_overlay", False))
     try:
-        with remotion_lock.remotion_render_lock():
+        with (nullcontext() if unlocked else remotion_lock.remotion_render_lock()):
             _execute_remotion_locked(
                 Path(timeline_path),
                 Path(assets_path),
