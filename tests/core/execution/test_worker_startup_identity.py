@@ -43,14 +43,14 @@ def _source_checkout(tmp_path: Path) -> Path:
     (checkout / "astrid" / "sdk" / "workspace_client.py").write_text(
         "# workspace client fixture\n", encoding="utf-8"
     )
-    (checkout / "banodoco_workspace_client").mkdir()
-    (checkout / "banodoco_workspace_client" / "__init__.py").write_text(
+    (checkout / "astrid_runtime_client").mkdir()
+    (checkout / "astrid_runtime_client" / "__init__.py").write_text(
         "# vendored client fixture\n", encoding="utf-8"
     )
-    (checkout / "banodoco_workspace_client" / "generated.py").write_text(
+    (checkout / "astrid_runtime_client" / "generated.py").write_text(
         "# generated client fixture\n", encoding="utf-8"
     )
-    (checkout / "banodoco_workspace_client" / "contract_metadata.py").write_text(
+    (checkout / "astrid_runtime_client" / "contract_metadata.py").write_text(
         "# contract fixture\n", encoding="utf-8"
     )
     return checkout
@@ -112,7 +112,7 @@ def test_sanitized_child_import_proves_current_host_sdk_version_and_vendored_cli
         "import astrid.version as version; "
         "import astrid.core.execution.generic_host as host; "
         "import astrid.sdk.workspace_client as sdk; "
-        "import banodoco_workspace_client as vendor; "
+        "import astrid_runtime_client as vendor; "
         "from pathlib import Path; "
         "root = Path.cwd().resolve(); "
         "assert all(Path(module.__file__).resolve().is_relative_to(root) "
@@ -142,7 +142,7 @@ def test_sanitized_imported_version_module_changes_measured_closure(tmp_path: Pa
         "import astrid, astrid.version as version; "
         "import astrid.core.execution.generic_host as host; "
         "import astrid.sdk.workspace_client as sdk; "
-        "import banodoco_workspace_client as vendor; "
+        "import astrid_runtime_client as vendor; "
         "from pathlib import Path; "
         "root = Path.cwd().resolve(); "
         "assert all(Path(module.__file__).resolve().is_relative_to(root) "

@@ -10,7 +10,7 @@ whether state is temporary or saved:
 
 | Concept | Role | Possible placement |
 |---|---|---|
-| **Tool** | A complete workspace for doing a kind of work. Preserve Reigh's existing “Tools” terminology for these user-facing workspaces. | A top-level experience a person opens, such as a video editor. It can compose reusable interface features and callable behavior. |
+| **Tool** | A complete workspace for doing a kind of work. Preserve Astrid's existing “Tools” terminology for these user-facing workspaces. | A top-level experience a person opens, such as a video editor. It can compose reusable interface features and callable behavior. |
 | **Widget** | A focused, reusable interface feature with an API suited to its host. A Widget may use host services or state and may request callable Actions. Each Widget remains owned by its pack. | A Tool or another supported host surface can embed it; Widgets can be shared across Tools. Panels, dialogs, sidebars, and toolbar slots are placements, not required Widget types. A host may also allow one to open on its own. |
 | **Action** | A callable backend operation, independent of how a person interacts with it. | Invoked through an existing host capability route; a Widget may request an Action when the user asks it to do work. An Action does not own a screen. |
 
@@ -39,7 +39,7 @@ current schema supports editor entries), and timeline visuals or render
 infrastructure under `rendering`. A UI entry is not yet a pack-level Widget
 contract, and an editor extension need not be modeled as one. Timeline effects,
 animations, and transitions remain rendering elements, not interface Widgets.
-The current frontend uses Reigh Tools and editor slots, panels, and dialogs;
+The current Astrid App frontend uses Astrid Tools and editor slots, panels, and dialogs;
 the proposed Tool/Widget contract and host adapter are not implemented.
 
 Use [the current pack guide](create-a-pack.md) and

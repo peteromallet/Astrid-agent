@@ -337,7 +337,7 @@ def _dispatch_backup(args: list[str]) -> int:
         parser.error("backup export does not support --out; the SDK export API has no destination")
     json_mode = "--json" in args
     if parsed.operation is None:
-        payload = {"ok": False, "state": "unavailable", "next_action": "banodoco-local up --profile astrid", "error": "backup operation is required"}
+        payload = {"ok": False, "state": "unavailable", "next_action": "astrid-runtime up --profile astrid", "error": "backup operation is required"}
         if json_mode:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -405,7 +405,7 @@ def _dispatch_backup(args: list[str]) -> int:
             "ok": False,
             "state": "unavailable",
             "next_action": exc.details.get(
-                "next_action", "banodoco-local up --profile astrid"
+                "next_action", "astrid-runtime up --profile astrid"
             ),
             "error": str(exc),
         }

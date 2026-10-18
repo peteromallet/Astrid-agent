@@ -22,13 +22,13 @@ def test_open_requires_explicit_context_and_never_bootstraps(monkeypatch):
         "astrid.sdk.autobootstrap.ensure_runtime",
         lambda: pytest.fail("ordinary SDK open invoked the launcher"),
     )
-    with pytest.raises(Exception, match="banodoco-local up --profile astrid"):
+    with pytest.raises(Exception, match="astrid-runtime up --profile astrid"):
         AstridClient.open()
 
 
 def test_connection_resolution_does_not_guess_a_checkout_or_catalog(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", "http://wrong")
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "wrong-token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", "http://wrong")
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "wrong-token"))
     with pytest.raises(WorkspaceClientError):
         resolve_runtime_connection("", "")
     assert resolve_runtime_connection("https://127.0.0.1:8443/", "Bearer token") == (
@@ -41,8 +41,8 @@ def test_connection_resolution_accepts_host_injected_runtime_context(tmp_path: P
     credential = tmp_path / "owner.token"
     credential.write_text("child-token\n", encoding="utf-8")
     credential.chmod(0o600)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", "http://127.0.0.1:8443/")
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(credential))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", "http://127.0.0.1:8443/")
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(credential))
 
     assert resolve_runtime_connection() == ("http://127.0.0.1:8443", "child-token")
 
@@ -113,8 +113,8 @@ def test_top_level_sdk_has_no_event_aliases():
 def test_launcher_uses_installed_command_and_explicit_manifest(monkeypatch, tmp_path: Path):
     manifest = tmp_path / "source-manifest.json"
     manifest.write_text(json.dumps({"profile": "astrid"}), encoding="utf-8")
-    monkeypatch.setenv("BANODOCO_LOCAL_SOURCE_MANIFEST", str(manifest))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/local/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/local/bin/astrid-runtime")
     seen: dict[str, object] = {}
 
     def run(command, **kwargs):
@@ -130,7 +130,7 @@ def test_launcher_uses_installed_command_and_explicit_manifest(monkeypatch, tmp_
     monkeypatch.setattr(autobootstrap.subprocess, "run", run)
     result = autobootstrap.ensure_runtime()
     assert result["status"] == "started"
-    assert seen["command"][:5] == ["/usr/local/bin/banodoco-local", "up", "--profile", "astrid", "--source-manifest"]
+    assert seen["command"][:5] == ["/usr/local/bin/astrid-runtime", "up", "--profile", "astrid", "--source-manifest"]
 
 
 def test_public_open_signature_has_no_auto_bootstrap_keyword():
@@ -143,6 +143,6 @@ def test_sdk_boundary_has_no_checkout_or_dynamic_import_injection():
     bootstrap_source = (root / "autobootstrap.py").read_text(encoding="utf-8")
     assert "sys.path" not in workspace_source
     assert "importlib" not in workspace_source
-    assert "BANODOCO_RUNTIME_CHECKOUT" not in workspace_source
+    assert "ASTRID_RUNTIME_CHECKOUT" not in workspace_source
     assert "source_checkout" not in bootstrap_source
     assert "PYTHONPATH" not in bootstrap_source

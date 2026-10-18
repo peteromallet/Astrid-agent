@@ -748,7 +748,7 @@ def test_launch_validation_owned_waits_before_publish_and_reuse_without_probe(tm
     assert remotion_runtime._validated_runtime(runtime, environment=actual)['node_version'] == 'v20.19.4'
     worker = remotion_runtime_context_worker(actual)
     worker['ASTRID_REMOTION_VALIDATION_ROLE'] = 'worker'
-    worker.update({'ASTRID_TASK_RUN_ID': 'new-task', 'BANODOCO_RUNTIME_CREDENTIAL': 'SECRET'})
+    worker.update({'ASTRID_TASK_RUN_ID': 'new-task', 'ASTRID_RUNTIME_CREDENTIAL': 'SECRET'})
     remotion_runtime._validated_runtime(runtime, environment=worker)
     assert len(calls) == 3
     raw = Path(ref['ASTRID_REMOTION_VALIDATION_PATH']).read_text()
@@ -798,7 +798,7 @@ def test_clean_probe_rejects_unsupported_consuming_overrides(tmp_path, name):
 def test_clean_probe_projection_preserves_values_absence_and_excludes_task_metadata(tmp_path):
     env = {'HOME': str(tmp_path), 'LANG': '', 'PATH': 'actual-path', 'TMPDIR': 'actual-tmp',
            'ASTRID_TASK_RUN_ID': 'task', 'COVERAGE_PROCESS_START': 'private-instrumentation',
-           'BANODOCO_RUNTIME_CREDENTIAL': 'SECRET', 'SETUPTOOLS_USE_DISTUTILS': 'stdlib'}
+           'ASTRID_RUNTIME_CREDENTIAL': 'SECRET', 'SETUPTOOLS_USE_DISTUTILS': 'stdlib'}
     ctx = remotion_runtime.probe_context(environment=env, python_executable=sys.executable)
     assert ctx['schema_env'] == {'HOME': str(tmp_path), 'LANG': ''}
     assert ctx['node_env'] == {'HOME': str(tmp_path), 'LANG': '', 'PATH': 'actual-path', 'TMPDIR': 'actual-tmp'}
@@ -1041,7 +1041,7 @@ def _registry_settling_fixture(tmp_path, monkeypatch):
     environment = {'HOME': str(tmp_path), 'PATH': '/usr/bin', 'LANG': 'C.UTF-8',
                    'ASTRID_TIMELINE_SCHEMA_PYTHONPATH': str(tmp_path / 'schema'),
                    'ASTRID_PACKS_PATH': str(corpus), 'ASTRID_TASK_RUN_ID': 'must-not-enter',
-                   'BANODOCO_RUNTIME_CREDENTIAL': 'must-not-enter'}
+                   'ASTRID_RUNTIME_CREDENTIAL': 'must-not-enter'}
     return project, environment, observation, content, calls, generation, state_file
 
 
@@ -1060,7 +1060,7 @@ def test_registry_settling_owned_generator_four_file_readback_and_unchanged_skip
         remotion_runtime._settle_registries(project, {'host': environment}, sys.executable)
         assert len(generation) == 1
         assert [(Path(p['path']).stat().st_mtime_ns, p) for p in contract['outputs']] == stat_before
-    assert not any('ASTRID_TASK_RUN_ID' in env or 'BANODOCO_RUNTIME_CREDENTIAL' in env for env in (*calls, *generation))
+    assert not any('ASTRID_TASK_RUN_ID' in env or 'ASTRID_RUNTIME_CREDENTIAL' in env for env in (*calls, *generation))
     assert generation[0]['ASTRID_PACKS_PATH'] == environment['ASTRID_PACKS_PATH']
 
 

@@ -2,7 +2,7 @@
 import { createElement } from 'react';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExtensionContext, PanelVideoAdapter, TimelineSnapshot, TranscriptMediaChoice, TranscriptPanelAdapter, TranscriptPanelSnapshot } from '@reigh/editor-sdk';
+import type { ExtensionContext, PanelVideoAdapter, TimelineSnapshot, TranscriptMediaChoice, TranscriptPanelAdapter, TranscriptPanelSnapshot } from '@astrid/editor-sdk';
 import { alignedTextParts, filmParagraphs, playedFromReader, projectPlayedOccurrences, TranscriptPanel } from '../../../astrid/packs/rendering/ui/transcript/TranscriptPanel';
 afterEach(cleanup);
 function setup() {

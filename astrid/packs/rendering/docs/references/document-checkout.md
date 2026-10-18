@@ -14,8 +14,8 @@ high-level client does not yet expose as a general checkout method. It never
 constructs a pretend coordinator capability or accesses private client fields.
 
 Run with Python from the environment where Astrid is installed. Keep the same
-launcher configuration as Reigh; for a checkout-backed installation this may
-mean setting `BANODOCO_LOCAL_DATA_ROOT` to its already-configured data root.
+launcher configuration as Astrid App; for a checkout-backed installation this may
+mean setting `ASTRID_RUNTIME_DATA_ROOT` to its already-configured data root.
 Do not guess another root when the expected project is absent. Use project and
 timeline **slugs or IDs**, not display titles.
 
@@ -200,7 +200,7 @@ rewrite separately.
 ## Review and recover
 
 - **No render needed for saving:** refresh/open the same project and timeline in
-  Reigh after publication. `timelines visualize --mode inputs` gives declared
+  Astrid App after publication. `timelines visualize --mode inputs` gives declared
   placement evidence without rendering. The default/`--mode auto` route uses a
   matching render when available and otherwise captures bounded composed frames
   through the canonical Remotion route. Use `--mode inputs` for render-free

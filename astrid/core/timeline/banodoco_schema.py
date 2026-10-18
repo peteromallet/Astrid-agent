@@ -3,7 +3,7 @@
 
 TimelineConfig / TimelineClip / ThemeOverrides / TimelineOutput / AssetEntry /
 Theme are re-exported from `banodoco_timeline_schema` (the Python package in
-the external Banodoco workspace's `packages/timeline-schema/python/` tree); the
+the external banodoco-workspace repo's `packages/timeline-schema/python/` tree); the
 JSON-Schema validator there is the canonical shape check. Everything else in
 this file (pool/arrangement/metadata/registry types, transition validation,
 element registry checks) is Banodoco-only.
@@ -86,7 +86,7 @@ except ImportError:  # pragma: no cover
 
     _MISSING_SCHEMA_MESSAGE = (
         "banodoco_timeline_schema is required for timeline validation. Install "
-        "the external shared package from a Banodoco workspace checkout, for "
+        "the external shared package from a banodoco-workspace repo checkout, for "
         "example: python -m pip install -e "
         "/path/to/banodoco-workspace/packages/timeline-schema/python. "
         "Astrid does not vendor this package; see "

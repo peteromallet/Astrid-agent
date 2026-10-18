@@ -267,9 +267,9 @@ def test_public_visualizer_always_composes_current_saved_revision_with_matching_
     }
 
     try:
-        os.environ["BANODOCO_LOCAL_DATA_ROOT"] = controller["workspace_provenance"]["support_root"]
-        os.environ["BANODOCO_LOCAL_HOME"] = controller["workspace_provenance"]["home"]
-        os.environ["BANODOCO_LOCAL_SOURCE_MANIFEST"] = controller["workspace_provenance"]["source_manifest"]
+        os.environ["ASTRID_RUNTIME_DATA_ROOT"] = controller["workspace_provenance"]["support_root"]
+        os.environ["ASTRID_RUNTIME_HOME"] = controller["workspace_provenance"]["home"]
+        os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] = controller["workspace_provenance"]["source_manifest"]
         os.environ["ASTRID_PROJECTS_ROOT"] = str(Path(os.environ["ASTRID_STAGE1_SCRATCH_ROOT"]) / "projects")
         os.environ["ASTRID_REMOTION_PROJECT_DIR"] = str(ROOT / "remotion")
 

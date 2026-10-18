@@ -505,7 +505,7 @@
             "properties": {
               "type": {"const": "tool"},
               "entry": {"$ref": "#/$defs/relative_path"},
-              "target": {"const": "reigh"},
+              "target": {"const": "astrid"},
               "compatibility": {
                 "type": "object",
                 "additionalProperties": false,

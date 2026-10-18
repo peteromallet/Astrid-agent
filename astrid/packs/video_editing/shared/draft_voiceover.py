@@ -156,7 +156,7 @@ def _canonical_media_id(value: Any) -> str | None:
 def _bind_generated_audio(shot: dict, clip: dict, result: Mapping) -> None:
     """Keep generated draft audio addressable through the authored asset registry.
 
-    Reigh's occurrence projection resolves audio through ``clip.asset`` and the
+    Astrid's occurrence projection resolves audio through ``clip.asset`` and the
     shot revision's asset rows. A bare clip ``media_id`` passes timeline
     validation but leaves the preview without a source.
     """

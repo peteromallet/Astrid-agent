@@ -91,7 +91,7 @@ _CONFIG_KEYS = frozenset({"theme_path", "min_free_gb"})
 # params.anchor/offsetX/offsetY/textShadow/maxWidth/weight.
 _TEXT_TEXT_KEYS = frozenset({"content", "fontSize", "color", "align", "bold"})
 _TEXT_PARAM_KEYS = frozenset({"anchor", "offsetX", "offsetY", "textShadow", "maxWidth", "weight"})
-_LIVE_SCENE_CLIP_TYPE = "com.reigh.astrid.liveScene"
+_LIVE_SCENE_CLIP_TYPE = "haus.astrid.liveScene"
 _SUPPORTED_CLIP_TYPES = frozenset({"text", "media", _LIVE_SCENE_CLIP_TYPE})
 
 

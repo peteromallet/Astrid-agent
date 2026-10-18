@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
+from astrid_runtime_client import WorkspaceClient as GeneratedWorkspaceClient
 
 from astrid.sdk.remote import RemoteGenerations, RemoteTimelines
 

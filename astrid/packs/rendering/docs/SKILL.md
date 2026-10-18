@@ -26,11 +26,11 @@ to find its generation capability, then return here to assemble the result.
 ## Live Scenes extension route
 
 When the task concerns native Three.js scene code or a
-`com.reigh.astrid.liveScene` clip, first confirm that the corresponding
+`haus.astrid.liveScene` clip, first confirm that the corresponding
 registered extension/operation is active; installed documentation alone does
 not make the capability available. Then read [Live-scene authoring and
 conversion](references/live-scenes-authoring.md) for the supported public
-Reigh read/exact-edit/publish loop, Runtime-owned package revisions, hosted
+Astrid App read/exact-edit/publish loop, Runtime-owned package revisions, hosted
 lifecycle, source-time mapping, and bounded prepared-scene admission/export
 boundaries. Use the [two-shot Three.js template](templates/two-shot-threejs.ts)
 for the minimal reusable-set, animated-subject example with named camera cuts.
@@ -158,7 +158,7 @@ own type and native playback controls. An unchanged checkout has an empty diff.
 
 This bundle includes parent layers, shot placements, and internal clips.
 Narration is read through `timelines script`, which resolves the selected composition's pinned text bindings in occurrence order. Rendering is optional:
-a saved revision can be reviewed in Reigh. The recipe includes the authoritative
+a saved revision can be reviewed in Astrid App. The recipe includes the authoritative
 field map, media/gallery distinction, and common recovery paths.
 
 For ordinary candidate edits, use the [timeline editing helper catalog](references/document-checkout.md#editing-helper-catalog).

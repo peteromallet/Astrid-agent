@@ -184,7 +184,7 @@ LANES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "authority",
         (
-            "tests/stage1/test_reigh_authority_absence.py",
+            "tests/stage1/test_legacy_authority_absence.py",
         ),
     ),
     (

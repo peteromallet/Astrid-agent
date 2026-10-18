@@ -92,7 +92,7 @@ def served_profile(data_root: Path) -> dict[str, Any]:
     if value is None or not value.get("source_checkout"):
         raise DevOperatorError(
             f"no readable source profile at {path}",
-            next_action="banodoco-local up --profile astrid --source-manifest <profile.json>",
+            next_action="astrid-runtime up --profile astrid --source-manifest <profile.json>",
             state="unavailable",
         )
     return {

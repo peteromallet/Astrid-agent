@@ -32,7 +32,7 @@ WORKSPACE = ASTRID_SOURCE.parent
 RUNTIME_WORKTREE = Path(
     os.environ.get(
         "ASTRID_STAGE1_RUNTIME_CHECKOUT",
-        str(WORKSPACE / "banodoco-workspace-runtime-execution-20260909"),
+        str(WORKSPACE / "astrid-runtime-execution-20260909"),
     )
 )
 RUNTIME_COMMIT = os.environ.get(
@@ -55,7 +55,7 @@ from astrid.packs.generation.actions.generate_image.task_adapter import (  # noq
     validate_shot_generation_recipe,
 )
 from astrid.sdk.client import AstridClient  # noqa: E402
-from banodoco_workspace_client import WorkspaceClient  # noqa: E402
+from astrid_runtime_client import WorkspaceClient  # noqa: E402
 
 
 def _start_runtime(realm: Path, support: Path, runtime: Path = RUNTIME) -> tuple[subprocess.Popen[str], dict[str, str]]:
@@ -122,8 +122,8 @@ def test_pinned_daemon_astrid_host_composition_survives_restart(tmp_path, monkey
     daemon, metadata = _start_runtime(realm, support)
 
     def connect():
-        monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", metadata["endpoint"])
-        monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
+        monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", metadata["endpoint"])
+        monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
         credential = support / "credentials" / "owner.token"
         # This acceptance is intentionally below a directly-started daemon;
         # use the complete explicit client contract rather than the retired
@@ -251,9 +251,9 @@ def test_b71_project_shot_reference_sdk_crud_survives_restart(tmp_path, monkeypa
     runtime = RUNTIME
     realm, support = tmp_path / "realm", tmp_path / "support"
     daemon, metadata = _start_runtime(realm, support, runtime)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", metadata["endpoint"])
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
-    monkeypatch.setenv("BANODOCO_RUNTIME_CHECKOUT", str(runtime))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", metadata["endpoint"])
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(runtime))
     try:
         astrid = AstridClient.open(
             endpoint=metadata["endpoint"],
@@ -304,7 +304,7 @@ def test_b71_project_shot_reference_sdk_crud_survives_restart(tmp_path, monkeypa
         assert association.ok and secondary.ok and primary.ok and link.ok
         _stop_runtime(daemon)
         daemon, metadata = _start_runtime(realm, support, runtime)
-        monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", metadata["endpoint"])
+        monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", metadata["endpoint"])
         reopened = AstridClient.open(
             endpoint=metadata["endpoint"],
             credential=support / "credentials" / "owner.token",
@@ -326,9 +326,9 @@ def test_generation_candidate_promotion_preserves_receipt_provenance_and_replay(
     """Prove Astrid's recipe reaches the runtime-owned atomic promotion seam."""
     realm, support = tmp_path / "realm", tmp_path / "support"
     daemon, metadata = _start_runtime(realm, support)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", metadata["endpoint"])
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", metadata["endpoint"])
     monkeypatch.setenv(
-        "BANODOCO_RUNTIME_CREDENTIAL",
+        "ASTRID_RUNTIME_CREDENTIAL",
         str(support / "credentials" / "owner.token"),
     )
     try:

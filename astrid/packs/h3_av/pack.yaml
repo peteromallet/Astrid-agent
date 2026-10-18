@@ -529,7 +529,7 @@ actions:
       - ASTRID_RUNPOD_ACCOUNT_REF
       - ASTRID_H3_CANDIDATE_MANIFEST
       - ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE
-      - BANODOCO_LOCAL_DATA_ROOT
+      - ASTRID_RUNTIME_DATA_ROOT
       requirements:
       - vibecomfy
     metadata:

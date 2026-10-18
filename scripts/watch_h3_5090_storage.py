@@ -286,7 +286,7 @@ def upload_tree_tar(client: paramiko.SSHClient) -> None:
             "--exclude=__pycache__", "--exclude=.pytest_cache",
             "--exclude=*.pyc", "--exclude=tests", "--exclude=golden",
             "--exclude=skill", "--exclude=astrid/.astrid",
-            "astrid", "banodoco_workspace_client", "config",
+            "astrid", "astrid_runtime_client", "config",
             "pyproject.toml",
         ],
         stdout=subprocess.PIPE,

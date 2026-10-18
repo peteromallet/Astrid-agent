@@ -6,7 +6,7 @@ which is the signal to remove the marker. Do not weaken the assertions to make t
 
 (a) A CLI-made film keeps all Astrid intent through a simulated App load, a no-op save, one edit, a save
     and a CLI checkout. The App side is simulated from the App's known-key rebuild: the App source
-    (reigh-app, Codex's checkout) is not reachable from this worktree, so the simulation mirrors
+    (astrid-app, Codex's checkout) is not reachable from this worktree, so the simulation mirrors
     `ALLOWED_TOP_LEVEL_KEYS` (timeline-domain.ts:217-226), `withCanonicalClips` (timeline-domain.ts:1241-1250)
     and the `app` replace on save (timeline-patch.ts:1261-1266), as the platform doc describes them.
 (b) A track with role "source" is excluded from render (today the Astrid validator rejects `role`).
@@ -53,7 +53,7 @@ M2 = (
 @pytest.fixture
 def film(tmp_path, monkeypatch):
     """A CLI film: tiny.json with Astrid intent set through the intent module, checked out as a draft."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     bundle = json.loads(TINY.read_text(encoding="utf-8"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: RESOLVED)
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle))

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_ROOT = ROOT.parent / "reigh-app" / "vendor" / "timeline-schema" / "python"
+SCHEMA_ROOT = ROOT.parent / "astrid-app" / "vendor" / "timeline-schema" / "python"
 DEPENDENCY_ROOT = Path(
     os.environ.get(
         "ASTRID_TEST_REMOTION_DEPENDENCY_ROOT",
@@ -33,7 +33,7 @@ if not DEPENDENCY_ROOT.is_dir():
         allow_module_level=True,
     )
 
-from banodoco_workspace_client import WorkspaceClient  # noqa: E402
+from astrid_runtime_client import WorkspaceClient  # noqa: E402
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from tests.helpers.runtime import initialize_runtime_realm
 

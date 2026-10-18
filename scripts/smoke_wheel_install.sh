@@ -80,10 +80,10 @@ try:
         # result; it must still carry the typed launcher recovery contract.
         assert doctor_payload.get("state") == "unavailable", doctor_payload
         assert doctor_payload.get("next_action") in {
-            "banodoco-local up --profile astrid",
+            "astrid-runtime up --profile astrid",
             (
-                "python3 -m pip install 'banodoco-workspace-runtime @ "
-                "git+https://github.com/banodoco/banodoco-workspace-runtime.git@"
+                "python3 -m pip install 'astrid-runtime @ "
+                "git+https://github.com/banodoco/astrid-runtime.git@"
                 "afccb430e2a983c968b6a8a96fd630ba3a6262fc'"
             ),
         }, doctor_payload
@@ -107,8 +107,8 @@ try:
         "runtime-client",
         [
             "-c",
-            "from pathlib import Path; import banodoco_workspace_client as c; "
-            "from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST; "
+            "from pathlib import Path; import astrid_runtime_client as c; "
+            "from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST; "
             "assert PROTOCOL == 'workspace.v1'; assert SCHEMA_DIGEST.startswith('sha256:'); "
             "assert Path(c.__file__).is_file(); print('vendored workspace client: OK')",
         ],

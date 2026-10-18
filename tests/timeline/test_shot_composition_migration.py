@@ -74,7 +74,7 @@ def test_child_migration_preserves_identity_metadata_and_uses_canonical_graph():
     assert all(clip.get("clipType") != "shot" for clip in plan.publication["parent_composition"]["clips"])
 
 
-def test_reigh_group_conversion_preserves_group_name_and_deduplicates_media():
+def test_astrid_group_conversion_preserves_group_name_and_deduplicates_media():
     plan = plan_shot_composition_migration(_source(pinned=True), project_id="project-1", timeline_id="main")
     occurrence = plan.publication["parent_composition"]["occurrences"][0]
     assert occurrence["occurrence_id"] == "group-1"

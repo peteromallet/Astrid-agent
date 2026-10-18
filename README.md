@@ -16,7 +16,7 @@ Tools and knowledge for agents and humans to make art with open models.
 │                                                                        │
 │                                ·  ·  ·                                 │
 │                                                                        │
-│  https://github.com/peteromallet/Astrid-agent/blob/main/docs/setup/SKILL.md  │
+│  https://github.com/peteromallet/astrid-agent/blob/main/docs/setup/SKILL.md  │
 │                                                                        │
 │                                ·  ·  ·                                 │
 │                                                                        │

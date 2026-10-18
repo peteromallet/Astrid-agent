@@ -14,9 +14,9 @@ from astrid.sdk import autobootstrap
 @pytest.fixture
 def launcher_data_root(monkeypatch, tmp_path):
     data_root = tmp_path.resolve() / "runtime-support"
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(data_root))
-    monkeypatch.delenv("BANODOCO_LOCAL_SOURCE_MANIFEST", raising=False)
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(data_root))
+    monkeypatch.delenv("ASTRID_RUNTIME_SOURCE_MANIFEST", raising=False)
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     return data_root
 
 
@@ -48,7 +48,7 @@ def test_thin_launcher_accepts_restarted_owner_and_preserves_normal_command(monk
 
     assert result["status"] == "restarted"
     assert seen == [[
-        "/usr/bin/banodoco-local", "up", "--profile", "astrid",
+        "/usr/bin/astrid-runtime", "up", "--profile", "astrid",
         "--data-root", str(launcher_data_root), "--json"
     ]]
 
@@ -103,7 +103,7 @@ def test_thin_launcher_fails_closed_on_conflict_or_interruption(monkeypatch, lau
     with pytest.raises(autobootstrap.AutoBootstrapError, match=message):
         autobootstrap.ensure_runtime(start_pack_host=False)
     assert seen == [[
-        "/usr/bin/banodoco-local", "up", "--profile", "astrid",
+        "/usr/bin/astrid-runtime", "up", "--profile", "astrid",
         "--data-root", str(launcher_data_root), "--json"
     ]]
 
@@ -117,7 +117,7 @@ def test_doctor_uses_nonstarting_runtime_observer(monkeypatch, capsys, tmp_path)
     class _Runtime:
         def observe(self, command, *, support_root):
             seen.append(command)
-            return runtime_cli.RuntimeResult(("banodoco-local", command), 0, {"ok": True, "state": "ready"})
+            return runtime_cli.RuntimeResult(("astrid-runtime", command), 0, {"ok": True, "state": "ready"})
 
     monkeypatch.setattr(runtime_cli, "RuntimeCLI", _Runtime)
     monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: tmp_path / "support")

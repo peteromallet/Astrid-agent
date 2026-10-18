@@ -133,7 +133,7 @@ The gateway families and their verbs:
   - `purge` requires the exact `PURGE <realm_id>` confirmation and a tombstoned
     realm; the online workspace route then returns `409` at the offline-only
     boundary and never deletes a realm. Whole-realm purge is performed offline
-    with `banodoco-runtime purge --root <realm> --confirm 'PURGE <realm_id>'`.
+    with `astrid-runtime-protocol purge --root <realm> --confirm 'PURGE <realm_id>'`.
 
 Nested mounts (manifest-declared, never top-level):
 

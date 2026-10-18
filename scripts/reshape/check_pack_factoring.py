@@ -36,9 +36,9 @@ class FactoringResult:
 
 
 def _runtime_root() -> Path:
-    configured = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+    configured = os.environ.get("ASTRID_RUNTIME_CHECKOUT")
     return Path(configured).expanduser() if configured else REPO_ROOT.parent / (
-        "banodoco-workspace-runtime-stage1-convergence"
+        "astrid-runtime-stage1-convergence"
     )
 
 

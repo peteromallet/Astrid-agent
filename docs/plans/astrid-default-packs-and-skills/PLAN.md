@@ -74,7 +74,7 @@ publication requirements. Validation must not publish anything to the corpus.
 Astrid owns `astrid/sdk/host_bootstrap.py`, which starts the generic host. Use that
 existing handoff to pass the installed pack roots and their revision identity.
 Do not assume the neutral launcher already provisions packs: the inspected
-installed `banodoco_local.SourceProfile` has no pack-source field and rejects
+installed `astrid_runtime.SourceProfile` has no pack-source field and rejects
 unknown fields. Do not add a runtime-wide pack manager on speculation. Only
 change the neutral runtime if a concrete integration test demonstrates an API
 requirement that Astrid's existing host handoff cannot satisfy.

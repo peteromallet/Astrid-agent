@@ -139,7 +139,7 @@ def test_runtime_cli_timeout_maps_to_c2_timeout() -> None:
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
     report, _, _ = collect_diagnostic(
-        RuntimeCLI(command=("banodoco-local",), runner=runner),
+        RuntimeCLI(command=("astrid-runtime",), runner=runner),
         support_root="/Users/private/support",
         command="doctor",
     )
@@ -239,7 +239,7 @@ def test_doctor_consumes_product_observations_and_shared_redaction(monkeypatch, 
 def test_doctor_compares_existing_status_health_to_generated_client(monkeypatch, tmp_path):
     import astrid.core.pack.loader as loader
     import astrid.core.element.registry as registry
-    from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+    from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
     monkeypatch.setattr(loader, "pack_quarantine_section", lambda: {"count": 0, "quarantined": [], "fail_closed_error": None})
     monkeypatch.setattr(registry, "element_skip_section", lambda: {"count": 0, "skipped": [], "error": None})
     calls = []

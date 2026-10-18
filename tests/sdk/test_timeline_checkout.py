@@ -142,7 +142,7 @@ def test_replace_asset_repoints_all_clips_and_undo_restores_registry(monkeypatch
         "key": "new-art", "media_id": "sha-new", "content_sha256": "sha-new", "type": "image/webp", "size_bytes": 99,
     })
     root = tmp_path / "data"
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(root))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(root))
     tl = Checkout(data)
     path = store.drafts_root() / "p" / "t" / "main.json"
     tl.save(path, quiet=True)

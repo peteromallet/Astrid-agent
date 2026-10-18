@@ -114,7 +114,7 @@ REMOVED_AUTHORITY_MODULES = (
 The m6 cutover removes these authorities from the product surface: the
 legacy file/JSONL/FSA authorities (``eventlog``), the legacy thread/session
 kernels, the deleted timeline/project/session CLI modules, and the removed
-Reigh Supabase/data-provider integrations. Those integrations are deleted from
+Astrid App Supabase/data-provider integrations. Those integrations are deleted from
 the product checkout; historical references are not an import or runtime
 authority, and any attempted product import is a lint error.
 """

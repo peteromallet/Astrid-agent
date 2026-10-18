@@ -186,7 +186,7 @@ assert _runtime_media_snapshot("demo") == []
 assert "sqlite3" not in sys.modules
 """
     env = dict(os.environ)
-    env.pop("BANODOCO_RUNTIME_ENDPOINT", None)
+    env.pop("ASTRID_RUNTIME_ENDPOINT", None)
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=repo_root,

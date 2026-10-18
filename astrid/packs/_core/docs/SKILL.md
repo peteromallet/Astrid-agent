@@ -87,7 +87,7 @@ python3 -m astrid doctor --json
 If the runtime is not already configured, the explicit operator command is:
 
 ```bash
-banodoco-local up --profile astrid
+astrid-runtime up --profile astrid
 ```
 
 The gateway is the stable command surface. Begin with its census, then inspect

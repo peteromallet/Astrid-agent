@@ -30,7 +30,7 @@ from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridg
 from astrid.core.execution.generic_host import GenericPackHost, HostError, RuntimeProtocolClient, _DiscoveryCollection, _prepare_review_resume_input
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid.sdk.execution_request import normalize_execution_request
-from banodoco_workspace_client import ApiError, WorkspaceClient
+from astrid_runtime_client import ApiError, WorkspaceClient
 
 PARENT = "bridge.parent"
 CHILD = "bridge.child"
@@ -157,7 +157,7 @@ class _MetadataTrackingStream(io.BytesIO):
 @pytest.mark.parametrize("chunk", [1, 7, 65536])
 @pytest.mark.parametrize("slack", [-1, 0, 5])
 def test_discovery_acquisition_production_cap_and_error_identity(monkeypatch, http_error, head, chunk, slack):
-    from banodoco_workspace_client import generated
+    from astrid_runtime_client import generated
     body = json.dumps({"code": "conflict", "message": "é🙂", "details": {"field": "x"},
                        "request_id": "wire-request"}, ensure_ascii=False).encode()
     cap = len(body) + slack
@@ -210,7 +210,7 @@ def test_discovery_acquisition_production_cap_and_error_identity(monkeypatch, ht
 @pytest.mark.parametrize("http_error", [False, True])
 @pytest.mark.parametrize("body", [b'{"code":"private-prefix"', b'{"message":"\xc3', b'[]'])
 def test_discovery_acquisition_truncated_json_is_terminal_before_error_decode(monkeypatch, http_error, body):
-    from banodoco_workspace_client import generated
+    from astrid_runtime_client import generated
     f = discovery_collection_fixture()
     f.client.generated = WorkspaceClient("http://runtime")
     reader = f.collection()
@@ -967,7 +967,7 @@ def world(tmp_path, monkeypatch):
     from runtime_protocol.service import RuntimeService
     from runtime_protocol.store import RealmStore
 
-    spec = importlib.util.spec_from_file_location("f05_d18_generated_client", source / "packages/python/banodoco_workspace_client/generated.py")
+    spec = importlib.util.spec_from_file_location("f05_d18_generated_client", source / "packages/python/astrid_runtime_client/generated.py")
     generated = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = generated
     spec.loader.exec_module(generated)
@@ -1037,10 +1037,10 @@ def world(tmp_path, monkeypatch):
 
     client = RuntimeProtocolClient("http://127.0.0.1:1", SECRET)
     if os.environ.get("ASTRID_D18_USE_VENDORED_CLIENT") == "1":
-        from banodoco_workspace_client import WorkspaceClient
+        from astrid_runtime_client import WorkspaceClient
         import inspect
         assert type(client.generated) is WorkspaceClient
-        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "banodoco_workspace_client/generated.py"
+        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
         client.generated._transport = transport
         client.generated.timeout = 1
     else:
@@ -1074,7 +1074,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
               + "}, child_key='logical-child', wait=True, timeout_seconds=2, poll_seconds=0.01)\n"
                 "assert r.ok, r.error\n"
                 "assert r.kernel_task_id\n"
-                "assert not any(k in __import__('os').environ for k in ('BANODOCO_RUNTIME_CREDENTIAL', 'BANODOCO_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
+                "assert not any(k in __import__('os').environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
     prefix = "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\n"
     if derived:
         prefix += "Path('outputs/generated.txt').write_text('parent-bytes')\n"
@@ -1092,7 +1092,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
             args = ["-m", "command"] if form == "-m" else [str(root / "command.py")]
         parent_invocation = {"kind": "command", "command": {"argv": argv_override or ["{python_exec}", *flags, *args]}}
         parent_invocation["command"].update(parent_command_fields or {})
-    child_code = "def run(value):\n    import os\n    assert 'BANODOCO_RUNTIME_CREDENTIAL' not in os.environ\n"
+    child_code = "def run(value):\n    import os\n    assert 'ASTRID_RUNTIME_CREDENTIAL' not in os.environ\n"
     if child_file_output:
         child_code += "    from pathlib import Path\n    Path('outputs').mkdir(exist_ok=True)\n    Path('outputs/answer.txt').write_text('managed-child-bytes')\n"
     child_code += "    return {'answer': " + ("__import__('pathlib').Path(value).read_text()" if derived else "value") + "}\n"
@@ -1440,7 +1440,7 @@ def test_default_vendor_gap_is_explicit(world):
     # This proof deliberately documents the prerequisite, without replacing
     # default import resolution or claiming the injected fixture is production.
     import inspect
-    from banodoco_workspace_client import WorkspaceClient
+    from astrid_runtime_client import WorkspaceClient
     if "derived_inputs" not in inspect.signature(WorkspaceClient.issue_child_authority).parameters:
         pytest.xfail("B01 vendor sync prerequisite remains open")
     assert "derived_inputs" in inspect.signature(type(world.client.generated).issue_child_authority).parameters
@@ -1787,8 +1787,8 @@ from urllib.parse import urlsplit
 from astrid.core.execution import network_policy as np
 assert 'ASTRID_NETWORK_ADMISSION' not in os.environ
 assert 'ASTRID_NETWORK_BROKER_EVIDENCE' not in os.environ
-assert 'BANODOCO_RUNTIME_ENDPOINT' not in os.environ
-assert 'BANODOCO_RUNTIME_CREDENTIAL' not in os.environ
+assert 'ASTRID_RUNTIME_ENDPOINT' not in os.environ
+assert 'ASTRID_RUNTIME_CREDENTIAL' not in os.environ
 assert len(os.environ['ASTRID_NETWORK_ADMISSION_DIGEST']) == 64
 assert os.environ['ASTRID_NETWORK_NONCE'] and os.environ['ASTRID_NETWORK_BROKER_TOKEN']
 assert 'evidence_path' not in json.loads(os.environ['ASTRID_NETWORK_POLICY'])['broker']
@@ -2186,7 +2186,7 @@ def _snapshot_fixture(world, *, form="python", limits=None):
         "    import json, os\n"
         "    from pathlib import Path\n"
         "    from astrid.sdk import _child_bridge as bridge_sdk\n"
-        "    assert not any(k in os.environ for k in ('BANODOCO_RUNTIME_CREDENTIAL', 'BANODOCO_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n"
+        "    assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n"
         "    data = Path(state).read_bytes() if state else b'{\"draft\":1}'\n"
         "    Path('outputs').mkdir(exist_ok=True)\n"
         "    Path('outputs/draft.json').write_bytes(data)\n"
@@ -2211,7 +2211,7 @@ def _snapshot_fixture(world, *, form="python", limits=None):
         "assert r.ok, r.error\n"
         "assert len(r.outputs['managed_outputs']) == 1\n"
         "assert r.outputs['managed_outputs'][0]['output_port'] == 'answer'\n"
-        "assert not any(k in os.environ for k in ('BANODOCO_RUNTIME_CREDENTIAL', 'BANODOCO_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
+        "assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
     if form == "python":
         (world.root / "actions/parent.py").write_text("def run(resume_state=None):\n" + "\n".join("    " + line for line in body.splitlines()) + "\n    return {'child': r.kernel_task_id}\n")
         invocation = {"kind": "python", "path": "actions/parent.py", "function": "run"}
@@ -2288,10 +2288,10 @@ def _fresh_snapshot_reader(world, *, authorized=True):
     credentials = CredentialStore(world.tmp / ("fresh-reader-" + str(time.monotonic_ns())))
     token, _ = credentials.provision("fresh-reader", ["tasks:read", "objects:read"] if authorized else [])
     client = RuntimeProtocolClient("http://127.0.0.1:1", token)
-    from banodoco_workspace_client import WorkspaceClient
+    from astrid_runtime_client import WorkspaceClient
     import inspect
     assert type(client.generated) is WorkspaceClient
-    assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "banodoco_workspace_client/generated.py"
+    assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
 
     def transport(method, path, headers, body):
         with world.lock:
@@ -2511,7 +2511,7 @@ def test_snapshot_fresh_authorized_resume_through_ordinary_managed_child(world, 
     # the interrupted lineage after verified readback, before new admission.
     world.service.cancel_task_canonical(world.claim["task_id"], {}, idempotency_key="contain-old-parent")
     fresh = RuntimeProtocolClient("http://127.0.0.1:1", SECRET)
-    from banodoco_workspace_client import WorkspaceClient
+    from astrid_runtime_client import WorkspaceClient
     assert type(fresh.generated) is WorkspaceClient
     fresh.generated._transport = world.transport
     fresh.executor_id = "worker"
@@ -2862,7 +2862,7 @@ def _real_review_fixture(world):
         "assert r.ok, r.error\n"
         "assert len(r.outputs['managed_outputs']) == 2\n"
         "assert {row['output_port'] for row in r.outputs['managed_outputs']} == {'decisions', 'state_result'}\n"
-        "assert not any(k in os.environ for k in ('BANODOCO_RUNTIME_CREDENTIAL', 'BANODOCO_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
+        "assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
     (world.root / "actions/parent.py").write_text("def run(resume_state=None):\n"
         + "\n".join("    " + line for line in body.splitlines()) + "\n    return {'child': r.kernel_task_id}\n")
     manifest = yaml.safe_load((world.root / "pack.yaml").read_text())
@@ -2920,7 +2920,7 @@ def _real_receiver_host(world, monkeypatch, name):
     def environment(*args, **kwargs):
         env, secrets = original_environment(*args, **kwargs)
         assert not any(key in env for key in (
-            "BANODOCO_RUNTIME_CREDENTIAL", "BANODOCO_RUNTIME_ENDPOINT", "CHILD_AUTHORITY", "PARENT_LEASE_ID"))
+            "ASTRID_RUNTIME_CREDENTIAL", "ASTRID_RUNTIME_ENDPOINT", "CHILD_AUTHORITY", "PARENT_LEASE_ID"))
         assert SECRET not in json.dumps(env)
         return env, secrets
     monkeypatch.setattr(host, "_child_environment", environment)
@@ -3090,10 +3090,10 @@ def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monk
         assert source_future.result(timeout=8)["status"] == "cancelled"
 
         fresh = RuntimeProtocolClient("http://127.0.0.1:1", SECRET)
-        from banodoco_workspace_client import WorkspaceClient
+        from astrid_runtime_client import WorkspaceClient
         import inspect
         assert type(fresh.generated) is WorkspaceClient
-        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "banodoco_workspace_client/generated.py"
+        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
         fresh.generated._transport = world.transport
         fresh.executor_id = "worker"
         world.client = fresh

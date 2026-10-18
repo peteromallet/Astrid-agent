@@ -2,7 +2,7 @@
   "$provenance": "shape from astrid/packs/rendering/editor/live-scenes/authoring.ts importPreparedScene (liveScenePatch + TimelinePatchOperation literals); values illustrative, NOT a recorded run; scope proposed",
   "instance": {
     "version": 7,
-    "source": "com.reigh.astrid.live-scenes",
+    "source": "haus.astrid.live-scenes",
     "scope": {
       "projectId": "p",
       "timelineId": "t"
@@ -23,7 +23,7 @@
         "payload": {
           "track": "visual-2",
           "at": 2.0,
-          "clipType": "com.reigh.astrid.liveScene"
+          "clipType": "haus.astrid.liveScene"
         },
         "order": 1
       },

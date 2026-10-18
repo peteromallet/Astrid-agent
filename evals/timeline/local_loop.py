@@ -118,7 +118,7 @@ def _case_child_environment(prepared: PreparedCase, *, work: Path) -> dict[str, 
     # give that cache an explicit home inside the selected case workspace.
     # This keeps the public SDK path intact while making the isolated worker
     # able to complete the same inspect/readback flow as a normal host.
-    env["BANODOCO_LOCAL_DATA_ROOT"] = str((work / ".astrid-data").resolve())
+    env["ASTRID_RUNTIME_DATA_ROOT"] = str((work / ".astrid-data").resolve())
     source_root = Path(__file__).resolve().parents[2]
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
@@ -229,7 +229,7 @@ def _case_worker_boundary(
     # evaluator code, evidence, and canonical stores remain denied above.
     public_product_reads = (
         source_root / "astrid",
-        source_root / "banodoco_workspace_client",
+        source_root / "astrid_runtime_client",
         source_root / "docs" / "timeline-editing-guide.md",
     )
     lines.extend(

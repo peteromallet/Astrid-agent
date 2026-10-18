@@ -2,7 +2,7 @@
   "$provenance": "invalid on purpose: cutIds must be unique",
   "instance": {
     "version": 8,
-    "source": "com.reigh.astrid.live-scenes",
+    "source": "haus.astrid.live-scenes",
     "scope": {
       "projectId": "p",
       "timelineId": "t",

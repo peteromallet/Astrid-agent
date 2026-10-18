@@ -1,14 +1,14 @@
 # Host-mounted editor Tools
 
 This guide records the V3 boundary used by the admitted Video Editor Tool. It
-describes a real Astrid declaration and its existing Reigh host entry; it is
+describes a real Astrid declaration and its existing Astrid App host entry; it is
 not a general plug-in or installer contract.
 
 ## Declare the Tool in Astrid
 
 The existing declaration is `ui.video-editor` in
 [video_editing/pack.yaml](../../astrid/packs/video_editing/pack.yaml). It has
-`type: tool`, `target: reigh`, `compatibility.host: "1"`, and the JSON entry
+`type: tool`, `target: astrid`, `compatibility.host: "1"`, and the JSON entry
 [entry.json](../../astrid/packs/video_editing/ui/video-editor/entry.json):
 
 ```json
@@ -38,7 +38,7 @@ by `npm run dev:editor` is development-only.
 
 ## Generate and bind source
 
-From the Astrid checkout containing the source you intend Reigh to build:
+From the Astrid checkout containing the source you intend Astrid App to build:
 
 ```sh
 python3 scripts/gen_tool_catalog.py
@@ -55,9 +55,9 @@ python3 scripts/gen_editor_extension_catalog.py --check
 
 The generated Tool catalog binds the manifest digest, entry bytes, declared
 resource paths and digests, dependencies, compatibility, and release digest.
-Reigh imports that catalog as `@astrid/tools/catalog`; Vite build/test
+Astrid App imports that catalog as `@astrid/tools/catalog`; Vite build/test
 configuration checks the bound source bytes, and the launch boundary checks
-the admitted catalog identity again. Build Reigh with the matching Astrid
+the admitted catalog identity again. Build Astrid App with the matching Astrid
 source selected:
 
 ```sh
@@ -71,12 +71,12 @@ dynamic package loader or arbitrary install path in this contract.
 
 ## Other Tool shapes are design-only
 
-A future declaration such as `ui.<another-tool>: { type: tool, target: reigh,
-entry: ... }` is only a sketch until Reigh adds a real public host entry,
+A future declaration such as `ui.<another-tool>: { type: tool, target: astrid,
+entry: ... }` is only a sketch until Astrid App adds a real public host entry,
 catalog admission, launch mapping, and source-bound build. The current launch
 boundary admits the catalog-bound Video Editor only. A declaration by itself
 does not implement the host service contract or make another route launchable.
 
 For editor contribution slots, scoped runtime services, and the real source
-change/reopen procedure, see Reigh's
-`docs/video-editor/tool-authoring.md` in the Reigh repository.
+change/reopen procedure, see Astrid App's
+`docs/video-editor/tool-authoring.md` in the Astrid App repository.

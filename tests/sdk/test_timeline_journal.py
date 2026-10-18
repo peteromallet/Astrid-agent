@@ -33,7 +33,7 @@ def python_source(monkeypatch):
 @pytest.fixture
 def draft(tmp_path, monkeypatch):
     """A working copy of the tiny fixture under a temp data root. The seams are fakes; nothing real is touched."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny()))
     monkeypatch.setattr(_store, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
@@ -111,7 +111,7 @@ def test_undo_and_redo_are_recorded_with_both_digests(draft):
 
 
 def test_a_fresh_checkout_and_a_discard_are_recorded(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(_store, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(_store, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny()))
     tl = Checkout.draft("P", "t")
@@ -277,7 +277,7 @@ def test_verify_detects_a_removed_line(tmp_path):
 
 
 def test_an_in_memory_checkout_writes_no_journal(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     tl = Checkout(copy.deepcopy(tiny()))
     with tl.edit("in memory"):
         tl.clip("c1.rocket").set(x=90)

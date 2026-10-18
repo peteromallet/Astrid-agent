@@ -103,7 +103,7 @@ def list_element_descriptors(
     This is intentionally narrower than :class:`ElementDefinition`: absolute
     filesystem paths and Python objects are not part of the host contract.
     ``scripts/gen_element_catalog.py`` serializes this projection into the
-    Vite-importable TypeScript catalog consumed by Reigh.
+    Vite-importable TypeScript catalog consumed by Astrid App.
     """
 
     registry = _registry(project_slug=project_slug)

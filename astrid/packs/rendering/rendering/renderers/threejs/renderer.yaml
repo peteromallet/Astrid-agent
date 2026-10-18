@@ -6,7 +6,7 @@ protocol_version: 1
 command: [python3, rendering/renderers/threejs/run.py]
 operations: [support, render]
 capabilities:
-  clip_types: [text, media, com.reigh.astrid.liveScene]
+  clip_types: [text, media, haus.astrid.liveScene]
   track_types: [visual, audio]
   supports_full_timeline: true
   supports_windows: true

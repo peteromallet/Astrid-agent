@@ -596,7 +596,7 @@ def run(reference: Path, timeline: str, summary: Path, *, tier: str = "smoke", s
     for key in list(env):
         if key in ("ASTRID_NODE_EXECUTABLE", "ASTRID_TIMELINE_SCHEMA_PYTHONPATH", "OTTO_HEAVY_LEASE") or key.startswith(("ASTRID_REMOTION_", "ASTRID_RENDER_")):
             env.pop(key)
-    env["BANODOCO_LOCAL_DATA_ROOT"] = str(root / "data")
+    env["ASTRID_RUNTIME_DATA_ROOT"] = str(root / "data")
     env["TMPDIR"] = str(root / "tmp")
     (root / "tmp").mkdir()
     changed = False
@@ -614,8 +614,8 @@ def run(reference: Path, timeline: str, summary: Path, *, tier: str = "smoke", s
         manifest["runtime_environment"] = sys.prefix
         manifest_path = root / "source-profile.json"
         manifest_path.write_text(json.dumps(manifest))
-        env["BANODOCO_LOCAL_SOURCE_MANIFEST"] = str(manifest_path)
-        local = [sys.executable, "-m", "banodoco_local"]
+        env["ASTRID_RUNTIME_SOURCE_MANIFEST"] = str(manifest_path)
+        local = [sys.executable, "-m", "astrid_runtime"]
         common = ["--profile", "astrid", "--data-root", str(root / "data"), "--json"]
         adopt_attempted = True
         runner.phase("adopt", lambda: runner.command("adopt", local + ["workspace", "adopt", "--from", str(reference_realm), "--realm-id", realm_id, "--source-manifest", str(manifest_path)] + common, env))
@@ -659,7 +659,7 @@ def run(reference: Path, timeline: str, summary: Path, *, tier: str = "smoke", s
                 failure = (failure + "; " if failure else "") + "source_change: journey source changed concurrently; manual restore required"
         if adopt_attempted:
             try:
-                runner.phase("down", lambda: runner.command("down", [sys.executable, "-m", "banodoco_local", "down", "--source-manifest", str(manifest_path)] + common, env))
+                runner.phase("down", lambda: runner.command("down", [sys.executable, "-m", "astrid_runtime", "down", "--source-manifest", str(manifest_path)] + common, env))
             except Exception as exc:
                 failure = (failure + "; " if failure else "") + str(exc)
         try:

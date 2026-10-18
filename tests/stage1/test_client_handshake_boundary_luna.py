@@ -108,7 +108,7 @@ def test_open_rejects_tampered_health(monkeypatch: pytest.MonkeyPatch, response:
             protocol_version=PROTOCOL,
         )
     assert error.value.details["reason"] in {"protocol_error", "identity_mismatch"}
-    assert error.value.details["next_action"] == "banodoco-local up --profile astrid"
+    assert error.value.details["next_action"] == "astrid-runtime up --profile astrid"
 
 
 @pytest.mark.parametrize(
@@ -171,7 +171,7 @@ def test_launcher_rejects_symlinked_manifest(
     real_manifest.write_text('{"profile":"astrid"}', encoding="utf-8")
     link = tmp_path / "manifest-link.json"
     link.symlink_to(real_manifest)
-    monkeypatch.setenv("BANODOCO_LOCAL_SOURCE_MANIFEST", str(link))
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(link))
     with pytest.raises(autobootstrap.AutoBootstrapError, match="source manifest is unsafe"):
         autobootstrap.ensure_runtime()
 
@@ -181,8 +181,8 @@ def test_launcher_rejects_non_loopback_advertisement(
 ) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text('{"profile":"astrid"}', encoding="utf-8")
-    monkeypatch.setenv("BANODOCO_LOCAL_SOURCE_MANIFEST", str(manifest))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/bin/true")
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/bin/true")
     monkeypatch.setattr(
         autobootstrap.subprocess,
         "run",
@@ -202,7 +202,7 @@ def test_launcher_credential_environment_is_read_as_a_safe_path(
 ) -> None:
     credential = tmp_path / "owner.token"
     credential.write_text("secret-token\n", encoding="utf-8")
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(credential))
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(credential))
     monkeypatch.setattr(
         autobootstrap,
         "ensure_runtime",

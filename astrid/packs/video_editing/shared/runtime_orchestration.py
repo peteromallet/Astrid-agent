@@ -1,4 +1,4 @@
-"""Typed Runtime contract for the migrated Reigh orchestration families.
+"""Typed Runtime contract for the migrated Astrid orchestration families.
 
 This module describes Runtime task admissions; it does not own task lifecycle,
 persist a graph, or execute an engine.  The Runtime owns task identity,

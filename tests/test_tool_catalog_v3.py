@@ -40,7 +40,7 @@ def _fixture_repo(tmp_path: Path, *, host_entry: str = "video-editor") -> Path:
             "video-editor": {
                 "type": "tool",
                 "entry": ENTRY,
-                "target": "reigh",
+                "target": "astrid",
                 "compatibility": {"host": "1"},
                 "resources": [{"kind": "support", "path": RESOURCE}],
             },

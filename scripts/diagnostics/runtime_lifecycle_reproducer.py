@@ -3,7 +3,7 @@
 
 The default fixture uses a tiny launcher instead of the operator's live support
 directory.  ``--launcher pinned`` exercises the installed pinned
-``banodoco-local`` against a disposable absolute support root and the
+``astrid-runtime`` against a disposable absolute support root and the
 canonical source manifest.  Both modes exercise Astrid's real
 ``ensure_runtime`` boundary and record only bounded lifecycle metadata.
 
@@ -126,7 +126,7 @@ def _run(
             launcher.write_text(_LAUNCHER, encoding="utf-8")
             launcher.chmod(0o700)
         else:
-            launcher = Path("/Users/peteromalley/.pyenv/shims/banodoco-local")
+            launcher = Path("/Users/peteromalley/.pyenv/shims/astrid-runtime")
             if not launcher.is_file():
                 raise RuntimeError(f"pinned launcher not found: {launcher}")
         state = data_root / "fixture-state"
@@ -147,10 +147,10 @@ def _run(
             )
 
         environment = os.environ.copy()
-        environment["BANODOCO_LOCAL_LAUNCHER"] = str(launcher)
+        environment["ASTRID_RUNTIME_LAUNCHER"] = str(launcher)
         if launcher_mode == "pinned":
             manifest = source_manifest or Path(__file__).resolve().parents[2] / ".astrid-data/runtime/source-profiles/astrid.json"
-            environment["BANODOCO_LOCAL_SOURCE_MANIFEST"] = str(manifest)
+            environment["ASTRID_RUNTIME_SOURCE_MANIFEST"] = str(manifest)
         environment["PYTHONPATH"] = os.pathsep.join(
             [str(Path(__file__).resolve().parents[2]), environment.get("PYTHONPATH", "")]
         ).rstrip(os.pathsep)
@@ -364,7 +364,7 @@ def _run_recovery_case(case: str, source_manifest: Path | None = None) -> dict[s
     """Exercise pinned launcher repair against a disposable support root."""
     if case not in {"stale", "interrupted"}:
         raise ValueError(f"unsupported recovery case: {case}")
-    launcher = Path("/Users/peteromalley/.pyenv/shims/banodoco-local")
+    launcher = Path("/Users/peteromalley/.pyenv/shims/astrid-runtime")
     if not launcher.is_file():
         raise RuntimeError(f"pinned launcher not found: {launcher}")
     repo = Path(__file__).resolve().parents[2]
@@ -375,8 +375,8 @@ def _run_recovery_case(case: str, source_manifest: Path | None = None) -> dict[s
         data_root = root / "support"
         data_root.mkdir()
         environment = os.environ.copy()
-        environment["BANODOCO_LOCAL_LAUNCHER"] = str(launcher)
-        environment["BANODOCO_LOCAL_SOURCE_MANIFEST"] = str(manifest)
+        environment["ASTRID_RUNTIME_LAUNCHER"] = str(launcher)
+        environment["ASTRID_RUNTIME_SOURCE_MANIFEST"] = str(manifest)
         environment["PYTHONPATH"] = os.pathsep.join(
             [str(repo), environment.get("PYTHONPATH", "")]
         ).rstrip(os.pathsep)

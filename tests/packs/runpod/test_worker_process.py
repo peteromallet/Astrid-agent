@@ -523,7 +523,7 @@ def test_runtime_projection_checks_binding_and_accepts_nonsecret_configuration(
         env_items=(
             ("ASTRID_RUNTIME_INSTANCE_ID", "runtime-test"),
             ("ASTRID_CREDENTIAL_REF", "file:/selected/executor.token"),
-            ("BANODOCO_LOCAL_DATA_ROOT", "/selected/data"),
+            ("ASTRID_RUNTIME_DATA_ROOT", "/selected/data"),
         ),
     )
     preparation = SimpleNamespace(reference=reference, launch=launch)

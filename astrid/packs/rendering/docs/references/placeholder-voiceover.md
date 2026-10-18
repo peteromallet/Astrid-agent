@@ -112,10 +112,10 @@ catalog and replaces the temporary path with a managed ID. The SDK
 settings, and output hashes in its manifest. Keep the TTS engine, voice, rate,
 and placeholder status in shot metadata or a managed production note when they
 need to be reproducible. Confirm the returned audio
-record appears under Reigh's **Audio** gallery filter; open the gallery pane so
+record appears under Astrid App's **Audio** gallery filter; open the gallery pane so
 its query is active. `media.import_file` alone is not the gallery-aware route.
 
 After saving, read `timelines script` to confirm the pinned words and preview
-the audio/timeline in Reigh. Decode checks establish file integrity; only an
+the audio/timeline in Astrid App. Decode checks establish file integrity; only an
 auditory review establishes pronunciation and pacing. Report which was checked.
 No video render is needed unless the user requests one.

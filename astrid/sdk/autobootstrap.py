@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 PROFILE = "astrid"
-RECONFIGURE_ACTION = "run `banodoco-local up --profile astrid`"
+RECONFIGURE_ACTION = "run `astrid-runtime up --profile astrid`"
 INSTALL_RUNTIME_ACTION = (
-    "python3 -m pip install 'banodoco-workspace-runtime @ "
-    "git+https://github.com/banodoco/banodoco-workspace-runtime.git@"
-    "bc74a4b2179de83ace55c35fa6371f10e1e58610'"
+    "python3 -m pip install 'astrid-runtime @ "
+    "git+https://github.com/banodoco/astrid-runtime.git@"
+    "3b21334366fa8124f1a7b0d371cc4295821616f5'"
 )
 
 
@@ -44,7 +44,7 @@ class AutoBootstrapError(RuntimeError):
 # The neutral launcher remains the cross-process authority.  This lock only
 # collapses callers in one Astrid process so a warm-up burst does not spawn a
 # fleet of identical launcher commands before the first one publishes
-# discovery.  Different processes still converge through banodoco-local's
+# discovery.  Different processes still converge through astrid-runtime's
 # support mutex and owner lock.
 _ACQUISITION_LOCK = threading.RLock()
 
@@ -54,7 +54,7 @@ def _configured(name: str) -> str:
 
 
 def _manifest_from_environment() -> Path | None:
-    value = _configured("BANODOCO_LOCAL_SOURCE_MANIFEST")
+    value = _configured("ASTRID_RUNTIME_SOURCE_MANIFEST")
     if not value:
         # The neutral launcher owns the persisted source profile under its
         # fixed support directory.  An ordinary Astrid relaunch must be able
@@ -124,23 +124,23 @@ def _bounded_details(value: Any, *, limit: int = 16_384) -> dict[str, Any]:
 
 def _launcher_command() -> list[str]:
     """Resolve the neutral launcher without relying solely on shell ``PATH``."""
-    configured = _configured("BANODOCO_LOCAL_LAUNCHER")
+    configured = _configured("ASTRID_RUNTIME_LAUNCHER")
     if configured:
         return [configured]
-    executable = shutil.which("banodoco-local")
+    executable = shutil.which("astrid-runtime")
     if executable:
         return [executable]
-    if find_spec("banodoco_local") is not None:
-        return [sys.executable, "-m", "banodoco_local"]
+    if find_spec("astrid_runtime") is not None:
+        return [sys.executable, "-m", "astrid_runtime"]
     raise AutoBootstrapError(
-        "the Banodoco workspace runtime is not installed",
+        "the Astrid Runtime is not installed",
         next_action=INSTALL_RUNTIME_ACTION,
     )
 
 
 def _launcher_timeout() -> float:
     """Allow the runtime's admission budget plus launcher/process overhead."""
-    raw = _configured("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS") or "120"
+    raw = _configured("ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS") or "120"
     try:
         admission = float(raw)
     except ValueError as exc:

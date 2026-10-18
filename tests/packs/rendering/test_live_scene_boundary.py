@@ -54,7 +54,7 @@ def _with_body(package: dict, body: dict) -> dict:
 
 
 def test_nonzero_window_preserves_scene_revision_and_advances_source_rate():
-    clip = {'id':'c', 'clipType':'com.reigh.astrid.liveScene', 'at':2, 'from':55, 'to':75, 'speed':2, 'track':'v', 'app':{'liveScene':PACKAGE}}
+    clip = {'id':'c', 'clipType':'haus.astrid.liveScene', 'at':2, 'from':55, 'to':75, 'speed':2, 'track':'v', 'app':{'liveScene':PACKAGE}}
     config = {'tracks':[{'id':'v','kind':'visual'}], 'clips':[clip]}
     sliced = RenderService._window_timeline(config, FrameWindow(start_frame=180, end_frame=195, fps_rational=(30,1)))
     rendered = sliced['clips'][0]
@@ -121,7 +121,7 @@ def test_entry_digest_or_size_mismatch_is_rejected(field, message):
 
 
 def test_backend_admits_valid_source_and_fails_missing_source():
-    clip = {'id':'c','clipType':'com.reigh.astrid.liveScene','at':0,'hold':1,'track':'v','app':{'liveScene':PACKAGE}}
+    clip = {'id':'c','clipType':'haus.astrid.liveScene','at':0,'hold':1,'track':'v','app':{'liveScene':PACKAGE}}
     config = {'tracks':[{'id':'v','kind':'visual'}], 'clips':[clip], 'theme_overrides':{'visual':{'canvas':{'width':320,'height':180,'fps':30}}}}
     assert _support_reasons(config) == []
     clip['app'] = {}
@@ -134,12 +134,12 @@ def test_maple_adapter_rejects_unrecognized_source():
 
 
 def test_composition_clip_admission_does_not_weaken_standard_remotion(tmp_path):
-    config = {'clips':[{'id':'c','clipType':'com.reigh.astrid.liveScene','app':{'liveScene':PACKAGE}}]}
+    config = {'clips':[{'id':'c','clipType':'haus.astrid.liveScene','app':{'liveScene':PACKAGE}}]}
     options = {'project_dir':tmp_path,'theme_path':None,'render_hash':'fixture'}
     with pytest.raises(ValueError, match='unregistered effect'):
         _stage_effect_assets_for_timeline(config, **options)
-    result = _stage_effect_assets_for_timeline(config, **options, composition_clip_types=frozenset({'com.reigh.astrid.liveScene'}))
+    result = _stage_effect_assets_for_timeline(config, **options, composition_clip_types=frozenset({'haus.astrid.liveScene'}))
     assert result['effects'] == []
     config['clips'].append({'id':'unknown','clipType':'not-an-effect'})
     with pytest.raises(ValueError, match='not-an-effect'):
-        _stage_effect_assets_for_timeline(config, **options, composition_clip_types=frozenset({'com.reigh.astrid.liveScene'}))
+        _stage_effect_assets_for_timeline(config, **options, composition_clip_types=frozenset({'haus.astrid.liveScene'}))

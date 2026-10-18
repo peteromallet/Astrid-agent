@@ -2,7 +2,7 @@
   "$provenance": "invalid on purpose: scope is required",
   "instance": {
     "version": 8,
-    "source": "com.reigh.astrid.live-scenes",
+    "source": "haus.astrid.live-scenes",
     "operations": [
       {
         "op": "clip.update",

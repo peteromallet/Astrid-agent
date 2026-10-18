@@ -8,8 +8,8 @@ Context includes fps, frame, owner spans, source bindings and relevant authored
 parameters; derived reports and acknowledgements are excluded. Runtime recomputes
 this context from its pinned closure. Only `synchronized` grants its named extra
 cues. Old bytes survive; malformed/stale canonical records never downgrade to a
-legacy acknowledgement. The Reigh cross-repository test executes the actual
-Reigh authoring helper and evaluates the result in Runtime.
+legacy acknowledgement. The Astrid App cross-repository test executes the actual
+Astrid App authoring helper and evaluates the result in Runtime.
 
 `fixtures/visual-boundary-v1.json` is the deterministic `visual-seam/v1` vector
 set shared with Runtime. It records expected disclosure values; the old-timeline

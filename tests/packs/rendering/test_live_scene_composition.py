@@ -95,7 +95,7 @@ def _composition(package):
         'theme_overrides': {'visual': {'canvas': {'width': 320, 'height': 180, 'fps': 30}}},
         'tracks': [{'id': 'overlay', 'kind': 'visual', 'label': 'Overlay'}, {'id': 'scene', 'kind': 'visual', 'label': 'Scene'}, {'id': 'audio', 'kind': 'audio', 'label': 'Audio'}],
         'clips': [
-            {'id': 'scene', 'track': 'scene', 'clipType': 'com.reigh.astrid.liveScene', 'at': 2, 'from': 55, 'to': 75, 'speed': 2, 'app': {'liveScene': package, 'sentinel': 'retained'}},
+            {'id': 'scene', 'track': 'scene', 'clipType': 'haus.astrid.liveScene', 'at': 2, 'from': 55, 'to': 75, 'speed': 2, 'app': {'liveScene': package, 'sentinel': 'retained'}},
             {'id': 'label', 'track': 'overlay', 'clipType': 'text', 'at': 6, 'hold': 1, 'text': {'content': 'L3 OVERLAY', 'fontSize': 24, 'color': '#ffff00'}, 'params': {'anchor': 'top'}},
             {'id': 'pulse', 'track': 'audio', 'clipType': 'media', 'at': 6.2, 'from': 1, 'to': 2.2, 'speed': 2, 'asset': 'pulse', 'volume': 0.8},
         ],

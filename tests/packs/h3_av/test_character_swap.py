@@ -625,18 +625,18 @@ def test_transform_declares_the_selected_local_runtime_support_root() -> None:
     support_root = "/tmp/h3-selected-runtime-support"
     child_environment = build_child_subprocess_env(
         base={
-            "BANODOCO_LOCAL_DATA_ROOT": support_root,
-            "BANODOCO_LOCAL_HOME": "/tmp/stale-home",
-            "BANODOCO_LOCAL_SOURCE_MANIFEST": "/tmp/stale-source-profile.json",
+            "ASTRID_RUNTIME_DATA_ROOT": support_root,
+            "ASTRID_RUNTIME_HOME": "/tmp/stale-home",
+            "ASTRID_RUNTIME_SOURCE_MANIFEST": "/tmp/stale-source-profile.json",
         },
         parent={},
         passthrough=declared,
         declared_passthrough=declared,
     )
 
-    assert child_environment["BANODOCO_LOCAL_DATA_ROOT"] == support_root
-    assert "BANODOCO_LOCAL_HOME" not in child_environment
-    assert "BANODOCO_LOCAL_SOURCE_MANIFEST" not in child_environment
+    assert child_environment["ASTRID_RUNTIME_DATA_ROOT"] == support_root
+    assert "ASTRID_RUNTIME_HOME" not in child_environment
+    assert "ASTRID_RUNTIME_SOURCE_MANIFEST" not in child_environment
 
 
 def test_finalizer_rejects_verification_for_different_candidate(tmp_path: Path) -> None:

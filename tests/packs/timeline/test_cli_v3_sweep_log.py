@@ -72,7 +72,7 @@ def _seeded_edit_parser(tmp_path, monkeypatch):
     # Use the actual Checkout draft store and CLI handler; only the published-head
     # lookup is fixture-backed, as in the existing timeline CLI tests.
     bundle = json.loads(_TIMELINE_FIXTURE.read_text(encoding="utf-8"))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(
         timeline_checkout,
         "resolve_ids",

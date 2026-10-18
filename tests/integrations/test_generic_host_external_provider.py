@@ -28,7 +28,7 @@ from astrid.core.execution.network_broker import ObservableNetworkBroker
 RUNTIME = Path(__file__).resolve().parents[3] / "runtime"
 if RUNTIME.is_dir():
     sys.path.insert(0, str(RUNTIME))
-from banodoco_workspace_client import ApiError, WorkspaceClient
+from astrid_runtime_client import ApiError, WorkspaceClient
 from runtime_protocol.daemon import RuntimeDaemon
 from tests.helpers.runtime import initialize_runtime_realm
 

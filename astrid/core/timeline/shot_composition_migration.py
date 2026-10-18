@@ -4,7 +4,7 @@ This module is intentionally the only Astrid code that understands the two
 legacy shapes being retired:
 
 * Astrid child clips (``clipType == "shot"`` with a child timeline pointer),
-* Reigh pinned groups (``pinnedShotGroups`` with a list of parent clip IDs).
+* Astrid App pinned groups (``pinnedShotGroups`` with a list of parent clip IDs).
 
 It is an explicit, read-then-publish operation.  The normal canonical adapter
 does not import this module and never interprets either legacy shape.
@@ -76,7 +76,7 @@ class MigrationInventoryItem:
     document_id: str
     source_fingerprint: str
     astrid_child_count: int
-    reigh_group_count: int
+    astrid_group_count: int
     affected: bool
     source_names: tuple[str, ...] = ()
 
@@ -87,7 +87,7 @@ class MigrationInventoryItem:
             "document_id": self.document_id,
             "source_fingerprint": self.source_fingerprint,
             "astrid_child_count": self.astrid_child_count,
-            "reigh_group_count": self.reigh_group_count,
+            "astrid_group_count": self.astrid_group_count,
             "affected": self.affected,
             "source_names": list(self.source_names),
         }
@@ -382,7 +382,7 @@ def inventory_legacy_shot_compositions(source: Any) -> MigrationInventory:
                 document_id=document_id,
                 source_fingerprint=_source_fingerprint(row, timeline),
                 astrid_child_count=len(children),
-                reigh_group_count=len(groups),
+                astrid_group_count=len(groups),
                 affected=bool(children or groups),
                 source_names=names,
             )
@@ -660,7 +660,7 @@ def plan_shot_composition_migration(
         internal_revisions: dict[tuple[str, str], dict[str, Any]] = {}
         mapping: dict[str, Any] = {"projects": {}, "timelines": {}, "shots": {}, "occurrences": {}}
         occurrence_seen: dict[str, str] = {}
-        source_counts = {"astrid_child_clips": len(child_clips), "reigh_pinned_groups": len(groups)}
+        source_counts = {"astrid_child_clips": len(child_clips), "astrid_pinned_groups": len(groups)}
 
         def register_unit(
             *,
@@ -845,8 +845,8 @@ def plan_shot_composition_migration(
             first = selected[0]
             occurrence_source = {**_copy(dict(group)), "id": group_id, "occurrence_id": group.get("occurrence_id", group_id), "name": group.get("name", shot_record.get("name"))}
             register_unit(
-                source_key=f"reigh:{group_id}",
-                source_unit={"kind": "reigh_pinned_group", "source_id": group_id, "name": group.get("name")},
+                source_key=f"app:{group_id}",
+                source_unit={"kind": "astrid_pinned_group", "source_id": group_id, "name": group.get("name")},
                 shot_id=shot_id,
                 child_config=child_config,
                 child_registry=registry,

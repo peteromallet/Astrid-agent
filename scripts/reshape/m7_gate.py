@@ -76,7 +76,7 @@ GA_SELECTORS: dict[int, tuple[str, ...]] = {
     4: ("tests/v10/test_fanout.py",),
     5: ("tests/v10/test_task_races.py", "tests/v10/test_m7_hardening.py"),
     6: (
-        "tests/stage1/test_reigh_authority_absence.py",
+        "tests/stage1/test_legacy_authority_absence.py",
     ),
     7: ("tests/v10/test_media_pipeline.py",),
     8: ("tests/v10/test_reference_conformance.py", "tests/v10/test_shot_conformance.py"),

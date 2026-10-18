@@ -134,7 +134,7 @@ class _Reached(Exception):
 
 def test_monkeypatch_on_the_facade_reaches_the_code_that_calls_it(tmp_path, monkeypatch):
     original_fetch = store.fetch_bundle
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     calls = []
 

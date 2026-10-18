@@ -91,7 +91,7 @@ def resolve_remote_target(
         raise RemoteTargetError("reviewed source OID must be a full object ID")
     _validate_component_binding(target)
     expected_transition = framed_hash(
-        "banodoco.local-to-canonical-repository.v1",
+        "astrid_runtime.local-to-canonical-repository.v1",
         [target["component_id"], target["local_repository_identity"], target["repository_identity"], target["canonical_url"], ref, expected],
     )
     if target["identity_transition_sha256"] != expected_transition:

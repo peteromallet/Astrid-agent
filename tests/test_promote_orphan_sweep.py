@@ -29,7 +29,7 @@ BUNDLE = (
 LISTING = "\n".join([
     "  100     1 " + CHROME,                                   # orphan Chromium from serve: match
     "  101   100 " + CHROME.replace(" about", " x about"),     # still attached to a parent: skip
-    "  102     1 /Users/me/Library/Application Support/Banodoco/chrome-headless-shell about:blank",
+    "  102     1 /Users/me/Library/Application Support/Astrid Runtime/chrome-headless-shell about:blank",
     "  103     1 " + f"{SERVE}-old/remotion/node_modules/.remotion/chrome-headless-shell/x/chrome-headless-shell",
     "  104     1 " + BUNDLE,                                     # orphan bundle from serve: match
     "  105     1 /usr/local/bin/node " + f"{SERVE}/remotion/src/astrid-frame-worker.mjs --server /tmp/astrid-rfo/owner-x.sock",

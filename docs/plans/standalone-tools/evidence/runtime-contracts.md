@@ -1,7 +1,7 @@
 # Standalone-tool runtime contract evidence
 
 Read-only review of the Astrid checkout and the runtime checkout
-`banodoco-workspace-runtime-storage-estimate`. This records reusable contracts
+`astrid-runtime-storage-estimate`. This records reusable contracts
 and the smallest gaps for a standalone direct-CLI tool route. It does not
 change runtime behavior.
 
@@ -51,7 +51,7 @@ evidence at settlement. This should be reused for standalone API tools.
 
 ### Durable task/project lifecycle
 
-The runtime contract in `banodoco-workspace-runtime-storage-estimate` already
+The runtime contract in `astrid-runtime-storage-estimate` already
 has project-scoped task/run records, task states (`queued`, `ready`, `running`,
 `succeeded`, `failed`, `cancel_requested`, `cancelled`, `retrying`), leases,
 heartbeats, attempt/fence identity, cancel routes, and exact idempotency by
@@ -186,8 +186,8 @@ or process-host concern.
 - `Astrid/astrid/core/execution/executor/runner.py:430-580,930-1035`
 - `Astrid/astrid/core/execution/generic_host.py:398-526,570-665,980-1098,1859-2075,2140-2320`
 - `Astrid/astrid/core/execution/generic_host_worker.py:22-98`
-- `banodoco-workspace-runtime-storage-estimate/contract/schemas/task.json`
-- `banodoco-workspace-runtime-storage-estimate/contract/schemas/run.json`
-- `banodoco-workspace-runtime-storage-estimate/contract/openapi/workspace-v1.yaml:141-161,430-470`
-- `banodoco-workspace-runtime-storage-estimate/runtime_protocol/store.py:729-810`
-- `banodoco-workspace-runtime-storage-estimate/tests/test_runtime_exact_idempotency.py`
+- `astrid-runtime-storage-estimate/contract/schemas/task.json`
+- `astrid-runtime-storage-estimate/contract/schemas/run.json`
+- `astrid-runtime-storage-estimate/contract/openapi/workspace-v1.yaml:141-161,430-470`
+- `astrid-runtime-storage-estimate/runtime_protocol/store.py:729-810`
+- `astrid-runtime-storage-estimate/tests/test_runtime_exact_idempotency.py`

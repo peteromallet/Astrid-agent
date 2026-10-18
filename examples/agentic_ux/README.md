@@ -32,6 +32,6 @@ Output is a single JSON object with four top-level keys:
 
 This example intentionally does not create a local project, database, or event
 file. For live execution and event observation, open an explicit
-`AstridClient` against the Banodoco workspace runtime and use
+`AstridClient` against the Astrid Runtime and use
 `client.invoke_result(...)` and `client.runs.events(run_id)`; the
 runtime owns admission, execution, ordering, and event storage.

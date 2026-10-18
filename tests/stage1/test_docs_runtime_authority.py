@@ -51,7 +51,7 @@ def test_live_docs_name_runtime_bootstrap_and_authority() -> None:
     for path in LIVE_DOCS:
         text = path.read_text(encoding="utf-8")
         assert re.search(r"workspace\s+runtime", text, re.I), path
-    assert "banodoco-local up --profile astrid" in (
+    assert "astrid-runtime up --profile astrid" in (
         ROOT / "docs" / "getting-started.md"
     ).read_text(encoding="utf-8")
 

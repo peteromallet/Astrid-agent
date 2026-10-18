@@ -28,7 +28,7 @@ ASTRID_SOURCE = Path(
         text=True,
     ).stdout.strip()
 ).parent
-RUNTIME_WORKTREE = ASTRID_SOURCE.parent / "banodoco-workspace-runtime-execution-20260909"
+RUNTIME_WORKTREE = ASTRID_SOURCE.parent / "astrid-runtime-execution-20260909"
 RUNTIME_COMMIT = "afccb430e2a983c968b6a8a96fd630ba3a6262fc"
 ROOT = Path(__file__).resolve().parents[2]
 PACK_ROOT = ROOT / "astrid" / "packs" / "vibecomfy"

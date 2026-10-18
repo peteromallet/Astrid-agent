@@ -26,7 +26,7 @@ def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
     from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
     from tests.packs.rendering.test_live_scene_boundary import _package
 
-    clips = [{"id": "scene", "clipType": "com.reigh.astrid.liveScene", "track": "v1", "at": 50, "from": 63, "to": 70, "speed": 2, "app": {"liveScene": _package()}}]
+    clips = [{"id": "scene", "clipType": "haus.astrid.liveScene", "track": "v1", "at": 50, "from": 63, "to": 70, "speed": 2, "app": {"liveScene": _package()}}]
     config = {"tracks": [{"id": "v1", "kind": "visual"}], "clips": clips if location != "payload" else [], "theme": "banodoco-default", "app": {"sentinel": 1}}
     parent = {"project_id": "project-demo", "timeline_id": "timeline-1", "revision_id": "saved", "payload": {"config": config, "clips": clips if location != "config" else [], "registry": {"assets": {}}, "occurrences": []}}
     projected = project_runtime_parent_composition(parent, shot_revisions=[], internal_timeline_revisions=[])
@@ -51,7 +51,7 @@ def test_managed_saved_prepared_scene_validates_and_corruption_fails():
 
     runtime = _Runtime()
     package = _package()
-    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [{"id": "scene", "track": "v1", "clipType": "com.reigh.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": package}}]}
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [{"id": "scene", "track": "v1", "clipType": "haus.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": package}}]}
     snapshot = resolve_managed_render_snapshot(project_ref="demo", timeline_ref="main", client=runtime)
     validate_managed_render_snapshot(snapshot)
     package["html"] += "corrupt"

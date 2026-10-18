@@ -2,7 +2,7 @@
  * @banodoco/timeline-composition
  *
  * Sprint 5: real composition + theme-api + plugin registry. The Banodoco
- * CLI render path imports `TimelineComposition` from here; Reigh's
+ * CLI render path imports `TimelineComposition` from here; Astrid's
  * TimelineRenderer imports the EFFECT_REGISTRY-style dispatch entries
  * via the codegenned `registry.generated.ts`.
  */
@@ -51,7 +51,7 @@ export {
 } from "./lib/duration";
 
 // Plugin registry — codegenned from installed `@banodoco/timeline-theme-*`
-// packages (Reigh-side) and from `themes/<id>/effects/` (Banodoco-side).
+// packages (Astrid-side) and from `themes/<id>/effects/` (Banodoco-side).
 export {
   THEME_PACKAGE_REGISTRY,
   THEME_PACKAGE_CLIP_TYPES,

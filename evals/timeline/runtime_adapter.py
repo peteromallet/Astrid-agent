@@ -907,8 +907,8 @@ def _ensure_disposable_pack_host(
             dirs_exist_ok=True,
         )
     shutil.copytree(
-        current_source / "banodoco_workspace_client",
-        compatible_checkout / "banodoco_workspace_client",
+        current_source / "astrid_runtime_client",
+        compatible_checkout / "astrid_runtime_client",
         dirs_exist_ok=True,
     )
     for directory in ("config",):

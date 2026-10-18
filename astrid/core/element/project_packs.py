@@ -149,7 +149,7 @@ def _verify_build(selection: dict[str,Any], path: Path) -> dict[str,Any]:
         try:receipt=json.loads(result.stdout)
         except json.JSONDecodeError as exc:raise ValueError('Element build verifier omitted its structured receipt') from exc
         digest='sha256:'+hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if receipt.get('schema')!='reigh.element-build/v1' or receipt.get('selectionDigest')!=digest:raise ValueError('Element build receipt does not match captured selection')
+        if receipt.get('schema')!='astrid.element-build/v1' or receipt.get('selectionDigest')!=digest:raise ValueError('Element build receipt does not match captured selection')
         expected={(e['projectId'],*(e['descriptor'][k] for k in ('packId','id','kind','revision'))) for e in selection['elements']}
         actual={(e.get('projectId'),*(e.get(k) for k in ('packId','id','kind','revision'))) for e in receipt.get('elements',[]) if isinstance(e,dict)}
         if expected!=actual:raise ValueError('Element build receipt has missing or unexpected exact revisions')
@@ -374,7 +374,7 @@ def resolve_admitted_element(realm: str, project: str, reference: dict[str,str],
     if digest!=admitted[0]['snapshot_digest'] or files!=snapshot['files']:raise ValueError('Admitted element snapshot is missing or corrupt')
     build=json.loads((root/'.build-receipt.json').read_text())
     identity={'projectId':project,**{k:reference[k] for k in ('packId','id','kind','revision')}}
-    if build.get('schema')!='reigh.element-build/v1' or identity not in build.get('elements',[]):raise ValueError('Selected source lacks a successful build receipt')
+    if build.get('schema')!='astrid.element-build/v1' or identity not in build.get('elements',[]):raise ValueError('Selected source lacks a successful build receipt')
     exact=[_element_descriptor(d) for d,_ in _definitions(root,entry) if d.id==reference['id']]
     if len(exact)!=1 or any(exact[0].get(k)!=reference[k] for k in required):raise ValueError('Admitted source does not match canonical revision')
     return {**record,'binding':_index(realm,project,document_id,row['version'],row['content'],[])['binding']}

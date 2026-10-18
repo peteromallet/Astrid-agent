@@ -91,15 +91,15 @@ INPUT_MANIFEST_SCHEMA = "astrid.stage1.consumer-input/v1"
 PENDING_MARKERS = {"PENDING_PRODUCER_HANDOFF", "PENDING", "UNBOUND"}
 REQUIRED_IMPORTS = (
     "astrid",
-    "banodoco_local",
+    "astrid_runtime",
     "runtime_protocol",
-    "banodoco_workspace_client",
+    "astrid_runtime_client",
 )
 EXPECTED_CONSUMER = {
     "host": "astrid.core.execution.generic_host.GenericPackHost",
     "action": "astrid.core.execution.generic_host.RuntimeProtocolClient",
     "client": "astrid.sdk.client.AstridClient",
-    "runtime_client": "banodoco_workspace_client.generated.WorkspaceClient",
+    "runtime_client": "astrid_runtime_client.generated.WorkspaceClient",
 }
 
 ACTIVE_PRODUCT_ROOT = ROOT
@@ -186,7 +186,7 @@ def _load_input_manifest() -> dict[str, Any]:
     tuple_inputs = manifest.get("tuple")
     if not isinstance(tuple_inputs, Mapping):
         raise AssertionError("manifest tuple is required")
-    for name in ("astrid", "runtime", "reigh"):
+    for name in ("astrid", "runtime", "astrid"):
         component = tuple_inputs.get(name)
         if not isinstance(component, Mapping):
             raise AssertionError(f"tuple.{name} is required")
@@ -383,7 +383,7 @@ def _write_input_manifest_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path]
 
     astrid_root = tmp_path / "astrid-snapshot"
     runtime_root = tmp_path / "runtime-snapshot"
-    reigh_root = tmp_path / "reigh-private-candidate"
+    app_root = tmp_path / "astrid-private-candidate"
     working_directory = tmp_path / "working"
     support_root = tmp_path / "support"
     discovery_path = support_root / "runtime" / "discovery.json"
@@ -392,7 +392,7 @@ def _write_input_manifest_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path]
     for directory in (
         astrid_root,
         runtime_root,
-        reigh_root,
+        app_root,
         working_directory,
         support_root,
         discovery_path.parent,
@@ -410,7 +410,7 @@ def _write_input_manifest_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path]
     identities = {
         "astrid": write(astrid_root / "identity.json", '{"component":"astrid"}\n'),
         "runtime": write(runtime_root / "identity.json", '{"component":"runtime"}\n'),
-        "reigh": write(reigh_root / "identity.json", '{"component":"reigh"}\n'),
+        "astrid": write(app_root / "identity.json", '{"component":"astrid"}\n'),
     }
     descriptors = {
         name: write(tmp_path / "descriptors" / f"{name}.json", json.dumps({"name": name}))
@@ -440,7 +440,7 @@ def _write_input_manifest_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path]
             for name, root in (
                 ("astrid", astrid_root),
                 ("runtime", runtime_root),
-                ("reigh", reigh_root),
+                ("astrid", app_root),
             )
         },
         "environment": {
@@ -512,7 +512,7 @@ def test_input_manifest_rejects_pending_or_tampered_identity(
         _load_input_manifest()
 
     manifest, manifest_path = _write_input_manifest_fixture(tmp_path / "pending")
-    manifest["tuple"]["reigh"]["identity"]["sha256"] = "PENDING"
+    manifest["tuple"]["astrid"]["identity"]["sha256"] = "PENDING"
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     monkeypatch.setenv(INPUT_MANIFEST_ENV, str(manifest_path))
     with pytest.raises(AssertionError, match="still pending producer handoff"):
@@ -648,7 +648,7 @@ def _write_launcher(path: Path, interpreter: Path) -> None:
     # actual neutral CLI process and not an installed/ambient launcher.
     path.write_text(
         "#!/bin/sh\n"
-        f"exec {interpreter!s} -m banodoco_local \"$@\"\n",
+        f"exec {interpreter!s} -m astrid_runtime \"$@\"\n",
         encoding="utf-8",
     )
     path.chmod(0o700)
@@ -716,20 +716,20 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
     support = (
         _path(environment["support_root"], "environment.support_root", directory=True)
         if installed_mode
-        else home / "Library" / "Application Support" / "Banodoco"
+        else home / "Library" / "Application Support" / "Astrid Runtime"
     )
-    launcher = tmp_path / "banodoco-local"
+    launcher = tmp_path / "astrid-runtime"
     _write_launcher(launcher, ACTIVE_PYTHON)
 
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env["BANODOCO_LOCAL_HOME"] = str(home)
+    env["ASTRID_RUNTIME_HOME"] = str(home)
     # Keep later direct CLI/SDK calls on the same disposable support root that
     # the public lifecycle helper creates and launches.
-    env["BANODOCO_LOCAL_DATA_ROOT"] = str(support)
-    env["BANODOCO_LOCAL_LAUNCHER"] = str(launcher)
+    env["ASTRID_RUNTIME_DATA_ROOT"] = str(support)
+    env["ASTRID_RUNTIME_LAUNCHER"] = str(launcher)
     if source_manifest is not None:
-        env["BANODOCO_LOCAL_SOURCE_MANIFEST"] = str(source_manifest)
+        env["ASTRID_RUNTIME_SOURCE_MANIFEST"] = str(source_manifest)
         env["PYTHONPATH"] = os.pathsep.join(
             (
                 str(astrid_root),
@@ -740,7 +740,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
         )
     else:
         # Installed mode must not inherit checkout/runtime source injection.
-        env.pop("BANODOCO_LOCAL_SOURCE_MANIFEST", None)
+        env.pop("ASTRID_RUNTIME_SOURCE_MANIFEST", None)
         env.pop("PYTHONPATH", None)
 
     runtime_pid: int | None = None
@@ -788,14 +788,14 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
             os.replace(temporary, target)
 
     if installed_mode:
-        from banodoco_local.bootstrap import BootstrapConfig
-        from banodoco_local.paths import RuntimePaths
-        from banodoco_local.runtime_boundary import LocalRuntimeBoundary
+        from astrid_runtime.bootstrap import BootstrapConfig
+        from astrid_runtime.paths import RuntimePaths
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
         installed_paths = RuntimePaths.current_mac(home, data_root=support)
         installed_boundary = LocalRuntimeBoundary()
         installed_config = BootstrapConfig(profile="astrid")
         discovery_path = _path(environment["discovery_path"], "environment.discovery_path")
-        assert "PYTHONPATH" not in env and "BANODOCO_LOCAL_SOURCE_MANIFEST" not in env
+        assert "PYTHONPATH" not in env and "ASTRID_RUNTIME_SOURCE_MANIFEST" not in env
 
     workspace_session = None
     host_pids: set[int] = set()
@@ -839,7 +839,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
         # discovery, bootstrap and monitor descriptors without source
         # injection or implicit workspace creation.
         workspace_help = _run(
-            [str(ACTIVE_PYTHON), "-m", "banodoco_local", "workspace", "--help"],
+            [str(ACTIVE_PYTHON), "-m", "astrid_runtime", "workspace", "--help"],
             env,
             check=False,
         )
@@ -866,7 +866,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
             if source_manifest is not None:
                 assert "invalid choice" in workspace_help.stderr and "workspace" in workspace_help.stderr
             if installed_mode:
-                from banodoco_local.bootstrap import bootstrap
+                from astrid_runtime.bootstrap import bootstrap
                 # These are the real installed public lifecycle components;
                 # keep their original child handle alive through this journey.
                 started = asdict(bootstrap(installed_paths, installed_boundary, installed_config))
@@ -878,7 +878,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
             else:
                 first = _run(
                     [
-                        str(ACTIVE_PYTHON), "-m", "banodoco_local", "up", "--profile", "astrid",
+                        str(ACTIVE_PYTHON), "-m", "astrid_runtime", "up", "--profile", "astrid",
                         *((["--source-manifest", str(source_manifest)] if source_manifest is not None else [])), "--json",
                     ], env,
                 )
@@ -940,9 +940,9 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
         # A second real launch with the first-run manifest removed exercises
         # persisted-profile/env-less relaunch rather than mocked delegation.
         envless = dict(env)
-        envless.pop("BANODOCO_LOCAL_SOURCE_MANIFEST", None)
+        envless.pop("ASTRID_RUNTIME_SOURCE_MANIFEST", None)
         second = _run(
-            [str(ACTIVE_PYTHON), "-m", "banodoco_local", "up", "--profile", "astrid", "--json"],
+            [str(ACTIVE_PYTHON), "-m", "astrid_runtime", "up", "--profile", "astrid", "--json"],
             envless,
         )
         reconnected = json.loads(second.stdout)
@@ -954,7 +954,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
         # source profile and support lock. Exactly one may start an owner.
         concurrent = [
             subprocess.Popen(
-                [str(ACTIVE_PYTHON), "-m", "banodoco_local", "up", "--profile", "astrid", "--json"],
+                [str(ACTIVE_PYTHON), "-m", "astrid_runtime", "up", "--profile", "astrid", "--json"],
                 cwd=ACTIVE_WORKING_DIRECTORY,
                 env=envless,
                 text=True,
@@ -1007,18 +1007,18 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
 
         from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
         from astrid.sdk.client import AstridClient
-        from banodoco_workspace_client import WorkspaceClient
-        from banodoco_workspace_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+        from astrid_runtime_client import WorkspaceClient
+        from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
 
         # Bind the public export to its exact defining class and installed bytes.
         assert WorkspaceClient is GeneratedWorkspaceClient
         if installed_mode:
-            defining_record = input_manifest["runtime_imports"]["banodoco_workspace_client.generated"]
+            defining_record = input_manifest["runtime_imports"]["astrid_runtime_client.generated"]
             defining_path = _digest_record(
                 {"path": defining_record["origin"], "sha256": defining_record["sha256"]},
-                "runtime_imports.banodoco_workspace_client.generated",
+                "runtime_imports.astrid_runtime_client.generated",
             )
-            assert defining_path == expected_host_root / "banodoco_workspace_client" / "generated.py"
+            assert defining_path == expected_host_root / "astrid_runtime_client" / "generated.py"
             defining_spec = importlib.util.find_spec(WorkspaceClient.__module__)
             assert defining_spec is not None and defining_spec.origin is not None
             assert Path(defining_spec.origin).resolve() == defining_path
@@ -1216,7 +1216,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
             _wait_dead(runtime_pid)
             runtime_pid = None
             restarted_process = _run(
-                [str(ACTIVE_PYTHON), "-m", "banodoco_local", "up", "--profile", "astrid", "--json"],
+                [str(ACTIVE_PYTHON), "-m", "astrid_runtime", "up", "--profile", "astrid", "--json"],
                 envless,
             )
             restarted = json.loads(restarted_process.stdout)
@@ -1356,7 +1356,7 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
 
         # The neutral doctor path must remain healthy after all mutations.
         doctor = _run(
-            [str(ACTIVE_PYTHON), "-m", "banodoco_local", "doctor", "--home", str(home), "--json"],
+            [str(ACTIVE_PYTHON), "-m", "astrid_runtime", "doctor", "--home", str(home), "--json"],
             envless,
         )
         doctor_result = json.loads(doctor.stdout)
@@ -1374,14 +1374,14 @@ def test_final_cold_launch_matrix_no_mocks(tmp_path: Path) -> None:
         _run([str(runtime_pkg / "node_modules" / ".bin" / "tsc"), "-p", str(conformance / "tsconfig.json")], {**envless, "CI": "1"}, check=True)
         actor = conformance / "dist" / "conformance" / "fake-second-product.js"
         assert actor.is_file()
-        actor_result = _run(["node", str(actor), "--endpoint", restarted["endpoint"], "--token", astrid_token, "--worker-token", new_token, "--executor-id", str(new_discovery["worker_actor"])], {**envless, "BANODOCO_RUNTIME_OWNER_TOKEN": "", "BANODOCO_LOCAL_OWNER_TOKEN": ""})
+        actor_result = _run(["node", str(actor), "--endpoint", restarted["endpoint"], "--token", astrid_token, "--worker-token", new_token, "--executor-id", str(new_discovery["worker_actor"])], {**envless, "ASTRID_RUNTIME_OWNER_TOKEN": "", "ASTRID_RUNTIME_LOCAL_OWNER_TOKEN": ""})
         actor_payload = json.loads(actor_result.stdout)
         assert actor_payload["product"] == "neutral-gallery"
         assert actor_payload["realm_id"] == started["realm_id"]
         assert "claim-heartbeat-fenced-settlement-cas-output" in actor_payload["steps"]
 
         if installed_mode:
-            from banodoco_local.bootstrap import down
+            from astrid_runtime.bootstrap import down
             original = installed_boundary._process
             assert original is installed_owned_handles[-1]
             publish_owner("before-final-down", process=original, operation="installed down")

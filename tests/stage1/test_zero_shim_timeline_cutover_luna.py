@@ -39,7 +39,7 @@ ASTRID_SOURCE = Path(
         text=True,
     ).stdout.strip()
 ).parent
-RUNTIME_WORKTREE = ASTRID_SOURCE.parent / "banodoco-workspace-runtime-execution-20260909"
+RUNTIME_WORKTREE = ASTRID_SOURCE.parent / "astrid-runtime-execution-20260909"
 RUNTIME_COMMIT = "afccb430e2a983c968b6a8a96fd630ba3a6262fc"
 _RUNTIME_TMP = tempfile.TemporaryDirectory(prefix="astrid-runtime-archive-")
 RUNTIME = Path(_RUNTIME_TMP.name)

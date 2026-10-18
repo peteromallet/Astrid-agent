@@ -7,7 +7,7 @@ from astrid.sdk.storage_root import ensure_no_unmigrated_runtime, resolve_runtim
 
 
 def test_checkout_default_is_stable_and_cwd_independent(monkeypatch, tmp_path):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.chdir(tmp_path)
 
@@ -16,18 +16,18 @@ def test_checkout_default_is_stable_and_cwd_independent(monkeypatch, tmp_path):
 
 def test_explicit_data_root_wins(monkeypatch, tmp_path):
     target = tmp_path / "runtime-state"
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(target))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(target))
     assert resolve_runtime_data_root() == target
 
 
 def test_explicit_data_root_must_be_absolute(monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", ".astrid-data")
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", ".astrid-data")
     with pytest.raises(ValueError, match="absolute"):
         resolve_runtime_data_root()
 
 
 def test_missing_checkout_config_uses_persistent_user_root(monkeypatch, tmp_path):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
@@ -40,10 +40,10 @@ def test_missing_checkout_config_uses_persistent_user_root(monkeypatch, tmp_path
 def test_default_does_not_create_blank_realm_over_existing_external_catalog(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("HOME", str(tmp_path))
-    old_catalog = tmp_path / "Library" / "Application Support" / "Banodoco" / "runtime" / "catalog.json"
+    old_catalog = tmp_path / "Library" / "Application Support" / "Astrid Runtime" / "runtime" / "catalog.json"
     old_catalog.parent.mkdir(parents=True)
     old_catalog.write_text('{"selected_realm_id":"existing"}', encoding="utf-8")
 
@@ -55,7 +55,7 @@ def test_default_does_not_create_blank_realm_over_existing_external_catalog(
 def test_persisted_setup_selection_is_reused_when_install_config_is_only_a_default(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr("astrid.sdk.storage_root.CONFIG_PATH", tmp_path / "missing-config.json")
     selected = tmp_path / "selected-support"
@@ -72,7 +72,7 @@ def test_persisted_setup_selection_is_reused_when_install_config_is_only_a_defau
 def test_persisted_and_configured_existing_realms_fail_closed_as_ambiguous(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state"))
     selected = tmp_path / "selected-support"
     configured = tmp_path / "configured-support"
@@ -95,12 +95,12 @@ def test_persisted_and_configured_existing_realms_fail_closed_as_ambiguous(
 
 
 def test_explicit_legacy_root_is_retained_without_migration(monkeypatch, tmp_path):
-    legacy = tmp_path / "Library" / "Application Support" / "Banodoco"
+    legacy = tmp_path / "Library" / "Application Support" / "Astrid Runtime"
     catalog = legacy / "runtime" / "catalog.json"
     catalog.parent.mkdir(parents=True)
     catalog.write_text(json.dumps({"selected_realm_id": "legacy"}), encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(legacy))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(legacy))
 
     assert resolve_runtime_data_root() == legacy
     ensure_no_unmigrated_runtime(legacy)
@@ -109,13 +109,13 @@ def test_explicit_legacy_root_is_retained_without_migration(monkeypatch, tmp_pat
 def test_different_existing_legacy_and_configured_realms_fail_before_side_effects(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     target = tmp_path / "Astrid" / ".astrid-data"
     target_catalog = target / "runtime" / "catalog.json"
     target_catalog.parent.mkdir(parents=True)
     target_catalog.write_text(json.dumps({"selected_realm_id": "new"}), encoding="utf-8")
-    legacy_catalog = tmp_path / "Library" / "Application Support" / "Banodoco" / "runtime" / "catalog.json"
+    legacy_catalog = tmp_path / "Library" / "Application Support" / "Astrid Runtime" / "runtime" / "catalog.json"
     legacy_catalog.parent.mkdir(parents=True)
     legacy_catalog.write_text(json.dumps({"selected_realm_id": "old"}), encoding="utf-8")
 

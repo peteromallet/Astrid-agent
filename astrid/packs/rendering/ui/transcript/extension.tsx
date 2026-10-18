@@ -5,17 +5,17 @@ import {
   type ExtensionContext,
   type ExtensionId,
   type PanelRenderProps,
-} from '@reigh/editor-sdk';
+} from '@astrid/editor-sdk';
 import { TranscriptPanel } from './TranscriptPanel';
 import { TranscriptLane } from '../transcript-lane/TranscriptLane';
 
 /** Stable release identity; the V3 pack owner remains `rendering`. */
-export const TRANSCRIPT_EXTENSION_ID = 'com.reigh.transcript-lane';
+export const TRANSCRIPT_EXTENSION_ID = 'haus.astrid.transcript-lane';
 export const TRANSCRIPT_PANEL_ID = 'transcript-lane-panel';
 export const TRANSCRIPT_PANEL_RENDER_ID = `${TRANSCRIPT_EXTENSION_ID}.panel`;
 export const TRANSCRIPT_KIND_CONTRIBUTION_ID = 'transcript-lane-kind';
-export const TRANSCRIPT_KIND_ID = 'reigh.transcript';
-export const TRANSCRIPT_SCHEMA_REF = 'reigh.transcript_segment/v1';
+export const TRANSCRIPT_KIND_ID = 'astrid.transcript';
+export const TRANSCRIPT_SCHEMA_REF = 'astrid.transcript_segment/v1';
 
 export const transcriptExtension = defineExtension({
   manifest: {
@@ -23,7 +23,7 @@ export const transcriptExtension = defineExtension({
     version: '1.0.0',
     apiVersion: 1,
     label: 'Transcript',
-    description: 'Rendering-pack transcript panel for the Reigh editor.',
+    description: 'Rendering-pack transcript panel for the Astrid editor.',
     contributions: [{
       id: TRANSCRIPT_PANEL_ID as ContributionId,
       kind: 'panel',

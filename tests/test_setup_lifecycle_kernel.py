@@ -279,17 +279,17 @@ def test_startup_recovery_command_parses_at_installed_runtime_boundary(tmp_path)
         os.environ.get(
             "ASTRID_RUNTIME_CANDIDATE",
             astrid_root.parents[3]
-            / "banodoco-workspace-runtime"
+            / "astrid-runtime"
             / ".otto"
             / "worktrees"
             / astrid_root.name,
         )
     )
-    if not (runtime_candidate / "banodoco_local" / "cli.py").is_file():
+    if not (runtime_candidate / "astrid_runtime" / "cli.py").is_file():
         pytest.skip("paired Runtime candidate is unavailable")
     probe = """
 import json
-from banodoco_local.cli import parser
+from astrid_runtime.cli import parser
 value = parser().parse_args(%r)
 print(json.dumps({
     'command': value.command,
@@ -323,7 +323,7 @@ def test_runtime_observers_delegate_without_inspect_connect_or_up(tmp_path):
         seen.append(argv)
         return subprocess.CompletedProcess(argv, 1, '{"ok":false,"problem_code":"workspace_missing"}', "")
 
-    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+    runtime = RuntimeCLI(command=("astrid-runtime",), runner=runner)
     runtime.observe("status", support_root=tmp_path / "support")
     runtime.observe("doctor", support_root=tmp_path / "support")
 
@@ -368,7 +368,7 @@ def test_runtime_up_inspects_exact_selection_before_delegating(tmp_path):
         data = _selected(request)
         return subprocess.CompletedProcess(argv, 0, json.dumps(data), "")
 
-    runtime = RuntimeCLI(command=("banodoco-local",), runner=runner)
+    runtime = RuntimeCLI(command=("astrid-runtime",), runner=runner)
     result = runtime.up(
         support_root=request.support_root,
         expected_realm_id=request.workspace_id,

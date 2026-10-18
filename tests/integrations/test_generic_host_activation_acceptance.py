@@ -35,7 +35,7 @@ from astrid.core.execution.generic_host import (
 from astrid.core.gateway.dispatch import compose_profile_handoff
 from astrid.core.generation.model_root import canonical_model_inventory_digest
 from astrid.sdk import host_bootstrap
-from banodoco_workspace_client import ApiError
+from astrid_runtime_client import ApiError
 from tests.helpers.runtime import initialize_runtime_realm
 
 OWNER = {"actor": "owner", "scopes": ["admin"]}

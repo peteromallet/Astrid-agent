@@ -35,7 +35,7 @@ def _fixture_repo(tmp_path: Path) -> Path:
                     "video-editor": {
                         "type": "tool",
                         "entry": "ui/video-editor/entry.json",
-                        "target": "reigh",
+                        "target": "astrid",
                         "compatibility": {"host": "1"},
                     },
                 },

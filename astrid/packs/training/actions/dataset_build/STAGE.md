@@ -74,7 +74,7 @@ acquisition. Fixture mode performs no child-budget admission.
 The public Python SDK parent admission must carry the matching complete grant:
 registered capability digests, allowed targets, admitted original object IDs,
 and all six resolved limits. Config preflight is local checking; the inherited
-bridge enforces the persisted Runtime grant. CLI/Reigh grant parity is separate.
+bridge enforces the persisted Runtime grant. CLI/Astrid App grant parity is separate.
 
 YouTube acquisition and Scenes use public child actions. The run-scoped meter
 survives provider recreation and refill rounds. It charges exact output

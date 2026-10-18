@@ -118,7 +118,7 @@ def recoverable_policy(**changes):
 
 @pytest.fixture
 def generated_admission(monkeypatch):
-    from banodoco_workspace_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+    from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
     from astrid.sdk.remote import RemoteAstridClient
     from astrid.sdk.workspace_client import WorkspaceClient
 

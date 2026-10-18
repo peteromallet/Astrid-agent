@@ -24,7 +24,7 @@ def _catalog(root: Path, *, realm_id: str = "realm-1", realms=None) -> None:
 
 def test_upgrade_roots_use_configured_target_and_known_legacy_source(monkeypatch, tmp_path):
     target = tmp_path / "Astrid" / ".astrid-data"
-    legacy = tmp_path / "Library" / "Application Support" / "Banodoco"
+    legacy = tmp_path / "Library" / "Application Support" / "Astrid Runtime"
     _catalog(legacy)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(upgrade, "resolve_runtime_data_root", lambda: target)
@@ -115,14 +115,14 @@ def test_launcher_upgrade_uses_reviewed_neutral_command(monkeypatch, tmp_path):
         returncode = 0
         stdout = '{"ok": true, "status": "activated"}'
 
-    monkeypatch.setattr(upgrade, "_launcher_command", lambda: ["/opt/banodoco-local"])
+    monkeypatch.setattr(upgrade, "_launcher_command", lambda: ["/opt/astrid-runtime"])
     monkeypatch.setattr(upgrade.subprocess, "run", lambda command, **kwargs: seen.update(command=command, kwargs=kwargs) or Completed())
 
     result = upgrade._launcher_upgrade(source, target, manifest)
 
     assert result == {"ok": True, "status": "activated"}
     assert seen["command"] == [
-        "/opt/banodoco-local", "upgrade", "--profile", "astrid", "--data-root", str(source),
+        "/opt/astrid-runtime", "upgrade", "--profile", "astrid", "--data-root", str(source),
         "--destination", str(target), "--source-manifest", str(manifest), "--json",
     ]
     assert "timeout" not in seen["kwargs"]

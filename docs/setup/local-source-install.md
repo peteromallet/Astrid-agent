@@ -5,7 +5,7 @@ Bun, the supported OMP agent executable, and FFmpeg with both `ffmpeg` and `ffpr
 media import, including still images. For a Homebrew installation, the media
 prerequisite is `brew install ffmpeg`. This command installs the app from
 prepared prerequisites; it is not a zero-prerequisite machine bootstrap.
-Check out the matching Astrid, Workspace Runtime, and Reigh app branches and
+Check out the matching Astrid, Astrid Runtime, and Astrid App branches and
 commit any local changes. The installer records all three exact commits and
 refuses dirty checkouts. Select a new installation directory outside all three
 checkouts; an existing installation or workspace is never replaced.
@@ -15,14 +15,14 @@ From the Astrid checkout:
 ```sh
 python3 scripts/local_install.py \
   --root /absolute/path/to/new-local-install \
-  --runtime-root /absolute/path/to/banodoco-workspace-runtime \
-  --app-root /absolute/path/to/reigh-app
+  --runtime-root /absolute/path/to/astrid-runtime \
+  --app-root /absolute/path/to/astrid-app
 ```
 
 This builds both Python wheels from clean Git snapshots, verifies their
 package contents against the selected sources, consumes Astrid's hash-locked
 build/runtime dependencies, and installs the noneditable pair in the new
-directory. It builds Reigh with `npm ci` and the selected Astrid browser
+directory. It builds Astrid App with `npm ci` and the selected Astrid browser
 inputs, creates a fresh Runtime-owned workspace, checks its installed
 identity and schema, and starts the app at `http://localhost:2222`.
 Network access is needed for dependencies on the first run.
@@ -62,7 +62,7 @@ and a credential-free `with-env` wrapper for later inspection and restart.
 
 For a fresh installation check without keeping servers running, add
 `--check-only`. It still installs packages, creates a new workspace,
-builds Reigh, checks the app connection, and creates/reads back one
+builds Astrid App, checks the app connection, and creates/reads back one
 `installation-check` project in that fresh workspace, imports a small PNG,
 and verifies its Runtime-owned readback. It briefly starts the actual app,
 proxy, and ACP bridge on the chosen ports and verifies that HTTP/proxy health

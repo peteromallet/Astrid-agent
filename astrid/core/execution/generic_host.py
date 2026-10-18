@@ -4026,7 +4026,7 @@ def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
         "astrid_version": root / "astrid" / "version.py",
         "astrid_main": root / "astrid" / "__main__.py",
         "astrid_runtime_cli": root / "astrid" / "runtime_cli.py",
-        "vendored_workspace_client": root / "banodoco_workspace_client",
+        "vendored_workspace_client": root / "astrid_runtime_client",
     }
     measured: list[dict[str, str]] = []
     for name, path in components.items():
@@ -4370,11 +4370,11 @@ class RuntimeProtocolClient:
         self.credential_file = Path(credential_file) if credential_file else None
         self.timeout = timeout
         try:
-            from banodoco_workspace_client import WorkspaceClient
-            from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+            from astrid_runtime_client import WorkspaceClient
+            from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
         except ImportError as exc:
             raise HostError(
-                "generated banodoco_workspace_client is unavailable; reinstall the Astrid package"
+                "generated astrid_runtime_client is unavailable; reinstall the Astrid package"
             ) from exc
         self.schema_digest = SCHEMA_DIGEST
         self.generated = WorkspaceClient(
@@ -4417,7 +4417,7 @@ class RuntimeProtocolClient:
         except OSError as exc:
             raise HostError(f"worker credential unreadable: {exc}") from exc
         if credential and credential != self.credential:
-            from banodoco_workspace_client import WorkspaceClient
+            from astrid_runtime_client import WorkspaceClient
 
             self.credential = credential
             self.generated = WorkspaceClient(self.endpoint, credential, timeout=self.timeout)
@@ -6241,7 +6241,7 @@ class GenericPackHost:
 
     def _runtime_compatibility(self) -> dict[str, Any]:
         """Read and validate the exact runtime protocol/schema/epoch."""
-        from banodoco_workspace_client.contract_metadata import PROTOCOL
+        from astrid_runtime_client.contract_metadata import PROTOCOL
 
         expected_protocol = PROTOCOL
         if self.client is None:
@@ -7374,9 +7374,9 @@ class GenericPackHost:
         runtime_endpoint = getattr(self.client, "endpoint", None)
         runtime_credential = getattr(self.client, "credential", None)
         if allow_runtime_connection and runtime_endpoint and runtime_credential:
-            explicit["BANODOCO_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
-            secrets["BANODOCO_RUNTIME_CREDENTIAL"] = str(runtime_credential)
-            declared_secrets = (*declared, "BANODOCO_RUNTIME_CREDENTIAL")
+            explicit["ASTRID_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
+            secrets["ASTRID_RUNTIME_CREDENTIAL"] = str(runtime_credential)
+            declared_secrets = (*declared, "ASTRID_RUNTIME_CREDENTIAL")
         else:
             declared_secrets = declared
         if isinstance(authority_context, Mapping):
@@ -7405,7 +7405,7 @@ class GenericPackHost:
                          "ASTRID_NETWORK_BROKER_TOKEN"):
                 env.pop(name, None)
             for name, value in tuple(env.items()):
-                if name in {"BANODOCO_RUNTIME_ENDPOINT", "BANODOCO_RUNTIME_CREDENTIAL"} or (
+                if name in {"ASTRID_RUNTIME_ENDPOINT", "ASTRID_RUNTIME_CREDENTIAL"} or (
                     runtime_credential and value == str(runtime_credential)
                 ):
                     env.pop(name, None)
@@ -10524,7 +10524,7 @@ def _handoff_live_runtime_binding(owner: "GenericPackHost", *, client: Any = Non
     if client is None:
         return None
     try:
-        from banodoco_workspace_client.contract_metadata import PROTOCOL
+        from astrid_runtime_client.contract_metadata import PROTOCOL
 
         schema = getattr(client, "schema_digest", None)
         health_operation = getattr(client, "health", None)
@@ -13494,7 +13494,7 @@ def _cli() -> int:
             "attempt_base": str(host.attempt_base) if host.attempt_base else None,
             "session_ref": os.environ.get("ASTRID_SESSION_REF"),
             "session_config_digest": os.environ.get("ASTRID_SESSION_CONFIG_DIGEST"),
-            "data_root": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
+            "data_root": os.environ.get("ASTRID_RUNTIME_DATA_ROOT"),
             "capability_count": len(host.capabilities),
             "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
             "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),

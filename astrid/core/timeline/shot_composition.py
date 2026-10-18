@@ -1,7 +1,7 @@
 """Canonical shot-composition contract and Runtime preparation boundary.
 
 The adapter accepts explicit immutable source records, produces the canonical
-wire graph shared with Reigh's editor, and delegates persistence to an
+wire graph shared with Astrid's editor, and delegates persistence to an
 injected Runtime resolution/CAS port. It never translates legacy
 ``pinnedShotGroups`` or ``clipType: "shot"`` data.
 """
@@ -358,7 +358,7 @@ def stable_occurrence_deep_link(
     occurrence_id: str,
 ) -> str:
     parts = (project_id, parent_document_id, shot_id, revision_id, occurrence_id)
-    # Match JavaScript encodeURIComponent used by Reigh's contract validator.
+    # Match JavaScript encodeURIComponent used by Astrid's contract validator.
     encoded = [quote(_string(part, "deep_link"), safe="-_.!~*'()") for part in parts]
     return (
         f"project/{encoded[0]}/document/{encoded[1]}/shot/{encoded[2]}"

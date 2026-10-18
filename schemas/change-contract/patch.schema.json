@@ -14,7 +14,7 @@
     },
     "source": {
       "type": "string",
-      "description": "The extension id that authored the patch, e.g. com.reigh.astrid.live-scenes."
+      "description": "The extension id that authored the patch, e.g. haus.astrid.live-scenes."
     },
     "scope": {
       "type": "object",

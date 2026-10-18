@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pytest
 
 # Reuse the current sibling Runtime when available; never bootstrap providers.
-_runtime = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+_runtime = os.environ.get("ASTRID_RUNTIME_CHECKOUT")
 if not _runtime:
-    _runtime = next((str(parent / "banodoco-workspace-runtime") for parent in Path(__file__).resolve().parents
-                     if (parent / "banodoco-workspace-runtime/runtime_protocol").is_dir()), None)
+    _runtime = next((str(parent / "astrid-runtime") for parent in Path(__file__).resolve().parents
+                     if (parent / "astrid-runtime/runtime_protocol").is_dir()), None)
 if _runtime:
     sys.path.insert(0, _runtime)
 pytest.importorskip("runtime_protocol")
@@ -27,7 +27,7 @@ assert Path(sys.modules[RuntimeDaemon.__module__].__file__).resolve().parents[1]
 
 # Load the current Runtime-generated source explicitly. Other collected SDK
 # tests may already have imported Astrid's bundled package under its normal name.
-_generated_path = Path(_runtime) / "packages/python/banodoco_workspace_client/generated.py"
+_generated_path = Path(_runtime) / "packages/python/astrid_runtime_client/generated.py"
 _spec = importlib.util.spec_from_file_location("_admission_recovery_runtime_generated", _generated_path)
 _current_generated = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _current_generated

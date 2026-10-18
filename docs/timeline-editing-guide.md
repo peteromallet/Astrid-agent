@@ -38,7 +38,7 @@ the source duration. Parent occurrence `duration_ms` caps the resulting visible
 interval. Source trims remain in source units, and the renderer owns final frame
 rounding against the shared conformance vectors.
 
-The Reigh editor reads the exact canonical Runtime head. Empty canonical
+The Astrid App editor reads the exact canonical Runtime head. Empty canonical
 compositions remain canonical; a failed read shows an error and never routes to
 legacy shot groups. Legacy mode is explicit and is selected only when the
 canonical adapter is absent. Retry refreshes the pinned Runtime snapshot while

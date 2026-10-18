@@ -40,7 +40,7 @@ _PACKS_REGISTRY = "creative-work/references/packs.md"
 
 # The pack-builder guide points at the canonical public docs rather than at
 # checkout paths: its authoring guides are not shipped in a clean wheel.
-_PACK_BUILDER_DOC_PREFIX = "https://github.com/peteromallet/Astrid/blob/main/"
+_PACK_BUILDER_DOC_PREFIX = "https://github.com/peteromallet/astrid-agent/blob/main/"
 _PACK_BUILDER_DOC_REWRITES = {
     "../../../../../docs/": _PACK_BUILDER_DOC_PREFIX + "docs/",
     "../../../../../scripts/": _PACK_BUILDER_DOC_PREFIX + "scripts/",

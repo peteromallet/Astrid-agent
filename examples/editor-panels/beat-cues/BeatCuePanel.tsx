@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { PanelRenderProps } from '@reigh/editor-sdk';
+import type { PanelRenderProps } from '@astrid/editor-sdk';
 
 interface BeatCue {
   readonly id: string;

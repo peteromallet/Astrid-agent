@@ -1,5 +1,5 @@
 import { createElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ExtensionContext, PanelRenderProps, TimelineClipSummary, TimelineSnapshot, TranscriptOccurrence, TranscriptPanelTextEdit, TranscriptPanelTextEditResult, TranscriptProjectSourceChoice, TranscriptSourceRow, TranscriptSourceWordView, TranscriptWordProjection } from '@reigh/editor-sdk';
+import type { ExtensionContext, PanelRenderProps, TimelineClipSummary, TimelineSnapshot, TranscriptOccurrence, TranscriptPanelTextEdit, TranscriptPanelTextEditResult, TranscriptProjectSourceChoice, TranscriptSourceRow, TranscriptSourceWordView, TranscriptWordProjection } from '@astrid/editor-sdk';
 
 export interface TranscriptPanelProps extends PanelRenderProps { readonly context: ExtensionContext }
 const EMPTY = { sources: [], occurrences: [] };

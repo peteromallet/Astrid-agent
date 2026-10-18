@@ -1,6 +1,6 @@
 # TESTS: tests that tell us the truth (Astrid · Runtime · App)
 
-> The cross-repo testing plan for Astrid, the workspace Runtime and the App (reigh-app). It lives here because Astrid hosts the journeys (`astrid dev journey`, see `journeys.md`).
+> The cross-repo testing plan for Astrid, the workspace Runtime and the App (astrid-app). It lives here because Astrid hosts the journeys (`astrid dev journey`, see `journeys.md`).
 
 A standalone plan in Megado format (cards with route, size, dependencies and "Done when"). It is not run inside Otto.
 
@@ -122,7 +122,7 @@ When all three layers are green, the main things work together. When one is red,
 
 | ID | Bug | Where |
 |---|---|---|
-| B1 | The paired relay's allowlist rejects `…/timelines/{id}/composition-revisions` and `…/inspect` (and `/v1/capabilities` on the Runtime side). Paired-mode saves likely fail. | `reigh-app/config/vite/pairedRoutePolicy.ts` |
+| B1 | The paired relay's allowlist rejects `…/timelines/{id}/composition-revisions` and `…/inspect` (and `/v1/capabilities` on the Runtime side). Paired-mode saves likely fail. | `astrid-app/config/vite/pairedRoutePolicy.ts` |
 | B2 | The ACP prompt names the removed `retime-clip` command. | `astridAcpLauncher.ts` |
 | B3 | The App classifies conflicts by regex on the message. The App's fakes send codes the Runtime never sends. | `client.ts:146`, `fakeBridgeRouter.ts:684` |
 | B4 | An expired lease is reaped only inside a claim. A crashed render stays `running`, and the App's render poll spins forever. | Runtime `store.py:3368`; App `useRenderState.ts:776` |
@@ -152,7 +152,7 @@ When all three layers are green, the main things work together. When one is red,
 | **R-9** | Heavy runs go through `otto-heavy`. Required lanes fail when prerequisites are missing. Every suite reaps what it starts and fails on leftovers. |
 | **R-12** | **One pre-push command per repo** (`scripts/check-before-push`, a small script, not a framework). It runs the default run and, when R-11's paths changed, the smoke. A push to main without it is not done. (On 15 Oct a push after a hand-picked test subset broke two claim-loop tests that the default run would have caught.) |
 | **R-10** | Every journey phase reports success, failure or hung, with its duration and the machine load. Durations never fail a run. Hang ceilings are many times the usual duration. Provider failures are reported separately and never replaced by a fixture. |
-| **R-11** | **When journeys run.** Every merge runs the affected local and boundary checks. The smoke also runs before a merge that touches any of:<ul><li>Astrid `astrid/core/execution/{process_group,custody_broker,task_scope,generic_host*}.py`, `astrid/sdk/{autobootstrap,host_bootstrap,workspace_client}.py`, `astrid/packs/rendering/**` or `remotion/**`;</li><li>Runtime `runtime_protocol/**` or `banodoco_local/**`.</li></ul>The thin `full` runs before a merge that touches the App's `src/integrations/runtime/**`, `renderRouter.ts`, `useTimelineSave.ts`, `usePollSync.ts`, `config/vite/paired*` or the connector. Both run at each integration point and release, and `full` includes `smoke`. This changes r4's "no journey per merge" rule, using its escape valve: on 15 Oct the render failures on main were exactly what a smoke catches. |
+| **R-11** | **When journeys run.** Every merge runs the affected local and boundary checks. The smoke also runs before a merge that touches any of:<ul><li>Astrid `astrid/core/execution/{process_group,custody_broker,task_scope,generic_host*}.py`, `astrid/sdk/{autobootstrap,host_bootstrap,workspace_client}.py`, `astrid/packs/rendering/**` or `remotion/**`;</li><li>Runtime `runtime_protocol/**` or `astrid_runtime/**`.</li></ul>The thin `full` runs before a merge that touches the App's `src/integrations/runtime/**`, `renderRouter.ts`, `useTimelineSave.ts`, `usePollSync.ts`, `config/vite/paired*` or the connector. Both run at each integration point and release, and `full` includes `smoke`. This changes r4's "no journey per merge" rule, using its escape valve: on 15 Oct the render failures on main were exactly what a smoke catches. |
 
 ## Cards
 
@@ -205,7 +205,7 @@ Also: `xfail_strict` is on, no test is weakened without a reason in its PR, and 
 **Done when:**
 1. i06 and the Astrid activation join are deleted; F1 covers what they checked.
 2. The **60 current reds** are each dispositioned.
-3. Tests stop rewriting committed files: `test_generated_client.py:707`, and whatever regenerates `banodoco_workspace_runtime.egg-info/SOURCES.txt`.
+3. Tests stop rewriting committed files: `test_generated_client.py:707`, and whatever regenerates `astrid_runtime.egg-info/SOURCES.txt`.
 4. A generous per-test hang guard is set (hangs only).
 5. Runtime's first workflow runs the default run, plus `test_second_client_e2e.py` as a boundary job with an npm cache.
 6. A test keeps B4 fixed: an expired lease with no new claim ends in its defined state.
@@ -215,7 +215,7 @@ Also: `xfail_strict` is on, no test is weakened without a reason in its PR, and 
 **Done when:**
 - vitest is measured and gets a per-push workflow.
 - The default run needs no Astrid checkout. Today the vitest config fails to load without `ASTRID_CHECKOUT`, because the vendored `astrid-browser` lacks `tools/catalog.json` and the `video_editing` pack.
-- The load-dependent flakes are fixed or quarantined: the terminal-output test in `reighAcpBridge.test.ts`; `PublicAstridSite.lifecycle` "retains Home state and scroll across repeated round trips" (red in the full suite, 13/13 alone); and `AgentChat.projectContract` `beforeEach` under full-suite load.
+- The load-dependent flakes are fixed or quarantined: the terminal-output test in `astridAcpBridge.test.ts`; `PublicAstridSite.lifecycle` "retains Home state and scroll across repeated round trips" (red in the full suite, 13/13 alone); and `AgentChat.projectContract` `beforeEach` under full-suite load.
 - `shotCompositionRuntime.test.ts` (17 red on main: its handshake fixture no longer matches the product connector role) is fixed.
 - `astridSceneAuthoring.test.ts` re-runs Astrid's own `tests/packs/rendering/test_live_scene_authoring.test` through a cross-repo import. It moves to the checkout lane, or Astrid runs it itself (R-5). The same applies to `localExtensions.catalog.test.ts`, and to `portableVisualSeamIntent.test.ts`, which reads a fixture from a sibling Runtime path.
 - Stub-bridge and real-bridge tests are separated.
@@ -293,7 +293,7 @@ Also: `xfail_strict` is on, no test is weakened without a reason in its PR, and 
 
    This carries r4 IP3/IP4.
 3. **Render that revision, adversarially.**
-   - Render accepted revision R through the App's render action (`renderRouter.enqueueBanodocoRenderTimeline`; required).
+   - Render accepted revision R through the App's render action (`renderRouter.enqueueAstridRuntimeRenderTimeline`; required).
    - Publish R+1 before it executes.
    - Assert the task's `timeline_authority.parent_revision_id` equals R, and that a frame or audio marker distinguishing R from R+1 is R's.
 4. **Plays in the App:**

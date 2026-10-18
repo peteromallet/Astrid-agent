@@ -5,7 +5,7 @@ export default function (pi: any) {
     name: "astrid_invoke",
     label: "Astrid task",
     loadMode: "essential",
-    description: "Admit generation, rendering or media work to Astrid Runtime. Returns immediately with the real task identity; Runtime continues execution. Use the selected project from Reigh editor context. Read the capability skill for its inputs.",
+    description: "Admit generation, rendering or media work to Astrid Runtime. Returns immediately with the real task identity; Runtime continues execution. Use the selected project from Astrid App editor context. Read the capability skill for its inputs.",
     parameters: z.object({
       capability_id: z.string().min(1),
       kind: z.enum(["executor", "orchestrator"]),

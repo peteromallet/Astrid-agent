@@ -17,8 +17,8 @@ from astrid.core.cli.domain_product import (
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = Path(
     os.environ.get(
-        "BANODOCO_RUNTIME_CHECKOUT",
-        str(ROOT.parent / "banodoco-workspace-runtime-stage1-convergence"),
+        "ASTRID_RUNTIME_CHECKOUT",
+        str(ROOT.parent / "astrid-runtime-stage1-convergence"),
     )
 )
 

@@ -9,7 +9,7 @@ from astrid.core.util.credential_store import list_credential_names, main as cre
 from astrid.runtime_cli import RuntimeCLIError, validate_started_workspace
 from astrid.sdk.client import AstridClient, RUNTIME_PAIRING_FIX
 from astrid.sdk.exceptions import CapabilityUnavailableError, ServiceUnavailableError
-from banodoco_workspace_client.contract_metadata import COMPONENT_MANIFEST_SHA256, SCHEMA_DIGEST
+from astrid_runtime_client.contract_metadata import COMPONENT_MANIFEST_SHA256, SCHEMA_DIGEST
 
 
 def test_quarantined_capability_error_exposes_stable_state() -> None:
@@ -40,9 +40,9 @@ def test_started_workspace_accepts_omitted_realm_root_but_fences_support_paths(t
 
 
 def test_storage_hint_names_non_destructive_alternative(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    legacy = tmp_path / "Library" / "Application Support" / "Banodoco" / "runtime" / "catalog.json"
+    legacy = tmp_path / "Library" / "Application Support" / "Astrid Runtime" / "runtime" / "catalog.json"
     legacy.parent.mkdir(parents=True)
     legacy.write_text('{"selected_realm_id":"realm-1"}', encoding="utf-8")
 
@@ -52,7 +52,7 @@ def test_storage_hint_names_non_destructive_alternative(monkeypatch, tmp_path: P
         ensure_no_unmigrated_runtime(tmp_path / "new" / ".astrid-data")
     message = str(caught.value)
     assert "astrid-upgrade" in message
-    assert "BANODOCO_LOCAL_DATA_ROOT" in message
+    assert "ASTRID_RUNTIME_DATA_ROOT" in message
     assert "is not touched" in message
 
 

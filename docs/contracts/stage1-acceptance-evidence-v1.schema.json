@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://banodoco.local/schemas/astrid-stage1-acceptance-evidence-v1.schema.json",
+  "$id": "https://astrid.haus/schemas/astrid-stage1-acceptance-evidence-v1.schema.json",
   "title": "Astrid Stage 1 acceptance evidence",
   "description": "Machine-readable receipt and aggregate contracts for §§10–13 of the Astrid Beta Stage 1 blueprint. A receipt is not accepted without retained, hash-verified artifacts.",
   "oneOf": [
@@ -59,7 +59,7 @@
         "status": { "enum": ["pass", "fail", "blocked"] },
         "ok": { "type": "boolean" },
         "generated_at": { "type": ["string", "null"] },
-        "normative_source": { "const": "reigh-app/docs/local-runtime/01-astrid-beta.md" },
+        "normative_source": { "const": "astrid-app/docs/local-runtime/01-astrid-beta.md" },
         "normative_sections": { "const": ["10", "11", "12", "13"] },
         "repositories": { "type": "array" },
         "dependency_locks": { "type": "array" },

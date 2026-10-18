@@ -1,7 +1,7 @@
 """Resolve Astrid's installation-owned neutral-runtime data root.
 
 The runtime remains the authority for the database and object store.  This
-module only chooses the support-root argument passed to ``banodoco-local``;
+module only chooses the support-root argument passed to ``astrid-runtime``;
 it never opens or creates runtime state.
 """
 
@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-DATA_ROOT_ENV = "BANODOCO_LOCAL_DATA_ROOT"
+DATA_ROOT_ENV = "ASTRID_RUNTIME_DATA_ROOT"
 UPGRADE_ACTION = "run `astrid-upgrade` before launching Astrid"
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "astrid-runtime.json"
 STATE_HOME_ENV = "ASTRID_STATE_HOME"
@@ -126,7 +126,7 @@ def _ambiguous_roots_error(
 def resolve_runtime_data_root() -> Path:
     """Return one stable support root selected by existing config surfaces.
 
-    An explicit ``BANODOCO_LOCAL_DATA_ROOT`` override wins. Otherwise a
+    An explicit ``ASTRID_RUNTIME_DATA_ROOT`` override wins. Otherwise a
     persisted Astrid setup selection is reused when available, followed by the
     checked-in install config. A wheel without either surface uses
     ``~/.astrid-data``. Existing selections are read only; this function never
@@ -167,14 +167,14 @@ def ensure_no_unmigrated_runtime(data_root: Path) -> None:
 
     This guard only reads the old neutral catalog. It prevents an upgrade from
     silently creating a second empty realm before an operator has reviewed a
-    backup/restore relocation plan. Explicit ``BANODOCO_LOCAL_DATA_ROOT``
+    backup/restore relocation plan. Explicit ``ASTRID_RUNTIME_DATA_ROOT``
     overrides remain available for deliberate recovery or test composition.
     """
 
     if os.environ.get(DATA_ROOT_ENV, "").strip():
         return
     selected = _selected_realm(data_root)
-    legacy_root = Path.home() / "Library" / "Application Support" / "Banodoco"
+    legacy_root = Path.home() / "Library" / "Application Support" / "Astrid Runtime"
     legacy_selected = _selected_realm(legacy_root)
     if data_root == legacy_root:
         return
@@ -201,8 +201,8 @@ def ensure_no_unmigrated_runtime(data_root: Path) -> None:
             f"and this checkout's support root {data_root} has no workspace yet. Choose one: "
             f"(1) move it: {UPGRADE_ACTION}. That MOVES the existing realm from {legacy.parent} "
             f"into {data_root}, so the old location stops being used. "
-            "(2) keep it where it is and start a separate workspace: set BANODOCO_LOCAL_DATA_ROOT "
-            "to a new absolute folder (for example `export BANODOCO_LOCAL_DATA_ROOT=<new folder>`) "
+            "(2) keep it where it is and start a separate workspace: set ASTRID_RUNTIME_DATA_ROOT "
+            "to a new absolute folder (for example `export ASTRID_RUNTIME_DATA_ROOT=<new folder>`) "
             f"before running Astrid. That folder gets its own empty workspace and {legacy.parent} "
             "is not touched."
         )

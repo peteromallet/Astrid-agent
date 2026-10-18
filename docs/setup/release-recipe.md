@@ -32,9 +32,9 @@ source audit:
 schema: astrid.paired-release-recipe/v1
 status: pending_producer_handoff
 publication_destinations:
-  astrid: https://github.com/peteromallet/Astrid-agent.git
-  runtime: https://github.com/banodoco/banodoco-workspace-runtime.git
-  app: https://github.com/banodoco/reigh-app.git
+  astrid: https://github.com/peteromallet/astrid-agent.git
+  runtime: https://github.com/banodoco/astrid-runtime.git
+  app: https://github.com/banodoco/astrid-app.git
 source_tuple:
   astrid_final_sha: PENDING_PRODUCER_HANDOFF
   runtime_final_sha: PENDING_PRODUCER_HANDOFF
@@ -58,7 +58,7 @@ workspace_setup:
   required_args: --workspace-id --data-root --realm-root --json
 canonical_client:
   delivery_owner: astrid-wheel
-  import: banodoco_workspace_client
+  import: astrid_runtime_client
   runtime_role: neutral-workspace-service-and-protocol
   final_digest: PENDING_PRODUCER_HANDOFF
 resources:
@@ -83,7 +83,7 @@ validation_auxiliary:
   black_frame_checker: contributor_only_not_installed_journey
 support_root:
   owner: stable-config-worker
-  fresh_home_default: "$HOME/Library/Application Support/Banodoco"
+  fresh_home_default: "$HOME/Library/Application Support/Astrid Runtime"
   selected_absolute_root: PENDING_STABLE_CONFIG_HANDOFF
   discovery_path: "$ASTRID_SUPPORT_ROOT/runtime/discovery.json"
   realm_binding: existing-runtime-attach-exact-realm-id-and-realm-root
@@ -93,7 +93,7 @@ app_identity:
   discovery_path: "$ASTRID_WORKSPACE_DISCOVERY"
   realm_actor_binding: exact-and-preserved
   instance_check: keep-enabled
-  reigh_launcher_correction_owner: NativeSol
+  astrid_launcher_correction_owner: NativeSol
   installed_host_origins: PENDING_NATIVE_SOL_HEAVY_END
 predecessor:
   kind: recorded-i11-current-noneditable-candidate
@@ -103,7 +103,7 @@ predecessor:
 
 The Astrid wheel is the single delivery owner for the canonical generated
 Python client. The Runtime wheel owns the neutral service/protocol. I08/I09
-must verify one installed `banodoco_workspace_client` origin and matching
+must verify one installed `astrid_runtime_client` origin and matching
 contract digest; install order must not select a different copy. Generated
 client bytes remain owned by the Runtime schema/generator source contract and
 are consumed only after that producer handoff.
@@ -150,8 +150,8 @@ selected wheel filenames and SHA-256 values from the manifest, then verify the
 installed distribution metadata and import origins from the same environment:
 
 ```bash
-python3 -m pip show astrid banodoco-workspace-runtime
-python3 -c 'import importlib.metadata as m, importlib.util; print("astrid", m.version("astrid"), importlib.util.find_spec("astrid").origin); print("banodoco-workspace-runtime", m.version("banodoco-workspace-runtime"), importlib.util.find_spec("banodoco_local").origin); print("banodoco_workspace_client", importlib.util.find_spec("banodoco_workspace_client").origin)'
+python3 -m pip show astrid astrid-runtime
+python3 -c 'import importlib.metadata as m, importlib.util; print("astrid", m.version("astrid"), importlib.util.find_spec("astrid").origin); print("astrid-runtime", m.version("astrid-runtime"), importlib.util.find_spec("astrid_runtime").origin); print("astrid_runtime_client", importlib.util.find_spec("astrid_runtime_client").origin)'
 shasum -a 256 "$ASTRID_WHEELHOUSE/$ASTRID_WHEEL_FILENAME"
 shasum -a 256 "$ASTRID_WHEELHOUSE/$RUNTIME_WHEEL_FILENAME"
 ```
@@ -208,8 +208,8 @@ The command is not run by this documentation pass.
 On macOS, the documented fresh-home support-root default is:
 
 ```bash
-export ASTRID_SUPPORT_ROOT="$HOME/Library/Application Support/Banodoco"
-export BANODOCO_LOCAL_DATA_ROOT="$ASTRID_SUPPORT_ROOT"
+export ASTRID_SUPPORT_ROOT="$HOME/Library/Application Support/Astrid Runtime"
+export ASTRID_RUNTIME_DATA_ROOT="$ASTRID_SUPPORT_ROOT"
 export ASTRID_WORKSPACE_DISCOVERY="$ASTRID_SUPPORT_ROOT/runtime/discovery.json"
 ```
 
@@ -265,13 +265,13 @@ astrid-runtime status --profile astrid \
 
 ## Rendering prerequisites and review loop
 
-The Astrid wheel is the single delivery owner for `banodoco_workspace_client`;
+The Astrid wheel is the single delivery owner for `astrid_runtime_client`;
 Runtime owns the canonical timeline, realm, run and managed output. The final
 paired manifest must name and hash the matching Remotion bundle, canonical
 timeline schema, browser/Chromium executable, reviewed public fonts and
 provenance, `ffmpeg`, `ffprobe`, OMP/agent/native inputs and app public inputs.
 Do not use an ambient schema/OMP or place Runtime/provider credentials in app
-public inputs. NativeSol owns the actual Reigh launcher correction and
+public inputs. NativeSol owns the actual Astrid App launcher correction and
 installed-host-origin evidence; this recipe does not claim an installed
 journey.
 
@@ -342,7 +342,7 @@ not evidence of a real user population:
 | Artifact | Candidate identity |
 | --- | --- |
 | Astrid | `astrid-0.1.0-py3-none-any.whl`, SHA-256 `47d56e391f9b41d82a714e0ef7cbd9ab76caa9c0137088e5530bc3fe55a497eb` |
-| Runtime | `banodoco_workspace_runtime-0.1.0-py3-none-any.whl`, SHA-256 `4c3363b3d9f7694a8c63567b659f3299d62f43efb290a56207a0dcf620caced7` |
+| Runtime | `astrid_runtime-0.1.0-py3-none-any.whl`, SHA-256 `4c3363b3d9f7694a8c63567b659f3299d62f43efb290a56207a0dcf620caced7` |
 
 These candidate artifacts are evidence inputs, not published-release claims.
 The current final release is the producer-handoff tuple in the manifest above.
@@ -385,7 +385,7 @@ For an existing predecessor installation:
 4. Run the existing bounded upgrade wrapper:
 
    ```bash
-   astrid-upgrade --data-root "$BANODOCO_LOCAL_DATA_ROOT" --json
+   astrid-upgrade --data-root "$ASTRID_RUNTIME_DATA_ROOT" --json
    ```
 
    Runtime owns schema/storage migration. The wrapper stops the idle Astrid

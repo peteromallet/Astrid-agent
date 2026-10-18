@@ -286,7 +286,7 @@ def test_host_derived_registry_reaches_canonical_remotion_executor_process(tmp_p
     monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", str(node))
     monkeypatch.setenv(
         "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
-        str(Path(__file__).parents[3] / "reigh-app" / "vendor" / "timeline-schema" / "python"),
+        str(Path(__file__).parents[3] / "astrid-app" / "vendor" / "timeline-schema" / "python"),
     )
     payload = source.read_bytes()
     digest = hashlib.sha256(payload).hexdigest()

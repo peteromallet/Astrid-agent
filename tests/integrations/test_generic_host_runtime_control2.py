@@ -15,7 +15,7 @@ if RUNTIME.is_dir():
     sys.path.insert(0, str(RUNTIME))
 
 runtime_protocol = pytest.importorskip("runtime_protocol")
-from banodoco_workspace_client import ApiError, WorkspaceClient  # noqa: E402
+from astrid_runtime_client import ApiError, WorkspaceClient  # noqa: E402
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from runtime_protocol.store import RealmStore  # noqa: E402
 

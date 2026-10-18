@@ -5,7 +5,7 @@ import type {
   TimelineOps,
   TimelineReader,
   TimelineSnapshot,
-} from '@reigh/editor-sdk';
+} from '@astrid/editor-sdk';
 import {
   MAPLE_ACCEPTANCE_PLACEMENTS,
   MAPLE_CAMERA_EDIT_FOV,
@@ -24,7 +24,7 @@ import {
   type PreparedScenePlacement,
   type PreparedMaplePlacement,
 } from '../../../astrid/packs/rendering/editor/live-scenes/authoring';
-import type { LiveSceneRequest, LiveSceneExecution } from '@reigh/editor-sdk';
+import type { LiveSceneRequest, LiveSceneExecution } from '@astrid/editor-sdk';
 
 describe('pack-owned ACP source authoring', () => {
   async function fixture(html = MAPLE_HTML) {
@@ -35,7 +35,7 @@ describe('pack-owned ACP source authoring', () => {
     testHarness.patch.current = undefined;
     const cancel = new AbortController();
     const request: LiveSceneRequest = {
-      schema: 'reigh.live-scene-request/v1', requestId: 'read',
+      schema: 'astrid.live-scene-request/v1', requestId: 'read',
       scope: { sessionId: 'session', turnId: 'turn', projectId: 'project-a', timelineId: 'timeline-a', capturedTimelineVersion: 8 },
       placementIds: PLACEMENTS.map(({ id }) => id), action: 'read', offset: 0, length: 8192,
     };
@@ -144,8 +144,8 @@ describe('pack-owned ACP source authoring', () => {
   });
 });
 
-const EXTENSION_ID = 'com.reigh.astrid.live-scenes';
-const CLIP_TYPE = 'com.reigh.astrid.liveScene';
+const EXTENSION_ID = 'haus.astrid.live-scenes';
+const CLIP_TYPE = 'haus.astrid.liveScene';
 const PLACEMENTS: readonly PreparedMaplePlacement[] = [
   { id: 'maple-acceptance-position-2', track: 'V1', at: 2, from: 55, to: 75, rate: 1 },
   { id: 'maple-acceptance-position-22', track: 'V1', at: 22, from: 20, to: 30, rate: 2 },

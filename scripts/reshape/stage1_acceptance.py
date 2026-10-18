@@ -69,7 +69,7 @@ REQUIRED_CATEGORIES: tuple[str, ...] = (
 )
 
 # These identifiers are the blocking rows from §§10.1–10.3, §11, and §13 of
-# reigh-app/docs/local-runtime/01-astrid-beta.md.  They are intentionally
+# astrid-app/docs/local-runtime/01-astrid-beta.md.  They are intentionally
 # explicit rather than discovered from filenames or receipt prose.
 CHECK_CATEGORY: dict[str, str] = {
     # §10.1 — launch, persistence, migration
@@ -704,7 +704,7 @@ def aggregate(
         "status": "pass" if not errors else ("blocked" if any("missing" in error or "required" in error for error in errors) else "fail"),
         "ok": not errors,
         "generated_at": generated_at,
-        "normative_source": "reigh-app/docs/local-runtime/01-astrid-beta.md",
+        "normative_source": "astrid-app/docs/local-runtime/01-astrid-beta.md",
         "normative_sections": ["10", "11", "12", "13"],
         "repositories": repositories,
         "dependency_locks": dependency_locks,

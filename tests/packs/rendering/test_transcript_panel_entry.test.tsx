@@ -2,7 +2,7 @@
 import { createElement, isValidElement } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExtensionContext, PanelRenderProps } from '@reigh/editor-sdk';
+import type { ExtensionContext, PanelRenderProps } from '@astrid/editor-sdk';
 import transcriptExtension, {
   TRANSCRIPT_EXTENSION_ID,
   TRANSCRIPT_KIND_CONTRIBUTION_ID,
@@ -38,7 +38,7 @@ describe('rendering-pack transcript panel receiving boundary', () => {
       id: TRANSCRIPT_KIND_CONTRIBUTION_ID,
       kind: 'dataKind',
       kindId: TRANSCRIPT_KIND_ID,
-      schemaRef: 'reigh.transcript_segment/v1',
+      schemaRef: 'astrid.transcript_segment/v1',
       shape: 'interval',
       domain: 'source_seconds',
       label: 'Transcript',

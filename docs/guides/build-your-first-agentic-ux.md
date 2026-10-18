@@ -23,7 +23,7 @@ pip install -e .
 
 - The dry-run preview requires no API keys, network access, or hosted services.
   Live invocation and event observation require an explicitly configured
-  Banodoco workspace runtime.
+  Astrid Runtime.
 
 ## Step 1 — Import the SDK
 
@@ -196,7 +196,7 @@ For in-progress runs, poll the same runtime resource (or use the runtime's
 subscription facility). Runtime integrity and replay checks happen at the
 service boundary; failures are returned as typed runtime errors. The endpoint
 and credential must be supplied explicitly or through the documented
-`BANODOCO_RUNTIME_*` configuration.
+`ASTRID_RUNTIME_*` configuration.
 
 ## Step 6 — Run the Complete Example
 

@@ -15,8 +15,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-from banodoco_workspace_client import ManagedOutput, ObjectLocation, WorkspaceClient, generated
-from banodoco_workspace_client.contract_metadata import (
+from astrid_runtime_client import ManagedOutput, ObjectLocation, WorkspaceClient, generated
+from astrid_runtime_client.contract_metadata import (
     COMPONENT_MANIFEST_SHA256,
     OPERATIONS,
     PROTOCOL,
@@ -25,18 +25,18 @@ from banodoco_workspace_client.contract_metadata import (
 from astrid.sdk.workspace_client import WorkspaceClient as AstridWorkspaceClient
 
 ROOT = Path(__file__).resolve().parents[2]
-GENERATED_PATH = ROOT / "banodoco_workspace_client" / "generated.py"
-METADATA_PATH = ROOT / "banodoco_workspace_client" / "contract_metadata.py"
+GENERATED_PATH = ROOT / "astrid_runtime_client" / "generated.py"
+METADATA_PATH = ROOT / "astrid_runtime_client" / "contract_metadata.py"
 
 # These values are intentionally duplicated in the immutable test gate. A
 # future runtime contract refresh must update the contract exports, file
 # hashes, and this test in one reviewed change; no ambient sibling checkout can
 # silently alter the shipped transport.
 PINNED_PROTOCOL = "workspace.v1"
-PINNED_COMPONENT_MANIFEST_SHA256 = 'sha256:43db3374e0235750a3d0dd6590926cccba73e6e67de317573f86fd812cbcf082'
-PINNED_SCHEMA_DIGEST = 'sha256:16bb1265d39d8bf82959c65ede08628e9c832832f21d785acaca64256aa3463e'
-PINNED_GENERATED_SHA256 = '55a05c55d000822a35badd4a739ee55b3d30e876fb700ae2fe318f4914f7b19f'
-PINNED_METADATA_SHA256 = 'eac584dff918170b9b69ef360e9c93cee58a8e99efa2d581d97f12f8a03fdb8d'
+PINNED_COMPONENT_MANIFEST_SHA256 = 'sha256:46a1084915781086032f51971bf2f7d10ddbfd7fdda9f20ddf01e33e1cd4cc92'
+PINNED_SCHEMA_DIGEST = 'sha256:200c2553f54a7e41a6405518912dc6ee9577de25292afd46fc1fcccf68be0770'
+PINNED_GENERATED_SHA256 = '0ae65e07e918f018e521bc9563f904b462645681e41e5a0b90255ad619a2c2e3'
+PINNED_METADATA_SHA256 = '80fc75fd5bb5f8215624306f11b94893321b7d3d5725d9a647b7f13fc6abe3ef'
 
 
 def _camel_to_snake(value: str) -> str:

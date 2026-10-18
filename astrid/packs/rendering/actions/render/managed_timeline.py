@@ -307,7 +307,7 @@ def _validate_render_element_clip_types(
         if not isinstance(clip, Mapping):
             continue
         clip_type = clip.get("clipType", "media")
-        if clip_type == "com.reigh.astrid.liveScene":
+        if clip_type == "haus.astrid.liveScene":
             from astrid.packs.rendering.shared.live_scenes.package import validate_package
 
             path = f"$.clips[{index}].app.liveScene"

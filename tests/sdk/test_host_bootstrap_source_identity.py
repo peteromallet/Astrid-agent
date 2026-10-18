@@ -48,14 +48,14 @@ def _materialize_source_closure(source: Path) -> None:
     (source / "astrid" / "sdk" / "workspace_client.py").write_text(
         "# workspace client fixture\n", encoding="utf-8"
     )
-    (source / "banodoco_workspace_client").mkdir()
-    (source / "banodoco_workspace_client" / "__init__.py").write_text(
+    (source / "astrid_runtime_client").mkdir()
+    (source / "astrid_runtime_client" / "__init__.py").write_text(
         "# vendored client fixture\n", encoding="utf-8"
     )
-    (source / "banodoco_workspace_client" / "generated.py").write_text(
+    (source / "astrid_runtime_client" / "generated.py").write_text(
         "# generated client fixture\n", encoding="utf-8"
     )
-    (source / "banodoco_workspace_client" / "contract_metadata.py").write_text(
+    (source / "astrid_runtime_client" / "contract_metadata.py").write_text(
         "# contract fixture\n", encoding="utf-8"
     )
 

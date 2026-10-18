@@ -16,7 +16,7 @@ from astrid.sdk.timeline.revisions import (
 
 A = "authoring-parent-revision-aaaa1111"
 B = "authoring-parent-revision-bbbb2222"
-C = "reigh.editor.timeline.cccc3333"
+C = "astrid.editor.timeline.cccc3333"
 D = "restore-dddd4444"
 
 

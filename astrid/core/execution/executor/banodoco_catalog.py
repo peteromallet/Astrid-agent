@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from astrid.core.env_vars import ASTRID_BANODOCO_CATALOG_URL
+from astrid.core.env_vars import ASTRID_RUNTIME_CATALOG_URL
 
 from .catalog_source import GitExecutorSource, fetch_git_executor_manifest
 from .schema import ExecutorDefinition, ExecutorValidationError, validate_executor_definition
@@ -32,17 +32,17 @@ class BanodocoCatalogConfig:
 
     @classmethod
     def from_env(cls) -> "BanodocoCatalogConfig":
-        enabled_var = "ASTRID_BANODOCO_AGENT_EXECUTORS"
-        cache_var = "ASTRID_BANODOCO_EXECUTOR_CACHE"
+        enabled_var = "ASTRID_RUNTIME_AGENT_EXECUTORS"
+        cache_var = "ASTRID_RUNTIME_EXECUTOR_CACHE"
         return cls(
             enabled=_env_bool(enabled_var, default=False),
-            catalog_url=os.environ.get(ASTRID_BANODOCO_CATALOG_URL),
-            include_defaults=_env_bool("ASTRID_BANODOCO_DEFAULT_EXECUTORS", default=True),
-            include_mandatory=_env_bool("ASTRID_BANODOCO_MANDATORY_EXECUTORS", default=True),
+            catalog_url=os.environ.get(ASTRID_RUNTIME_CATALOG_URL),
+            include_defaults=_env_bool("ASTRID_RUNTIME_DEFAULT_EXECUTORS", default=True),
+            include_mandatory=_env_bool("ASTRID_RUNTIME_MANDATORY_EXECUTORS", default=True),
             cache_dir=Path(os.environ[cache_var]).expanduser()
             if os.environ.get(cache_var)
             else None,
-            refresh=_env_bool("ASTRID_BANODOCO_REFRESH", default=False),
+            refresh=_env_bool("ASTRID_RUNTIME_REFRESH", default=False),
         )
 
 
@@ -50,7 +50,7 @@ def load_banodoco_catalog_executors(config: BanodocoCatalogConfig) -> tuple[Exec
     if not config.enabled:
         return ()
     if not config.catalog_url:
-        raise BanodocoCatalogError("ASTRID_BANODOCO_CATALOG_URL is required when Banodoco agent executors are enabled")
+        raise BanodocoCatalogError("ASTRID_RUNTIME_CATALOG_URL is required when Banodoco agent executors are enabled")
 
     payload = _fetch_catalog_payload(config)
     executors: list[ExecutorDefinition] = []

@@ -4,7 +4,7 @@ Status: implementation complete on current Astrid `main`; awaiting final integra
 
 This is the blocking orchestration amendment to
 [`canonical-timeline-feature-ports.md`](canonical-timeline-feature-ports.md). It
-executes directly in `/Users/peteromalley/Documents/reigh-workspace/Astrid` on
+executes directly in `/Users/peteromalley/Documents/astrid-workspace/Astrid` on
 branch `main`, currently based at `8150c3b70887495f0fae4a55c1ac70085a900550`.
 Historical branches are source evidence only. The four protected dirty payloads
 and `Astrid-oracle/.agentbox/astrid.env` remain untouched.

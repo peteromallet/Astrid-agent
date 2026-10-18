@@ -31,7 +31,7 @@ WORKSPACE_ROOT = ASTRID_ROOT.parents[2]
 RECEIVING_ROOT = ASTRID_ROOT.parents[1]
 RUNTIME_ROOT = Path(
     os.environ.get("ASTRID_STAGE1_RUNTIME_CHECKOUT")
-    or RECEIVING_ROOT / "checkouts" / "banodoco-workspace-runtime--integration"
+    or RECEIVING_ROOT / "checkouts" / "astrid-runtime--integration"
 ).resolve()
 VIBECOMFY_ROOT = Path(
     os.environ.get("ASTRID_VIBECOMFY_CHECKOUT") or RECEIVING_ROOT / "repos" / "vibecomfy"
@@ -244,10 +244,10 @@ def _start_retained_public_workspace(*, python: Path, env: Mapping[str, str],
     provenance/observation shape is reused without changing its released bytes.
     """
     from dataclasses import asdict
-    from banodoco_local.bootstrap import BootstrapConfig, SourceProfile, bootstrap
-    from banodoco_local.paths import RuntimePaths
-    from banodoco_local.runtime_boundary import LocalRuntimeBoundary
-    from banodoco_local.workspace import configure_workspace
+    from astrid_runtime.bootstrap import BootstrapConfig, SourceProfile, bootstrap
+    from astrid_runtime.paths import RuntimePaths
+    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+    from astrid_runtime.workspace import configure_workspace
 
     fixture = _load_public_workspace_fixture()
     selected = SourceProfile.load(source_manifest, expected_profile="astrid")
@@ -377,11 +377,11 @@ def _public_workspace_environment() -> dict[str, str]:
         "ASTRID_C11_SESSION_DIR",
         "ASTRID_STAGE1_RUNTIME_CHECKOUT",
         "ASTRID_VIBECOMFY_CHECKOUT",
-        "BANODOCO_LOCAL_DATA_ROOT",
-        "BANODOCO_LOCAL_HOME",
-        "BANODOCO_LOCAL_SOURCE_MANIFEST",
-        "BANODOCO_RUNTIME_CREDENTIAL",
-        "BANODOCO_RUNTIME_ENDPOINT",
+        "ASTRID_RUNTIME_DATA_ROOT",
+        "ASTRID_RUNTIME_HOME",
+        "ASTRID_RUNTIME_SOURCE_MANIFEST",
+        "ASTRID_RUNTIME_CREDENTIAL",
+        "ASTRID_RUNTIME_ENDPOINT",
         "PYTHONHOME",
         "PYTHONPATH",
     ):
@@ -1329,11 +1329,11 @@ class H3CpuRuntime:
                 "ASTRID_VIBECOMFY_CHECKOUT",
                 "ASTRID_H3_CANDIDATE_MANIFEST",
                 "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE",
-                "BANODOCO_LOCAL_DATA_ROOT",
-                "BANODOCO_LOCAL_HOME",
-                "BANODOCO_LOCAL_SOURCE_MANIFEST",
-                "BANODOCO_RUNTIME_CREDENTIAL",
-                "BANODOCO_RUNTIME_ENDPOINT",
+                "ASTRID_RUNTIME_DATA_ROOT",
+                "ASTRID_RUNTIME_HOME",
+                "ASTRID_RUNTIME_SOURCE_MANIFEST",
+                "ASTRID_RUNTIME_CREDENTIAL",
+                "ASTRID_RUNTIME_ENDPOINT",
                 "PATH",
                 "PYTHONPATH",
             )
@@ -1631,9 +1631,9 @@ class H3CpuRuntime:
             self.launcher_value = launcher_value
             if render_only:
                 host_environment = {
-                    "BANODOCO_LOCAL_DATA_ROOT": str(self.data_root),
-                    "BANODOCO_RUNTIME_ENDPOINT": self.runtime_endpoint,
-                    "BANODOCO_RUNTIME_CREDENTIAL": str(self.worker_credential_file),
+                    "ASTRID_RUNTIME_DATA_ROOT": str(self.data_root),
+                    "ASTRID_RUNTIME_ENDPOINT": self.runtime_endpoint,
+                    "ASTRID_RUNTIME_CREDENTIAL": str(self.worker_credential_file),
                     "ASTRID_H3_CANDIDATE_MANIFEST": str(candidate_manifest),
                 }
             else:
@@ -1653,9 +1653,9 @@ class H3CpuRuntime:
                             self.vibecomfy_root, self.readiness_profile_path,
                             self.readiness_profile_hash, source_revision, source_digest,
                         ),
-                        "BANODOCO_LOCAL_DATA_ROOT": str(self.data_root),
-                        "BANODOCO_RUNTIME_ENDPOINT": self.runtime_endpoint,
-                        "BANODOCO_RUNTIME_CREDENTIAL": str(self.worker_credential_file),
+                        "ASTRID_RUNTIME_DATA_ROOT": str(self.data_root),
+                        "ASTRID_RUNTIME_ENDPOINT": self.runtime_endpoint,
+                        "ASTRID_RUNTIME_CREDENTIAL": str(self.worker_credential_file),
                         "PYTHONPATH": _vibecomfy_child_pythonpath(self.vibecomfy_root),
                         "ASTRID_H3_CANDIDATE_MANIFEST": str(candidate_manifest),
                     }
@@ -1667,8 +1667,8 @@ class H3CpuRuntime:
             with _temporary_environment(
                 host_environment,
                 remove=(
-                    "BANODOCO_LOCAL_HOME",
-                    "BANODOCO_LOCAL_SOURCE_MANIFEST",
+                    "ASTRID_RUNTIME_HOME",
+                    "ASTRID_RUNTIME_SOURCE_MANIFEST",
                     "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE",
                     *(_H3_ONLY_ENVIRONMENT if render_only else ()),
                 ),
@@ -1891,7 +1891,7 @@ class H3CpuRuntime:
         # isolated child. Carry only the selected nonsecret support root into
         # that launch scope so the SDK discovers this workspace instead of
         # falling back to a developer/default support directory.
-        invoke_environment = {"BANODOCO_LOCAL_DATA_ROOT": str(self.data_root.resolve())}
+        invoke_environment = {"ASTRID_RUNTIME_DATA_ROOT": str(self.data_root.resolve())}
         if _HOST_EXECUTION_PROFILE == "installed":
             # The real public local parent performs canonical VibeComfy SDK
             # preflight before it dispatches a managed run child. Carry the

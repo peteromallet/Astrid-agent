@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
-import type { DataLaneRenderItem, DataLaneRendererProps } from '@reigh/editor-sdk';
+import type { DataLaneRenderItem, DataLaneRendererProps } from '@astrid/editor-sdk';
 
 export const TRANSCRIPT_LANE_MAX_ROWS = 3;
 

@@ -172,7 +172,7 @@ def test_copy_content_reports_dropped_text_bindings():
 # ---- drafts, offline: data root in tmp, resolve_ids and fetch_bundle replaced ----------------
 
 def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
 
@@ -232,7 +232,7 @@ def _run_with_client(*argv):
 
 @pytest.fixture
 def draft_with_edit(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -307,7 +307,7 @@ def test_a_sheet_exported_before_an_edit_never_reverts_it(tmp_path, monkeypatch,
 
     root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
     tiny = json.loads((root / "tiny.json").read_text(encoding="utf-8"))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -331,7 +331,7 @@ def test_a_sheet_exported_before_an_edit_never_reverts_it(tmp_path, monkeypatch,
 
 @pytest.fixture
 def drafted(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -342,7 +342,7 @@ def test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner(tmp_path, mon
 
     root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
     tiny = json.loads((root / "tiny.json").read_text(encoding="utf-8"))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -392,7 +392,7 @@ def test_words_for_one_word_prints_its_record(drafted, capsys):
 
 
 def test_discard_without_a_working_copy_is_not_an_error(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     assert _run("discard", "t", "--project", "P") == 0
     assert "no working copy" in capsys.readouterr().out

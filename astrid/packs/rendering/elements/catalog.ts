@@ -2,7 +2,7 @@
 //
 // Astrid's element registry and renderers remain authoritative. This file is
 // the deterministic, data-only projection imported by editor hosts such as
-// Reigh; regenerate it when an element manifest or component changes.
+// Astrid App; regenerate it when an element manifest or component changes.
 
 export const ASTRID_ELEMENT_CATALOG_VERSION = 1 as const;
 

@@ -10,7 +10,7 @@ import type {
   LiveSceneExecution,
   LiveSceneResult,
   LiveSceneCapture,
-} from '@reigh/editor-sdk';
+} from '@astrid/editor-sdk';
 import type { SceneManifest } from './runtime';
 import { LIVE_SCENE_CLIP_TYPE_ID, LIVE_SCENE_EXTENSION_ID } from './identity';
 

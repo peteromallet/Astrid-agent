@@ -688,7 +688,7 @@ def _installed_execution_origins(source_path: Path, python_executable: str) -> d
     An old provenance checkout is diagnostic data, never import authority.
     """
     probe = """import importlib.util,json
-modules={'host':'astrid.core.execution.generic_host','child':'astrid.core.execution.generic_host_worker','action':'astrid.packs.rendering.actions.render.run','client':'banodoco_workspace_client','sdk':'astrid.sdk.invocation'}
+modules={'host':'astrid.core.execution.generic_host','child':'astrid.core.execution.generic_host_worker','action':'astrid.packs.rendering.actions.render.run','client':'astrid_runtime_client','sdk':'astrid.sdk.invocation'}
 print(json.dumps({key:importlib.util.find_spec(module).origin for key,module in modules.items()}))
 """
     completed = subprocess.run([python_executable, "-I", "-c", probe],

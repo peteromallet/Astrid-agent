@@ -18,7 +18,7 @@ RUNTIME_COMMIT = "70e269bca3aaafed560289e93f0e30e5927679fb"
 
 def _runtime_archive() -> bytes:
     """Find the optional runtime's pinned acceptance revision."""
-    override = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+    override = os.environ.get("ASTRID_RUNTIME_CHECKOUT")
     if override:
         candidates = [Path(override).expanduser().resolve()]
     else:
@@ -39,8 +39,8 @@ def _runtime_archive() -> bytes:
             for root in dict.fromkeys(sibling_roots)
             for name in (
                 "runtime-export-candidate",
-                "banodoco-workspace-runtime",
-                "banodoco-workspace-runtime-execution-20260909",
+                "astrid-runtime",
+                "astrid-runtime-execution-20260909",
             )
         ]
     reasons = []
@@ -68,7 +68,7 @@ def _runtime_archive() -> bytes:
             return archive.stdout
         reasons.append(f"{checkout}: cannot archive {revision}: {archive.stderr.decode(errors='replace').strip()}")
     pytest.skip(
-        "Optional Banodoco runtime unavailable; set BANODOCO_RUNTIME_CHECKOUT "
+        "Optional Astrid Runtime unavailable; set ASTRID_RUNTIME_CHECKOUT "
         "to a runtime Git checkout. " + "; ".join(reasons),
         allow_module_level=True,
     )
@@ -101,7 +101,7 @@ from astrid.sdk.client import AstridClient  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolate_runtime_support_root(tmp_path, monkeypatch):
     """Never let this acceptance module resolve Astrid's installed support root."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str((tmp_path / "runtime-support").resolve()))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str((tmp_path / "runtime-support").resolve()))
 
 
 def _fake_runtime_cli(monkeypatch, *, data, returncode=0):
@@ -113,7 +113,7 @@ def _fake_runtime_cli(monkeypatch, *, data, returncode=0):
     class FakeRuntimeCLI:
         def observe(self, command, *, support_root, timeout=5.0):
             calls.append((command, str(support_root), timeout))
-            return RuntimeResult(("fake-banodoco-local", command), returncode, data)
+            return RuntimeResult(("fake-astrid-runtime", command), returncode, data)
 
     monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", FakeRuntimeCLI)
     return calls
@@ -134,7 +134,7 @@ def _pin_runtime_cli_subprocess(monkeypatch):
     class PinnedRuntimeCLI(original):
         def __init__(self):
             super().__init__(
-                command=[sys.executable, "-B", "-m", "banodoco_local"],
+                command=[sys.executable, "-B", "-m", "astrid_runtime"],
                 runner=runner,
             )
 
@@ -317,17 +317,17 @@ def test_backup_gateway_routes_forward_runtime_arguments_without_pack_host(monke
 
 
 def test_product_client_requires_bootstrap_with_exact_next_action(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "missing-credential.json"))
-    monkeypatch.delenv("BANODOCO_RUNTIME_ENDPOINT", raising=False)
-    with pytest.raises(Exception, match=r"banodoco-local up --profile astrid"):
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "missing-credential.json"))
+    monkeypatch.delenv("ASTRID_RUNTIME_ENDPOINT", raising=False)
+    with pytest.raises(Exception, match=r"astrid-runtime up --profile astrid"):
         AstridClient.open()
 
 
 def test_product_client_crosses_real_daemon_and_returns_stable_envelopes(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     _register_render_basic(daemon)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         client = _open_client(daemon)
         created = client.projects.create(slug="demo", name="Demo", idempotency_key="project-1")
@@ -384,8 +384,8 @@ def test_retired_timeline_create_is_absent_from_cli_and_sdk(tmp_path, monkeypatc
 def test_cold_mutations_expose_server_receipts_on_cli_sdk_replay(tmp_path, monkeypatch, capsys):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     _register_render_basic(daemon)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     _use_explicit_gateway_connection(monkeypatch, daemon)
     try:
         with _open_client(daemon) as client:
@@ -432,8 +432,8 @@ def test_cold_mutations_expose_server_receipts_on_cli_sdk_replay(tmp_path, monke
 
 def test_projects_selection_and_unready_admission_are_typed_on_real_daemon(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         with _open_client(daemon) as client:
             project = client.projects.create(slug="selected", name="Selected", idempotency_key="selected").data
@@ -463,8 +463,8 @@ def test_projects_selection_and_unready_admission_are_typed_on_real_daemon(tmp_p
 
 def test_documented_project_cli_mutations_return_committed_receipts(tmp_path, monkeypatch, capsys):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     _use_explicit_gateway_connection(monkeypatch, daemon)
     _use_explicit_gateway_connection(monkeypatch, daemon)
     try:
@@ -501,8 +501,8 @@ def test_documented_project_cli_mutations_return_committed_receipts(tmp_path, mo
 
 def test_project_shot_scope_stays_with_project_route(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
 
     def assert_not_found(result):
         assert not result.ok
@@ -544,8 +544,8 @@ def test_project_shot_scope_stays_with_project_route(tmp_path, monkeypatch):
 
 def test_project_reference_scope_stays_with_project_route(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
 
     def assert_not_found(result):
         assert not result.ok
@@ -599,8 +599,8 @@ def test_project_reference_scope_stays_with_project_route(tmp_path, monkeypatch)
 
 def test_remote_reads_are_scoped_and_unsupported_operations_fail_honestly(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         client = _open_client(daemon)
         project = client.projects.create(slug="scoped", name="Scoped", idempotency_key="p")
@@ -622,8 +622,8 @@ def test_remote_reads_are_scoped_and_unsupported_operations_fail_honestly(tmp_pa
 
 def test_client_reopens_after_close_against_same_daemon(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         first = _open_client(daemon)
         assert isinstance(first.health(), dict)
@@ -677,8 +677,8 @@ def test_retired_public_commands_are_absent():
 
 
 def test_doctor_and_backup_never_open_local_storage(capsys, monkeypatch, tmp_path):
-    monkeypatch.delenv("BANODOCO_RUNTIME_ENDPOINT", raising=False)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "missing.token"))
+    monkeypatch.delenv("ASTRID_RUNTIME_ENDPOINT", raising=False)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "missing.token"))
     calls = _fake_runtime_cli(
         monkeypatch,
         data={
@@ -695,7 +695,7 @@ def test_doctor_and_backup_never_open_local_storage(capsys, monkeypatch, tmp_pat
     assert doctor["next_action"] == "astrid-runtime up"
     assert len(calls) == 1 and calls[0][0] == "doctor"
     assert dispatch._dispatch_backup(["--json"]) == 1
-    assert "banodoco-local up --profile astrid" in capsys.readouterr().out
+    assert "astrid-runtime up --profile astrid" in capsys.readouterr().out
 
 
 def test_doctor_uses_the_read_only_runtime_observer(capsys, monkeypatch):
@@ -745,8 +745,8 @@ def test_doctor_preserves_observer_failure_and_diagnostic(capsys, monkeypatch):
 def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     _register_render_basic(daemon)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         client = _open_client(daemon)
         project = client.projects.create(slug="journey", name="Journey", idempotency_key="journey-project")
@@ -767,7 +767,7 @@ def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
         assert client.runs.events(task.data["run_id"]).ok
         daemon.stop()
         daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
-        monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
+        monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
         reopened = _open_client(daemon)
         assert reopened.projects.show("journey").ok
         assert reopened.timelines.list("journey").ok
@@ -778,8 +778,8 @@ def test_remote_domains_use_generated_runtime_and_reopen(tmp_path, monkeypatch):
 def test_editor_domain_reads_and_media_relations_use_generated_operations(tmp_path, monkeypatch):
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     _register_render_basic(daemon)
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(tmp_path / "support" / "credentials" / "owner.token"))
     try:
         client = _open_client(daemon)
         project = client.projects.create(slug="editor", name="Editor", idempotency_key="project").data
@@ -826,9 +826,9 @@ def test_operational_gateway_uses_typed_runtime_backup_and_lifecycle(tmp_path, m
         support_root=support,
         owner_lock=support / "instance.lock",
     ).start()
-    monkeypatch.setenv("BANODOCO_RUNTIME_ENDPOINT", daemon.endpoint)
-    monkeypatch.setenv("BANODOCO_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str((tmp_path / "support").resolve()))
+    monkeypatch.setenv("ASTRID_RUNTIME_ENDPOINT", daemon.endpoint)
+    monkeypatch.setenv("ASTRID_RUNTIME_CREDENTIAL", str(support / "credentials" / "owner.token"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str((tmp_path / "support").resolve()))
     _pin_runtime_cli_subprocess(monkeypatch)
     _use_explicit_gateway_connection(monkeypatch, daemon)
     try:

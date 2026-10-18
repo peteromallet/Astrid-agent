@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      BANODOCO_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
+      ASTRID_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
 
     steps:
       - name: Check out repository
@@ -56,9 +56,9 @@ jobs:
 
       - name: Check out pinned C12 CPU dependencies
         run: |
-          git init "$BANODOCO_RUNTIME_CHECKOUT"
-          git -C "$BANODOCO_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/banodoco-workspace-runtime.git a278cd460018976940ae21fc2cad563a29a29649
-          git -C "$BANODOCO_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
+          git init "$ASTRID_RUNTIME_CHECKOUT"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/astrid-runtime.git 3b21334366fa8124f1a7b0d371cc4295821616f5
+          git -C "$ASTRID_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -103,7 +103,7 @@ jobs:
         run: timeout 120 python3 -m pytest tests/v10/test_m7_hardening.py -q
 
       - name: Focused m7 contention lane
-        run: timeout 120 python3 -m pytest tests/stage1/test_reigh_authority_absence.py -q
+        run: timeout 120 python3 -m pytest tests/stage1/test_legacy_authority_absence.py -q
 
       - name: Focused m7 dogfood lane
         run: timeout 120 python3 -m pytest tests/v10/test_m7_dogfood.py -q
@@ -203,7 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
-      BANODOCO_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
+      ASTRID_RUNTIME_CHECKOUT: ${{ runner.temp }}/c12-runtime
 
     steps:
       - name: Check out repository
@@ -211,9 +211,9 @@ jobs:
 
       - name: Check out pinned C12 CPU dependencies
         run: |
-          git init "$BANODOCO_RUNTIME_CHECKOUT"
-          git -C "$BANODOCO_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/banodoco-workspace-runtime.git a278cd460018976940ae21fc2cad563a29a29649
-          git -C "$BANODOCO_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
+          git init "$ASTRID_RUNTIME_CHECKOUT"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" fetch --depth 1 https://github.com/banodoco/astrid-runtime.git 3b21334366fa8124f1a7b0d371cc4295821616f5
+          git -C "$ASTRID_RUNTIME_CHECKOUT" checkout --detach FETCH_HEAD
 
       - name: Set up Python
         uses: actions/setup-python@v5

@@ -7,9 +7,9 @@ import {
   type DisposeHandle,
   type ExtensionContext,
   type ExtensionId,
-} from '@reigh/editor-sdk';
+} from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID, LIVE_SCENE_EXTENSION_ID } from './identity';
-import type { CommandContribution } from '@reigh/editor-sdk';
+import type { CommandContribution } from '@astrid/editor-sdk';
 
 /** Stable first-party identity used by the host release allowlist. */
 // IDs are validated by defineExtension; these casts only attach the SDK brands.
@@ -101,7 +101,7 @@ export const liveSceneExtension = defineExtension({
     id: LIVE_SCENE_EXTENSION_ID_BRANDED,
     version: '1.0.0',
     label: 'Astrid Live Scenes',
-    description: 'Pack-owned live-scene clip entry for the Reigh editor.',
+    description: 'Pack-owned live-scene clip entry for the Astrid App editor.',
     apiVersion: 1,
     contributions: [LIVE_SCENE_CONTRIBUTION, LIVE_SCENE_AUTHORING_COMMAND],
     messages: {

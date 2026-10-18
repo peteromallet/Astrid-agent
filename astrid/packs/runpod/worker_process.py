@@ -1056,7 +1056,7 @@ class WorkerProcessOwner:
             "ASTRID_OUTPUT_ROOT",
             "ASTRID_CREDENTIAL_REF",
             "ASTRID_SOURCE_CLOSURE_DIGEST",
-            "BANODOCO_LOCAL_DATA_ROOT",
+            "ASTRID_RUNTIME_DATA_ROOT",
             "ASTRID_EXECUTION_TARGET_JSON",
             "ASTRID_RECOVERY_DECISION_DIGEST",
             "ASTRID_INPUT_BINDINGS_JSON",

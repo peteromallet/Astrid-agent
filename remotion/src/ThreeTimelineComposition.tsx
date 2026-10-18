@@ -432,13 +432,13 @@ export const ThreeTimelineComposition = (
   const {width, height, fps} = useVideoConfig();
   const background = useMemo(() => resolveBackground(props), [props]);
   const alpha = useMemo(() => isAlphaLayer(props), [props]);
-  const scenes = (props.timeline.clips ?? []).filter(clip => clip.clipType === 'com.reigh.astrid.liveScene');
+  const scenes = (props.timeline.clips ?? []).filter(clip => clip.clipType === 'haus.astrid.liveScene');
   const time = frame / fps;
   const audioTracks = (props.timeline.tracks ?? []).filter(track => track.kind === 'audio');
   const ordinaryProps = (tracks: typeof props.timeline.tracks): TimelineCompositionProps => ({
     ...props,
     timeline: {...props.timeline, tracks, clips: props.timeline.clips.filter(clip =>
-      tracks?.some(track => track.id === clip.track) && clip.clipType !== 'com.reigh.astrid.liveScene')},
+      tracks?.some(track => track.id === clip.track) && clip.clipType !== 'haus.astrid.liveScene')},
     theme: {...(props.theme ?? DEFAULT_THEME), visual: {
       ...(props.theme ?? DEFAULT_THEME).visual,
       color: {...(props.theme ?? DEFAULT_THEME).visual.color, bg: 'transparent'},

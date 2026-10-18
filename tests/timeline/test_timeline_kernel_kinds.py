@@ -399,9 +399,9 @@ class DoctorV10ChecksTest(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "BANODOCO_RUNTIME_ENDPOINT": "",
-                    "BANODOCO_RUNTIME_DISCOVERY": str(Path(tmp) / "missing.json"),
-                    "BANODOCO_RUNTIME_CREDENTIAL": str(Path(tmp) / "missing.token"),
+                    "ASTRID_RUNTIME_ENDPOINT": "",
+                    "ASTRID_RUNTIME_DISCOVERY": str(Path(tmp) / "missing.json"),
+                    "ASTRID_RUNTIME_CREDENTIAL": str(Path(tmp) / "missing.token"),
                 },
                 clear=False,
             ), contextlib.redirect_stdout(output):
@@ -411,4 +411,4 @@ class DoctorV10ChecksTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["state"], "unavailable")
-        self.assertIn("banodoco-local up --profile astrid", payload["next_action"])
+        self.assertIn("astrid-runtime up --profile astrid", payload["next_action"])

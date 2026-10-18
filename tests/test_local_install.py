@@ -60,13 +60,13 @@ class LocalInstallBoundaries(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
-            (source / "banodoco_local").mkdir(parents=True)
-            (source / "banodoco_local/bootstrap.py").write_text("scopes = ['projects:read']\n")
+            (source / "astrid_runtime").mkdir(parents=True)
+            (source / "astrid_runtime/bootstrap.py").write_text("scopes = ['projects:read']\n")
             wheel = root / "runtime.whl"
             with zipfile.ZipFile(wheel, "w") as bundle:
-                bundle.writestr("banodoco_local/bootstrap.py", "scopes = []\n")
+                bundle.writestr("astrid_runtime/bootstrap.py", "scopes = []\n")
             with self.assertRaisesRegex(ValueError, "does not match selected source"):
-                installer.wheel_parity(wheel, source, ("banodoco_local/",))
+                installer.wheel_parity(wheel, source, ("astrid_runtime/",))
 
     def test_missing_source_module_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

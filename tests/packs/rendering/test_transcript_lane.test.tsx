@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DataLaneRenderItem, DataLaneRendererProps } from '@reigh/editor-sdk';
+import type { DataLaneRenderItem, DataLaneRendererProps } from '@astrid/editor-sdk';
 import {
   computeTranscriptLaneLayout,
   readTranscriptLaneText,
@@ -32,8 +32,8 @@ function rendererProps(
   overrides: Partial<DataLaneRendererProps> = {},
 ): DataLaneRendererProps {
   return {
-    kindId: 'reigh.transcript',
-    schemaRef: 'reigh.transcript_segment/v1',
+    kindId: 'astrid.transcript',
+    schemaRef: 'astrid.transcript_segment/v1',
     shape: 'interval',
     domain: 'source_seconds',
     startLeft: 0,

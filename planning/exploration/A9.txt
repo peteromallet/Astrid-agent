@@ -18,7 +18,7 @@ Now I have all the evidence. Let me compile the findings.
 
 ### 2. Agentic Test Machinery (Sisypy / tests/agentic)
 
-**Sisypy:** Installed as dev dependency from git at `sisypy @ git+https://github.com/peteromallet/sisypy.git@dfb3fa3` (pyproject.toml:45–47). Editable install at `/Users/peteromalley/Documents/reigh-workspace/sisypy`. It provides:
+**Sisypy:** Installed as dev dependency from git at `sisypy @ git+https://github.com/peteromallet/sisypy.git@dfb3fa3` (pyproject.toml:45–47). Editable install at `/Users/peteromalley/Documents/astrid-workspace/sisypy`. It provides:
 
 - `AgenticProjectAdapter` ABC (sisypy/adapters.py:32–174) with `capture()` method (line 86) that receives `evidence_dir: Path` for project-specific capture.
 - `capture_evidence()` (sisypy/evidence.py:378–640) captures a fixed catalog: `brief.md`, `report.md`, `stdout.log`, `stderr.log`, `command_log.jsonl`, `actions.jsonl`, `commands/`, `tree_before.txt`, `tree_after.txt`, `git_status_before.txt`, `git_status_after.txt`, `git_diff.patch`, `capture.notes`, `manifest.json`.

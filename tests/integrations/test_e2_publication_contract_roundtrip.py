@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from banodoco_workspace_client import WorkspaceClient
+from astrid_runtime_client import WorkspaceClient
 from runtime_protocol.daemon import RuntimeDaemon
 from runtime_protocol.store import RealmStore
 

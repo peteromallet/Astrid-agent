@@ -2,7 +2,7 @@
   "$provenance": "invalid on purpose: op is outside the three seen families",
   "instance": {
     "version": 8,
-    "source": "com.reigh.astrid.live-scenes",
+    "source": "haus.astrid.live-scenes",
     "scope": {
       "projectId": "p",
       "timelineId": "t",

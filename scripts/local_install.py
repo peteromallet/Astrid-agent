@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the selected local sources, install a private pair, and launch Reigh.
+"""Build the selected local sources, install a private pair, and launch Astrid App.
 
 This is a local source installation, not the published release qualification.
 Only a new installation root is accepted; existing realms are never upgraded.
@@ -226,22 +226,22 @@ START_RUNTIME = r'''
 import dataclasses, importlib, importlib.metadata, json, pathlib, sys
 from astrid.runtime_cli import RuntimeCLI, validate_selected_workspace
 from astrid.core.execution.generic_host import source_checkout_digest
-from banodoco_workspace_client import WorkspaceClient
-from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+from astrid_runtime_client import WorkspaceClient
+from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
 from runtime_protocol.store import SCHEMA_VERSION
 root=pathlib.Path(sys.argv[1]); identity=json.loads((root/'install.json').read_text())
 site=pathlib.Path(importlib.import_module('astrid').__file__).parent.parent
-origins={name:importlib.import_module(name).__file__ for name in ('astrid','banodoco_local','runtime_protocol','banodoco_workspace_client')}
+origins={name:importlib.import_module(name).__file__ for name in ('astrid','astrid_runtime','runtime_protocol','astrid_runtime_client')}
 for name,origin in origins.items():
     if not pathlib.Path(origin).is_relative_to(site): raise RuntimeError('foreign installed origin: '+name)
-for name in ('astrid','banodoco-workspace-runtime'):
+for name in ('astrid','astrid-runtime'):
     direct=json.loads(importlib.metadata.distribution(name).read_text('direct_url.json'))
     if direct.get('dir_info',{}).get('editable'): raise RuntimeError('editable distribution')
 profile={'profile':'astrid','runtime_checkout':str(site),'source_checkout':str(site),
          'runtime_environment':sys.prefix,'protocol_version':'workspace.v1',
          'schema_version':'workspace-schema-v1','source_digest':source_checkout_digest(site)}
 manifest=root/'profile.json'; manifest.write_text(json.dumps(profile,indent=2)+'\n')
-cli=RuntimeCLI(command=[str(pathlib.Path(sys.prefix)/'bin/banodoco-local')])
+cli=RuntimeCLI(command=[str(pathlib.Path(sys.prefix)/'bin/astrid-runtime')])
 args={'support_root':root/'support','realm_root':root/'support/runtime/realms/local',
       'expected_realm_id':identity['workspace_id']}
 observed=cli.inspect(support_root=args['support_root'])
@@ -272,7 +272,7 @@ print('Runtime ready: '+started.data['endpoint'])
 CHECK_PROJECT = r'''
 import dataclasses, hashlib, json, pathlib, sys, uuid
 from PIL import Image
-from banodoco_workspace_client import WorkspaceClient
+from astrid_runtime_client import WorkspaceClient
 root=pathlib.Path(sys.argv[1]); receipt=json.loads((root/'runtime-receipt.json').read_text())
 credential=json.loads(pathlib.Path(receipt['start']['credential_file']).read_text())
 client=WorkspaceClient(receipt['start']['endpoint'],credential['token'])
@@ -318,7 +318,7 @@ def install(args: argparse.Namespace) -> None:
     env = {k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT"}}
     node = run(["node", "--version"], cwd=sources["app"], env=env, capture=True)
     if tuple(int(n) for n in node.lstrip("v").split(".")[:2]) < (20, 19):
-        raise ValueError("Reigh requires Node 20.19 or newer")
+        raise ValueError("Astrid App requires Node 20.19 or newer")
     decoders = media_tools(env, {"ffmpeg": args.ffmpeg, "ffprobe": args.ffprobe})
     agents = agent_tools(env, {"omp": args.omp, "bun": args.bun})
     identity = {name: source_identity(path, env) for name, path in sources.items()}
@@ -331,7 +331,7 @@ def install(args: argparse.Namespace) -> None:
                 "ASTRID_STATE_HOME": str(root / "state/astrid"),
                 "ASTRID_SOURCE_STATE": str(root / "state/pack-sources.json"),
                 "ASTRID_SOURCE_DATA": str(root / "data/packs"), "ASTRID_NO_NUDGE": "1",
-                "ASTRID_SUPPORT_ROOT": str(root / "support"), "BANODOCO_LOCAL_DATA_ROOT": str(root / "support"),
+                "ASTRID_SUPPORT_ROOT": str(root / "support"), "ASTRID_RUNTIME_DATA_ROOT": str(root / "support"),
                 "ASTRID_WORKSPACE_DISCOVERY": str(root / "support/runtime/discovery.json"),
                 "ASTRID_HOST_EXECUTION_PROFILE": "installed", "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"})
     copies = {name: root / "sources" / name for name in sources}
@@ -350,8 +350,8 @@ def install(args: argparse.Namespace) -> None:
         (root / "venv/bin" / name).symlink_to(tool["path"])
     run([build_python, "-m", "pip", "install", "--require-hashes", "-r", locks["build"]], cwd=work, env=env)
     products = []
-    for name, pattern, prefixes in (("astrid", "astrid-*.whl", ("astrid/", "banodoco_workspace_client/")),
-                                    ("runtime", "banodoco_workspace_runtime-*.whl", ("banodoco_local/", "runtime_protocol/"))):
+    for name, pattern, prefixes in (("astrid", "astrid-*.whl", ("astrid/", "astrid_runtime_client/")),
+                                    ("runtime", "astrid_runtime-*.whl", ("astrid_runtime/", "runtime_protocol/"))):
         run([build_python, "-m", "build", "--wheel", "--no-isolation", "--outdir", wheels, copies[name]], cwd=work, env=env)
         selected = list(wheels.glob(pattern))
         if len(selected) != 1:
@@ -359,7 +359,7 @@ def install(args: argparse.Namespace) -> None:
         products.append(wheel_parity(selected[0], sources[name], prefixes))
     # Compare the two authoritative generated contracts before starting either
     # server or app. A dependency cache cannot substitute a stale product wheel.
-    if (copies["astrid"] / "banodoco_workspace_client/contract_metadata.py").read_bytes() != (copies["runtime"] / "runtime_protocol/contract_metadata.py").read_bytes():
+    if (copies["astrid"] / "astrid_runtime_client/contract_metadata.py").read_bytes() != (copies["runtime"] / "runtime_protocol/contract_metadata.py").read_bytes():
         raise ValueError("Astrid and Runtime generated contracts do not match")
     if not args.wheelhouse:
         run([python, "-m", "pip", "download", "--require-hashes", "--only-binary=:all:", "--dest", cache, "-r", locks["runtime"]], cwd=work, env=env)
@@ -367,8 +367,8 @@ def install(args: argparse.Namespace) -> None:
     run([python, "-m", "pip", "install", "--no-index", "--no-deps", *[wheels / p["filename"] for p in products]], cwd=work, env=env)
     run([python, "-m", "pip", "check"], cwd=work, env=env)
     env.update({"PATH": str(root / "venv/bin") + os.pathsep + env["PATH"],
-                "ASTRID_PACK_HOST_PYTHON": str(python), "ASTRID_RUNTIME_CLI": str(root / "venv/bin/banodoco-local"),
-                "BANODOCO_LOCAL_SOURCE_MANIFEST": str(root / "profile.json"),
+                "ASTRID_PACK_HOST_PYTHON": str(python), "ASTRID_RUNTIME_CLI": str(root / "venv/bin/astrid-runtime"),
+                "ASTRID_RUNTIME_SOURCE_MANIFEST": str(root / "profile.json"),
                 "ASTRID_ACP_COMMAND": str(root / "venv/bin/astrid"),
                 "OMP_BIN": str(root / "venv/bin/omp"),
                 "ASTRID_CHECKOUT": str(copies["astrid"]),
@@ -406,7 +406,7 @@ def install(args: argparse.Namespace) -> None:
             run(["npm", "run", "dev:local"], cwd=copies["app"], env=env)
     finally:
         # This lifecycle only targets the explicitly created private root.
-        subprocess.run([str(python), "-I", "-m", "banodoco_local", "down", "--profile", "astrid", "--data-root", str(root / "support"), "--json"], cwd=work, env=env, check=False)
+        subprocess.run([str(python), "-I", "-m", "astrid_runtime", "down", "--profile", "astrid", "--data-root", str(root / "support"), "--json"], cwd=work, env=env, check=False)
 
 
 def main() -> int:

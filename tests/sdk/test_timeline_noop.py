@@ -31,7 +31,7 @@ def _dump(tl: Checkout) -> str:
 def draft_env(tmp_path, monkeypatch):
     """A temp data root, and the head resolved to a deep copy of the fixture (as the conformance runner does)."""
     bundle = _load()
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: RESOLVED)
     monkeypatch.setattr(tc, "fetch_bundle",
                         lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle))

@@ -146,7 +146,7 @@ class SchemaContractTest(unittest.TestCase):
 
     def test_editor_app_extensions_roundtrip_through_shared_validator(self) -> None:
         config = {
-            "app": {"com.reigh.scene-phase-markers": {"sceneMarkers": []}},
+            "app": {"haus.astrid.scene-phase-markers": {"sceneMarkers": []}},
             "tracks": [
                 {
                     "id": "visual",
@@ -177,7 +177,7 @@ class SchemaContractTest(unittest.TestCase):
             "theme_overrides": {"visual": {"canvas": {"fps": 24}}},
             "generation_defaults": {
                 "model": "sequence-v1",
-                "image": {"quality": "high", "provider": "reigh"},
+                "image": {"quality": "high", "provider": "astrid"},
                 "provider_settings": {"seed": 1234, "flags": ["keep", "open"]},
             },
             "tracks": [],

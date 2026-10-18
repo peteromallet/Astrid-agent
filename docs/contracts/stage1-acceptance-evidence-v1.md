@@ -7,7 +7,7 @@ machine observations and at least one retained artifact whose SHA-256 matches
 the bytes in the bundle.
 
 The normative checklist is §§10–13 of
-`reigh-app/docs/local-runtime/01-astrid-beta.md`. The schema is
+`astrid-app/docs/local-runtime/01-astrid-beta.md`. The schema is
 [`stage1-acceptance-evidence-v1.schema.json`](stage1-acceptance-evidence-v1.schema.json).
 
 ## Receipt shape

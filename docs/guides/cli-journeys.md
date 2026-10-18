@@ -3,7 +3,7 @@
 This guide walks the five product families (`projects`, `media`, `tasks`,
 `runs`, `timelines`), the two nested mounts (`media references`, `timelines
 shots`), and the runtime health/backup routes. Examples use `--json` where the
-command returns an SDK envelope. The Banodoco workspace runtime is the sole
+command returns an SDK envelope. The Astrid Runtime is the sole
 authority for all durable state; the Astrid checkout has no live project store.
 
 Normative references: `docs/astrid-first-sprint-plan-20260813.md` (Sprints 5–6),
@@ -18,7 +18,7 @@ commands. The first product command starts or reconnects it through the
 explicit launcher boundary:
 
 ```bash
-export BANODOCO_LOCAL_SOURCE_MANIFEST=/path/to/astrid-source-profile.json
+export ASTRID_RUNTIME_SOURCE_MANIFEST=/path/to/astrid-source-profile.json
 python3 -m astrid projects list --json
 ```
 
@@ -598,7 +598,7 @@ python3 -m astrid doctor --json
 ```
 
 If it reports `state: "unavailable"`, start the runtime with
-`banodoco-local up --profile astrid` and retry. Do not create a local database,
+`astrid-runtime up --profile astrid` and retry. Do not create a local database,
 tail local event files, or edit runtime state by hand. An unexpected command
 failure is returned as a typed error; preserve the idempotency key and retry
 only when the error's recovery guidance permits it.

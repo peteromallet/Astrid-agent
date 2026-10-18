@@ -53,7 +53,7 @@ def _runtime_for(slug: str) -> dict[str, Any]:
     if _RUNTIME_CONTEXT is None:
         runtime_checkout = (
             Path(__file__).resolve().parents[4]
-            / "banodoco-workspace-runtime-stage1-convergence"
+            / "astrid-runtime-stage1-convergence"
         )
         if str(runtime_checkout) not in sys.path:
             sys.path.insert(0, str(runtime_checkout))
@@ -68,8 +68,8 @@ def _runtime_for(slug: str) -> dict[str, Any]:
             realm_root,
             support_root=_RUNTIME_STORAGE_ROOT / "support",
         ).start()
-        os.environ["BANODOCO_RUNTIME_ENDPOINT"] = daemon.endpoint
-        os.environ["BANODOCO_RUNTIME_CREDENTIAL"] = str(
+        os.environ["ASTRID_RUNTIME_ENDPOINT"] = daemon.endpoint
+        os.environ["ASTRID_RUNTIME_CREDENTIAL"] = str(
             _RUNTIME_STORAGE_ROOT / "support" / "credentials" / "owner.token"
         )
         client = WorkspaceClient(daemon.endpoint, daemon.token)

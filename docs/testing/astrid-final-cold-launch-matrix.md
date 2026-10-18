@@ -4,13 +4,13 @@ The executable final matrix is
 `tests/stage1/test_final_cold_launch_matrix_luna.py`. It is intentionally
 no-mock: the test archives the exact runtime release candidate, creates a fresh
 current-Mac-shaped `HOME`, starts the neutral runtime through the real
-`banodoco-local up --profile astrid` path, then drives Astrid and the generic
+`astrid-runtime up --profile astrid` path, then drives Astrid and the generic
 host over loopback.
 
 Run it from the Astrid checkout:
 
 ```bash
-PYTHONPATH=.:../banodoco-workspace-runtime/packages/python \
+PYTHONPATH=.:../astrid-runtime/packages/python \
   python3 -m pytest -q tests/stage1/test_final_cold_launch_matrix_luna.py
 ```
 

@@ -17,9 +17,9 @@ def _target(oid: str) -> dict[str, str]:
         "remote_target_id": "REMOTE-TARGET:COMPONENT:ASTRID-CLIENT",
         "target_kind": "component",
         "component_id": "ASTRID-CLIENT",
-        "local_repository_identity": "peteromallet/Astrid",
-        "repository_identity": "peteromallet/Astrid",
-        "canonical_url": "https://github.com/peteromallet/Astrid.git",
+        "local_repository_identity": "peteromallet/astrid-agent",
+        "repository_identity": "peteromallet/astrid-agent",
+        "canonical_url": "https://github.com/peteromallet/astrid-agent.git",
         "destination_ref_or_prefix": "refs/heads/main",
         "expected_old_oid": "NONE",
         "reviewed_source_oid": oid,
@@ -27,7 +27,7 @@ def _target(oid: str) -> dict[str, str]:
         "repository_provision_receipt_rows": "NONE",
     }
     target["identity_transition_sha256"] = framed_hash(
-        "banodoco.local-to-canonical-repository.v1",
+        "astrid_runtime.local-to-canonical-repository.v1",
         [target["component_id"], target["local_repository_identity"], target["repository_identity"], target["canonical_url"], target["destination_ref_or_prefix"], oid],
     )
     return target
@@ -75,8 +75,8 @@ def test_target_set_preserves_publication_suffix_without_inventing_oid(tmp_path:
     component = provision_local_bare_target(_target(first), local_bare_remote=remote)
     publication = {
         "remote_target_id": "REMOTE-TARGET:PUBLICATION", "target_kind": "publication", "component_id": "NONE",
-        "local_repository_identity": "NONE", "repository_identity": "banodoco/banodoco-workspace-runtime",
-        "canonical_url": "https://github.com/banodoco/banodoco-workspace-runtime.git",
+        "local_repository_identity": "NONE", "repository_identity": "banodoco/astrid-runtime",
+        "canonical_url": "https://github.com/banodoco/astrid-runtime.git",
         "destination_ref_or_prefix": "refs/tags/astrid-stage1-evidence/", "expected_old_oid": "NONE",
         "reviewed_source_oid": "NONE", "identity_transition_sha256": "NONE", "repository_provision_receipt_rows": "NONE",
     }

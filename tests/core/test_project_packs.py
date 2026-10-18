@@ -34,7 +34,7 @@ def configured(tmp_path,monkeypatch):
     monkeypatch.setenv(packs.ROOT_ENV,str(tmp_path/'user-data'))
     monkeypatch.setenv(packs.ARTIFACT_ENV,str(tmp_path/'build-cache'))
     verifier=tmp_path/'test-build-verifier.py'
-    verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'reigh.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
+    verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
     monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,str(verifier)]))
     documents=FakeDocuments()
     client=SimpleNamespace(documents=documents)

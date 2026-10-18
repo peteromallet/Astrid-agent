@@ -25,7 +25,6 @@ token	ReighExtension	AstridExtension	all	section 5 product identity or collision
 token	reigh-product-connector	astrid-product-connector	all	section 5 product identity or collision rule
 token	reigh-browser	astrid-browser	all	Runtime handshake actor; App client.ts:349
 token	reigh-v3	astrid-app-v3	all	section 5 product identity or collision rule
-token	reigh-workspace	astrid-app-workspace	all	section 5 product identity or collision rule
 regex	(?<=github\.com/peteromallet/)Astrid(?:-agent)?	astrid-agent	all	GitHub URL only: current repo and old redirect
 token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	astrid:astrid/core/release_identity.py	live Astrid repository identity; URL uses existing regex
 token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	astrid:tests/test_release_identity.py	release identity expectation; URL uses existing regex
@@ -135,7 +134,6 @@ token	REIGH_SCRATCH_ROOT	ASTRID_APP_SCRATCH_ROOT	all	section 5 env var rule; 17 
 token	REIGH_TIMELINE_PORTS_ALLOCATED	ASTRID_APP_TIMELINE_PORTS_ALLOCATED	all	section 5 env var rule; 17 Oct inventory
 token	REIGH_VIBECOMFY_ATTENTION_PROFILE	ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE	all	section 5 env var rule; 17 Oct inventory
 token	REIGH_WGP_HOME	ASTRID_APP_WGP_HOME	all	section 5 env var rule; 17 Oct inventory
-token	REIGH_WORKER_CHECKOUT	ASTRID_APP_WORKER_CHECKOUT	all	section 5 env var rule; 17 Oct inventory
 token	VITE_REIGH_APPEND_SERVICE_URL	VITE_ASTRID_APP_APPEND_SERVICE_URL	all	section 5 env var rule; 17 Oct inventory
 token	REIGH_SUPABASE_URL	ASTRID_APP_SUPABASE_URL	all	App Supabase connection; Astra decision
 token	REIGH_SUPABASE_SERVICE_ROLE_KEY	ASTRID_APP_SUPABASE_SERVICE_ROLE_KEY	all	App Supabase service role; Astra decision
@@ -190,7 +188,6 @@ path	scripts/reigh-	scripts/astrid-	app	inventory section 2 path move
 path	scripts/release/reigh-release-provenance	scripts/release/astrid-release-provenance	app	inventory section 2 path move
 path	docs/extensions/reigh-acp-local-bridge.md	docs/extensions/astrid-acp-local-bridge.md	app	inventory section 2 path move
 path	docs/local-runtime/02-reigh-plan.md	docs/local-runtime/02-astrid-app-plan.md	app	inventory section 2 path move
-path	docs/local-runtime/04e-reigh-worker-cutover-lane.md	docs/local-runtime/04e-astrid-worker-cutover-lane.md	app	inventory section 2 path move
 path	docs/local-runtime/reviews/grok-reigh-review.md	docs/local-runtime/reviews/grok-astrid-app-review.md	app	inventory section 2 path move
 path	docs/video-editor/reigh-branch-census-and-convergence.md	docs/video-editor/astrid-app-branch-census-and-convergence.md	app	inventory section 2 path move
 path	tsconfig.reigh-	tsconfig.astrid-	app	inventory section 2 path move

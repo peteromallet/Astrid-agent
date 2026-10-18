@@ -26,7 +26,7 @@ def tiny() -> dict:
 @pytest.fixture
 def draft(tmp_path, monkeypatch):
     """A working copy of the tiny fixture under a temp data root. The seams are fakes; nothing real is touched."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny()))
     monkeypatch.setattr(_store, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))

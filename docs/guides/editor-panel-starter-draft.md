@@ -1,6 +1,6 @@
 # Editor panel authoring
 
-This starter is reconciled against the current rendering pack and pinned Reigh SDK. The independent author exercise on the Beat Cue example remains a separate final proof.
+This starter is reconciled against the current rendering pack and pinned Astrid App SDK. The independent author exercise on the Beat Cue example remains a separate final proof.
 
 ## Start from the V3 UI scaffold
 
@@ -41,7 +41,7 @@ The rendering pack's live transcript entry is [ui/transcript/extension.tsx](../.
 
 ## Declare and register a panel
 
-Keep the pack UI key, extension ID, contribution ID, and render ID stable. The V3 pack key identifies `rendering.beat-cues`; Reigh resolves the panel by the extension ID plus contribution ID. The host's selected-panel preference uses that qualified runtime identity. The current transcript binding is the rendering pack's `transcript` key → `com.reigh.transcript-lane` → `transcript-lane-panel`.
+Keep the pack UI key, extension ID, contribution ID, and render ID stable. The V3 pack key identifies `rendering.beat-cues`; Astrid App resolves the panel by the extension ID plus contribution ID. The host's selected-panel preference uses that qualified runtime identity. The current transcript binding is the rendering pack's `transcript` key → `haus.astrid.transcript-lane` → `transcript-lane-panel`.
 
 In the extension entry, declare one `kind: 'panel'` contribution with a render ID, then bind that ID through `ctx.ui.registerRenderer`. Use the returned disposal handle as the activation result. Return a React element so hooks and panel-local drafts belong to the mounted component instance:
 
@@ -64,7 +64,7 @@ The host keeps a hidden panel mounted when the user switches panels. Keep local 
 
 Use the optional `props.video?.transcript` adapter exposed by the host; it can be absent on unsupported/read-only hosts. `getSnapshot()` returns readonly `sources` and projected `occurrences`. Source rows carry canonical source times and supplied text/speaker/word timing. Occurrences carry host-projected timeline intervals for a clip use. Do not infer repeated-clip timing, rewrite source times from the playhead, or persist projected occurrences. Subscribe with `subscribe(listener)` for canonical document changes and observe `video.view` for playback updates; dispose both handles while hidden and refresh immediately on reveal.
 
-The current transcript contract is exported from `@reigh/editor-sdk` in `video/transcript`. `TranscriptSelection` is the `{ assetId, sourceId, occurrenceId }` tuple; `TranscriptSourceIdentity` is `{ assetId, sourceId }`. Keep the media/source pair together because the same source ID can occur on different assets. `getPlayback(selection)` returns focused and all-playing occurrences/word IDs; `selectSource(selection, sourceIdentity)` returns the next local selection. The host adapter owns trim/speed/repeat projection. `seek({ occurrenceId, wordId? })` returns a `TranscriptSeekResult`: success identifies the resolved seconds and whether timing was word- or segment-level; failure reports unavailable, stale occurrence/word, or out-of-trim targets. Unusable word timing falls back to the segment start. For a generic time jump, use the shared `video.seek(seconds)` callback shown in the Beat Cue example.
+The current transcript contract is exported from `@astrid/editor-sdk` in `video/transcript`. `TranscriptSelection` is the `{ assetId, sourceId, occurrenceId }` tuple; `TranscriptSourceIdentity` is `{ assetId, sourceId }`. Keep the media/source pair together because the same source ID can occur on different assets. `getPlayback(selection)` returns focused and all-playing occurrences/word IDs; `selectSource(selection, sourceIdentity)` returns the next local selection. The host adapter owns trim/speed/repeat projection. `seek({ occurrenceId, wordId? })` returns a `TranscriptSeekResult`: success identifies the resolved seconds and whether timing was word- or segment-level; failure reports unavailable, stale occurrence/word, or out-of-trim targets. Unusable word timing falls back to the segment start. For a generic time jump, use the shared `video.seek(seconds)` callback shown in the Beat Cue example.
 
 For text correction, submit a typed word/segment edit to optional `editText(edit)` and render its result. `{ ok: true, changed }` means the host accepted the canonical text-only edit; `{ ok: false, code, message, fallback? }` gives an actionable error and, when alignment is ambiguous, a suggested whole-segment edit that the user must submit separately. If `editText` is absent, keep the panel read-only. Include the displayed row’s `assetId`, `documentId` and `documentVersion` as `baseVersion` in an edit, and retain that base while typing. Call `stageTextDraft(edit)` for valid field changes to retain unsent text. Await `editText`: project-source edits write the shared project document with version checking, independently of timeline timing/history. Use `getProjectState()` for Saving, Unsaved and Conflict status; `undoSource`, `redoSource` and explicit `resolveSourceConflict(documentId, "discard" | "reapply")` operate on that source. Preserve local drafts after a conflict; never silently overwrite a newer document. Do not write a transcript file, call private `commitData`, or mutate a projection.
 
@@ -80,7 +80,7 @@ The host presents one Inspector / Extensions navigation row, with Panel display 
 
 ## Optional transcript lane
 
-Keep a lane as a separate `dataKind` contribution; a panel does not draw into `TimelineCanvas`. The transcript entry declares `kind: 'dataKind'`, `kindId: 'reigh.transcript'`, `schemaRef: 'reigh.transcript_segment/v1'`, `shape: 'interval'`, and `domain: 'source_seconds'`. It binds the renderer with the existing `ctx.dataKinds.register(kindId, renderer, inspector?, options?)` API and disposes the returned handle alongside the panel renderer. The current transcript entry uses:
+Keep a lane as a separate `dataKind` contribution; a panel does not draw into `TimelineCanvas`. The transcript entry declares `kind: 'dataKind'`, `kindId: 'astrid.transcript'`, `schemaRef: 'astrid.transcript_segment/v1'`, `shape: 'interval'`, and `domain: 'source_seconds'`. It binds the renderer with the existing `ctx.dataKinds.register(kindId, renderer, inspector?, options?)` API and disposes the returned handle alongside the panel renderer. The current transcript entry uses:
 
 ```tsx
 const laneRegistration = ctx.dataKinds.register(
@@ -108,10 +108,10 @@ python3 scripts/gen_editor_extension_catalog.py --check
 
 When a declared editor entry changes, regenerate the projection from the same checkout root with `python3 scripts/gen_editor_extension_catalog.py`; it writes `astrid/packs/rendering/editor/catalog.ts`. The V3 validator checks declarations and declared paths. The generator calls `discover_packs()` rooted at that checkout's `astrid/packs`; setting `ASTRID_PACKS_PATH` does not add packs to this editor projection. Do not edit `editor/catalog.ts` by hand.
 
-From the Reigh app root, set `ASTRID_CHECKOUT` to the disposable checkout to select it for local preview:
+From the Astrid App root, set `ASTRID_CHECKOUT` to the disposable checkout to select it for local preview:
 
 ```sh
-cd /path/to/reigh-app
+cd /path/to/astrid-app
 ASTRID_CHECKOUT="$tmp_astrid" npm run dev:editor
 ```
 

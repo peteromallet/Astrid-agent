@@ -372,7 +372,7 @@ def test_task_cannot_modify_host_scope_inputs_or_escape_attempt(tmp_path, monkey
 def test_child_start_environment_does_not_include_runtime_credentials(tmp_path, monkeypatch):
     manager, _ = owner(tmp_path)
     env = environment(tmp_path)
-    env['BANODOCO_RUNTIME_CREDENTIAL'] = 'fixture-secret-do-not-forward'
+    env['ASTRID_RUNTIME_CREDENTIAL'] = 'fixture-secret-do-not-forward'
     env['NODE_OPTIONS'] = '--require=/unadmitted.js'
     observed = []
     def start(argv, **kw):
@@ -383,7 +383,7 @@ def test_child_start_environment_does_not_include_runtime_credentials(tmp_path, 
     try:
         with pytest.raises(RuntimeError, match='before process'):
             manager.request(lease, request(env))
-        assert 'BANODOCO_RUNTIME_CREDENTIAL' not in observed[0]
+        assert 'ASTRID_RUNTIME_CREDENTIAL' not in observed[0]
         assert 'NODE_OPTIONS' not in observed[0]
     finally:
         lease.close()

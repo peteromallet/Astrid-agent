@@ -12,19 +12,19 @@ from astrid.sdk.client import AstridClient
 from astrid.sdk.exceptions import ServiceUnavailableError
 from astrid.sdk.host_bootstrap import _provision_render_runtime_env
 from astrid.sdk.workspace_client import WorkspaceClientError
-from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
 
 
 def test_launcher_wait_outlasts_runtime_admission(monkeypatch):
-    monkeypatch.delenv("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS", raising=False)
     assert autobootstrap._launcher_timeout() == 135.0
-    monkeypatch.setenv("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS", "300")
+    monkeypatch.setenv("ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS", "300")
     assert autobootstrap._launcher_timeout() == 315.0
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-1", "0", "invalid"])
 def test_invalid_admission_budget_is_rejected(monkeypatch, value):
-    monkeypatch.setenv("BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS", value)
+    monkeypatch.setenv("ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS", value)
     with pytest.raises(autobootstrap.AutoBootstrapError):
         autobootstrap._launcher_timeout()
 
@@ -37,7 +37,7 @@ def _isolated_home(monkeypatch, tmp_path):
 
 def _runtime_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "runtime"
-    (checkout / "banodoco_local").mkdir(parents=True)
+    (checkout / "astrid_runtime").mkdir(parents=True)
     return checkout
 
 
@@ -46,7 +46,7 @@ def _persisted_profile(home: Path, runtime: Path, source: Path) -> Path:
         home
         / "Library"
         / "Application Support"
-        / "Banodoco"
+        / "Astrid Runtime"
         / "runtime"
         / "source-profiles"
         / "astrid.json"
@@ -101,8 +101,8 @@ def test_neutral_launcher_is_invoked_with_ephemeral_profile(monkeypatch, tmp_pat
     source.mkdir()
     manifest_path = tmp_path / "source-profile.json"
     manifest_path.write_text(json.dumps({"profile": "astrid", "runtime_checkout": str(runtime), "source_checkout": str(source)}), encoding="utf-8")
-    monkeypatch.setenv("BANODOCO_LOCAL_SOURCE_MANIFEST", str(manifest_path))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     # This test exercises the explicit cold/up command.  Keep it hermetic
     # when the developer checkout happens to have a live discovery file.
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
@@ -156,7 +156,7 @@ def test_read_runtime_connection_skips_pack_host_setup(monkeypatch, tmp_path):
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -169,7 +169,7 @@ def test_read_runtime_connection_skips_pack_host_setup(monkeypatch, tmp_path):
     result = autobootstrap.ensure_runtime(start_pack_host=False)
 
     assert result["status"] == "reconnected"
-    assert seen["command"][:4] == ["/usr/bin/banodoco-local", "up", "--profile", "astrid"]
+    assert seen["command"][:4] == ["/usr/bin/astrid-runtime", "up", "--profile", "astrid"]
 
 
 def test_default_runtime_connection_still_starts_pack_host(monkeypatch, tmp_path):
@@ -201,7 +201,7 @@ def test_default_runtime_connection_still_starts_pack_host(monkeypatch, tmp_path
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
     monkeypatch.setattr(
         host_bootstrap,
@@ -261,7 +261,7 @@ def test_real_worker_source_handoff_starts_pack_host_after_lifecycle_filter(
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
 
@@ -283,8 +283,8 @@ def test_real_worker_source_handoff_starts_pack_host_after_lifecycle_filter(
 def test_installed_runtime_module_is_used_when_console_script_is_off_path(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("BANODOCO_LOCAL_LAUNCHER", raising=False)
-    monkeypatch.delenv("BANODOCO_LOCAL_SOURCE_MANIFEST", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_LAUNCHER", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_SOURCE_MANIFEST", raising=False)
     monkeypatch.setattr(autobootstrap.shutil, "which", lambda _name: None)
     monkeypatch.setattr(autobootstrap, "find_spec", lambda name: object())
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
@@ -306,7 +306,7 @@ def test_installed_runtime_module_is_used_when_console_script_is_off_path(
     assert seen["command"] == [
         sys.executable,
         "-m",
-        "banodoco_local",
+        "astrid_runtime",
         "up",
         "--profile",
         "astrid",
@@ -317,7 +317,7 @@ def test_installed_runtime_module_is_used_when_console_script_is_off_path(
 
 
 def test_missing_runtime_package_returns_install_action(monkeypatch):
-    monkeypatch.delenv("BANODOCO_LOCAL_LAUNCHER", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_LAUNCHER", raising=False)
     monkeypatch.setattr(autobootstrap.shutil, "which", lambda _name: None)
     monkeypatch.setattr(autobootstrap, "find_spec", lambda name: None)
 
@@ -345,7 +345,7 @@ def test_launcher_bootstrap_preserves_typed_install_action(monkeypatch):
 
 def test_launcher_rejection_preserves_structured_runtime_cause(monkeypatch, tmp_path):
     """A neutral admission failure remains actionable at the Astrid boundary."""
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
 
     response = {
@@ -408,8 +408,8 @@ def test_configured_manifest_does_not_require_editable_source_inference(monkeypa
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("BANODOCO_LOCAL_SOURCE_MANIFEST", str(manifest))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(
         autobootstrap.subprocess,
         "run",
@@ -429,10 +429,10 @@ def test_persisted_source_profile_relaunches_without_environment(monkeypatch, tm
     home = tmp_path / "home"
     profile = _persisted_profile(home, runtime, source)
     assert profile.is_file()
-    launcher = tmp_path / "banodoco-local"
+    launcher = tmp_path / "astrid-runtime"
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", str(launcher))
-    monkeypatch.delenv("BANODOCO_LOCAL_SOURCE_MANIFEST", raising=False)
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", str(launcher))
+    monkeypatch.delenv("ASTRID_RUNTIME_SOURCE_MANIFEST", raising=False)
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
 
     seen: dict[str, object] = {}
@@ -457,10 +457,10 @@ def test_persisted_source_profile_relaunches_without_environment(monkeypatch, tm
 
 
 def test_envless_bootstrap_delegates_missing_profile_to_neutral_launcher(monkeypatch, tmp_path):
-    launcher = tmp_path / "banodoco-local"
+    launcher = tmp_path / "astrid-runtime"
     monkeypatch.setenv("HOME", str(tmp_path / "fresh-home"))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", str(launcher))
-    monkeypatch.delenv("BANODOCO_LOCAL_SOURCE_MANIFEST", raising=False)
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", str(launcher))
+    monkeypatch.delenv("ASTRID_RUNTIME_SOURCE_MANIFEST", raising=False)
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
     seen: dict[str, object] = {}
 
@@ -483,14 +483,14 @@ def test_envless_bootstrap_delegates_missing_profile_to_neutral_launcher(monkeyp
 
 
 def test_envless_bootstrap_never_infers_checkout_authority(monkeypatch, tmp_path):
-    launcher = tmp_path / "banodoco-local"
+    launcher = tmp_path / "astrid-runtime"
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", str(launcher))
-    monkeypatch.setenv("BANODOCO_RUNTIME_CHECKOUT", str(tmp_path / "attacker-runtime"))
-    monkeypatch.setenv("BANODOCO_LOCAL_RUNTIME_CHECKOUT", str(tmp_path / "other-runtime"))
-    monkeypatch.setenv("BANODOCO_ASTRID_SOURCE_CHECKOUT", str(tmp_path / "attacker-source"))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", str(launcher))
+    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(tmp_path / "attacker-runtime"))
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER_CHECKOUT", str(tmp_path / "other-runtime"))
+    monkeypatch.setenv("UNTRUSTED_ASTRID_SOURCE_CHECKOUT", str(tmp_path / "attacker-source"))
     monkeypatch.setenv("ASTRID_SOURCE_CHECKOUT", str(tmp_path / "other-source"))
-    monkeypatch.delenv("BANODOCO_LOCAL_SOURCE_MANIFEST", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_SOURCE_MANIFEST", raising=False)
     monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
     seen: dict[str, object] = {}
 
@@ -557,7 +557,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
 def test_open_existing_from_launcher_observes_before_connecting_without_acquisition(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from banodoco_workspace_client.contract_metadata import PROTOCOL
+    from astrid_runtime_client.contract_metadata import PROTOCOL
 
     support_root = tmp_path / "support"
     realm_root = tmp_path / "realm"
@@ -677,7 +677,7 @@ def test_diagnostics_can_remain_side_effect_free(monkeypatch):
         "astrid.sdk.autobootstrap.ensure_runtime",
         lambda: pytest.fail("diagnostic path unexpectedly bootstrapped the runtime"),
     )
-    with pytest.raises(Exception, match="banodoco-local up --profile astrid"):
+    with pytest.raises(Exception, match="astrid-runtime up --profile astrid"):
         AstridClient.open(endpoint="http://127.0.0.1:1", credential="token", realm_id="realm", actor_id="actor", client_name="test", client_version="1", protocol_version="workspace.v1")
 
 
@@ -702,14 +702,14 @@ def test_warm_acquisition_connects_before_considering_bootstrap(monkeypatch, tmp
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
 
     result = autobootstrap.ensure_runtime(start_pack_host=False, data_root=data_root)
 
     assert result["status"] == "reconnected"
     assert len(seen) == 1
-    assert seen[0][:4] == ["/usr/bin/banodoco-local", "connect", "--profile", "astrid"]
+    assert seen[0][:4] == ["/usr/bin/astrid-runtime", "connect", "--profile", "astrid"]
 
 
 def test_stale_discovery_falls_back_to_authoritative_bootstrap(monkeypatch, tmp_path):
@@ -732,7 +732,7 @@ def test_stale_discovery_falls_back_to_authoritative_bootstrap(monkeypatch, tmp_
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
 
     result = autobootstrap.ensure_runtime(start_pack_host=False, data_root=data_root)
@@ -754,7 +754,7 @@ def test_connect_protocol_rejection_is_not_masked_by_bootstrap(monkeypatch, tmp_
             command, 1, '{"ok":false,"error":"Source profile is incompatible"}', ""
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
 
     with pytest.raises(autobootstrap.AutoBootstrapError, match="incompatible"):
@@ -777,7 +777,7 @@ def test_interrupted_bootstrap_gets_one_bounded_recovery_attempt(monkeypatch, tm
             "",
         )
 
-    monkeypatch.setenv("BANODOCO_LOCAL_LAUNCHER", "/usr/bin/banodoco-local")
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
     monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
 
     result = autobootstrap.ensure_runtime(start_pack_host=False, data_root=data_root)

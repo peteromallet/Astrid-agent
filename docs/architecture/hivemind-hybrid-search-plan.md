@@ -1677,8 +1677,8 @@ The plan is intended to be executable without rediscovering its architecture:
 |---|---|
 | Implementation repository | `/Users/peteromalley/Documents/banodoco-workspace/hivemind` |
 | Retrieval/evaluation reference | `/Users/peteromalley/Documents/Pumpernickel` |
-| Workflow representation/export reference | `/Users/peteromalley/Documents/reigh-workspace/vibecomfy` |
-| Planning document | `/Users/peteromalley/Documents/reigh-workspace/Astrid/docs/architecture/hivemind-hybrid-search-plan.md` |
+| Workflow representation/export reference | `/Users/peteromalley/Documents/astrid-workspace/vibecomfy` |
+| Planning document | `/Users/peteromalley/Documents/astrid-workspace/Astrid/docs/architecture/hivemind-hybrid-search-plan.md` |
 | Installed pack snapshot (inspect only) | `/Users/peteromalley/.astrid/packs/hivemind/revisions/hivemind` |
 
 These paths describe the audited machine, not a portable repository layout.

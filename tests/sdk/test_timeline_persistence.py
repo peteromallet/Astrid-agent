@@ -3,7 +3,7 @@
 Every "process" in this file is a child interpreter (``worker_main``) that keeps its own ``Checkout`` in memory
 until it exits, so the only thing two writers share is the working-copy file on disk. Each worker:
 
-- uses a temp data root (``BANODOCO_LOCAL_DATA_ROOT``) and a temp ``ASTRID_HOME``;
+- uses a temp data root (``ASTRID_RUNTIME_DATA_ROOT``) and a temp ``ASTRID_HOME``;
 - opens the timeline through a fake client that reads a head file the test controls;
 - refuses to open the live runtime (``AstridClient.open_from_launcher`` raises), and stubs the publish
   transport, so publish runs its real three-way guard and stops at the stubbed write.
@@ -166,7 +166,7 @@ class Writer:
         self.rc: int | None = None
         self.err_path = world.tmp / f"{name}-{len(world.writers)}.err"
         self._err = open(self.err_path, "w", encoding="utf-8")
-        env = {**os.environ, "BANODOCO_LOCAL_DATA_ROOT": str(world.root), "TP_HEAD": str(world.head),
+        env = {**os.environ, "ASTRID_RUNTIME_DATA_ROOT": str(world.root), "TP_HEAD": str(world.head),
                "ASTRID_HOME": str(world.tmp / "astrid-home"), "ASTRID_WORKSPACE_CONFIG_DIR": str(world.tmp / "ws")}
         self.proc = subprocess.Popen(
             [sys.executable, "-c", BOOT, str(THIS_FILE), "worker"], cwd=str(REPO), env=env,
@@ -220,7 +220,7 @@ class Writer:
 def world(tmp_path, monkeypatch):
     root = tmp_path / "data"
     root.mkdir()
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(root))  # the parent computes draft paths from the same root
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(root))  # the parent computes draft paths from the same root
     head = tmp_path / "head.json"
     head.write_text(json.dumps({"revision_id": "rev-0", "bundle": timeline()}), encoding="utf-8")
     w = SimpleNamespace(tmp=tmp_path, root=root, head=head, writers=[])

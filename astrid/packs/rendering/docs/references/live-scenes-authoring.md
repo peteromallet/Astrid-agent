@@ -18,27 +18,27 @@ edit a checkout database, generated catalog, private store, or mutable dev URL.
 
 ## Find the source and use the public route
 
-Start from the active Reigh editor/runtime scope and the public timeline reader.
+Start from the active Astrid App editor/runtime scope and the public timeline reader.
 The live-scene reader projection identifies the target clip, its
-`com.reigh.astrid.liveScene` clip type, `app.liveScene` cache, source/package
+`haus.astrid.liveScene` clip type, `app.liveScene` cache, source/package
 references, and ordinary timing (`at`, `duration`, `sourceOffset`,
 `sourceEnd`, `rate`). The registered public handler is exposed through the
-`reigh.live-scene-request/v1` ACP route, not through a private editor store or a
-new Astrid CLI verb. The SDK types are exported from Reigh's public SDK; the
+`astrid.live-scene-request/v1` ACP route, not through a private editor store or a
+new Astrid CLI verb. The SDK types are exported from Astrid App's public SDK; the
 pack binds the handler through `ctx.liveSceneAuthoring`.
 
 The agent receives an exact
-`<reigh_live_scene_context>` scope. Read bounded source first, then publish
+`<astrid_live_scene_context>` scope. Read bounded source first, then publish
 against the same session/turn capture:
 
 ```text
-<reigh_live_scene_request>{
-  "schema": "reigh.live-scene-request/v1",
+<astrid_live_scene_request>{
+  "schema": "astrid.live-scene-request/v1",
   "requestId": "read-1",
   "scope": {"sessionId":"…","turnId":"…","projectId":"…","timelineId":"…","capturedTimelineVersion":7},
   "placementIds": ["<placement-id-from-active-timeline>"],
   "action": "read", "offset": 0, "length": 1200
-}</reigh_live_scene_request>
+}</astrid_live_scene_request>
 ```
 
 The placeholder above is illustrative, not a live ID. Replace it with the
@@ -258,9 +258,9 @@ revision and waits for the requested frame; the backend remains visual-only
 for the hosted entry while ordinary timeline audio is handled by the existing
 capture route. When calling the managed `rendering.render` executor directly,
 pass `selector: "rendering.threejs"` for a timeline containing
-`com.reigh.astrid.liveScene`; an omitted selector defaults to ordinary
+`haus.astrid.liveScene`; an omitted selector defaults to ordinary
 `rendering.remotion`, which does not implement this scene composition. The
-Reigh editor router already selects the Three.js backend for its supported
+Astrid App editor router already selects the Three.js backend for its supported
 live-scene subset; direct SDK callers must do the same. Do not add this clip
 type to ordinary Remotion's registry. The relevant composition mapping is in
 [`ThreeTimelineComposition.tsx`](../../../../../remotion/src/ThreeTimelineComposition.tsx).
@@ -268,8 +268,8 @@ The template's `render` resizes the renderer to the host viewport, updates the
 camera aspect, evaluates the final DOM label and WebGL surface, and calls the
 WebGL context's finish hook before returning. Export therefore captures the
 requested pinned frame, not a last-good preview frame.
-The Reigh live-scene clip contribution itself is not a browser/worker export
-capability; do not claim a generic Reigh export path. A true non-Maple live
+The Astrid App live-scene clip contribution itself is not a browser/worker export
+capability; do not claim a generic Astrid App export path. A true non-Maple live
 acceptance through the current public interfaces starts with the bounded
 prepared-HTML admission above and continues with bundling, publication, and
 runtime/render checks; it does not add a generic ZIP importer or export path.

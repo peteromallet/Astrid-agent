@@ -12,7 +12,7 @@ from astrid.sdk.timeline import store as _store
 
 @pytest.fixture
 def journal_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(cli, "_IN_VERB", False)
     monkeypatch.setattr(_store, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     return journal.journal_path("p", "t")

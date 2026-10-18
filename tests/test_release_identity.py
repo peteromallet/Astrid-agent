@@ -33,7 +33,7 @@ def _repo(root: Path, name: str) -> Path:
     (path / "astrid-pack-manifest.yaml").write_text("capability: render\n")
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "initial"], check=True)
-    remote = "https://github.com/peteromallet/Astrid.git" if name == "Astrid" else "https://github.com/banodoco/banodoco-workspace-runtime.git" if name == "runtime" else "https://github.com/example/Repo.git"
+    remote = "https://github.com/peteromallet/astrid-agent.git" if name == "Astrid" else "https://github.com/banodoco/astrid-runtime.git" if name == "runtime" else "https://github.com/example/Repo.git"
     subprocess.run(["git", "-C", str(path), "remote", "add", "origin", remote], check=True)
     return path
 
@@ -70,7 +70,7 @@ def test_remote_binding_is_copy_only(tmp_path: Path) -> None:
     checkout = _repo(tmp_path, "Astrid")
     pre = create_pre_live_identity({"ASTRID-CLIENT": checkout}, seed_outputs=_seeds())
     original = json.dumps(pre, sort_keys=True)
-    bound = bind_remote_targets(pre, [{"remote_target_id": "REMOTE-TARGET:ASTRID", "target_kind": "component", "component_id": "ASTRID-CLIENT", "local_repository_identity": "peteromallet/Astrid", "repository_identity": "peteromallet/Astrid", "canonical_url": "https://github.com/peteromallet/Astrid.git", "destination_ref_or_prefix": "refs/heads/main", "expected_old_oid": "NONE", "reviewed_source_oid": "NONE", "identity_transition_sha256": "NONE", "repository_provision_receipt_rows": "NONE"}])
+    bound = bind_remote_targets(pre, [{"remote_target_id": "REMOTE-TARGET:ASTRID", "target_kind": "component", "component_id": "ASTRID-CLIENT", "local_repository_identity": "peteromallet/astrid-agent", "repository_identity": "peteromallet/astrid-agent", "canonical_url": "https://github.com/peteromallet/astrid-agent.git", "destination_ref_or_prefix": "refs/heads/main", "expected_old_oid": "NONE", "reviewed_source_oid": "NONE", "identity_transition_sha256": "NONE", "repository_provision_receipt_rows": "NONE"}])
     assert bound["remote_targets"][0]["remote_target_id"] == "REMOTE-TARGET:ASTRID"
     assert json.dumps(pre, sort_keys=True) == original
     assert not (checkout / "remote-targets.json").exists()
@@ -83,7 +83,7 @@ def test_b11_manifest_rejects_missing_seed_bytes_and_46_rows(tmp_path: Path) -> 
     manifest = build_prelive_manifest({seed: seed.encode() for seed in PRELIVE_SEEDS})
     manifest["evidence_rows"].pop()
     manifest["manifest_sha256"] = __import__("astrid.core.release_identity", fromlist=["framed_hash"]).framed_hash(
-        "banodoco.pre-live-manifest.v1", {k: v for k, v in manifest.items() if k != "manifest_sha256"}
+        "astrid_runtime.pre-live-manifest.v1", {k: v for k, v in manifest.items() if k != "manifest_sha256"}
     )
     # The full receipt verifier is intentionally the final authority; a
     # manifest with 46 rows must not become valid merely by rehashing it.

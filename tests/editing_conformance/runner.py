@@ -288,7 +288,7 @@ def _fresh(fixture: str):
     """A new temp data root and the resolve/fetch seams patched to a deep copy of the fixture."""
     bundle = json.loads(fixture_path(fixture).read_text(encoding="utf-8"))
     with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as root:
-        mp.setenv("BANODOCO_LOCAL_DATA_ROOT", root)
+        mp.setenv("ASTRID_RUNTIME_DATA_ROOT", root)
         mp.setattr(tc, "resolve_ids", lambda project, timeline, client=None: RESOLVED)
         mp.setattr(tc, "fetch_bundle",
                    lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle))

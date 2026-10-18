@@ -1,7 +1,7 @@
 """Explicit transport adapter around the generated workspace client.
 
 HTTP protocol encoding, authentication, and response decoding are delegated
-to the generated ``banodoco_workspace_client`` package from the runtime
+to the generated ``astrid_runtime_client`` package from the runtime
 contract. Endpoint and credential values are supplied by the caller.
 """
 
@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
-from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+from astrid_runtime_client import WorkspaceClient as GeneratedWorkspaceClient
+from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
 
 from .pagination import page_pair, paged_rows
 
@@ -35,7 +35,7 @@ __all__ = [
 
 _DOCUMENT_CONTENT_UNSET = object()
 
-RECONFIGURE_ACTION = "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`"
+RECONFIGURE_ACTION = "reconfigure the Astrid runtime with `astrid-runtime up --profile astrid`"
 
 
 def _reconfigure(field: str, message: str) -> "WorkspaceClientError":
@@ -180,16 +180,16 @@ def resolve_runtime_connection(
     """Validate a runtime connection supplied by the caller or host boundary.
 
     Pack executors run in a host-created child process.  The host may provide
-    the same explicit connection through ``BANODOCO_RUNTIME_ENDPOINT`` and
-    ``BANODOCO_RUNTIME_CREDENTIAL``; this is still an explicit boundary, not
+    the same explicit connection through ``ASTRID_RUNTIME_ENDPOINT`` and
+    ``ASTRID_RUNTIME_CREDENTIAL``; this is still an explicit boundary, not
     runtime discovery.  A credential environment value is treated as an
     owner-only path when it names an existing file, otherwise as a bearer
     token already held by the host.
     """
     if endpoint is None:
-        endpoint = os.environ.get("BANODOCO_RUNTIME_ENDPOINT", "")
+        endpoint = os.environ.get("ASTRID_RUNTIME_ENDPOINT", "")
     if credential is None:
-        raw_credential = os.environ.get("BANODOCO_RUNTIME_CREDENTIAL", "").strip()
+        raw_credential = os.environ.get("ASTRID_RUNTIME_CREDENTIAL", "").strip()
         credential = (
             Path(raw_credential)
             if raw_credential and Path(raw_credential).expanduser().is_file()

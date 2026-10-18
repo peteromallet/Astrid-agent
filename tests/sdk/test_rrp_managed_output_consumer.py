@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from banodoco_workspace_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
 
 from astrid.sdk.project_render import open_render
 from astrid.sdk.remote import RemoteTasks

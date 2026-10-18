@@ -5,7 +5,7 @@ look at it, then publish it. Times are timeline seconds; **positions are canvas 
 *When* things happen is written as **moments** (`on "viral"`), so a new take moves everything with its words.
 
 Every `timelines` below is short for **`python -m astrid timelines`** (venv active, from the `Astrid` install dir,
-`BANODOCO_LOCAL_DATA_ROOT` set as your install says). A bare `timelines` is not on PATH.
+`ASTRID_RUNTIME_DATA_ROOT` set as your install says). A bare `timelines` is not on PATH.
 
 ## The loop
 ```bash

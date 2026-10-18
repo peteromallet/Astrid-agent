@@ -4,20 +4,20 @@ Stage1 runtime connection and the remaining Astrid process variables.
 
 ## Stage1 runtime connection
 
-The live CLI and SDK connect to the Banodoco workspace runtime. The runtime
+The live CLI and SDK connect to the Astrid Runtime. The runtime
 owns durable projects, media, receipts, events, and execution state; Astrid
 does not select a project root or open a local database/CAS.
 
 | Variable | Who sets | Effect |
 |---|---|---|
-| `BANODOCO_RUNTIME_CREDENTIAL` | Runtime launcher / operator | Path to the credential/token file used by the generated workspace client. |
-| `BANODOCO_LOCAL_SOURCE_MANIFEST` | Astrid launcher / operator | Existing Astrid source-profile manifest passed to neutral bootstrap. |
-| `BANODOCO_LOCAL_DATA_ROOT` | Astrid launcher / operator | Absolute installation-owned support root. Defaults to `Astrid/.astrid-data` from the checkout config (or `~/.astrid-data` for a wheel install); overrides the macOS `Library/Application Support/Banodoco` location. |
+| `ASTRID_RUNTIME_CREDENTIAL` | Runtime launcher / operator | Path to the credential/token file used by the generated workspace client. |
+| `ASTRID_RUNTIME_SOURCE_MANIFEST` | Astrid launcher / operator | Existing Astrid source-profile manifest passed to neutral bootstrap. |
+| `ASTRID_RUNTIME_DATA_ROOT` | Astrid launcher / operator | Absolute installation-owned support root. Defaults to `Astrid/.astrid-data` from the checkout config (or `~/.astrid-data` for a wheel install); overrides the macOS `Library/Application Support/Astrid Runtime` location. |
 | `ASTRID_COMPUTE_PROFILE` | RunPod executor / operator | Optional user compute-profile id loaded from `~/.astrid/compute-profiles/<id>.json`. |
 
 These are runtime composition variables, not project-store overrides. Product
 commands use the configured manifest to invoke
-`banodoco-local up --profile astrid` automatically; the explicit command
+`astrid-runtime up --profile astrid` automatically; the explicit command
 remains available for operator lifecycle work. `AstridClient.open(...)` takes
 all connection values explicitly and does not read these variables.
 
@@ -98,7 +98,7 @@ These are propagated into subprocess env by `build_child_subprocess_env`.
 
 | Constant | Env var | Who sets | Who reads | Effect |
 |---|---|---|---|---|
-| `ASTRID_BANODOCO_CATALOG_URL` | `ASTRID_BANODOCO_CATALOG_URL` | User / CI | `executor/banodoco_catalog.py` | URL of the Banodoco agent-executor catalog.  Required when `ASTRID_BANODOCO_AGENT_EXECUTORS=1`. |
+| `ASTRID_RUNTIME_CATALOG_URL` | `ASTRID_RUNTIME_CATALOG_URL` | User / CI | `executor/banodoco_catalog.py` | URL of the Banodoco agent-executor catalog.  Required when `ASTRID_RUNTIME_AGENT_EXECUTORS=1`. |
 
 ## Internal/authoring-only variables
 

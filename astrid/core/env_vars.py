@@ -128,9 +128,9 @@ a new skill is available. Read by skills/__init__.py."""
 # External catalog (Banodoco)
 # ---------------------------------------------------------------------------
 
-ASTRID_BANODOCO_CATALOG_URL = "ASTRID_BANODOCO_CATALOG_URL"
+ASTRID_RUNTIME_CATALOG_URL = "ASTRID_RUNTIME_CATALOG_URL"
 """URL of the Banodoco agent-executor catalog. Required when
-ASTRID_BANODOCO_AGENT_EXECUTORS=1. Read by executor/banodoco_catalog.py."""
+ASTRID_RUNTIME_AGENT_EXECUTORS=1. Read by executor/banodoco_catalog.py."""
 
 # ---------------------------------------------------------------------------
 # Allowlisted modules — catalog only, consumers are contract-locked
@@ -156,7 +156,7 @@ __all__ = [
     "ASTRID_AUDIT_DISABLED",
     "ASTRID_AUDIT_RUN_DIR",
     "ASTRID_AUTHOR_TEST",
-    "ASTRID_BANODOCO_CATALOG_URL",
+    "ASTRID_RUNTIME_CATALOG_URL",
     "ASTRID_HOME",
     "ASTRID_ENV_FILE",
     "ASTRID_INTERNAL_INVOCATION",

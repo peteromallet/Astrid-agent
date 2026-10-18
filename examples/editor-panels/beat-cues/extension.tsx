@@ -5,7 +5,7 @@ import {
   type ExtensionContext,
   type ExtensionId,
   type PanelRenderProps,
-} from '@reigh/editor-sdk';
+} from '@astrid/editor-sdk';
 import { BeatCuePanel } from './BeatCuePanel';
 
 const EXTENSION_ID = 'com.example.beat-cues' as ExtensionId;

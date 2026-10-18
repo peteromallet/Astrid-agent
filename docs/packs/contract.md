@@ -48,7 +48,7 @@ by itself.
 
 The current V3 contract has one concrete host-mounted Tool declaration:
 `ui.video-editor` in the `video_editing` pack. Its `type: tool` declaration
-selects the existing Reigh `video-editor` host entry and its `/tools/video-editor`
+selects the existing Astrid App `video-editor` host entry and its `/tools/video-editor`
 route; it does not create a route, load arbitrary modules, or define a generic
 Tool/Widget SDK. The corresponding Tool catalog binds the manifest, JSON entry,
 declared resources, compatibility, dependencies, and release digest. The

@@ -28,9 +28,9 @@ The current publication destinations are:
 
 | Component | Current destination |
 | --- | --- |
-| Astrid client/toolkit | `https://github.com/peteromallet/Astrid-agent.git` |
-| Workspace Runtime | `https://github.com/banodoco/banodoco-workspace-runtime.git` |
-| App consumer | `https://github.com/banodoco/reigh-app.git` |
+| Astrid client/toolkit | `https://github.com/peteromallet/astrid-agent.git` |
+| Astrid Runtime | `https://github.com/banodoco/astrid-runtime.git` |
+| App consumer | `https://github.com/banodoco/astrid-app.git` |
 
 These are current publication destinations, not a request to rename a
 repository, package, CLI, import namespace, domain, or storage location.
@@ -94,14 +94,14 @@ each diagnostic to the exact artifact tuple.
 ## 5. Rendering prerequisites and the V3 review loop
 
 The Astrid wheel is the single delivery owner for the canonical generated
-client (`banodoco_workspace_client`); the Runtime remains authoritative for
+client (`astrid_runtime_client`); the Runtime remains authoritative for
 the timeline, realm, runs and managed outputs. The paired final manifest must
 name the matching Remotion bundle, canonical timeline schema, browser/
 Chromium executable, reviewed public fonts and provenance, `ffmpeg`,
 `ffprobe`, OMP/agent/native inputs and app public inputs. Do not install a
 browser or renderer from this guide, use an ambient schema or `omp`, or put
 Runtime/provider credentials in app public inputs. Missing host/native inputs
-must surface their existing diagnostic; the actual Reigh launcher correction
+must surface their existing diagnostic; the actual Astrid App launcher correction
 and installed-host-origin proof remain NativeSol/heavy-end work.
 
 After the selected project and timeline are supplied by Runtime, use the

@@ -30,18 +30,18 @@ python3 -m pip install --no-index --require-hashes \
 The final Astrid and Runtime SHA/version slots remain
 `PENDING_PRODUCER_HANDOFF`; do not replace them with a guessed tag, wheel,
 registry project, or domain. The canonical client delivery owner is the
-Astrid wheel's `banodoco_workspace_client` package. Runtime owns the neutral
+Astrid wheel's `astrid_runtime_client` package. Runtime owns the neutral
 service/protocol and its lifecycle; do not install an order-dependent second
 client owner. I08/I09 must verify the installed import origin and generated
 client/schema digest for the final tuple.
 
 Current publication destinations are the Astrid-agent client repository,
-Banodoco Workspace Runtime repository, and Reigh app consumer repository:
+astrid-agent, astrid-runtime and astrid-app repositories:
 
 ```text
-https://github.com/peteromallet/Astrid-agent.git
-https://github.com/banodoco/banodoco-workspace-runtime.git
-https://github.com/banodoco/reigh-app.git
+https://github.com/peteromallet/astrid-agent.git
+https://github.com/banodoco/astrid-runtime.git
+https://github.com/banodoco/astrid-app.git
 ```
 
 No repository, package, CLI, import, protocol, domain, or storage rename is
@@ -60,7 +60,7 @@ The stable-config fragment distinguishes the durable support-root envelope from
 the Runtime realm id/root. The app and delivered preview consume the same
 `ASTRID_WORKSPACE_DISCOVERY` path. Do not relocate data, infer a root from the
 current directory, create an automatic replacement, or disable realm/actor
-identity checks. NativeSol owns the actual Reigh launcher correction and
+identity checks. NativeSol owns the actual Astrid App launcher correction and
 installed-host-origin proof; no installed journey is claimed here.
 
 The Runtime remains authoritative for the database, realm, credentials,
@@ -122,7 +122,7 @@ exact artifact named by the paired recipe; do not use an unrelated sibling
 checkout or an older ambient schema.
 
 The operational V3 review loop is Runtime-owned and uses the Astrid wheel's
-single canonical client (`banodoco_workspace_client`):
+single canonical client (`astrid_runtime_client`):
 
 ```bash
 python3 -m astrid projects current --json
@@ -209,7 +209,7 @@ noneditable I11 candidate pair, not an arbitrary historical installation:
 
 - Astrid candidate wheel: `astrid-0.1.0-py3-none-any.whl`, SHA-256
   `47d56e391f9b41d82a714e0ef7cbd9ab76caa9c0137088e5530bc3fe55a497eb`;
-- Runtime candidate wheel: `banodoco_workspace_runtime-0.1.0-py3-none-any.whl`,
+- Runtime candidate wheel: `astrid_runtime-0.1.0-py3-none-any.whl`,
   SHA-256 `4c3363b3d9f7694a8c63567b659f3299d62f43efb290a56207a0dcf620caced7`.
 
 These are candidate evidence artifacts, not a claim that a public release or
@@ -235,7 +235,7 @@ For an existing installation, use this exact sequence:
 4. Run the existing upgrade contract with the same selected root:
 
    ```bash
-   astrid-upgrade --data-root "$BANODOCO_LOCAL_DATA_ROOT" --json
+   astrid-upgrade --data-root "$ASTRID_RUNTIME_DATA_ROOT" --json
    ```
 
    The command stops the idle pack host, asks Runtime to apply its supported

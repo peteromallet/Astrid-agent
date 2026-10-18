@@ -254,7 +254,7 @@ _SECRET_PREFIXES = (
     "HF_",
     "HUGGINGFACE_",
     "OPENAI_",
-    "REIGH_",
+    "ASTRID_APP_",
     "RUNPOD_",
 )
 _REMOVED_ENV_NAMES = {

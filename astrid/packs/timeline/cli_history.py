@@ -20,7 +20,7 @@ def _store(parsed: Any) -> RuntimeRevisions:
 
 
 def _short(revision: Revision) -> str:
-    for prefix in ("authoring-parent-revision-", "reigh.editor.timeline.", "restore-"):
+    for prefix in ("authoring-parent-revision-", "astrid.editor.timeline.", "restore-"):
         if revision.id.startswith(prefix):
             return revision.id[len(prefix):][:8]
     return revision.id[:8]

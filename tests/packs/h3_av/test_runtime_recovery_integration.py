@@ -17,12 +17,12 @@ from pathlib import Path
 import pytest
 
 ASTRID_ROOT = Path(__file__).resolve().parents[3]
-_runtime_root = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+_runtime_root = os.environ.get("ASTRID_RUNTIME_CHECKOUT")
 if not _runtime_root:
-    pytest.skip("BANODOCO_RUNTIME_CHECKOUT must pin the Runtime source worktree", allow_module_level=True)
+    pytest.skip("ASTRID_RUNTIME_CHECKOUT must pin the Runtime source worktree", allow_module_level=True)
 RUNTIME_ROOT = Path(_runtime_root).resolve()
 if not (RUNTIME_ROOT / "runtime_protocol").is_dir():
-    pytest.skip("BANODOCO_RUNTIME_CHECKOUT must point to a Runtime source worktree", allow_module_level=True)
+    pytest.skip("ASTRID_RUNTIME_CHECKOUT must point to a Runtime source worktree", allow_module_level=True)
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 pytest.importorskip("runtime_protocol")

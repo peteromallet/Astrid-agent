@@ -26,16 +26,16 @@ from urllib.parse import urlsplit
 import pytest
 
 RUNTIME_ROOT = Path(
-    os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+    os.environ.get("ASTRID_RUNTIME_CHECKOUT")
     or "/Users/hannahomalley/Documents/Codex/2026-09-09/can-you-see-the-poms-skills/work/astrid-prep/repos/Runtime"
 ).resolve()
-REIGH_ROOT = Path(
-    os.environ.get("REIGH_APP_CHECKOUT")
-    or "/Users/hannahomalley/Documents/Codex/2026-09-09/can-you-see-the-poms-skills/work/astrid-prep/repos/reigh-app"
+ASTRID_APP_ROOT = Path(
+    os.environ.get("ASTRID_APP_CHECKOUT")
+    or "/Users/hannahomalley/Documents/Codex/2026-09-09/can-you-see-the-poms-skills/work/astrid-prep/repos/astrid-app"
 ).resolve()
 sys.path.insert(0, str(RUNTIME_ROOT))
 
-from banodoco_workspace_client import WorkspaceClient  # noqa: E402
+from astrid_runtime_client import WorkspaceClient  # noqa: E402
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from runtime_protocol.store import RealmStore  # noqa: E402
 from tests.helpers.runtime import initialize_runtime_realm
@@ -869,8 +869,8 @@ def test_typed_character_animation_admission_consumes_ordered_cas_and_readback(t
         daemon.stop()
 
 
-def test_reigh_character_animation_producer_composes_runtime_and_gallery_readback(tmp_path: Path) -> None:
-    """Prove the paired Reigh producer → Runtime → shipped host → gallery path."""
+def test_astrid_character_animation_producer_composes_runtime_and_gallery_readback(tmp_path: Path) -> None:
+    """Prove the paired Astrid App producer → Runtime → shipped host → gallery path."""
     pack = _character_animation_cpu_fixture(tmp_path)
     previous_readiness = _set_cpu_readiness_environment(pack)
     daemon = RuntimeDaemon(
@@ -882,7 +882,7 @@ def test_reigh_character_animation_producer_composes_runtime_and_gallery_readbac
     try:
         owner = WorkspaceClient(daemon.endpoint, daemon.token)
         owner.handshake(
-            "reigh-character-animation-paired-trace",
+            "astrid-character-animation-paired-trace",
             "0.1.0",
             ["projects:read", "projects:write", "objects:read", "objects:write", "worker:execute"],
         )
@@ -894,7 +894,7 @@ def test_reigh_character_animation_producer_composes_runtime_and_gallery_readbac
         host = GenericPackHost(
             pack_roots=[pack],
             client=client,
-            executor_id="reigh-character-animation-paired-host",
+            executor_id="astrid-character-animation-paired-host",
         )
         host.discover()
         host.preflight()
@@ -902,11 +902,11 @@ def test_reigh_character_animation_producer_composes_runtime_and_gallery_readbac
         host.register()
 
         project = owner.create_project(
-            "Reigh Character Animation Paired Trace",
-            slug="reigh-character-animation-paired-trace",
-            idempotency_key="reigh-character-animation-paired-project",
+            "Astrid App Character Animation Paired Trace",
+            slug="astrid-character-animation-paired-trace",
+            idempotency_key="astrid-character-animation-paired-project",
         )
-        producer = tmp_path / "reigh_character_animation_producer.ts"
+        producer = tmp_path / "astrid_character_animation_producer.ts"
         producer.write_text(
             r"""
 const realFetch = globalThis.fetch;
@@ -919,7 +919,7 @@ globalThis.fetch = async (input, init = {}) => {
     : input instanceof URL
       ? input.toString()
       : input.url;
-  const source = new URL(raw, 'http://reigh.local');
+  const source = new URL(raw, 'http://astrid.local');
   const prefix = '/api/astrid';
   const route = source.pathname.startsWith(prefix)
     ? source.pathname.slice(prefix.length) || '/'
@@ -962,8 +962,8 @@ globalThis.fetch = async (input, init = {}) => {
             }
         )
         produced = subprocess.run(
-            [str(REIGH_ROOT / "node_modules/.bin/tsx"), str(producer)],
-            cwd=REIGH_ROOT,
+            [str(ASTRID_APP_ROOT / "node_modules/.bin/tsx"), str(producer)],
+            cwd=ASTRID_APP_ROOT,
             env=producer_env,
             capture_output=True,
             text=True,
@@ -1002,7 +1002,7 @@ globalThis.fetch = async (input, init = {}) => {
         assert output["size"] == len(video)
         assert not Path(completed.result["execution_guards"]["cleanup_path"]).exists()
 
-        readback = tmp_path / "reigh_character_animation_readback.ts"
+        readback = tmp_path / "astrid_character_animation_readback.ts"
         readback.write_text(
             r"""
 const realFetch = globalThis.fetch;
@@ -1015,7 +1015,7 @@ globalThis.fetch = async (input, init = {}) => {
     : input instanceof URL
       ? input.toString()
       : input.url;
-  const source = new URL(raw, 'http://reigh.local');
+  const source = new URL(raw, 'http://astrid.local');
   const prefix = '/api/astrid';
   const route = source.pathname.startsWith(prefix)
     ? source.pathname.slice(prefix.length) || '/'
@@ -1041,8 +1041,8 @@ globalThis.fetch = async (input, init = {}) => {
         )
         readback_env = producer_env.copy()
         readback = subprocess.run(
-            [str(REIGH_ROOT / "node_modules/.bin/tsx"), str(readback)],
-            cwd=REIGH_ROOT,
+            [str(ASTRID_APP_ROOT / "node_modules/.bin/tsx"), str(readback)],
+            cwd=ASTRID_APP_ROOT,
             env=readback_env,
             capture_output=True,
             text=True,

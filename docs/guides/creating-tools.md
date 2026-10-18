@@ -4,7 +4,7 @@ Use this guide when Astrid is missing a capability.
 
 The admitted Video Editor Tool has a host-specific source and catalog contract;
 see [Host-mounted editor Tools](host-mounted-editor-tools.md) for its real
-Astrid declaration, Reigh host entry, source binding, and reopen loop. Other
+Astrid declaration, Astrid App host entry, source binding, and reopen loop. Other
 Tool or Widget shapes remain design-only until they have a concrete host entry
 and source-bound launch path.
 

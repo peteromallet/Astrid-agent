@@ -289,7 +289,7 @@ def _static_receipt(evidence_dir: Path, *, category: str, observations: Mapping[
 def _capture_source_identity(evidence_dir: Path, repo_root: Path) -> Path:
     rows: list[dict[str, object]] = []
     errors: list[str] = []
-    runtime = repo_root.parent / "banodoco-workspace-runtime-stage1-convergence"
+    runtime = repo_root.parent / "astrid-runtime-stage1-convergence"
     for name, path in (("astrid", repo_root), ("runtime", runtime)):
         code, commit, stderr = _git_output(path, ["rev-parse", "HEAD"])
         code_tree, tree, tree_err = _git_output(path, ["ls-files", "-s"])

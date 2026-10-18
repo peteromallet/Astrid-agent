@@ -252,7 +252,7 @@ def test_edit_set_refuses_a_param_the_element_does_not_declare(local, capsys):
 
 
 def test_undo_steps_back_through_the_working_copy(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -270,7 +270,7 @@ def test_undo_steps_back_through_the_working_copy(tmp_path, monkeypatch, capsys)
 
 def test_undo_is_one_edit_per_step_and_redo_goes_forward(tmp_path, monkeypatch, capsys):
     """P1: several edits (verbs and Python, some before one save), undo one at a time, then redo."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
     assert _run("checkout", "t", "--project", "P") == 0
@@ -416,7 +416,7 @@ def test_duration_is_a_literal_length(local):
 def test_verify_compares_the_changed_frames_and_timings_say_where_time_went(tmp_path, monkeypatch, capsys):
     from astrid.sdk.timeline.checkout import Checkout as Real
 
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle()))
     seen = {}

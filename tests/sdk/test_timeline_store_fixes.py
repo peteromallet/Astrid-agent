@@ -18,14 +18,14 @@ PUBLISHABLE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "time
 # ---------------------------------------------------------------- (A) drafts root
 
 def test_drafts_root_follows_the_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     assert drafts_root() == tmp_path / "data" / "drafts"
 
 
 def test_drafts_root_without_env_is_the_sdk_data_root_never_home_astrid(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.delenv("BANODOCO_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(storage_root, "CONFIG_PATH", tmp_path / "missing-astrid-runtime.json")
 

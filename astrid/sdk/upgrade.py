@@ -1,7 +1,7 @@
 """The explicit Astrid operator boundary for neutral-runtime upgrades.
 
 This module resolves the installation-owned target and delegates the actual
-database/storage transition to ``banodoco-local``.  Astrid only fences its
+database/storage transition to ``astrid-runtime``.  Astrid only fences its
 managed pack host before the handoff and verifies a normal relaunch after it.
 """
 
@@ -70,7 +70,7 @@ def _realm_id(root: Path, value: Mapping[str, Any]) -> str:
 
 def _legacy_source() -> Path | None:
     """Return the known old support root only when it has a valid selection."""
-    root = (Path.home() / "Library" / "Application Support" / "Banodoco").absolute()
+    root = (Path.home() / "Library" / "Application Support" / "Astrid Runtime").absolute()
     value = _catalog(root)
     if value is None:
         return None

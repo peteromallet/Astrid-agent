@@ -245,8 +245,8 @@ def test_child_environment_carries_explicit_runtime_connection(tmp_path):
 
     child_env, secrets = host._child_environment(record, tmp_path / "attempt")
     try:
-        assert child_env["BANODOCO_RUNTIME_ENDPOINT"] == "http://127.0.0.1:8765"
-        assert child_env["BANODOCO_RUNTIME_CREDENTIAL"] == "worker-token"
+        assert child_env["ASTRID_RUNTIME_ENDPOINT"] == "http://127.0.0.1:8765"
+        assert child_env["ASTRID_RUNTIME_CREDENTIAL"] == "worker-token"
     finally:
         child_env.clear()
         secrets.clear()
@@ -1195,7 +1195,7 @@ def test_runtime_unhealthy_status_blocks_registration_before_publish(tmp_path):
 
 
 def test_registration_failure_is_typed_and_has_no_capability_prepublication(tmp_path):
-    from banodoco_workspace_client import ApiError
+    from astrid_runtime_client import ApiError
 
     _write_manifest(tmp_path / "echo")
 
@@ -1224,7 +1224,7 @@ def test_registration_failure_is_typed_and_has_no_capability_prepublication(tmp_
 
 
 def test_failed_replacement_registration_does_not_withdraw_removed_capability(tmp_path):
-    from banodoco_workspace_client import ApiError
+    from astrid_runtime_client import ApiError
 
     _write_manifest(tmp_path / "kept", capability_id="test.kept")
     removed = _write_manifest(tmp_path / "removed")
@@ -1296,7 +1296,7 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
             self.registration_payloads.append(executor)
             return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
 
-    monkeypatch.setattr("banodoco_workspace_client.WorkspaceClient", WorkerGenerated)
+    monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     client = RuntimeProtocolClient(
         "http://127.0.0.1:8765", "worker-token", timeout=4.25
     )
@@ -1340,7 +1340,7 @@ def test_runtime_protocol_client_registration_retries_are_session_idempotent(
             self.keys.append(idempotency_key)
             return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
 
-    monkeypatch.setattr("banodoco_workspace_client.WorkspaceClient", WorkerGenerated)
+    monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     kwargs = {
         "capabilities": [],
         "max_concurrency": 1,
@@ -1377,7 +1377,7 @@ def test_claim_loop_renews_executor_registration_after_liveness_interval(
 
 
 def test_vendored_runtime_client_timeout_is_bounded_and_request_correlated(monkeypatch):
-    from banodoco_workspace_client import ApiError, WorkspaceClient
+    from astrid_runtime_client import ApiError, WorkspaceClient
 
     captured = {}
 
@@ -1400,14 +1400,14 @@ def test_vendored_runtime_client_timeout_is_bounded_and_request_correlated(monke
 
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
 def test_vendored_runtime_client_rejects_unbounded_timeout(timeout):
-    from banodoco_workspace_client import WorkspaceClient
+    from astrid_runtime_client import WorkspaceClient
 
     with pytest.raises(ValueError, match="finite and positive"):
         WorkspaceClient("http://127.0.0.1:8765", timeout=timeout)
 
 
 def test_vendored_runtime_client_preserves_server_failure_diagnostic():
-    from banodoco_workspace_client import ApiError, WorkspaceClient
+    from astrid_runtime_client import ApiError, WorkspaceClient
 
     def transport(_method, _path, _headers, _body):
         return 503, {}, json.dumps(
@@ -1430,8 +1430,8 @@ def test_vendored_runtime_client_preserves_server_failure_diagnostic():
 def test_cli_writes_terminal_correlated_registration_failure_marker(
     tmp_path, monkeypatch, capsys
 ):
-    from banodoco_workspace_client import ApiError
-    from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+    from astrid_runtime_client import ApiError
+    from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
     from astrid.core.execution import generic_host
     from astrid.core.gateway.dispatch import compose_profile_handoff
 
@@ -1532,7 +1532,7 @@ def test_runtime_protocol_client_settlement_preserves_structured_result(monkeypa
             self.settlements.append((attempt_id, settlement, idempotency_key))
             return settlement
 
-    monkeypatch.setattr("banodoco_workspace_client.WorkspaceClient", WorkerGenerated)
+    monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     client = RuntimeProtocolClient("http://127.0.0.1:8765", "worker-token")
     client._attempt_runtime_epochs["attempt-1"] = 7
     result = {
@@ -1658,7 +1658,7 @@ def test_runtime_protocol_client_uses_a_fresh_idempotency_key_for_each_heartbeat
             self.heartbeats.append((attempt_id, payload))
             return payload
 
-    monkeypatch.setattr("banodoco_workspace_client.WorkspaceClient", WorkerGenerated)
+    monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     client = RuntimeProtocolClient("http://127.0.0.1:8765", "worker-token")
     client._attempt_runtime_epochs["attempt-1"] = 7
 

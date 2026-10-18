@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 PUBLIC_PACKAGE_KIND = "astrid.timeline-eval.public-package.v1"
-PACKAGE_ROOTS = ("astrid", "banodoco_workspace_client")
+PACKAGE_ROOTS = ("astrid", "astrid_runtime_client")
 EXCLUDED_PARTS = {
     "__pycache__", "tests", "test", "evals", "golden", "build", "dist",
     ".astrid", ".git", ".megaplan", ".otto", "node_modules", "site-packages",
@@ -146,7 +146,7 @@ def stage_public_package(source_root: Path, packages_root: Path) -> PublicPackag
             Path("astrid/packs/video_editing/docs/SKILL.md"),
             Path("astrid/packs/rendering/docs/SKILL.md"),
             Path("astrid/packs/rendering/docs/references/timeline-cookbook.md"),
-            Path("banodoco_workspace_client/__init__.py"),
+            Path("astrid_runtime_client/__init__.py"),
         )
         missing = [path.as_posix() for path in required if not (temporary / path).is_file()]
         if missing:

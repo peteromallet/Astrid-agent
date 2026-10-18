@@ -76,7 +76,7 @@ def test_explicit_client_path_does_not_bootstrap(monkeypatch: pytest.MonkeyPatch
 
         def health(self) -> dict[str, object]:
             calls.append("health")
-            from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+            from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
 
             return {
                 "status": "ok",
@@ -87,7 +87,7 @@ def test_explicit_client_path_does_not_bootstrap(monkeypatch: pytest.MonkeyPatch
 
         def handshake(self, *_args: object) -> dict[str, object]:
             calls.append("handshake")
-            from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+            from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
 
             return {
                 "protocol": PROTOCOL,
@@ -122,8 +122,8 @@ def test_explicit_client_path_does_not_bootstrap(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.parametrize("case", ["stale", "interrupted"])
 @pytest.mark.skipif(
-    not Path("/Users/peteromalley/.pyenv/shims/banodoco-local").is_file(),
-    reason="pinned banodoco-local is not installed",
+    not Path("/Users/peteromalley/.pyenv/shims/astrid-runtime").is_file(),
+    reason="pinned astrid-runtime is not installed",
 )
 def test_pinned_launcher_recovers_disposable_partial_state(case: str) -> None:
     result = subprocess.run(

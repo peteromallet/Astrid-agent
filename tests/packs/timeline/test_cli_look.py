@@ -22,7 +22,7 @@ def _parse(*args: str):
 @pytest.fixture
 def draft(tmp_path, monkeypatch):
     bundle = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "root"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "root"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle",
                         lambda project, timeline, revision_id=None, client=None: copy.deepcopy(bundle))

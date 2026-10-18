@@ -4,30 +4,30 @@ Outcome: treat the dirty Hivemind/default-tier work as an incomplete prototype, 
 
 1. Current skill discovery is split between source-tree scanning and shared pack metadata.
 
-- Source packs are scanned directly in [`astrid/skills/discovery.py:161`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/discovery.py:161).
-- External metadata is consumed in [`astrid/skills/discovery.py:130`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/discovery.py:130).
-- The current filter only accepts `"extra"` and `"installed"` at [`astrid/skills/discovery.py:143`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/discovery.py:143), but the shared discovery contract declares source kinds `("source", "local", "extra", "env")` at [`astrid/core/pack/discovery.py:41`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/core/pack/discovery.py:41). This is the reported bug: environment-provisioned packs are discovered by the pack bridge but excluded from skill discovery.
+- Source packs are scanned directly in [`astrid/skills/discovery.py:161`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/discovery.py:161).
+- External metadata is consumed in [`astrid/skills/discovery.py:130`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/discovery.py:130).
+- The current filter only accepts `"extra"` and `"installed"` at [`astrid/skills/discovery.py:143`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/discovery.py:143), but the shared discovery contract declares source kinds `("source", "local", "extra", "env")` at [`astrid/core/pack/discovery.py:41`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/core/pack/discovery.py:41). This is the reported bug: environment-provisioned packs are discovered by the pack bridge but excluded from skill discovery.
 
 2. The dirty default-tier implementation currently adds Hivemind-specific behavior directly into the skills layer.
 
-- `default_descriptors()` and `default_pack_ids()` are new dirty APIs at [`astrid/skills/__init__.py:20`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/__init__.py:20).
-- It special-cases `pack.id == "hivemind"` at [`astrid/skills/__init__.py:54`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/__init__.py:54).
-- Default behavior is threaded through sync, nudge, and uninstall state at [`astrid/skills/__init__.py:552`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/__init__.py:552), [`astrid/skills/__init__.py:460`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/__init__.py:460), and [`astrid/skills/state.py:35`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/state.py:35).
+- `default_descriptors()` and `default_pack_ids()` are new dirty APIs at [`astrid/skills/__init__.py:20`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/__init__.py:20).
+- It special-cases `pack.id == "hivemind"` at [`astrid/skills/__init__.py:54`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/__init__.py:54).
+- Default behavior is threaded through sync, nudge, and uninstall state at [`astrid/skills/__init__.py:552`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/__init__.py:552), [`astrid/skills/__init__.py:460`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/__init__.py:460), and [`astrid/skills/state.py:35`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/state.py:35).
 
 Recommended direction: keep the concept of a provisioning inventory and durable opt-out, but remove the Hivemind name-based fallback from the installer. Default setup should supply the inventory explicitly.
 
 3. Existing adapters install individual links directly into each harness.
 
-- The common filesystem primitives are [`astrid/skills/harnesses/base.py:145`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/harnesses/base.py:145) and [`astrid/skills/harnesses/base.py:171`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/harnesses/base.py:171).
-- Claude maps `_core` to `~/.claude/skills/astrid` and other packs to `astrid-<pack>` at [`astrid/skills/harnesses/claude.py:26`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/harnesses/claude.py:26).
+- The common filesystem primitives are [`astrid/skills/harnesses/base.py:145`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/harnesses/base.py:145) and [`astrid/skills/harnesses/base.py:171`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/harnesses/base.py:171).
+- Claude maps `_core` to `~/.claude/skills/astrid` and other packs to `astrid-<pack>` at [`astrid/skills/harnesses/claude.py:26`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/harnesses/claude.py:26).
 - Codex has the same per-pack model plus generated `AGENTS.md` content.
-- `sync()` currently regenerates a registry file and then applies per-pack links at [`astrid/skills/__init__.py:158`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/__init__.py:158).
+- `sync()` currently regenerates a registry file and then applies per-pack links at [`astrid/skills/__init__.py:158`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/__init__.py:158).
 
 This architecture cannot safely compose installed packs when the canonical source is in read-only site-packages.
 
 4. Wheel packaging is currently mid-transition.
 
-HEAD explicitly excludes `astrid.skills*` and excludes `packs/**/skill/*`; the dirty tree removes both exclusions and adds skill package-data patterns at [`pyproject.toml:80`](/Users/peteromalley/Documents/reigh-workspace/Astrid/pyproject.toml:80) and [`pyproject.toml:115`](/Users/peteromalley/Documents/reigh-workspace/Astrid/pyproject.toml:115).
+HEAD explicitly excludes `astrid.skills*` and excludes `packs/**/skill/*`; the dirty tree removes both exclusions and adds skill package-data patterns at [`pyproject.toml:80`](/Users/peteromalley/Documents/astrid-workspace/Astrid/pyproject.toml:80) and [`pyproject.toml:115`](/Users/peteromalley/Documents/astrid-workspace/Astrid/pyproject.toml:115).
 
 The intended result is correct—ship canonical pack skills in the wheel—but it needs a release test proving that:
 
@@ -186,7 +186,7 @@ Explicit opt-out:
    - Adapt `astrid.skills.discovery.list_skills()` to consume it.
    - Include `source_kind == "env"` in the bridge.
    - Add tests proving source, extra, and env packs all produce descriptors with correct absolute paths.
-   - Evidence: current mismatch at [`astrid/skills/discovery.py:143`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/skills/discovery.py:143) versus [`astrid/core/pack/discovery.py:41`](/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/core/pack/discovery.py:41).
+   - Evidence: current mismatch at [`astrid/skills/discovery.py:143`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/skills/discovery.py:143) versus [`astrid/core/pack/discovery.py:41`](/Users/peteromalley/Documents/astrid-workspace/Astrid/astrid/core/pack/discovery.py:41).
 
 2. Separate discovery from composition.
 
@@ -232,7 +232,7 @@ Explicit opt-out:
    - Remove the `astrid.*.skill*` package-discovery exclusion only if it is proven not to hide required package directories; otherwise use explicit package-data/resource loading without treating skill folders as Python packages.
    - Add a wheel inspection test/build check.
    - Verify installed discovery paths and composition from a simulated read-only wheel tree.
-   - Evidence: HEAD excludes skills at [`pyproject.toml:87`](/Users/peteromalley/Documents/reigh-workspace/Astrid/pyproject.toml:87) and [`pyproject.toml:98`](/Users/peteromalley/Documents/reigh-workspace/Astrid/pyproject.toml:98); dirty work changes this at [`pyproject.toml:115`](/Users/peteromalley/Documents/reigh-workspace/Astrid/pyproject.toml:115).
+   - Evidence: HEAD excludes skills at [`pyproject.toml:87`](/Users/peteromalley/Documents/astrid-workspace/Astrid/pyproject.toml:87) and [`pyproject.toml:98`](/Users/peteromalley/Documents/astrid-workspace/Astrid/pyproject.toml:98); dirty work changes this at [`pyproject.toml:115`](/Users/peteromalley/Documents/astrid-workspace/Astrid/pyproject.toml:115).
 
 8. Remove unsupported surface assumptions.
 

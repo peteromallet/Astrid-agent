@@ -1,7 +1,7 @@
 """Thin, identity-fenced facade over the installed workspace Runtime CLI.
 
 Astrid deliberately owns no workspace catalog or process supervisor.  This
-module resolves Astrid's stable support root, invokes ``banodoco-local`` with
+module resolves Astrid's stable support root, invokes ``astrid-runtime`` with
 that root explicitly, and checks that lifecycle results still describe the
 one Runtime-selected workspace.
 """
@@ -76,12 +76,12 @@ def _runtime_command(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
         if not command:
             raise RuntimeCLIError(f"{RUNTIME_COMMAND_ENV} is empty")
         return command
-    installed = shutil.which("banodoco-local")
+    installed = shutil.which("astrid-runtime")
     if installed:
         return (installed,)
     # This remains an installed-package invocation; it does not import or
     # duplicate Runtime implementation inside Astrid.
-    return (sys.executable, "-m", "banodoco_local")
+    return (sys.executable, "-m", "astrid_runtime")
 
 
 def _json_payload(stdout: str, stderr: str) -> Mapping[str, Any]:
@@ -272,7 +272,7 @@ def validate_started_workspace(
     """Validate an ``up`` result while allowing its root to be omitted.
 
     The pre-start ``workspace inspect`` result is the authority for the exact
-    realm-root pair.  ``banodoco-local up --json`` may return only the realm
+    realm-root pair.  ``astrid-runtime up --json`` may return only the realm
     UUID, so an omitted root is accepted only when the UUID matches and any
     optional discovery/credential paths remain beneath the already-validated
     support root.
@@ -317,7 +317,7 @@ def validate_started_workspace(
 def _wrapper_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid-runtime",
-        description="Selected-workspace facade over banodoco-local (Runtime remains lifecycle authority).",
+        description="Selected-workspace facade over astrid-runtime (Runtime remains lifecycle authority).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("up", "status", "doctor", "restart"):

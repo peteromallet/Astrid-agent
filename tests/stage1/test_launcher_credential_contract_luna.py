@@ -9,11 +9,9 @@ import sys
 
 import pytest
 
-RUNTIME = Path(
-    os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
-    or "/Users/peteromalley/Documents/reigh-workspace/banodoco-workspace-runtime-stage1-convergence"
-)
-sys.path.insert(0, str(RUNTIME))
+runtime_checkout = os.environ.get("ASTRID_RUNTIME_CHECKOUT")
+if runtime_checkout:
+    sys.path.insert(0, runtime_checkout)
 
 pytest.importorskip("runtime_protocol.daemon")
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
@@ -50,7 +48,7 @@ def test_first_launch_cli_reads_launcher_credential_file_without_secret_env(
     try:
         credential_file = daemon.credential_path
         assert credential_file is not None
-        monkeypatch.delenv("BANODOCO_RUNTIME_CREDENTIAL", raising=False)
+        monkeypatch.delenv("ASTRID_RUNTIME_CREDENTIAL", raising=False)
         monkeypatch.setattr(
             "astrid.sdk.autobootstrap.ensure_runtime", lambda: _launcher_result(daemon)
         )
@@ -81,7 +79,7 @@ def test_launcher_path_is_forwarded_as_path_not_bearer_text(
 ) -> None:
     daemon = RuntimeDaemon(tmp_path / "realm", support_root=tmp_path / "support").start()
     try:
-        monkeypatch.delenv("BANODOCO_RUNTIME_CREDENTIAL", raising=False)
+        monkeypatch.delenv("ASTRID_RUNTIME_CREDENTIAL", raising=False)
         monkeypatch.setattr(
             "astrid.sdk.autobootstrap.ensure_runtime", lambda: _launcher_result(daemon)
         )

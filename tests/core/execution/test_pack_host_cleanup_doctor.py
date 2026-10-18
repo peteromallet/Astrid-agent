@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
 
 from astrid.core.execution import process_group
 from astrid.core.gateway import main

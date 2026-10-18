@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
-from banodoco_workspace_client.contract_metadata import (
+from astrid_runtime_client.contract_metadata import (
     COMPONENT_MANIFEST_SHA256,
     PROTOCOL,
     SCHEMA_DIGEST,
@@ -56,8 +56,8 @@ _TARGETED_EXECUTION_BINDING_CAPABILITY = "execution_binding.targeted.v1"
 # Pairing is owned by the Runtime lifecycle.  This deliberately does not tell
 # a caller to check out a historical tree or kill a process by PID.
 RUNTIME_PAIRING_FIX = (
-    "use the owner-managed Astrid Runtime lifecycle (`banodoco-local down --profile astrid`, "
-    "then `banodoco-local up --profile astrid`) against the installed workspace contract; "
+    "use the owner-managed Astrid Runtime lifecycle (`astrid-runtime down --profile astrid`, "
+    "then `astrid-runtime up --profile astrid`) against the installed workspace contract; "
     "do not switch checkouts or kill a PID"
 )
 
@@ -69,7 +69,7 @@ def _protocol_error(field: str, message: str, *, actual_digest: str | None = Non
         "field": field,
         "expected_schema_digest": SCHEMA_DIGEST,
         "expected_component_manifest": COMPONENT_MANIFEST_SHA256,
-        "next_action": "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
+        "next_action": "reconfigure the Astrid runtime with `astrid-runtime up --profile astrid`",
     }
     if actual_digest is not None:
         details["actual_schema_digest"] = actual_digest
@@ -90,7 +90,7 @@ def _identity_error(field: str, message: str) -> Any:
         message,
         {
             "field": field,
-            "next_action": "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
+            "next_action": "reconfigure the Astrid runtime with `astrid-runtime up --profile astrid`",
         },
     )
 
@@ -213,13 +213,13 @@ class AstridClient:
 
         if protocol_version != PROTOCOL:
             raise ServiceUnavailableError(
-                "unsupported runtime protocol; run `banodoco-local up --profile astrid`",
-                details={"next_action": "banodoco-local up --profile astrid"},
+                "unsupported runtime protocol; run `astrid-runtime up --profile astrid`",
+                details={"next_action": "astrid-runtime up --profile astrid"},
             )
         if not all(isinstance(value, str) and value.strip() for value in (endpoint, realm_id, actor_id, client_name, client_version)) or not isinstance(credential, (str, Path)) or (isinstance(credential, str) and not credential.strip()):
             raise ServiceUnavailableError(
-                "runtime realm, actor, and client identity are required; run `banodoco-local up --profile astrid`",
-                details={"next_action": "banodoco-local up --profile astrid"},
+                "runtime realm, actor, and client identity are required; run `astrid-runtime up --profile astrid`",
+                details={"next_action": "astrid-runtime up --profile astrid"},
             )
 
         def unavailable(exc: Exception, *, operation: str | None = None) -> ServiceUnavailableError:
@@ -248,7 +248,7 @@ class AstridClient:
                 details["operation"] = operation
             message = (
                 f"runtime request failed ({reason}: {original}); reconfigure the Astrid runtime "
-                "with `banodoco-local up --profile astrid`"
+                "with `astrid-runtime up --profile astrid`"
             )
             if reason == "protocol_error":
                 details.setdefault("expected_schema_digest", SCHEMA_DIGEST)
@@ -266,9 +266,9 @@ class AstridClient:
             elif reason == "identity_mismatch":
                 message = (
                     f"runtime rejected the explicit client context ({original}); reconfigure the Astrid "
-                    "runtime with `banodoco-local up --profile astrid`"
+                    "runtime with `astrid-runtime up --profile astrid`"
                 )
-            details["next_action"] = "banodoco-local up --profile astrid"
+            details["next_action"] = "astrid-runtime up --profile astrid"
             return ServiceUnavailableError(
                 message,
                 details=details,
@@ -328,7 +328,7 @@ class AstridClient:
 
         The credential is still explicit: the launcher may supply it as a
         path/token, or the caller may opt into the documented
-        ``BANODOCO_RUNTIME_CREDENTIAL`` setting.  No SDK operation invokes
+        ``ASTRID_RUNTIME_CREDENTIAL`` setting.  No SDK operation invokes
         this method implicitly.
         """
         import os
@@ -381,7 +381,7 @@ class AstridClient:
             # The environment variable is a launcher-issued path, not an
             # ambient bearer token. Keep it typed as a Path so the explicit
             # credential boundary rejects symlinks before reading it.
-            credential_env = os.environ.get("BANODOCO_RUNTIME_CREDENTIAL", "").strip()
+            credential_env = os.environ.get("ASTRID_RUNTIME_CREDENTIAL", "").strip()
             credential_value = Path(credential_env) if credential_env else ""
         if not credential_value:
             # `up --json` deliberately hands off a file path, not the secret.
@@ -390,8 +390,8 @@ class AstridClient:
             credential_value = Path(str(credential_file)) if credential_file else ""
         if not credential_value:
             raise ServiceUnavailableError(
-                "runtime credential is required; run `banodoco-local up --profile astrid`",
-                details={"next_action": "banodoco-local up --profile astrid"},
+                "runtime credential is required; run `astrid-runtime up --profile astrid`",
+                details={"next_action": "astrid-runtime up --profile astrid"},
             )
         return cls.open(
             endpoint=str(result.get("endpoint", "")),
@@ -427,7 +427,7 @@ class AstridClient:
         from astrid.sdk.exceptions import ServiceUnavailableError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
-        next_action = "banodoco-local up --profile astrid"
+        next_action = "astrid-runtime up --profile astrid"
 
         def unavailable(message: str, *, reason: str = "runtime_unavailable") -> ServiceUnavailableError:
             return ServiceUnavailableError(
@@ -560,7 +560,7 @@ class AstridClient:
             raise
         except (RuntimeCLIError, OSError, ValueError, json.JSONDecodeError) as exc:
             raise unavailable(
-                "the selected Runtime is unavailable; run `banodoco-local up --profile astrid`",
+                "the selected Runtime is unavailable; run `astrid-runtime up --profile astrid`",
                 reason=getattr(exc, "code", "runtime_unavailable"),
             ) from exc
 
@@ -680,9 +680,9 @@ class AstridClient:
             return self._remote.health()
         except WorkspaceClientError as exc:
             raise ServiceUnavailableError(
-                "runtime unavailable; run `banodoco-local up --profile astrid`",
+                "runtime unavailable; run `astrid-runtime up --profile astrid`",
                 details={
-                    "next_action": "banodoco-local up --profile astrid",
+                    "next_action": "astrid-runtime up --profile astrid",
                     "reason": exc.code,
                 },
             ) from exc

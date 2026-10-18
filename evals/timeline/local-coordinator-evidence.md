@@ -67,7 +67,7 @@ target/receipt/readback/safety pack before it can be admitted.
 Focused command:
 
 ```text
-PYTHONPATH=../banodoco-workspace-runtime pytest -q \
+PYTHONPATH=../astrid-runtime pytest -q \
   tests/evals/test_timeline_local_coordinator.py \
   tests/evals/test_timeline_eval_luna_native.py \
   tests/evals/test_timeline_eval_evidence_and_admission.py \
@@ -76,4 +76,4 @@ PYTHONPATH=../banodoco-workspace-runtime pytest -q \
 
 Result: **49 passed**. The path addition is necessary in Astrid-only
 environments because `runtime_protocol` is an optional package located in the
-sibling `banodoco-workspace-runtime` checkout.
+sibling `astrid-runtime` checkout.

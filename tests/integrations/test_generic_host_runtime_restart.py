@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("runtime_protocol")
-from banodoco_workspace_client import WorkspaceClient  # noqa: E402
+from astrid_runtime_client import WorkspaceClient  # noqa: E402
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from runtime_protocol.store import RealmStore  # noqa: E402
 

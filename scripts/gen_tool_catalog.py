@@ -37,9 +37,9 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 
 def _entry_contract(tool: ToolEntryProjection) -> dict[str, Any]:
-    if tool.target != "reigh" or dict(tool.compatibility) != {"host": "1"}:
+    if tool.target != "astrid" or dict(tool.compatibility) != {"host": "1"}:
         raise PackValidationError(
-            f"{tool.canonical_id}: current Tool projection requires target: reigh and compatibility: {{host: '1'}}"
+            f"{tool.canonical_id}: current Tool projection requires target: astrid and compatibility: {{host: '1'}}"
         )
     if tool.entry.file_kind != "file" or tool.entry.resolved.suffix != ".json":
         raise PackValidationError(

@@ -29,7 +29,7 @@ database or invent filesystem side channels. For the product CLI use
 `astrid-tools` (or `python3 -m astrid`); prefer JSON output for inspection and
 report artifacts, exit status, and the next useful action clearly.
 
-For generation, rendering, and media work in Reigh, use the `astrid_invoke`
+For generation, rendering, and media work in Astrid App, use the `astrid_invoke`
 tool with the selected project from the editor context and the capability's
 documented inputs. It admits a real Runtime task and returns immediately;
 Runtime owns progress and outputs. Its structured task references preserve

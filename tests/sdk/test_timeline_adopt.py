@@ -66,7 +66,7 @@ def test_checkout_adopt_through_the_api_and_the_cli(tmp_path, monkeypatch, capsy
     from astrid.sdk import timeline_checkout as tc
 
     film, round2 = _round2()
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     heads = {"t": film, "round2": round2}
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(heads[timeline]))

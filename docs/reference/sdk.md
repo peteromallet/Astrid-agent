@@ -9,9 +9,9 @@ Stage1 runtime boundary: ordinary SDK clients require an explicit endpoint,
 credential, realm id, actor id, client identity, and `workspace.v1` protocol
 version. They never infer a checkout, mutate `sys.path`, or launch a process.
 The explicit Astrid CLI launcher may invoke the installed
-`banodoco-local up --profile astrid` command and then construct a client from
-the returned runtime identity. Set `BANODOCO_LOCAL_SOURCE_MANIFEST` and, for
-the launcher client, `BANODOCO_RUNTIME_CREDENTIAL` explicitly.
+`astrid-runtime up --profile astrid` command and then construct a client from
+the returned runtime identity. Set `ASTRID_RUNTIME_SOURCE_MANIFEST` and, for
+the launcher client, `ASTRID_RUNTIME_CREDENTIAL` explicitly.
 The runtime is the sole authority for projects, media, timelines, tasks, runs,
 receipts, and events. `AstridClient` is a runtime client: it does not open a
 checkout-local database or content store and does not execute a pack
@@ -38,9 +38,9 @@ binding head. The CLI exposes this as `timelines shots text list/show/set`.
 Voiceover scripts and transcripts are unslotted; only prompts accept a slot.
 
 The published Astrid wheel includes the generated
-`banodoco_workspace_client` transport package. It is a pinned vendor copy of
+`astrid_runtime_client` transport package. It is a pinned vendor copy of
 the neutral runtime contract (source commit is recorded in
-`banodoco_workspace_client.contract_metadata`); it is never loaded from a
+`astrid_runtime_client.contract_metadata`); it is never loaded from a
 sibling checkout or an ambient `PYTHONPATH`.
 
 > **Compatibility policy**: This document is a user-facing walkthrough. The
@@ -132,7 +132,7 @@ discovers 59 executable in-tree executor manifests. Historical external rows
 `unavailable_external` when their source pack is not installed, never as ready
 local capabilities. The host re-runs preflight before each runtime claim, so
 the capability IDs offered for admission are exactly the capabilities that
-are currently ready. The projection also retains 19 retired pre-cutover Reigh
+are currently ready. The projection also retains 19 retired pre-cutover App capability
 IDs. Hivemind's v2 executor and contributor-operation coverage is maintained
 in the Astrid-side [external-pack contract](hivemind-pack-contract.md). The
 delivery configuration carries a full immutable source pin; setup does not

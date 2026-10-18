@@ -262,7 +262,7 @@ def collect_product_observations(support_root: str, runtime_data: Mapping[str, A
     compatibility = runtime_data.get("compatibility") or ready.get("runtime_compatibility")
     health = runtime_data.get("runtime_health")
     if not isinstance(compatibility, Mapping) and isinstance(health, Mapping):
-        from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+        from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
         instance = health.get("runtime_instance_id") or health.get("instance_id")
         compatibility = {"protocol": health.get("protocol"), "schema_digest": health.get("schema_digest"),
                          "expected_protocol": PROTOCOL, "expected_schema_digest": SCHEMA_DIGEST,

@@ -109,7 +109,7 @@ def test_tool_ui_projection_keeps_whole_tool_distinct_from_editor_extensions(tmp
             "video-editor": {
                 "type": "tool",
                 "entry": entry_path,
-                "target": "reigh",
+                "target": "astrid",
                 "compatibility": {"host": "1"},
                 "resources": [{"kind": "support", "path": resource_path}],
             },
@@ -128,7 +128,7 @@ def test_tool_ui_projection_keeps_whole_tool_distinct_from_editor_extensions(tmp
     assert projection.entry is handles[entry_path]
     assert projection.resources == (handles[resource_path],)
     assert projection.resource_closure == (handles[entry_path], handles[resource_path])
-    assert projection.target == "reigh" and dict(projection.compatibility) == {"host": "1"}
+    assert projection.target == "astrid" and dict(projection.compatibility) == {"host": "1"}
 
 
 def test_mixed_maps_and_authored_skill_have_one_manifest_authority(tmp_path: Path) -> None:
@@ -250,7 +250,7 @@ def test_v2_admission_and_manifestless_core_shell_remain_compatible(tmp_path: Pa
     ({"ui": {"tool": {"type": "theme", "entry": "ui/theme.json"}}}, "ui"),
     ({"ui": {"tool": {"type": "editor", "entry": "ui/tool.tsx", "host_id": "duplicate"}}}, "ui"),
     ({"ui": {"tool": {"type": "tool", "entry": "ui/tool.json", "target": "app", "compatibility": {"host": "1"}}}}, "ui"),
-    ({"ui": {"tool": {"type": "tool", "entry": "ui/tool.json", "target": "reigh", "compatibility": {"sdk": "1"}}}}, "ui"),
+    ({"ui": {"tool": {"type": "tool", "entry": "ui/tool.json", "target": "astrid", "compatibility": {"sdk": "1"}}}}, "ui"),
     ({"actions": {"echo": {**_action(), "id": "other.echo"}}}, "actions"),
     ({"actions": {"echo": {**_action(), "input_schema": {"type": "object"}}}}, "actions"),
     ({"actions": {"echo": {**_action(), "invocation": {"kind": "command", "command": "echo hi"}}}}, "actions"),

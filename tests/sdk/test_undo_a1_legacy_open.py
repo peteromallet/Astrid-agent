@@ -25,7 +25,7 @@ RESOLVED = ("p", "t", "rev-0")
 @pytest.fixture
 def head(tmp_path, monkeypatch):
     """A published head (tiny.json, new shape) behind the store, and a data root of this test's own."""
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     bundle = json.loads(TINY.read_text(encoding="utf-8"))
     monkeypatch.setattr(_store, "resolve_ids", lambda project, timeline, client=None: RESOLVED)
     monkeypatch.setattr(_store, "fetch_bundle",

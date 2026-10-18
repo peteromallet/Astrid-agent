@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("runtime_protocol.daemon")
-import banodoco_workspace_client
-from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
+import astrid_runtime_client
+from astrid_runtime_client.contract_metadata import SCHEMA_DIGEST
 from runtime_protocol.daemon import RuntimeDaemon  # noqa: E402
 from runtime_protocol.store import RealmStore  # noqa: E402
 
@@ -24,8 +24,8 @@ from astrid.sdk.client import AstridClient
 def test_launcher_context_reads_real_preferences_and_refreshes_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    package_root = Path(__file__).resolve().parents[2] / "banodoco_workspace_client"
-    assert Path(banodoco_workspace_client.__file__).resolve().is_relative_to(package_root)
+    package_root = Path(__file__).resolve().parents[2] / "astrid_runtime_client"
+    assert Path(astrid_runtime_client.__file__).resolve().is_relative_to(package_root)
     # All Runtime-owned state and owner-only actor credentials stay in tmp_path.
     root = tmp_path / "realm"
     RealmStore.initialize(root).close()
@@ -54,7 +54,7 @@ def test_launcher_context_reads_real_preferences_and_refreshes_project(
             "credential_file": str(credential_file),
         }
         for name in (
-            "BANODOCO_RUNTIME_CREDENTIAL",
+            "ASTRID_RUNTIME_CREDENTIAL",
             "ASTRID_TIMELINE_EVAL_ENDPOINT",
             "ASTRID_TIMELINE_EVAL_CREDENTIAL",
             "ASTRID_TIMELINE_EVAL_REALM_ID",

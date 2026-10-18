@@ -42,7 +42,7 @@ PACK_IDS = (
     "wan2gp",
     "youtube",
 )
-RETIRED = {"builtin", "references", "reigh", "runaway", "shots", "timeline"}
+RETIRED = {"builtin", "references", "astrid", "runaway", "shots", "timeline"}
 
 
 def test_current_catalog_is_exact_strict_v2_capability_set() -> None:

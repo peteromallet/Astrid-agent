@@ -12,13 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from banodoco_workspace_client.generated import Health
+from astrid_runtime_client.generated import Health
 
 from astrid.core.execution import generic_host
 
 
 def _host(client):
-    from banodoco_workspace_client.contract_metadata import PROTOCOL
+    from astrid_runtime_client.contract_metadata import PROTOCOL
 
     def health(**changes):
         values = {"status": "ok", "protocol": PROTOCOL, "schema_digest": "sha256:" + "c" * 64,

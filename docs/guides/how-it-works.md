@@ -24,7 +24,7 @@ Agents can draw on that knowledge to choose tools, understand models, and find a
 
 The workspace Runtime owns projects, media, timelines, tasks, runs, receipts, and event history. Astrid’s CLI and Python SDK are clients of that Runtime; a checkout-local project database is not live authority.
 
-For generation work, Reigh submits a typed request to Runtime, a Worker executes it through `GenericPackHost`, and Runtime records the result for gallery and timeline readback. The retired Reigh `create-task` endpoint and legacy timeline-agent task tools are not alternate admission paths. Current CPU acceptance evidence does not establish GPU, model, or provider availability.
+For generation work, Astrid App submits a typed request to Runtime, a Worker executes it through `GenericPackHost`, and Runtime records the result for gallery and timeline readback. The retired Astrid App `create-task` endpoint and legacy timeline-agent task tools are not alternate admission paths. Current CPU acceptance evidence does not establish GPU, model, or provider availability.
 
 ## Better together
 

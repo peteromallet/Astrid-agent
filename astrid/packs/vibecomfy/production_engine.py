@@ -753,7 +753,7 @@ def _run_profile_result(
         previous_configuration = os.environ.get("VIBECOMFY_COMFY_CONFIGURATION")
         previous_comfyui_path = os.environ.get("COMFYUI_PATH")
         previous_attention = os.environ.get("VIBECOMFY_ATTENTION_PROFILE")
-        previous_reigh_attention = os.environ.get("REIGH_VIBECOMFY_ATTENTION_PROFILE")
+        previous_astrid_attention = os.environ.get("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE")
         os.environ["VIBECOMFY_WARM"] = "never"
         os.environ["VIBECOMFY_SCHEMA_WARN_ONLY"] = "0"
         # VibeComfy's environment layer otherwise has precedence over the
@@ -762,7 +762,7 @@ def _run_profile_result(
         os.environ["VIBECOMFY_COMFY_CONFIGURATION"] = "{}"
         os.environ["COMFYUI_PATH"] = str(comfy_root.resolve())
         os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
-        os.environ.pop("REIGH_VIBECOMFY_ATTENTION_PROFILE", None)
+        os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
         try:
             result = run_embedded_sync(
                 record,
@@ -796,10 +796,10 @@ def _run_profile_result(
                 os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
             else:
                 os.environ["VIBECOMFY_ATTENTION_PROFILE"] = previous_attention
-            if previous_reigh_attention is None:
-                os.environ.pop("REIGH_VIBECOMFY_ATTENTION_PROFILE", None)
+            if previous_astrid_attention is None:
+                os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
             else:
-                os.environ["REIGH_VIBECOMFY_ATTENTION_PROFILE"] = previous_reigh_attention
+                os.environ["ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE"] = previous_astrid_attention
         raw_outputs = getattr(result, "outputs", None)
         if not isinstance(raw_outputs, (list, tuple)) or not raw_outputs:
             raise ProductionEngineError("VibeComfy produced no output artifacts")

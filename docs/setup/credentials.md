@@ -6,9 +6,9 @@ Configure only what your work needs.
 
 The launcher creates the workspace connection credentials automatically. Keep them separate from creative-provider API keys and let the launcher manage them.
 
-For a source checkout, `config/astrid-runtime.json` selects `Astrid/.astrid-data` as the default Runtime support root; a wheel installation uses `~/.astrid-data`. An explicit `BANODOCO_LOCAL_DATA_ROOT` or launcher `--data-root` overrides this location. The support root contains the launcher catalog, credentials, and Runtime realm. See [Getting Started](../getting-started.md) for details.
+For a source checkout, `config/astrid-runtime.json` selects `Astrid/.astrid-data` as the default Runtime support root; a wheel installation uses `~/.astrid-data`. An explicit `ASTRID_RUNTIME_DATA_ROOT` or launcher `--data-root` overrides this location. The support root contains the launcher catalog, credentials, and Runtime realm. See [Getting Started](../getting-started.md) for details.
 
-`BANODOCO_LOCAL_SOURCE_MANIFEST` selects an explicit source-profile file when needed. `BANODOCO_RUNTIME_CREDENTIAL` identifies a Runtime credential file for connection paths that use that override. Normal launcher setup supplies its connection information automatically.
+`ASTRID_RUNTIME_SOURCE_MANIFEST` selects an explicit source-profile file when needed. `ASTRID_RUNTIME_CREDENTIAL` identifies a Runtime credential file for connection paths that use that override. Normal launcher setup supplies its connection information automatically.
 
 ## Creative providers
 

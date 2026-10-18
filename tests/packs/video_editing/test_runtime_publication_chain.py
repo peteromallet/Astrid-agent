@@ -14,7 +14,7 @@ from astrid.sdk.client import AstridClient
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.execution.generic_host import RuntimeProtocolClient
 
-RUNTIME_CHECKOUT = Path(__file__).resolve().parents[3].parent / "banodoco-workspace-runtime-execution-20260909"
+RUNTIME_CHECKOUT = Path(__file__).resolve().parents[3].parent / "astrid-runtime-execution-20260909"
 if str(RUNTIME_CHECKOUT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_CHECKOUT))
 

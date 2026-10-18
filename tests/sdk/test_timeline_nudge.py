@@ -87,7 +87,7 @@ def test_a_zero_nudge_changes_nothing():
 
 @pytest.fixture
 def tiny_draft(tmp_path, monkeypatch):
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: tiny())
     assert _run("checkout", "t", "--project", "P") == 0

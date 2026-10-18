@@ -9,7 +9,7 @@ made.
 - `pyproject.toml:38-39` installs the `astrid` console script to
   `astrid.core.gateway:main`; `astrid/__main__.py` is the module equivalent.
   `README.md:45-46` and `docs/getting-started.md:21-23` direct users through
-  `python3 -m astrid`, after `banodoco-local up --profile astrid`.
+  `python3 -m astrid`, after `astrid-runtime up --profile astrid`.
 - The gateway's seven-family census is documented in root `AGENTS.md`:
   projects, timelines, media, tasks, runs, doctor and backup. Hivemind should
   enter through the existing executor/pack route, not a new gateway family.
@@ -38,10 +38,10 @@ secret environment requirements remain Hivemind-owned and must be declared by
 its future v2 manifest; Astrid should pass declared inputs rather than duplicate
 Hivemind CLI behavior.
 
-`astrid/sdk/autobootstrap.py:75-125` resolves `banodoco-local` from an explicit
+`astrid/sdk/autobootstrap.py:75-125` resolves `astrid-runtime` from an explicit
 environment setting, PATH, or installed module and runs `up --profile astrid`
 with bounded timeout/JSON validation. The launcher source manifest is accepted
-only through `BANODOCO_LOCAL_SOURCE_MANIFEST`; Astrid deliberately does not
+only through `ASTRID_RUNTIME_SOURCE_MANIFEST`; Astrid deliberately does not
 reconstruct the neutral runtime profile. A future pack provisioner must update
 that owner-facing source profile through its supported interface.
 

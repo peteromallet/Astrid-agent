@@ -1646,5 +1646,5 @@ ui:
   video-editor:
     type: tool
     entry: ui/video-editor/entry.json
-    target: reigh
+    target: astrid
     compatibility: {host: '1'}

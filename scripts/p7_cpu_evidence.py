@@ -9,8 +9,7 @@ the scanned repositories.
 Usage::
 
     python -m scripts.p7_cpu_evidence \
-        --repo astrid=/path/to/Astrid \
-        --repo reigh-worker=/path/to/reigh-worker
+        --repo astrid=/path/to/Astrid
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ SOURCE_DIRS = frozenset(
         "bin",
         "lib",
         "packages",
-        "reigh",
         "source",
         "src",
         "worker",

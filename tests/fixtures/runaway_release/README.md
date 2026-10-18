@@ -1,7 +1,7 @@
 # Runaway release fixtures
 
 These are tracked snapshots of the immutable Runaway migration inputs used by
-the paired Reigh/Astrid release gate. The fixture path hints are relative so
+the paired Astrid/Astrid release gate. The fixture path hints are relative so
 they do not depend on a particular checkout or home directory. The operational
 project tree remains ignored and untouched; release archives use these fixtures
 so an exact Git commit is sufficient to reproduce migration acceptance.

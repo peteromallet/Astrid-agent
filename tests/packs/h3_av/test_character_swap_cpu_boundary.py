@@ -94,7 +94,7 @@ except HostError:
 
 def test_installed_cpu_profile_binds_actual_product_roots(monkeypatch):
     import sys
-    from banodoco_local.bootstrap import SourceProfile
+    from astrid_runtime.bootstrap import SourceProfile
     from tests.helpers import h3_cpu_runtime as helper
 
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "installed")
@@ -107,7 +107,7 @@ def test_installed_cpu_profile_binds_actual_product_roots(monkeypatch):
 def test_installed_cpu_profile_rejects_execution_drift(tmp_path, monkeypatch, difference):
     import sys
     from dataclasses import replace
-    from banodoco_local.bootstrap import SourceProfile
+    from astrid_runtime.bootstrap import SourceProfile
     from tests.helpers import h3_cpu_runtime as helper
 
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "installed")
@@ -130,7 +130,7 @@ def test_installed_cpu_profile_rejects_execution_drift(tmp_path, monkeypatch, di
 
 def test_source_cpu_profile_roots_remain_source_bound(monkeypatch):
     import sys
-    from banodoco_local.bootstrap import SourceProfile
+    from astrid_runtime.bootstrap import SourceProfile
     from tests.helpers import h3_cpu_runtime as helper
 
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
@@ -234,7 +234,7 @@ def _boundary_blockers() -> list[str]:
     receiving_root = checkout.parents[1]
     runtime_root = Path(
         os.environ.get("ASTRID_STAGE1_RUNTIME_CHECKOUT")
-        or receiving_root / "checkouts" / "banodoco-workspace-runtime--integration"
+        or receiving_root / "checkouts" / "astrid-runtime--integration"
     )
     vibecomfy_root = Path(
         os.environ.get("ASTRID_VIBECOMFY_CHECKOUT") or receiving_root / "repos" / "vibecomfy"
@@ -265,7 +265,7 @@ def test_public_cpu_boundary_preflight_does_not_require_a_prior_qualification_re
     profile = tmp_path / "synthetic-t9-template.json"
     profile.write_text(json.dumps({"profile_template": "test-only"}), encoding="utf-8")
     monkeypatch.setenv("ASTRID_STAGE1_RUNTIME_CHECKOUT", str(
-        receiving_root / "checkouts" / "banodoco-workspace-runtime--integration"
+        receiving_root / "checkouts" / "astrid-runtime--integration"
     ))
     monkeypatch.setenv("ASTRID_VIBECOMFY_CHECKOUT", str(receiving_root / "repos" / "vibecomfy"))
     monkeypatch.setenv("ASTRID_H3_T9_READINESS_PROFILE", str(profile))
@@ -353,7 +353,7 @@ def test_cpu_harness_invokes_transform_unbound_without_request_or_target(
         def invoke_result(self, capability_id, **kwargs):
             captured.update({
                 "capability_id": capability_id,
-                "support_root_at_invocation": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
+                "support_root_at_invocation": os.environ.get("ASTRID_RUNTIME_DATA_ROOT"),
                 "model_substitute_profile_at_invocation": os.environ.get(
                     "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"
                 ),
@@ -368,7 +368,7 @@ def test_cpu_harness_invokes_transform_unbound_without_request_or_target(
     runtime.project_id = "fixture-project"
     runtime.cpu_model_boundary = "test-only"
     out = tmp_path / "out"
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", "/tmp/stale-runtime-support")
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", "/tmp/stale-runtime-support")
     monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", "/tmp/stale-model-profile.json")
 
     result = runtime.run_public_transform(request_path, tmp_path / "bundle.zip", out=out, key="fixture")
@@ -393,7 +393,7 @@ def test_cpu_harness_invokes_transform_unbound_without_request_or_target(
     assert "execution_request" not in captured
     assert set(captured["inputs"]) == {"request", "asset_map", "project"}
     assert "execution_target" not in captured
-    assert os.environ["BANODOCO_LOCAL_DATA_ROOT"] == "/tmp/stale-runtime-support"
+    assert os.environ["ASTRID_RUNTIME_DATA_ROOT"] == "/tmp/stale-runtime-support"
     assert os.environ["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == "/tmp/stale-model-profile.json"
 
 
@@ -624,7 +624,7 @@ def test_candidate_manifest_reaches_declared_orchestrator_child_environment(
     assert "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in allowed
     assert "ASTRID_H3_CANDIDATE_MANIFEST" in compile_allowed
     assert "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in compile_allowed
-    assert "BANODOCO_LOCAL_DATA_ROOT" in allowed
+    assert "ASTRID_RUNTIME_DATA_ROOT" in allowed
     assert "*" not in allowed
     assert "*" not in compile_allowed
 
@@ -633,7 +633,7 @@ def test_candidate_manifest_reaches_declared_orchestrator_child_environment(
     support = "/tmp/selected-support-root"
     monkeypatch.setenv("ASTRID_H3_CANDIDATE_MANIFEST", candidate)
     monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", model_profile)
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", support)
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", support)
     monkeypatch.setenv("ASTRID_H3_UNDECLARED_TEST_VALUE", "must-not-cross")
     child_env = build_child_subprocess_env(
         base=os.environ,
@@ -652,7 +652,7 @@ def test_candidate_manifest_reaches_declared_orchestrator_child_environment(
     assert child_env["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == model_profile
     assert compile_child_env["ASTRID_H3_CANDIDATE_MANIFEST"] == candidate
     assert compile_child_env["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == model_profile
-    assert child_env["BANODOCO_LOCAL_DATA_ROOT"] == support
+    assert child_env["ASTRID_RUNTIME_DATA_ROOT"] == support
     assert "ASTRID_H3_UNDECLARED_TEST_VALUE" not in child_env
 
 
@@ -1134,7 +1134,7 @@ def test_cpu_harness_local_parent_retains_child_managed_input_materialization(tm
 
 
 def _managed_import_real_sdk_media(transport):
-    from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
+    from astrid_runtime_client import WorkspaceClient as GeneratedWorkspaceClient
     from astrid.sdk.workspace_client import WorkspaceClient
     from astrid.sdk.remote import RemoteMedia
     workspace = WorkspaceClient("http://127.0.0.1:1", "fixture-only-no-network")
@@ -1396,7 +1396,7 @@ def test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner(
             assert Path(completed.stdout.strip()).resolve().is_relative_to(runtime.vibecomfy_root.resolve())
             captured.update({
                 "capability_id": capability_id,
-                "support_root_at_invocation": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
+                "support_root_at_invocation": os.environ.get("ASTRID_RUNTIME_DATA_ROOT"),
                 "model_substitute_profile_at_invocation": os.environ.get(
                     "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"
                 ),
@@ -1418,7 +1418,7 @@ def test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner(
     monkeypatch.setenv("PYTHONPATH", "/tmp/stale-parent-import")
     monkeypatch.setenv("VIBECOMFY_HEADLESS", "0")
     out = tmp_path / "out"
-    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", "/tmp/stale-runtime-support")
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", "/tmp/stale-runtime-support")
     monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", "/tmp/stale-model-profile.json")
 
     if fault == "raise":
@@ -1448,7 +1448,7 @@ def test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner(
     assert "execution_request" not in captured
     assert set(captured["inputs"]) == {"request", "asset_map", "project"}
     assert "execution_target" not in captured
-    assert os.environ["BANODOCO_LOCAL_DATA_ROOT"] == "/tmp/stale-runtime-support"
+    assert os.environ["ASTRID_RUNTIME_DATA_ROOT"] == "/tmp/stale-runtime-support"
     assert os.environ["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == "/tmp/stale-model-profile.json"
 
 

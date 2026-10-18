@@ -15,7 +15,7 @@ from astrid.sdk.timeline._common import TimelineEditError
 
 _SOURCE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("authoring-parent-revision-", "astrid"),
-    ("reigh.editor.timeline.", "app"),
+    ("astrid.editor.timeline.", "app"),
     ("restore-", "restore"),
 )
 # The prefix a revision id carries, so that a short id can match the part after it.
@@ -29,7 +29,7 @@ CANNOT_LIST = (
 @dataclass(frozen=True)
 class Revision:
     id: str
-    source: str  # "astrid" (authoring-parent-revision-*), "app" (reigh.editor.timeline.*), "restore" (restore-*), "other"
+    source: str  # "astrid" (authoring-parent-revision-*), "app" (astrid.editor.timeline.*), "restore" (restore-*), "other"
     created_at: str | None
     parent: str | None
     message: str | None

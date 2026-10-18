@@ -175,7 +175,7 @@ def test_threejs_manifest_registers_static_raw_command_backend() -> None:
     assert manifest.required_binaries == ("node", "npx", "ffprobe")
     assert manifest.timeout_seconds == 600
     capabilities = manifest.capabilities
-    assert capabilities["clip_types"] == ["text", "media", "com.reigh.astrid.liveScene"]
+    assert capabilities["clip_types"] == ["text", "media", "haus.astrid.liveScene"]
     assert capabilities["track_types"] == ["visual", "audio"]
     assert capabilities["supports_full_timeline"] is True
     assert capabilities["supports_windows"] is True
